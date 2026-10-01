@@ -180,6 +180,7 @@ export function foldBest(goal: Goal, best: number | undefined, score: number): n
 /**
  * Single source of truth for the ratchet keep/revert decision. Shared by step,
  * loop, and status so they can never diverge.
+ *  - every goal: a failed eval always reverts, regardless of its printed score.
  *  - gate goal: keep iff the eval passed (score is irrelevant).
  *  - min/max goal: a non-measurable (NaN) score can never prove improvement, so
  *    it is always reverted; otherwise keep iff it improves on the best so far.
@@ -190,7 +191,8 @@ export function decideStep(
   passed: boolean,
   best: number | undefined,
 ): "keep" | "revert" {
-  if (goal === "gate") return passed ? "keep" : "revert";
+  if (!passed) return "revert";
+  if (goal === "gate") return "keep";
   if (Number.isNaN(score)) return "revert";
   return isImprovement(goal, score, best) ? "keep" : "revert";
 }
@@ -255,8 +257,11 @@ function cmdStep(flags: Record<string, string>): void {
   if (decision === "revert" && flags["on-revert"]) {
     try {
       execSync(flags["on-revert"], { stdio: "inherit", shell: getShell() });
-    } catch {
-      console.error("jeo autopilot: --on-revert hook failed (decision still logged)");
+    } catch (error) {
+      appendLog({ type: "stop", reason: "rollback_failed", change, score, passed, prevBest: best ?? null, output, error: String(error) });
+      console.error(`jeo autopilot: stop — --on-revert hook failed: ${String(error)}`);
+      process.exitCode = 1;
+      return;
     }
   }
 
@@ -295,6 +300,7 @@ function cmdLoop(flags: Record<string, string>): void {
     if (!runnerOk) {
       appendLog({ type: "stop", reason: "runner_failed", iteration: i });
       console.log(`jeo autopilot: stop — runner failed at iteration ${i}`);
+      process.exitCode = 1;
       return;
     }
 
@@ -304,8 +310,11 @@ function cmdLoop(flags: Record<string, string>): void {
     if (decision === "revert" && flags["on-revert"]) {
       try {
         execSync(flags["on-revert"], { stdio: "inherit", shell: getShell() });
-      } catch {
-        /* logged below regardless */
+      } catch (error) {
+        appendLog({ type: "stop", reason: "rollback_failed", iteration: i, change: `loop#${i}`, score, passed, prevBest: best ?? null, output, error: String(error) });
+        console.error(`jeo autopilot: stop — --on-revert hook failed at iteration ${i}: ${String(error)}`);
+        process.exitCode = 1;
+        return;
       }
     }
     appendLog({ type: "step", iteration: i, change: `loop#${i}`, score, passed, decision, prevBest: best ?? null, output });

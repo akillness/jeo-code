@@ -1,5 +1,5 @@
 /**
- * `jeo daemon status|start|stop|reload` — manage the background Telegram
+ * `jeo daemon status|start|stop|reload` — manage the shared Telegram/Discord/Slack
  * notification/subagent-control daemon (gjc `gjc daemon` parity, scoped to
  * jeo's one daemon kind). See `src/agent/notify/daemon-control.ts`.
  */
@@ -10,8 +10,10 @@ async function printStatus(): Promise<void> {
   if (!status.configured) {
     console.log("notifications not configured — run 'jeo notify setup' first.");
   }
-  if (status.running) {
-    console.log(`running (pid ${status.pid}, started ${new Date(status.startedAt!).toISOString()})`);
+  if (status.pairing) {
+    console.log(`pairing owns polling (pid ${status.pid}); daemon not running`);
+  } else if (status.running) {
+    console.log(`process ${status.ready ? "initialized" : "initializing"} (pid ${status.pid}, started ${new Date(status.startedAt!).toISOString()}); platform connectivity not checked`);
     // Say so when the PID-reuse guard could not actually run. On a host with no `/proc`
     // and no usable `ps` (distroless images, seccomp-hardened sandboxes) "running" is an
     // existence-only guess: the pid is alive, but it may belong to an unrelated process

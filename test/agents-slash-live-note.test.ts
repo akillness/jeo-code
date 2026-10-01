@@ -16,6 +16,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { runAgentsSlash, type AgentsSlashCtx } from "../src/commands/launch/agents-slash";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
+import { parseModelsBody } from "../src/ai/model-discovery";
+import { providerModelFor, resolveProvider } from "../src/ai/model-manager";
+import { antigravityRequest } from "../src/ai/providers/antigravity";
 
 let dir: string;
 const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -83,4 +86,52 @@ test("/agents <role> <model>: the note is also suppressed when the provider is e
   ];
   const logs = await runPin("executor", "antigravity/gemini-pro-agent", live);
   expect(logs.some(l => l.includes("not in the live") && l.includes("model list"))).toBe(false);
+});
+
+test.each([
+  { name: "failed discovery", selection: "", ok: false, error: "auth rejected" },
+  { name: "empty discovery", selection: "", ok: true, error: undefined },
+  { name: "numeric selection after failed discovery", selection: " #1", ok: false, error: "auth rejected" },
+])("/agents provider Antigravity preserves the role assignment after $name", async ({ selection, ok, error }) => {
+  const configPath = path.join(dir, "config.json");
+  const subagents = { executor: { model: "ollama/keep-this-assignment", thinking: "high" } };
+  await fs.writeFile(configPath, JSON.stringify({
+    defaultModel: "ollama/keep-this-assignment",
+    oauth: { antigravity: { access: "test-access", projectId: "test-project" } },
+    subagents,
+  }));
+  const logs = await runPin("executor", `provider antigravity${selection}`, [
+    { provider: "antigravity", models: [], ok, source: "oauth", error },
+  ]);
+  expect(JSON.parse(await fs.readFile(configPath, "utf8")).subagents).toEqual(subagents);
+  expect(logs.join("\n")).toContain(error ?? "no account-available models");
+});
+
+test("/agents provider Antigravity routes a newly discovered callable ID unchanged after numeric selection", async () => {
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    defaultModel: "ollama/keep-this-assignment",
+    oauth: { antigravity: { access: "test-access", projectId: "test-project" } },
+  }));
+  // Source-confirmed keyed-map shape; this ID is deliberately synthetic, not a
+  // claim that any particular new model is available to a real account.
+  const models = parseModelsBody("antigravity", {
+    models: {
+      "gemini-2.5-pro": {},
+      "contract-test-agent-vnext": { model: "MODEL_PLACEHOLDER_TEST" },
+    },
+    agentModelSorts: [{ groups: [{ modelIds: ["gemini-2.5-pro", "contract-test-agent-vnext"] }] }],
+  });
+  await runPin("executor", "provider antigravity #2", [
+    { provider: "antigravity", models, ok: true, source: "oauth" },
+  ]);
+  const selected = JSON.parse(await fs.readFile(configPath, "utf8")).subagents?.executor?.model;
+  expect(selected).toBe("antigravity/contract-test-agent-vnext");
+  expect(resolveProvider(selected)).toBe("antigravity");
+  const request = antigravityRequest(
+    [{ role: "user", content: "hello" }],
+    { model: providerModelFor(selected) },
+    { kind: "oauth", provider: "antigravity", token: "test-access", projectId: "test-project" },
+  );
+  expect(JSON.parse(request.body).model).toBe("contract-test-agent-vnext");
 });

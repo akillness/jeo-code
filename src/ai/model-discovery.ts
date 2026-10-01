@@ -70,13 +70,6 @@ const DEFAULT_LIMIT = 100;
 const CODEX_CLIENT_VERSION = "2.0.0";
 export const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 const ANTIGRAVITY_MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
-const ANTIGRAVITY_MODEL_DENYLIST = new Set([
-  "chat_20706",
-  "chat_23310",
-  "gemini-2.5-flash-thinking",
-  "gemini-3-pro-low",
-  "gemini-2.5-pro",
-]);
 
 function anthropicHeaders(cred: Credential): Record<string, string> {
   if (cred.kind === "oauth") {
@@ -247,10 +240,11 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       /** Array of ids OR an object keyed by deprecated id. */
       deprecatedModelIds?: string[] | Record<string, unknown>;
     };
-    const roleIds = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+    const normalizeId = (id: string): string => id.replace(/^models\//, "").replace(/^antigravity\//, "");
+    const roleIds = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(normalizeId) : []);
     const deprecated = Array.isArray(payload.deprecatedModelIds)
       ? roleIds(payload.deprecatedModelIds)
-      : Object.keys(payload.deprecatedModelIds ?? {});
+      : Object.keys(payload.deprecatedModelIds ?? {}).map(normalizeId);
     const agentIds = new Set(
       (Array.isArray(payload.agentModelSorts) ? payload.agentModelSorts : [])
         .flatMap(sort => (Array.isArray(sort?.groups) ? sort.groups : []))
@@ -265,18 +259,16 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       ...deprecated,
     ]);
     const rawModels = payload.models;
-    const ids = Array.isArray(rawModels)
-      ? rawModels.map(m => m.slug ?? m.id ?? m.name ?? "").filter(Boolean)
-      : Object.entries(rawModels ?? {})
-          .filter(([id, model]) =>
-            !ANTIGRAVITY_MODEL_DENYLIST.has(id) &&
-            model?.isInternal !== true &&
-            (agentIds.size > 0 ? agentIds.has(id) : !nonChat.has(id)))
-          .map(([id]) => id);
-    return ids
-      .map(id => id.replace(/^models\//, ""))
-      .filter(Boolean)
-      .map(id => id.startsWith("antigravity/") ? id : `antigravity/${id}`);
+    const entries = Array.isArray(rawModels)
+      ? rawModels.map(model => [model?.slug ?? model?.id ?? model?.name ?? "", model] as const)
+      : Object.entries(rawModels ?? {});
+    return entries
+      .map(([id, model]) => [typeof id === "string" ? normalizeId(id) : "", model] as const)
+      .filter(([id, model]) =>
+        id.length > 0 &&
+        model?.isInternal !== true &&
+        (agentIds.size > 0 ? agentIds.has(id) : !nonChat.has(id)))
+      .map(([id]) => `antigravity/${id}`);
   }
   if (provider === "gemini") {
     // Keep only models the generateContent endpoint can serve (skip embeddings/tts/aqa/etc).

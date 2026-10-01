@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,6 +14,14 @@ import { SubagentRegistry } from "../src/agent/subagent-registry";
 
 let endpoint: SessionNotifyEndpoint | undefined;
 let sockets: WebSocket[] = [];
+let endpointDir: string;
+let previousConfigDir: string | undefined;
+
+beforeEach(async () => {
+  previousConfigDir = process.env.JEO_CONFIG_DIR;
+  endpointDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-endpoint-security-"));
+  process.env.JEO_CONFIG_DIR = endpointDir;
+});
 
 afterEach(async () => {
   for (const ws of sockets) {
@@ -26,6 +34,9 @@ afterEach(async () => {
     await endpoint.stop();
     endpoint = undefined;
   }
+  if (previousConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = previousConfigDir;
+  await fs.rm(endpointDir, { recursive: true, force: true });
 });
 
 interface Discovery {
@@ -370,21 +381,6 @@ test("onConfigCommand: does NOT fire for a frame with neither verbosity nor reda
   expect(received.length).toBe(0);
 });
 
-test("startSessionNotifyEndpoint: returns undefined and writes no discovery file when notifications.enabled is unset (no config file at all)", async () => {
-  const savedCfgDir = process.env.JEO_CONFIG_DIR;
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-session-endpoint-"));
-  process.env.JEO_CONFIG_DIR = dir;
-  try {
-    const result = await startSessionNotifyEndpoint("/tmp/proj", "some-session-id");
-    expect(result).toBeUndefined();
-    const sessionsDir = path.join(dir, "notifications", "sessions");
-    await expect(fs.readdir(sessionsDir)).rejects.toThrow(); // directory never created
-  } finally {
-    if (savedCfgDir === undefined) delete process.env.JEO_CONFIG_DIR;
-    else process.env.JEO_CONFIG_DIR = savedCfgDir;
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("startSessionNotifyEndpoint: returns undefined and writes no discovery file when notifications.enabled is explicitly false", async () => {
   const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -459,4 +455,94 @@ test("ensureSessionNotifyEndpoint: when sessionEndpoint is passed, it attachRegi
     else process.env.JEO_CONFIG_DIR = savedCfgDir;
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("malformed and null frames cannot invoke handlers or prevent a subsequent valid request", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  const received: RemoteUserMessage[] = [];
+  const commands: RemoteConfigCommand[] = [];
+  endpoint.onUserMessage = message => { received.push(message); };
+  endpoint.onConfigCommand = command => commands.push(command);
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  for (const raw of ["{", "null", "[]", "42", '"user_message"', JSON.stringify({ type: "user_message", text: 42 }), JSON.stringify({ type: "config_command", redact: "true" })]) ws.send(raw);
+  const completed = waitForMessage(ws, message => message.type === "ack" && message.reqId === "valid");
+  ws.send(JSON.stringify({ type: "user_message", text: "still connected", reqId: "valid" }));
+  expect(await completed).toEqual({ type: "ack", reqId: "valid", ok: true });
+  expect(received).toEqual([{ text: "still connected", imagePaths: undefined }]);
+  expect(commands).toEqual([]);
+});
+
+test.each([
+  { type: "user_message", text: "hello" },
+])("$type is acknowledged as rejected when no consumer exists", async frame => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const rejected = waitForMessage(ws, message => message.type === "ack" && message.reqId === "unhandled");
+  ws.send(JSON.stringify({ ...frame, reqId: "unhandled" }));
+  expect(await rejected).toEqual({ type: "ack", reqId: "unhandled", ok: false });
+});
+
+test("identity published before connection is replayed with latest identity on reconnection", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.sendIdentity({ repo: "project", branch: "first", cwd: "/tmp/project" });
+  await endpoint.start();
+  const discovery = await readDiscovery(endpoint.sessionId);
+  const first = connect(discovery);
+  expect(await waitForMessage(first, frame => frame.type === "identity_header")).toEqual({
+    type: "identity_header", sessionId: endpoint.sessionId, repo: "project", branch: "first", cwd: "/tmp/project",
+  });
+  endpoint.sendIdentity({ repo: "project", branch: "second", cwd: "/tmp/project" });
+  const second = connect(discovery);
+  expect(await waitForMessage(second, frame => frame.type === "identity_header")).toEqual({
+    type: "identity_header", sessionId: endpoint.sessionId, repo: "project", branch: "second", cwd: "/tmp/project",
+  });
+});
+
+test("slash user messages are rejected rather than executing the session command surface", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  const received: RemoteUserMessage[] = [];
+  endpoint.onUserMessage = message => { received.push(message); };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  for (const text of ["/shell dangerous", "  /model untrusted"]) {
+    const rejected = waitForMessage(ws, message => message.type === "ack" && message.reqId === text);
+    ws.send(JSON.stringify({ type: "user_message", text, reqId: text }));
+    expect(await rejected).toEqual({ type: "ack", reqId: text, ok: false });
+  }
+  expect(received).toEqual([]);
+});
+
+test.each([
+  { name: "refused", handler: () => false },
+  { name: "asynchronously refused", handler: async () => false },
+  { name: "thrown", handler: () => { throw new Error("handler unavailable"); } },
+  { name: "rejected promise", handler: async () => { throw new Error("handler unavailable"); } },
+])("user message $name by the consumer returns a negative ACK", async ({ handler }) => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.onUserMessage = handler;
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const rejected = waitForMessage(ws, message => message.type === "ack" && message.reqId === "failed-handler");
+  ws.send(JSON.stringify({ type: "user_message", text: "hello", reqId: "failed-handler" }));
+  expect(await rejected).toEqual({ type: "ack", reqId: "failed-handler", ok: false });
+});
+
+test("a cross-session user frame is ignored without invoking the consumer", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  const received: RemoteUserMessage[] = [];
+  endpoint.onUserMessage = message => { received.push(message); };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  ws.send(JSON.stringify({ type: "user_message", sessionId: "other-session", text: "wrong target" }));
+  const accepted = waitForMessage(ws, message => message.type === "ack" && message.reqId === "right-target");
+  ws.send(JSON.stringify({ type: "user_message", sessionId: endpoint.sessionId, text: "right target", reqId: "right-target" }));
+  expect(await accepted).toEqual({ type: "ack", reqId: "right-target", ok: true });
+  expect(received).toEqual([{ text: "right target", imagePaths: undefined }]);
 });

@@ -182,31 +182,92 @@ jeo ultragoal
 
 `--worktree <name>` は隔離された兄弟 git worktree で jeo を実行するため（パスがあれば再利用、なければ basename ブランチで作成）、リスクのある作業やレビュー対象の作業がメインのチェックアウトに触れることはありません。`jeo mcp serve` は stdio を介して MCP 対応のあらゆるコントローラーに jeo のツールを公開します（`jeo mcp tools` で一覧表示）。`-q`/`--quiet` (または `JEO_QUIET=1`) を追加すると、起動バナー・ウェルカムアニメーション・リリースノート・再開ヒントが抑制され、jeo を別のエージェントと並べて実行したりボットから駆動したりできます。`-p`/`--print` は quiet を含みます。
 
-## リモート監視・制御(Telegram)
+## リモート監視・制御(Telegram, Discord & Slack)
+
+オプトインの通知:サブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)を Telegram, Discord, または Slack へ送信します。1 つのデーモンがすべてのセッションを処理し、各プラットフォームがフォーラムトピック/スレッド・インラインキーボード・画像添付を完全にサポート。
+
+### セットアップと設定
 
 ```bash
-jeo notify setup        # BotFather ボットを一度ペアリング(getMe 検証 + chat-id ペアリング)
-jeo notify status       # マスクされたトークン、ペアリング済み chat id、デーモン状態
-jeo daemon start        # シングルトンのバックグラウンドデーモンを起動
-jeo daemon status       # 実行中かどうかを確認
-jeo daemon stop         # SIGTERM で停止
+jeo notify setup [--provider telegram|discord|slack] [--token-env 環境変数名] [--app-token-env 環境変数名] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider telegram|discord|slack]
+jeo notify health [--provider telegram|discord|slack]         # 読み取り専用検証
+jeo notify test [--provider telegram|discord|slack]          # テストメッセージを送信
+jeo daemon start|stop|status|reload
 ```
 
+**セットアップフロー:**
+
+- **Telegram**(チャレンジペアリング): `jeo notify setup` を実行するとチャレンジが表示され、そのメッセージをボットに 120 秒以内に送信すると自動ペアリングされます。または `--chat-id <ID>` で指定。グループは `--allowed-user-ids` が必要(Telegram ユーザー ID 正確一致)。認証情報は `~/.jeo/config.json` `notifications.telegram`(平文、プライベートストレージのみ)。
+- **Discord**: `--channel-id`(状態更新の送信先チャネル) + `--allowed-user-ids`(コマンド実行権限)が必須。ボットに `Message Content` インテント およびチャネル権限(View Channel, Send Messages)が必要。認証情報は `~/.jeo/config.json` `notifications.discord`(平文、プライベートストレージのみ)。
+- **Slack**: xoxb(ボット) + xapp(アプリ)トークン、Socket Mode 有効化、`--channel-id`(状態更新の送信先チャネル) + `--allowed-user-ids`(コマンド実行権限)が必須。ボットは `chat:write`, `users:read` スコープと message/app_mention イベント購読が必要。認証情報は `~/.jeo/config.json` `notifications.slack`(平文、プライベートストレージのみ)。
+
+トークンはデフォルトで `JEO_TELEGRAM_BOT_TOKEN`、`JEO_DISCORD_BOT_TOKEN`、`JEO_SLACK_BOT_TOKEN` 環境変数; `--token-env NAME` / `--app-token-env NAME` で変数名を指定可能。
+
+**ステータスレイヤー:**
+
+- `status`: 設定(マスクされたトークン)・宛先 ID・デーモン状態を表示
+- `health`: ボット ID およびチャネル/チャット アクセス検証(読み取り専用)、または `--test` で実メッセージ送信
+
+**デーモンライフサイクル:**
+
+- `jeo daemon start`: シングルトン起動(既に実行中なら成功)
+- `jeo daemon status`: 実行中かどうかを確認(pid・起動時刻・準備状態: `initializing` vs `initialized` = 待機中 vs 準備完了; チャットプラットフォーム接続は検証しない)
+- `jeo daemon stop`: SIGTERM で停止
+- `jeo daemon reload`: SIGHUP で設定を再読み込み
+
 ```
-┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
-│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
-│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
-└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
+│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord webhooks      │
+└─────────────────────┘        └──────────────────┘         └────────────────────────┘
 ```
 
-オプトインかつ遅延バインド: `notifications.enabled` が設定され、かつ detached サブエージェント(`task {detached:true}`)が実際に実行されるまで何もバインドされません。デーモンは生存中のセッションディスカバリファイルをスキャンし、セッションごとにループバック WebSocket を接続、サブエージェントの状態 *遷移*(開始 → 完了/失敗/キャンセル)時にのみメッセージを送信します — 「実行中のまま」の繰り返し通知はありません。受信した Telegram コマンドはペアリング済みチャットのみ許可され、それ以外は黙って破棄されます。
+デーモンはセッションディスカバリファイルをスキャンし、アクティブセッションごとにループバック WebSocket を接続、サブエージェント状態 *遷移*時のみメッセージ送信 — 「実行中のまま」の繰り返し通知なし。限定再試行(3 回・1 秒バックオフ)ごとのメッセージ。
+
+### インバウンドコマンド
+
+リモートスラッシュコマンドはペアリング済みチャット/チャネルのみ許可; 他は黙って破棄。コマンドはアクティブな jeo セッション必須(デーモンはアクティブセッションにのみ接続)。
+
+**Telegram**(プライベートチャットまたは許可ユーザー ID 指定済みグループ):
 
 | コマンド | 効果 |
 | --- | --- |
 | `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
-| `/steer <sessionId> <subagentId> <message>` | 実行中のサブエージェントへライブメッセージを送信 |
+| `/steer <sessionId> <subagentId> <message>` | 実行中のサブエージェントへライブメッセージ送信; typed control が allowlist で認可 |
 | `/cancel <sessionId> <subagentId>` | 実行中のサブエージェントをキャンセル |
 | `/help` | コマンドリファレンスを表示 |
+
+**Discord**(許可されたユーザー ID のみ):
+
+| コマンド | 効果 |
+| --- | --- |
+| `/sessions` | セッション ID と要約の一覧 |
+| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
+| `/send <sessionId> <text>` | アクティブセッションへテキストメッセージ送信 |
+| `/steer <sessionId> <agent> <message>` | 実行中のエージェントへライブメッセージ送信; typed control が allowlist で認可 |
+| `/cancel <sessionId> <agent>` | 実行中のエージェントをキャンセル |
+
+**Slack**(許可されたユーザー ID のみ、ワークスペース + チャネル + スレッドルーティング):
+
+| コマンド | 効果 |
+| --- | --- |
+| `/sessions` | セッション ID と要約の一覧 |
+| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
+| `/send <sessionId> <text>` | アクティブセッションへテキストメッセージ送信 |
+| `/steer <sessionId> <agent> <message>` | 実行中のエージェントへライブメッセージ送信; typed control が allowlist で認可 |
+| `/cancel <sessionId> <agent>` | 実行中のエージェントをキャンセル |
+
+プレーンテキスト言及と設定済みチャネルのスレッド返信のみ; すべてのコマンドは allowlist メンバーシップが必須。既知セッションスレッドの返信はそのセッションコンテキストにルーティング(既存スレッドのみ; 自動プロビジョニングなし); ルートチャネル言及は新規セッション発見を開始。
+
+### 制限と保証
+
+- **1 デーモン**マシンあたり; すべてのセッションで共有。認証情報ストレージは平文 `~/.jeo/config.json`。
+- **Telegram** 1 つのポール所有者を使用(Aside API またはローカルデーモン);jeo がボットを一度ペアリング後、デーモンがポーリング所有。手動 `--chat-id` 設定で Aside 依存性を回避。
+- **Discord** Bot トークン、Message Content インテント、明示的なチャネル ID および human user-ID allowlist が必須。Gateway WebSocket接続(webhooks ではない)がinbound コマンドを処理。
+- **リモートスラッシュコマンド**: `/help`, `/sessions`, `/subagents`, `/send`, `/steer`, `/cancel` は literal テキスト-メッセージコマンド(ネイティブ Discord スラッシュ登録なし)で、設定済みチャット/チャネルの allowlist user ID のみ権限あり; 実行中の jeo セッションで typed control を直接実行。
+- **オーファン復旧**: デーモンクラッシュ時はロックファイル stale → 次 `jeo daemon start` で自動回収(ロック状態: `stale → reclaimed`)。
+
 
 ## ルーティン(GitHub Actions)
 

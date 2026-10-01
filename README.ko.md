@@ -183,31 +183,92 @@ jeo ultragoal
 
 `--worktree <name>`는 격리된 형제 git worktree에서 jeo를 실행하므로(경로가 있으면 재사용, 없으면 basename 브랜치로 생성) 위험하거나 검토가 필요한 작업이 메인 체크아웃을 건드리지 않습니다. `jeo mcp serve`는 stdio를 통해 MCP를 지원하는 모든 컨트롤러에 jeo의 도구를 노출합니다(`jeo mcp tools`로 목록 확인). `-q`/`--quiet` (또는 `JEO_QUIET=1`)를 추가하면 시작 배너, 환영 애니메이션, 릴리스 노트, 재개 힌트가 억제되어 jeo를 다른 에이전트와 나란히 실행하거나 봇으로 구동할 수 있습니다. `-p`/`--print`는 quiet를 함의합니다.
 
-## 원격 모니터링 & 제어 (Telegram)
+## 원격 모니터링 & 제어 (Telegram, Discord & Slack)
+
+옵트인 알림: subagent 상태 전환(시작 → 완료/실패/취소)을 Telegram, Discord, 또는 Slack으로 전송합니다. 하나의 데몬이 모든 세션을 서빙하며, 각 플랫폼은 포럼 토픽/스레드, 인라인 키보드, 이미지 첨부 등을 지원합니다.
+
+### 설정 & 구성
 
 ```bash
-jeo notify setup        # BotFather 봇 한 번 페어링 (getMe 검증 + chat-id 페어링)
-jeo notify status       # 마스킹된 토큰, 페어링된 chat id, 데몬 상태
-jeo daemon start        # 싱글턴 백그라운드 데몬 실행
-jeo daemon status       # 실행 여부 확인
-jeo daemon stop         # SIGTERM으로 종료
+jeo notify setup [--provider telegram|discord|slack] [--token-env 환경변수명] [--app-token-env 환경변수명] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider telegram|discord|slack]
+jeo notify health [--provider telegram|discord|slack]         # 읽기 전용 검증
+jeo notify test [--provider telegram|discord|slack]          # 테스트 메시지 전송
+jeo daemon start|stop|status|reload
 ```
 
+**설정 흐름:**
+
+- **Telegram** (challenge 페어링): `jeo notify setup`을 실행하면 challenge가 나타나고, 정확히 그 메시지를 봇에 120초 내에 보내면 자동 페어링됩니다. 또는 `--chat-id <ID>` 명시. 그룹은 `--allowed-user-ids` 필요 (Telegram 사용자 ID 정확 일치). 자격증명은 `~/.jeo/config.json` `notifications.telegram` (평문, 개인 저장소만).
+- **Discord**: `--channel-id` (상태 업데이트 받을 채널) + `--allowed-user-ids` (명령 실행 권한) 필수. 봇에 `Message Content` intent와 채널 권한(View Channel, Send Messages) 필요. 자격증명은 `~/.jeo/config.json` `notifications.discord` (평문, 개인 저장소만).
+- **Slack**: xoxb (봇) + xapp (앱) 토큰, Socket Mode 활성화, `--channel-id` (상태 업데이트 받을 채널) + `--allowed-user-ids` (명령 실행 권한) 필수. 봇은 `chat:write`, `users:read` 스코프와 message/app_mention 이벤트 구독 필요. 자격증명은 `~/.jeo/config.json` `notifications.slack` (평문, 개인 저장소만).
+
+토큰은 기본적으로 `JEO_TELEGRAM_BOT_TOKEN`, `JEO_DISCORD_BOT_TOKEN`, `JEO_SLACK_BOT_TOKEN` 환경변수; `--token-env NAME` / `--app-token-env NAME`으로 변수명 지정 가능.
+
+**상태 계층:**
+
+- `status`: 설정(마스킹된 토큰), 목적지 ID, 데몬 상태 표시
+- `health`: 봇 ID와 채널/채팅 접근성 검증(읽기 전용), 또는 `--test`로 실제 메시지 전송
+
+**데몬 생명주기:**
+
+- `jeo daemon start`: 싱글턴 실행 (이미 실행 중이면 성공)
+- `jeo daemon status`: 실행 여부 확인 (pid, 시작시각, 준비 상태: `initializing` vs `initialized` = 준비 대기 vs 준비 완료; 채팅 플랫폼 연결 검증 안 함)
+- `jeo daemon stop`: SIGTERM으로 종료
+- `jeo daemon reload`: SIGHUP으로 설정 다시 로드
+
 ```
-┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
-│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
-│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
-└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
+│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord webhooks      │
+└─────────────────────┘        └──────────────────┘         └────────────────────────┘
 ```
 
-옵트인이며 지연 바인딩됩니다: `notifications.enabled`가 설정되고 detached 서브에이전트(`task {detached:true}`)가 실제로 실행되어야만 동작합니다. 데몬은 살아있는 세션 디스커버리 파일을 스캔해 세션별로 루프백 WebSocket을 연결하고, 서브에이전트 상태 *전환* 시점(시작 → 완료/실패/취소)에만 메시지를 보냅니다 — "여전히 실행 중" 같은 반복 알림은 없습니다. 이제 Telegram 포럼 토픽, 인라인 키보드, 이미지 첨부 파일 지원 등 `gjc`와의 완전한 패리티를 제공합니다. 수신되는 Telegram 명령은 페어링된 채팅에서만 허용되며, 그 외는 조용히 무시됩니다.
+데몬은 세션 디스커버리 파일을 스캔해 활성 세션별로 루프백 WebSocket 연결, subagent 상태 *전환*에만 메시지 전송 — "여전히 실행 중" 반복 알림 없음. 유한 재시도 (3회, 1초 backoff) 메시지당.
+
+### 인바운드 명령
+
+원격 슬래시 명령은 페어링된 채팅/채널에서만 허용; 나머지는 조용히 무시됩니다. 명령은 활성 jeo 세션 필요 (데몬은 활성 세션에만 연결).
+
+**Telegram** (개인 채팅 또는 허용 사용자 ID 명시된 그룹):
 
 | 명령 | 동작 |
 | --- | --- |
 | `/subagents` | 연결된 모든 세션의 실행 중/최근 서브에이전트 목록 |
-| `/steer <sessionId> <subagentId> <message>` | 실행 중인 서브에이전트에 실시간 메시지 전송 |
+| `/steer <sessionId> <subagentId> <message>` | 실행 중인 서브에이전트에 실시간 메시지 전송; typed control이 allowlist로 인가 |
 | `/cancel <sessionId> <subagentId>` | 실행 중인 서브에이전트 취소 |
 | `/help` | 명령 안내 표시 |
+
+**Discord** (허용된 사용자 ID만):
+
+| 명령 | 동작 |
+| --- | --- |
+| `/sessions` | 세션 ID 및 요약 목록 |
+| `/subagents` | 연결된 모든 세션의 실행 중/최근 서브에이전트 목록 |
+| `/send <sessionId> <text>` | 활성 세션에 텍스트 메시지 전송 |
+| `/steer <sessionId> <agent> <message>` | 실행 중인 에이전트에 실시간 메시지 전송; typed control이 allowlist로 인가 |
+| `/cancel <sessionId> <agent>` | 실행 중인 에이전트 취소 |
+
+**Slack** (허용된 사용자 ID만, 워크스페이스 + 채널 + 스레드 라우팅):
+
+| 명령 | 동작 |
+| --- | --- |
+| `/sessions` | 세션 ID 및 요약 목록 |
+| `/subagents` | 연결된 모든 세션의 실행 중/최근 서브에이전트 목록 |
+| `/send <sessionId> <text>` | 활성 세션에 텍스트 메시지 전송 |
+| `/steer <sessionId> <agent> <message>` | 실행 중인 에이전트에 실시간 메시지 전송; typed control이 allowlist로 인가 |
+| `/cancel <sessionId> <agent>` | 실행 중인 에이전트 취소 |
+
+평문 언급과 설정된 채널의 스레드 답글만; 모든 명령은 allowlist 멤버십 필요. 알려진 세션 스레드의 답글은 해당 세션 컨텍스트로 라우팅됨(기존 스레드만; 자동 프로비저닝 없음); 루트 채널 언급은 새로운 세션 발견 시작.
+
+### 제한 & 보증
+
+- **하나의 데몬** 머신당; 모든 세션 공유. 자격증명 저장소는 평문 `~/.jeo/config.json`.
+- **Telegram** 하나의 poll owner 사용 (Aside API 또는 로컬 데몬); jeo가 봇 한 번 페어링한 후 데몬이 polling 소유. 수동 `--chat-id` 설정으로 Aside 의존성 회피.
+- **Discord** Bot token, Message Content intent, 명시적 channel ID 및 human user-ID allowlist 필수. Gateway WebSocket connection (webhooks 아님)이 inbound 명령 처리.
+- **원격 슬래시 명령**: `/help`, `/sessions`, `/subagents`, `/send`, `/steer`, `/cancel`은 literal 텍스트-메시지 명령(native Discord slash 등록 아님)이며, 설정된 채팅/채널의 allowlist user ID만 권한 있음; 실행 중인 jeo 세션에서 typed control 직접 실행.
+- **고아 복구**: 데몬 크래시 시 lock 파일 stale → 다음 `jeo daemon start`가 자동 회수 (lock 상태: `stale → reclaimed`).
+
 
 ## 루틴 (GitHub Actions)
 

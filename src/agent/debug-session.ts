@@ -236,12 +236,16 @@ export class DebugSession {
     const decoder = new TextDecoder();
     let buf = "";
     const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+    let pendingRead: ReturnType<typeof reader.read> | undefined;
     try {
       while (Date.now() < deadline) {
-        const { value, done } = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: false }>((r) => setTimeout(() => r({ value: undefined, done: false }), 200)),
+        const result = await Promise.race([
+          pendingRead ??= reader.read(),
+          new Promise<undefined>((r) => setTimeout(() => r(undefined), 200)),
         ]);
+        if (!result) continue;
+        pendingRead = undefined;
+        const { value, done } = result;
         if (done) break;
         if (value) {
           const text = decoder.decode(value, { stream: true });

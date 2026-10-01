@@ -54,12 +54,12 @@ function providerDefaultModel(p: ProviderName): string {
   return openaiCompatDef(p)?.defaultModel ?? STATIC_PROVIDER_DEFAULT[p] ?? "";
 }
 
-// Pick-list entries for ONE provider, with static fallbacks so the list is
-// never empty. Pure function — mirrors launch.ts's exported `providerPickEntries`
+// Pick-list entries for ONE provider. Antigravity requires live availability;
+// other providers retain static fallbacks. Mirrors launch.ts's `providerPickEntries`
 // (duplicated here rather than imported to avoid a launch.ts <-> launch/*.ts cycle).
 function providerPickEntries(live: ProviderModelsResult[], want: ProviderName): PickEntry[] {
   const fromLive = flattenModels(live.filter(r => r.provider === want));
-  if (fromLive.length) return fromLive;
+  if (fromLive.length || want === "antigravity") return fromLive;
   const catalog = catalogByProvider(want);
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
@@ -253,6 +253,11 @@ export async function runAgentsSlash(input: string, ctx: AgentsSlashCtx): Promis
     const forProvider = providerPickEntries(live, want);
     const liveForProvider = live.some(r => r.ok && r.provider === want && r.models.length > 0);
     const explicit = tokens[3];
+    if (want === "antigravity" && !forProvider.length && (!explicit || explicit.startsWith("#"))) {
+      const reason = live.find(r => r.provider === want)?.error ?? "no account-available models returned";
+      console.log(`Cannot list ${want} models: ${reason}. Retry discovery or specify an explicit model id.`);
+      return result();
+    }
     let chosenModel: string;
     if (explicit && forProvider.length) {
       const sel = resolveSelection(forProvider, explicit);

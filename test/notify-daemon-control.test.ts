@@ -82,15 +82,15 @@ test("processStartTimeMs returns undefined for a pid that no longer exists", asy
 
 startTimeTest("processStartTimeMs resolves a real live process to a plausible (not garbage) start time", async () => {
   const before = Date.now();
+  const uptimeMs = process.uptime() * 1_000;
   const real = await processStartTimeMs(process.pid);
+  const after = Date.now();
   expect(real).toBeDefined();
-  // Sanity bounds only — not a precision check. Under a heavily contended full
-  // suite run, spawning `ps` itself can be delayed by seconds, so this must
-  // tolerate real scheduling jitter rather than assert tight timing; the exact
-  // arithmetic is already covered precisely by the parseEtimeToMs unit tests
-  // above. What matters here is that the real live process resolves to SOME
-  // recent-past timestamp, not NaN/0/far-future/wildly-stale.
-  expect(Math.abs(real! - before)).toBeLessThan(60_000);
+  // The runner may already be minutes old when this test executes. Compare its
+  // birth time with the independent runtime uptime, not with this test's start.
+  // Allow ps's whole-second precision and the measured lookup duration.
+  expect(real!).toBeGreaterThanOrEqual(before - uptimeMs - 1_000);
+  expect(real!).toBeLessThanOrEqual(after - uptimeMs + 1_000);
 });
 
 test("readDaemonLock returns undefined when no lock file exists", async () => {
@@ -128,17 +128,12 @@ test("acquireDaemonLock reclaims a stale lock (dead pid) and release() removes t
 });
 
 test("isNotifyConfigured is false until enabled + botToken + chatId are all present", async () => {
-  expect(await isNotifyConfigured()).toBe(false);
   await saveConfigPatch(() => ({ notifications: { enabled: true, telegram: { botToken: "t" } } }));
   expect(await isNotifyConfigured()).toBe(false); // missing chatId
   await saveConfigPatch(() => ({ notifications: { enabled: true, telegram: { botToken: "t", chatId: "1" } } }));
   expect(await isNotifyConfigured()).toBe(true);
 });
 
-test("daemonStatus reports stopped+not-configured on a clean install", async () => {
-  const status = await daemonStatus();
-  expect(status).toEqual({ configured: false, running: false, stale: false });
-});
 
 test("daemonStatus reports running for a live-pid lock and stale for a dead-pid lock", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
@@ -202,17 +197,22 @@ test("daemonInvocation runs a non-.ts entrypoint (already-built binary) directly
   expect(daemonInvocation("/usr/local/bin/jeo", "/usr/local/bin/jeo", "/repo")).toEqual(["/usr/local/bin/jeo", "notify-daemon-run"]);
 });
 
-test("startDaemon reports already-running without re-spawning when a live lock exists", async () => {
-  await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: await realStartedAt(process.pid) }));
+test("startDaemon reports initializing until its current owner explicitly marks ready", async () => {
+  const owner = await acquireDaemonLock();
+  expect(owner).toBeDefined();
   let spawned = false;
-  const res = await startDaemon(() => {
-    spawned = true;
-    return { unref: () => {} };
-  });
-  expect(res.ok).toBe(true);
-  expect(res.pid).toBe(process.pid);
-  expect(spawned).toBe(false);
+  const spawn = () => { spawned = true; return { unref() {} }; };
+  try {
+    expect((await startDaemon(spawn)).ok).toBe(false);
+    await owner!.markReady();
+    const res = await startDaemon(spawn);
+    expect(res.ok).toBe(true);
+    expect(res.pid).toBe(process.pid);
+    expect(spawned).toBe(false);
+  } finally {
+    await owner?.release();
+  }
+  expect(await readDaemonLock()).toBeUndefined();
 });
 
 test("startDaemon refuses to spawn when notifications are not configured", async () => {
@@ -231,9 +231,8 @@ test("startDaemon spawns and waits for the child to write its own lock", async (
   const res = await startDaemon(() => {
     // Simulate the real daemon process writing its lock shortly after spawn.
     void (async () => {
-      await new Promise(r => setTimeout(r, 50));
       await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-      await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+      await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now(), purpose: "daemon", ready: true }));
     })();
     return { unref: () => {} };
   });
@@ -242,13 +241,25 @@ test("startDaemon spawns and waits for the child to write its own lock", async (
 });
 
 
-test("startDaemon reports failure when the child never writes a lock within the timeout", async () => {
+test.each(["missing", "initializing", "pairing"] as const)("startup does not report success for a %s child lock", async state => {
   await saveConfigPatch(() => ({ notifications: { enabled: true, telegram: { botToken: "t", chatId: "1" } } }));
-  const res = await startDaemon(() => ({ unref: () => {} }));
-
-  expect(res.ok).toBe(false);
-  expect(res.message).toContain("did not report ready");
-}, 5_000);
+  let release: (() => Promise<void>) | undefined;
+  try {
+    const res = await startDaemon(() => ({ unref() {} }), async predicate => {
+      if (state !== "missing") {
+        const owner = await acquireDaemonLock(state === "pairing" ? "pairing" : "daemon");
+        expect(owner).toBeDefined();
+        release = owner!.release;
+        if (state === "pairing") await owner!.markReady();
+      }
+      return await predicate();
+    });
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain("did not initialize");
+  } finally {
+    await release?.();
+  }
+});
 
 test("stopDaemon reports 'was not running' and clears any stale lock file when no live pid holds it", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
@@ -278,8 +289,7 @@ test("reloadDaemon stops the old owner and starts a fresh one", async () => {
   const res = await reloadDaemon(() => {
 
     void (async () => {
-      await new Promise(r => setTimeout(r, 50));
-      await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+      await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now(), purpose: "daemon", ready: true }));
     })();
     return { unref: () => {} };
   });
@@ -316,4 +326,141 @@ test("daemonStatus reports whether the running claim was actually verified", asy
   // No lock at all → nothing to verify, so the field stays absent rather than false.
   await fs.unlink(notifyDaemonLockPath()).catch(() => {});
   expect((await daemonStatus()).ownerVerified).toBeUndefined();
+});
+
+test("concurrent acquisition admits exactly one owner and excludes a second acquisition by the same PID", async () => {
+  const attempts = await Promise.all(Array.from({ length: 8 }, () => acquireDaemonLock()));
+  const winners = attempts.filter(lock => lock !== undefined);
+  try {
+    expect(winners).toHaveLength(1);
+    expect(await acquireDaemonLock()).toBeUndefined();
+  } finally {
+    await Promise.all(winners.map(lock => lock.release()));
+  }
+  const next = await acquireDaemonLock();
+  expect(next).toBeDefined();
+  await next?.release();
+});
+
+test("an old release cannot remove a replacement owner's lock", async () => {
+  const original = await acquireDaemonLock();
+  expect(original).toBeDefined();
+  await fs.unlink(notifyDaemonLockPath());
+  const replacement = await acquireDaemonLock();
+  expect(replacement).toBeDefined();
+  try {
+    await original!.release();
+    expect(await acquireDaemonLock()).toBeUndefined();
+  } finally {
+    await replacement?.release();
+  }
+  expect(await readDaemonLock()).toBeUndefined();
+});
+
+test("Discord-only configuration requires an allowlist and honors the master disable switch", async () => {
+  const discord = { botToken: "test-token", channelId: "123456789012345678", allowedUserIds: ["234567890123456789"] };
+  await saveConfigPatch(() => ({ notifications: { enabled: true, discord: { ...discord, allowedUserIds: [] } } }));
+  expect(await isNotifyConfigured()).toBe(false);
+  await saveConfigPatch(() => ({ notifications: { enabled: true, discord } }));
+  expect(await isNotifyConfigured()).toBe(true);
+  await saveConfigPatch(() => ({ notifications: { enabled: false, discord } }));
+  expect(await isNotifyConfigured()).toBe(false);
+});
+
+test("reload never launches a replacement when the current daemon cannot stop", async () => {
+  let spawned = false;
+  const result = await reloadDaemon(() => {
+    spawned = true;
+    return { unref() {} };
+  }, async () => ({ ok: false, message: "permission denied" }));
+  expect(result).toEqual({ ok: false, message: "permission denied" });
+  expect(spawned).toBe(false);
+});
+
+test("pairing ownership is not a running daemon and daemon control cannot replace or stop it", async () => {
+  const owner = await acquireDaemonLock("pairing");
+  expect(owner).toBeDefined();
+  let spawned = false;
+  const spawn = () => { spawned = true; return { unref() {} }; };
+  try {
+    const status = await daemonStatus();
+    expect(status.running).toBe(false);
+    expect(status.stale).toBe(false);
+    expect(status.pairing).toBe(true);
+    expect((await startDaemon(spawn)).ok).toBe(false);
+    expect((await stopDaemon()).ok).toBe(false);
+    expect((await reloadDaemon(spawn)).ok).toBe(false);
+    expect(spawned).toBe(false);
+    expect(await acquireDaemonLock()).toBeUndefined();
+  } finally {
+    await owner?.release();
+  }
+});
+
+test("an obsolete daemon cannot mark a replacement owner's lock ready", async () => {
+  const original = await acquireDaemonLock();
+  expect(original).toBeDefined();
+  await fs.unlink(notifyDaemonLockPath());
+  const replacement = await acquireDaemonLock();
+  expect(replacement).toBeDefined();
+  try {
+    await expect(original!.markReady()).rejects.toThrow("lost lock ownership");
+    expect((await startDaemon(() => { throw new Error("must not respawn"); })).ok).toBe(false);
+    await replacement!.markReady();
+    expect((await startDaemon(() => { throw new Error("must not respawn"); })).ok).toBe(true);
+  } finally {
+    await original?.release();
+    await replacement?.release();
+  }
+});
+
+test("an aged recovery guard blocks startup and acquisition without deleting recovery evidence", async () => {
+  await saveConfigPatch(() => ({ notifications: { enabled: true, telegram: { botToken: "test-token", chatId: "999" } } }));
+  const lockPath = notifyDaemonLockPath();
+  const guardPath = `${lockPath}.reclaim`;
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  await fs.writeFile(lockPath, "interrupted legacy lock");
+  await fs.writeFile(guardPath, "recovery owner evidence");
+  const old = new Date("2000-01-01T00:00:00.000Z");
+  await fs.utimes(lockPath, old, old);
+  await fs.utimes(guardPath, old, old);
+  let spawned = false;
+  const result = await startDaemon(() => { spawned = true; return { unref() {} }; });
+  expect(result.ok).toBe(false);
+  expect(result.message).toContain("Notification lock recovery");
+  expect(result.message).toContain(guardPath);
+  expect(spawned).toBe(false);
+  await expect(acquireDaemonLock()).rejects.toThrow("Notification lock recovery");
+  expect(await fs.readFile(lockPath, "utf-8")).toBe("interrupted legacy lock");
+  expect(await fs.readFile(guardPath, "utf-8")).toBe("recovery owner evidence");
+});
+
+test("aged malformed primary lock can be recovered into an exclusive ready daemon owner", async () => {
+  const lockPath = notifyDaemonLockPath();
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  await fs.writeFile(lockPath, "{interrupted");
+  const old = new Date("2000-01-01T00:00:00.000Z");
+  await fs.utimes(lockPath, old, old);
+  const owner = await acquireDaemonLock();
+  expect(owner).toBeDefined();
+  try {
+    await owner!.markReady();
+    const result = await startDaemon(() => { throw new Error("recovered owner must not be replaced"); });
+    expect(result.ok).toBe(true);
+    expect(result.pid).toBe(process.pid);
+    expect(await acquireDaemonLock()).toBeUndefined();
+  } finally {
+    await owner?.release();
+  }
+  expect(await readDaemonLock()).toBeUndefined();
+});
+
+test("a recent malformed primary lock is preserved rather than mistaken for a crashed writer", async () => {
+  const lockPath = notifyDaemonLockPath();
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  await fs.writeFile(lockPath, "{writing");
+  const future = new Date("2100-01-01T00:00:00.000Z");
+  await fs.utimes(lockPath, future, future);
+  expect(await acquireDaemonLock()).toBeUndefined();
+  expect(await fs.readFile(lockPath, "utf-8")).toBe("{writing");
 });

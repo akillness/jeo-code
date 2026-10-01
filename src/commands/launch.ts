@@ -335,22 +335,22 @@ function providerDefaultModel(p: ProviderName): string {
 }
 
 /**
- * Pick-list entries for ONE provider. OpenAI availability comes only from live
- * results; other providers retain their offline catalog fallbacks.
+ * Pick-list entries for ONE provider. OpenAI and Antigravity availability comes
+ * only from live results; other providers retain their offline catalog fallbacks.
  *
  * Live discovery yields ids only for a logged-in, reachable provider, and
  * `catalogOr` backfills the static catalog for OAuth sources and for API-key
  * providers whose models-list endpoint is absent (HTTP 404, e.g. Tencent MaaS).
  * A not-yet-configured provider still has an empty live list, so prefer live ids;
  * else the provider's capability catalog; else its single known default model (all
- * 24 OpenAI-compat providers carry one) so the user always sees at least one id.
+ * 24 OpenAI-compat providers carry one). Antigravity never uses these fallbacks.
  */
 export function providerPickEntries(live: ProviderModelsResult[], want: ProviderName): PickEntry[] {
   const fromLive = flattenModels(live.filter(r => r.provider === want));
   if (fromLive.length) return fromLive;
-  // An OpenAI empty/error response is authoritative for this picker. Offering
-  // the static capability catalog here would fabricate account availability.
-  if (want === "openai") return [];
+  // An OpenAI or Antigravity empty/error response is authoritative for this picker.
+  // Offering the static capability catalog here would fabricate account availability.
+  if (want === "openai" || want === "antigravity") return [];
   const catalog = catalogByProvider(want);
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
@@ -1519,15 +1519,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
           const goalState = await readGoalState(cwd);
           if (goalState && goalState.condition) {
-            const reBlockCount = goalState.verdicts.filter(v => v.verdict === "NOT_MET" || v.verdict === "IMPOSSIBLE").length;
-            const MAX_RE_BLOCKS = 2;
-
-            if (reBlockCount >= MAX_RE_BLOCKS) {
-              if (tui) tui.events().onNotice?.(`[Goal Verifier] Re-block cap of ${MAX_RE_BLOCKS} reached. Auto-allowing done.`);
-              else console.log(`[Goal Verifier] Re-block cap of ${MAX_RE_BLOCKS} reached. Auto-allowing done.`);
-              return null;
-            }
-
             if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
             const llmVerdict = await verifyGoal(goalState.condition, history, resolveVerifierModel(turnConfig));
             // Deterministic downgrade: a fresh MET from the transcript-only LLM
@@ -4197,35 +4188,36 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // `rl`/`promptInput`'s `pendingRemoteInject`, and `pendingStdinLines`, all
   // established by now. See the Tier 2 contract's "Session-side routing".
   if (sessionNotifyEndpoint) {
-    sessionNotifyEndpoint.onUserMessage = (msg): void => {
-      void (async () => {
-        // Resolve any attached photo/document paths (already downloaded to
-        // local temp files by the daemon) into real ImageAttachments via the
-        // SAME path `attachImagePaths` uses for local drag-drop — one image
-        // ingestion mechanism, not a parallel one. Bare paths never contain
-        // whitespace here (daemon-generated temp names), so simple whitespace
-        // joining is a safe token boundary for the path-token scanner.
-        const withPaths = msg.imagePaths?.length ? `${msg.text} ${msg.imagePaths.join(" ")}`.trim() : msg.text;
-        const attached = await attachImagePaths(withPaths, pendingImages.length + 1);
-        const cleanedText = attached.images.length ? attached.text : msg.text;
-        if (attached.images.length) pendingImages.push(...attached.images);
+    sessionNotifyEndpoint.onUserMessage = async (msg): Promise<void | boolean> => {
+      // Resolve any attached photo/document paths (already downloaded to
+      // local temp files by the daemon) into real ImageAttachments via the
+      // SAME path `attachImagePaths` uses for local drag-drop — one image
+      // ingestion mechanism, not a parallel one. Bare paths never contain
+      // whitespace here (daemon-generated temp names), so simple whitespace
+      // joining is a safe token boundary for the path-token scanner.
+      const withPaths = msg.imagePaths?.length ? `${msg.text} ${msg.imagePaths.join(" ")}`.trim() : msg.text;
+      const attached = await attachImagePaths(withPaths, pendingImages.length + 1);
+      const cleanedText = attached.images.length ? attached.text : msg.text;
+      // Attachment normalization must not expose a remote slash command that
+      // bypasses the local approval prompt or changes local execution policy.
+      if (cleanedText.trimStart().startsWith("/")) return false;
+      if (attached.images.length) pendingImages.push(...attached.images);
 
-        if (interactiveTurnActive && currentTurnSteer) {
-          // Busy: steer the running turn exactly like a local mid-turn Enter.
-          currentTurnSteer.push(cleanedText);
-          currentTurnSteer.flushCard(cleanedText);
-          return;
-        }
-        // Idle: never hijack text the user is actively typing locally — only
-        // abort+inject when the readline buffer is confirmed empty (verified
-        // empirically: aborting mid-partial-type corrupts the buffer).
-        const rli = rl as unknown as { line?: string };
-        if (rli.line === "" && pendingRemoteInject?.(cleanedText)) return;
-        // No question pending, or the user is mid-type: queue for the NEXT
-        // prompt cycle instead (same queue `pendingMidTurnCommands`/paste-merge
-        // already feed — consumed at the top of the next `promptInput` call).
-        pendingStdinLines.push(cleanedText);
-      })();
+      if (interactiveTurnActive && currentTurnSteer) {
+        // Busy: steer the running turn exactly like a local mid-turn Enter.
+        currentTurnSteer.push(cleanedText);
+        currentTurnSteer.flushCard(cleanedText);
+        return;
+      }
+      // Idle: never hijack text the user is actively typing locally — only
+      // abort+inject when the readline buffer is confirmed empty (verified
+      // empirically: aborting mid-partial-type corrupts the buffer).
+      const rli = rl as unknown as { line?: string };
+      if (rli.line === "" && pendingRemoteInject?.(cleanedText)) return;
+      // No question pending, or the user is mid-type: queue for the NEXT
+      // prompt cycle instead (same queue `pendingMidTurnCommands`/paste-merge
+      // already feed — consumed at the top of the next `promptInput` call).
+      pendingStdinLines.push(cleanedText);
     };
     sessionNotifyEndpoint.onConfigCommand = (cmd): void => {
       if (cmd.verbosity !== undefined) notifyVerbosity = cmd.verbosity;

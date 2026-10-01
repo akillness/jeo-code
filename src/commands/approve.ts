@@ -67,11 +67,6 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
     };
   }
 
-  // Idempotency: check if already approved
-  if (ralplanState.approved) {
-    return { ok: true, message: `[SUCCESS] Plan is already approved.` };
-  }
-
   // Round-10 #4 (architect ref 8-Round10Planning): approval is a GATE, not a
   // rubber stamp — validate the plan against the exact contract `jeo team`
   // enforces, so a schema-invalid/unknown-role plan is refused HERE instead of
@@ -118,17 +113,27 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
     };
   }
 
-  // Round-13: verify the plan's hash matches the consensus hash to prevent silent edits
-  if (ralplanState.consensus_hash) {
-    const currentHash = createHash("sha256").update(planContent).digest("hex");
-    if (currentHash !== ralplanState.consensus_hash) {
-      return {
-        ok: false,
-        message:
-          `[ERROR] Refusing to approve: the plan file has been modified since the consensus critic reviewed it.\n` +
-          `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve again.`,
-      };
-    }
+  // Approval and idempotent re-approval both require the exact reviewed bytes.
+  if (!ralplanState.consensus_hash) {
+    return {
+      ok: false,
+      message:
+        `[ERROR] Refusing to approve: the plan lacks a consensus review hash.\n` +
+        `  Re-run 'jeo ralplan' so the consensus critic can review the plan, then approve again.`,
+    };
+  }
+  const currentHash = createHash("sha256").update(planContent).digest("hex");
+  if (currentHash !== ralplanState.consensus_hash) {
+    return {
+      ok: false,
+      message:
+        `[ERROR] Refusing to approve: the plan file has been modified since the consensus critic reviewed it.\n` +
+        `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve again.`,
+    };
+  }
+
+  if (ralplanState.approved) {
+    return { ok: true, message: `[SUCCESS] Plan is already approved.` };
   }
 
   // Update ralplan-state.json to approved: true

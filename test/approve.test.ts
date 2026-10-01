@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createHash } from "node:crypto";
 import { runApproveCommand } from "../src/commands/approve";
 import { readWorkflowState, writeWorkflowState } from "../src/agent/state";
 import { findCommand } from "../src/cli/runner";
@@ -94,6 +95,7 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
         plan_path: planPath,
         approved: false,
         consensus: "okay", // round-11: approval requires the persisted critic verdict
+        consensus_hash: createHash("sha256").update(await fs.readFile(planPath, "utf-8")).digest("hex"),
       },
       tempDir
     );
@@ -144,7 +146,6 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
     const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n  - name: \"verify\"\n    role: critic\n";
     await fs.writeFile(planPathHash, planContent, "utf-8");
 
-    const { createHash } = await import("node:crypto");
     const correctHash = createHash("sha256").update(planContent).digest("hex");
 
     await writeWorkflowState(

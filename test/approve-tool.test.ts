@@ -1,12 +1,20 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { createApproveTool } from "../src/agent/approve-tool";
 import { readWorkflowState, writeWorkflowState } from "../src/agent/state";
+import { createHash } from "node:crypto";
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
+});
 
 async function tmp(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "jeo-approve-tool-test-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-approve-tool-test-"));
+  temporaryDirectories.push(dir);
+  return dir;
 }
 
 test("approve tool: explicit planPath approves a schema-valid, consensus-reviewed plan", async () => {
@@ -16,7 +24,7 @@ test("approve tool: explicit planPath approves a schema-valid, consensus-reviewe
   await fs.writeFile(planPath, planContent, "utf-8");
   await writeWorkflowState(
     "ralplan",
-    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: false, consensus: "okay" },
+    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: false, consensus: "okay", consensus_hash: createHash("sha256").update(planContent).digest("hex") },
     dir,
   );
 
@@ -36,7 +44,7 @@ test("approve tool: omitted planPath defaults to the active ralplan state's plan
   await fs.writeFile(planPath, planContent, "utf-8");
   await writeWorkflowState(
     "ralplan",
-    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: false, consensus: "okay" },
+    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: false, consensus: "okay", consensus_hash: createHash("sha256").update(planContent).digest("hex") },
     dir,
   );
 
@@ -78,10 +86,11 @@ test("approve tool: surfaces the same content gate as the CLI (missing consensus
 test("approve tool: an already-approved plan reports success idempotently", async () => {
   const dir = await tmp();
   const planPath = path.join(dir, "already.yaml");
-  await fs.writeFile(planPath, 'steps:\n  - name: "Done already"\n    role: executor\n', "utf-8");
+  const planContent = 'steps:\n  - name: "Done already"\n    role: executor\n  - name: "verify"\n    role: critic\n';
+  await fs.writeFile(planPath, planContent, "utf-8");
   await writeWorkflowState(
     "ralplan",
-    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: true, consensus: "okay" },
+    { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: true, consensus: "okay", consensus_hash: createHash("sha256").update(planContent).digest("hex") },
     dir,
   );
 

@@ -189,31 +189,92 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 `--worktree <name>` runs jeo in an isolated sibling git worktree (reused if the path exists, else created on a branch named after the basename) so risky or reviewable work never touches your main checkout. `jeo mcp serve` exposes jeo's tools to any MCP-capable controller over stdio (`jeo mcp tools` lists them). Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, the welcome animation, release notes, and resume hints so jeo runs cleanly beside another agent or is driven by a bot — `-p`/`--print` implies quiet.
 
-## Remote monitoring & control (Telegram)
+## Remote monitoring & control (Telegram, Discord & Slack)
+
+Opt-in notifications push subagent state edges (started → completed/failed/cancelled) to Telegram, Discord, or Slack. One daemon serves all sessions; Telegram supports forum topics, inline keyboards, and image attachments; Discord relays text messages to a configured channel with optional existing thread routing; Slack uses Socket Mode connections with thread-per-session routing and plain-text command authorization.
+
+### Setup & Configuration
 
 ```bash
-jeo notify setup        # pair a BotFather bot once (getMe verification + chat-id pairing)
-jeo notify status       # masked token, paired chat id, daemon state
-jeo daemon start        # spawn the singleton background daemon
-jeo daemon status       # check whether it's running
-jeo daemon stop         # SIGTERM it (refuses to signal a recycled pid)
+jeo notify setup [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider telegram|discord|slack]
+jeo notify health [--provider telegram|discord|slack]              # read-only validation
+jeo notify test [--provider telegram|discord|slack]               # send explicit test message
+jeo daemon start|stop|status|reload
 ```
 
+**Setup flow:**
+
+- **Telegram** (`/start jeo_<challenge>` pairing): `jeo notify setup` auto-pairs one private chat if you send the exact challenge message to the bot within 120 seconds; explicit `--chat-id` skips this. Groups require `--allowed-user-ids` (must match exact Telegram user IDs). Credentials stored in `~/.jeo/config.json` `notifications.telegram` (plaintext, private storage only).
+- **Discord**: Requires explicit `--channel-id` (where to send state updates) and `--allowed-user-ids` (who can issue commands). Bot must have `View Channel`/`Send Messages` and `Message Content` intent enabled. Credentials stored in `~/.jeo/config.json` `notifications.discord` (plaintext, private storage only).
+- **Slack**: Requires explicit `--channel-id` (workspace channel ID, e.g. `C123...`), `--token-env SLACK_BOT_TOKEN` (for bot xoxb token, defaults `SLACK_BOT_TOKEN`), `--app-token-env SLACK_APP_TOKEN` (for app xapp token, defaults `SLACK_APP_TOKEN`), and `--allowed-user-ids` (comma-separated Slack user IDs, e.g. `U123,U456`). Setup validates bot identity (calls `bots.info` and `conversations.info`), acquires Socket Mode URL, and enables allowlist-scoped command authorization. Credentials stored in `~/.jeo/config.json` `notifications.slack.botToken` and `notifications.slack.appToken` (plaintext, private storage only). **Status**: test-verified offline; pending security review before live Socket Mode activation.
+
+Token defaults to `JEO_TELEGRAM_BOT_TOKEN` or `JEO_DISCORD_BOT_TOKEN` env var; use `--token-env NAME` to override the variable name. Explicit `--token` passes it directly (discouraged outside tests; prefers environment variables).
+
+Slack env vars default to `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`; use `--token-env`/`--app-token-env` to override the variable names.
+
+**Status layers:**
+
+- `status`: shows configuration (masked token), destination ID, and daemon state (`stopped` / `stale` / `initializing` / `initialized` / `pairing owns polling`)
+- `health`: validates bot identity and channel/chat access without sending (read-only), or with `--test` variant sends an explicit test message
+
+**Daemon lifecycle:**
+
+- `jeo daemon start`: spawns one singleton; idempotent (already running returns success)
+- `jeo daemon status`: check whether it's running (pid, uptime, readiness: `initializing` vs `initialized` means not-yet-ready-to-receive vs ready; connectivity to chat platform is NOT validated)
+- `jeo daemon stop`: SIGTERM the singleton
+- `jeo daemon reload`: stop (clear pending ACK timers, mark unacknowledged commands unsuccessful) and start (reinitialize, in-memory state reset)
+
 ```
-┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
-│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
-│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
-└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
+│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord Gateway WS   │
+└─────────────────────┘        └──────────────────┘         └────────────────────────┘
 ```
 
-Opt-in and lazy: nothing binds until `notifications.enabled` is set AND a detached subagent (`task {detached:true}`) actually runs. The daemon scans live session discovery files, connects a loopback WebSocket per session, and pushes a message only on a subagent state *edge* (started → completed/failed/cancelled) — never a repeated "still running" ping. Telegram Daemon now supports full `gjc` parity, including forum topics, inline keyboards, and image attachments. Inbound Telegram commands are authorized to the paired chat only; anything else is dropped silently.
+Daemon scans session discovery files, connects one loopback WebSocket per active jeo session, and pushes only on subagent state *edges* — never repeated "still running" pings. Bounded retry (3 attempts, 1s backoff) per message.
+
+### Inbound commands
+
+Remote slash commands are authorized to the paired chat/channel only; anything else is dropped silently. Commands must be in a live jeo session (the daemon connects to active sessions only).
+
+**Telegram** (private chat or group with explicit allowlist):
 
 | Command | Effect |
 | --- | --- |
 | `/subagents` | List running/recent subagents across every connected session |
-| `/steer <sessionId> <subagentId> <message>` | Send a live message into a running subagent |
+| `/steer <sessionId> <subagentId> <message>` | Send a live message into a running subagent; typed control authorized by allowlist |
 | `/cancel <sessionId> <subagentId>` | Cancel a running subagent |
-| `/help` | Show the command reference |
+| `/help` | Show command reference |
+
+**Discord** (allowed user IDs only):
+
+| Command | Effect |
+| --- | --- |
+| `/sessions` | List session IDs and summaries |
+| `/subagents` | List running/recent subagents across every connected session |
+| `/send <sessionId> <text>` | Send a text message to a session |
+| `/steer <sessionId> <agent> <message>` | Send a live message into a running agent; typed control authorized by allowlist |
+| `/cancel <sessionId> <agent>` | Cancel a running agent |
+**Slack** (allowed user IDs only, workspace + channel + thread routing):
+
+| Command | Effect |
+| --- | --- |
+| `/sessions` | List session IDs and summaries |
+| `/subagents` | List running/recent subagents across every connected session |
+| `/send <sessionId> <text>` | Send a text message to a session |
+| `/steer <sessionId> <agent> <message>` | Send a live message into a running agent; typed control authorized by allowlist |
+| `/cancel <sessionId> <agent>` | Cancel a running agent |
+
+Slack commands require an allowlisted human in the configured workspace and channel. The daemon discovers running local sessions after its Socket Mode handshake and on a periodic local scan, then creates per-session notification threads. Replies in known threads route to that session; `/send <sessionId> <text>` targets an existing discovered session. Channel mentions do not create new jeo sessions.
+
+- **One daemon** per machine; all sessions share it. Credential storage is plaintext at `~/.jeo/config.json`.
+- **Telegram** uses direct Bot API `getUpdates` polling with one long-poll owner per bot token. `notify setup` uses an explicit `--chat-id` or challenge-pairing; the daemon then owns polling. Aside is not a runtime dependency.
+- **Discord** requires a bot token, Message Content intent, an explicit channel ID, and a human user-ID allowlist. Gateway WebSocket events carry inbound messages; REST sends replies. Existing thread destinations are supported, but the adapter does not create per-session Discord threads.
+- **Slack** requires xoxb (bot) and xapp (app) tokens, Socket Mode, an explicit channel ID, a human user-ID allowlist, and the scopes/subscriptions listed above. Setup validates access without opening a socket. Status reports process state, not live connectivity. Changing a token or destination requires explicit `--allowed-user-ids`; unchanged credentials and destination retain the current allowlist.
+- **Remote commands** are literal text-message commands, not registered native slash commands. Telegram supports `/help`, `/subagents`, `/steer`, and `/cancel`; Discord and Slack additionally support `/sessions` and `/send`. Authorization is scoped to the configured chat/channel and human allowlist, with Slack workspace validation.
+- **Orphan recovery**: if a daemon crashes, the lock file becomes stale; next `jeo daemon start` reclaims it (`stale → reclaimed`).
+
 
 ## Routines (GitHub Actions)
 

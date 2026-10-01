@@ -42,6 +42,7 @@ import { RateLimitPool } from "./rate-limit-pool";
 import { parseInThreadConfigCommand } from "./config-commands";
 import { markdownToTelegramHtml, splitTelegramHtml } from "./telegram-html";
 import type { SubagentRecord } from "../subagent-registry";
+import { parseSessionEndpoint } from "./session-discovery";
 
 
 /** Initial (and post-success-reset) delay before retrying a failed/non-ok
@@ -55,11 +56,6 @@ const POLL_ERROR_BACKOFF_MIN_MS = 1_000;
  *  wait longer than this between retries. */
 const POLL_ERROR_BACKOFF_MAX_MS = 10_000;
 
-function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
 
 // ── Pure helpers (unit-testable without network/ws) ────────────────────────────
 
@@ -139,7 +135,6 @@ export const HELP_TEXT =
   "/subagents — list running/recent subagents across every connected session\n" +
   "/steer <sessionId> <subagentId> <message> — send a live message into a running subagent\n" +
   "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
-  "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
   "/help — show this message\n" +
   "(running subagents also carry an inline ⏹ Cancel button — tap it instead of typing /cancel)\n\n" +
   "Inside a session's OWN topic (when per-session topics are enabled): reply with any " +
@@ -192,6 +187,7 @@ interface SessionConnection {
   pid: number;
   ws: WebSocket;
   lastRecords: SubagentRecord[];
+  verified?: boolean;
   /** Latest identity, once an `identity_header` frame arrives — used to name/
    *  rename the session's forum topic. `undefined` until then (topic still
    *  gets created eagerly with a provisional short-id name, gjc parity). */
@@ -204,6 +200,9 @@ interface SessionConnection {
 
 export interface TelegramDaemonOptions {
   chatId: string;
+  /** Verified non-secret Telegram bot ID; required for default disk topic persistence. */
+  botId?: string;
+  allowedUserIds?: string[];
   telegram: TelegramApi;
   WebSocketImpl?: typeof WebSocket;
   readdir?: (dir: string) => Promise<string[]>;
@@ -220,8 +219,8 @@ export interface TelegramDaemonOptions {
   /** Auto-create/manage one forum topic PER SESSION instead of the single flat
    *  `topicId` above (see the file header doc). Off by default. */
   perSessionTopics?: boolean;
-  /** Injectable persistence for the per-session topic map — defaults to
-   *  reading/writing `notifyTopicsPath()` via `fs`. */
+  /** Injectable destination-scoped persistence for the per-session topic map —
+   *  default disk persistence checks both `botId` and `chatId`. */
   loadTopicState?: () => Promise<TopicRegistryState>;
   saveTopicState?: (state: TopicRegistryState) => Promise<void>;
   /** Injectable clock for `RateLimitPool` determinism in tests. */
@@ -248,13 +247,14 @@ type OutboundPayload =
 export class TelegramDaemon {
   private readonly WS: typeof WebSocket;
   readonly sessions = new Map<string, SessionConnection>();
-  private readonly pendingAcks = new Map<string, (ok: boolean) => void>();
+  private readonly pendingAcks = new Map<string, { conn: SessionConnection; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
   private updateOffset: number | undefined;
   /** Current error-poll retry delay; starts at `POLL_ERROR_BACKOFF_MIN_MS`,
    *  doubles (capped at `POLL_ERROR_BACKOFF_MAX_MS`) on each consecutive
    *  non-ok/failed `getUpdates`, and resets on the next success. */
   private pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
   private stopped = false;
+  private cancelBackoff: (() => void) | undefined;
   private scanTimer: ReturnType<typeof setInterval> | undefined;
   private poolTimer: ReturnType<typeof setInterval> | undefined;
   /** `undefined` when `perSessionTopics` is off — the flat/global `topicId`
@@ -337,6 +337,7 @@ export class TelegramDaemon {
   }
 
   async scanSessions(): Promise<void> {
+    if (this.stopped) return;
     const readdir = this.opts.readdir ?? (d => fs.readdir(d));
     let files: string[];
     try {
@@ -347,13 +348,16 @@ export class TelegramDaemon {
     const readFile = this.opts.readFile ?? (p => fs.readFile(p, "utf-8"));
     const unlink = this.opts.unlink ?? (p => fs.unlink(p));
     const pidAlive = this.opts.isPidAlive ?? isPidAlive;
-    for (const file of files.filter(f => f.endsWith(".json"))) {
+    for (const file of files.filter(f => /^[A-Za-z0-9_-]+\.json$/.test(f))) {
+      if (this.stopped) return;
       const sessionId = path.basename(file, ".json");
       if (this.sessions.has(sessionId)) continue;
       const filePath = path.join(notifySessionsDir(), file);
       try {
         const raw = await readFile(filePath);
-        const endpoint = JSON.parse(raw) as { url: string; token: string; pid: number; cwd: string };
+        if (this.stopped) return;
+        const endpoint = parseSessionEndpoint(raw);
+        if (!endpoint) continue;
         if (!pidAlive(endpoint.pid)) {
           await unlink(filePath).catch(() => {});
           continue;
@@ -393,7 +397,7 @@ export class TelegramDaemon {
     // instead (still fully functional for subagent-status pushes, just without
     // the per-session surface). Checked once per daemon lifetime and cached —
     // chat type cannot change without re-running `jeo notify setup` anyway.
-    if (!(await this.pairedChatIsPrivate())) return this.opts.topicId;
+    if (!(await this.pairedChatIsPrivate()) || this.stopped) return this.opts.topicId;
     const provisional = conn.identity
       ? `${conn.identity.repo}${conn.identity.branch ? `@${conn.identity.branch}` : ""}`
       : `session ${shortSessionId(conn.sessionId)}`;
@@ -434,7 +438,7 @@ export class TelegramDaemon {
 
   private async persistTopics(): Promise<void> {
     if (!this.topics) return;
-    const save = this.opts.saveTopicState ?? defaultSaveTopicState;
+    const save = this.opts.saveTopicState ?? (state => defaultSaveTopicState(state, this.opts.botId, this.opts.chatId));
     try {
       await save(this.topics.serialize());
     } catch {
@@ -473,12 +477,24 @@ export class TelegramDaemon {
   }
 
   async handleSessionMessage(conn: SessionConnection, raw: string): Promise<void> {
+    if (this.stopped) return;
+    if (Buffer.byteLength(raw) > 1024 * 1024) return;
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(raw);
     } catch {
       return;
     }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+    if (msg.type === "snapshot") {
+      if (msg.sessionId !== conn.sessionId || msg.pid !== conn.pid || !Array.isArray(msg.subagents)) {
+        conn.verified = false;
+        conn.ws.close();
+        return;
+      }
+      conn.verified = true;
+    }
+    if (!conn.verified || (msg.sessionId !== undefined && msg.sessionId !== conn.sessionId)) return;
     if (msg.type === "snapshot" && Array.isArray(msg.subagents)) {
       const next = msg.subagents as SubagentRecord[];
       const events = diffSubagentTransitions(conn.lastRecords, next);
@@ -511,9 +527,10 @@ export class TelegramDaemon {
       return;
     }
     if (msg.type === "ack" && typeof msg.reqId === "string") {
-      const resolve = this.pendingAcks.get(msg.reqId);
-      if (resolve) {
-        resolve(Boolean(msg.ok));
+      const pending = this.pendingAcks.get(msg.reqId);
+      if (pending?.conn === conn) {
+        clearTimeout(pending.timer);
+        pending.resolve(msg.ok === true);
         this.pendingAcks.delete(msg.reqId);
       }
       return;
@@ -572,25 +589,32 @@ export class TelegramDaemon {
 
   private findSession(shortId: string): SessionConnection | undefined {
     const needle = shortId.toLowerCase();
+    if (!needle) return undefined;
+    let match: SessionConnection | undefined;
     for (const conn of this.sessions.values()) {
-      if (shortSessionId(conn.sessionId) === needle || conn.sessionId.toLowerCase().startsWith(needle)) return conn;
+      if (shortSessionId(conn.sessionId).toLowerCase() === needle || conn.sessionId.toLowerCase().startsWith(needle)) {
+        if (match) return undefined;
+        match = conn;
+      }
     }
-    return undefined;
+    return match;
   }
 
   private sendRequest(conn: SessionConnection, frame: Record<string, unknown>): Promise<boolean> {
+    if (this.stopped || !conn.verified) return Promise.resolve(false);
     const reqId = crypto.randomUUID();
     const { promise, resolve } = Promise.withResolvers<boolean>();
-    this.pendingAcks.set(reqId, resolve);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (this.pendingAcks.has(reqId)) {
         this.pendingAcks.delete(reqId);
         resolve(false);
       }
     }, this.opts.ackTimeoutMs ?? 3_000);
+    this.pendingAcks.set(reqId, { conn, resolve, timer });
     try {
       conn.ws.send(JSON.stringify({ ...frame, reqId }));
     } catch {
+      clearTimeout(timer);
       this.pendingAcks.delete(reqId);
       resolve(false);
     }
@@ -639,13 +663,11 @@ export class TelegramDaemon {
    *  A config command (`/verbose`, `/lean`, `/redact on|off`) is applied to
    *  THAT session only; anything else (including a media-only message with no
    *  caption) is forwarded as free-text steering, with any attached photo/
-   *  image-document downloaded first. A 👀 reaction confirms the daemon
-   *  actually routed the message (simplified single-stage delivery
-   *  confirmation — gjc's own two-stage queued→consumed reaction protocol
-   *  requires a round-trip ack frame this version does not add). */
+   *  image-document downloaded first. A reaction confirms endpoint acceptance;
+   *  remote slash commands other than the presentation settings are rejected. */
   private async handleSessionTopicInbound(sessionId: string, msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
     const conn = this.sessions.get(sessionId);
-    if (!conn) return; // the owning session has disconnected; the topic record just lingers
+    if (!conn?.verified) return; // disconnected or not yet authenticated by its snapshot
     const text = msg.text ?? msg.caption ?? "";
     const hasMedia = !!(msg.photo?.length || msg.document);
     const cfg = !hasMedia ? parseInThreadConfigCommand(text) : undefined;
@@ -653,6 +675,7 @@ export class TelegramDaemon {
       conn.ws.send(JSON.stringify({ type: "config_command", sessionId, ...cfg }));
       return;
     }
+    if (typeof text !== "string" || text.trimStart().startsWith("/")) return;
     const imagePaths: string[] = [];
     if (msg.photo?.length) {
       const largest = msg.photo[msg.photo.length - 1]!;
@@ -663,39 +686,42 @@ export class TelegramDaemon {
       if (p) imagePaths.push(p);
     }
     if (!text && imagePaths.length === 0) return; // a non-image document with no caption — nothing usable to forward
-    conn.ws.send(JSON.stringify({ type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined }));
-    await this.reactToMessage(msg.message_id, "👀");
+    const ok = await this.sendRequest(conn, { type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined });
+    if (ok) await this.reactToMessage(msg.message_id, "👀");
   }
 
-  /** Trust boundary: a bot's username is publicly discoverable, so ANY Telegram
-   *  user can message it. Only the paired chat (the one that ran
-   *  `jeo notify setup`) may steer/cancel subagents or steer a session;
-   *  everything else is dropped without a reply (replying would leak that the
-   *  bot is live). A message in a KNOWN session's own topic (per-session-
-   *  topics mode) routes directly to that session — bypassing the flat
-   *  `topicId` gate, which still governs everything else (global commands in
-   *  the General topic or the configured flat topic; other topics ignored). */
+  private authorized(chat: NonNullable<TelegramUpdate["message"]>["chat"], from: TelegramCallbackQuery["from"] | undefined): boolean {
+    if (!chat || String(chat.id) !== this.opts.chatId || !from || from.is_bot !== false || !Number.isSafeInteger(from.id)) return false;
+    if (this.opts.allowedUserIds !== undefined) return this.opts.allowedUserIds.includes(String(from.id));
+    return chat.type === "private" && String(from.id) === this.opts.chatId;
+  }
+
+  /** Only an authorized human in the paired chat can control sessions. Groups
+   *  require an explicit allowlist; legacy private chats require owner identity.
+   *  Session topics route solely to their owner; all other input must match the
+   *  configured flat topic, including when the inbound topic is absent. */
   async handleUpdate(update: TelegramUpdate): Promise<void> {
+    if (!update || typeof update !== "object") return;
     if (update.callback_query) {
       await this.handleCallbackQuery(update.callback_query);
       return;
     }
     const msg = update.message;
     if (!msg) return;
-    if (String(msg.chat.id) !== this.opts.chatId) return;
+    if (!this.authorized(msg.chat, msg.from)) return;
 
     const ownerSessionId = this.topics && msg.message_thread_id !== undefined
       ? this.topics.sessionForTopic(msg.message_thread_id)
       : undefined;
-    if (ownerSessionId) {
+    if (ownerSessionId && await this.pairedChatIsPrivate()) {
       await this.handleSessionTopicInbound(ownerSessionId, msg);
       return;
     }
 
-    if (!msg.text) return;
+    if (typeof msg.text !== "string" || !msg.text) return;
+    if (this.topics && msg.message_thread_id !== undefined && msg.message_thread_id !== this.opts.topicId) return;
     if (
       this.opts.topicId !== undefined &&
-      msg.message_thread_id !== undefined &&
       msg.message_thread_id !== this.opts.topicId
     ) {
       return;
@@ -710,23 +736,19 @@ export class TelegramDaemon {
    *  The tap is always acknowledged (Telegram shows a spinner until
    *  `answerCallbackQuery`). */
   async handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
-    const chatId = cb.message?.chat.id;
-    if (chatId !== undefined && String(chatId) !== this.opts.chatId) {
+    if (!cb.message || !Number.isSafeInteger(cb.message.message_id) || !this.authorized(cb.message.chat, cb.from)) {
       await this.answerCallback(cb.id);
       return;
     }
-    const threadId = cb.message?.message_thread_id;
-    const inKnownSessionTopic = !!this.topics && threadId !== undefined && this.topics.sessionForTopic(threadId) !== undefined;
-    if (
-      this.opts.topicId !== undefined &&
-      threadId !== undefined &&
-      threadId !== this.opts.topicId &&
-      !inKnownSessionTopic
-    ) {
+    const threadId = cb.message.message_thread_id;
+    const ownerSessionId = this.topics && threadId !== undefined && await this.pairedChatIsPrivate()
+      ? this.topics.sessionForTopic(threadId) : undefined;
+    if (!ownerSessionId && ((this.opts.topicId !== undefined && threadId !== this.opts.topicId) ||
+        (this.topics && threadId !== undefined && threadId !== this.opts.topicId))) {
       await this.answerCallback(cb.id);
       return;
     }
-    const parsed = cb.data ? parseCallbackData(cb.data) : undefined;
+    const parsed = typeof cb.data === "string" ? parseCallbackData(cb.data) : undefined;
     if (!parsed) {
       await this.answerCallback(cb.id);
       return;
@@ -734,6 +756,10 @@ export class TelegramDaemon {
     const conn = this.findSession(parsed.shortId);
     if (!conn) {
       await this.answerCallback(cb.id, `No connected session matches '${parsed.shortId}'.`);
+      return;
+    }
+    if (ownerSessionId && ownerSessionId !== conn.sessionId) {
+      await this.answerCallback(cb.id);
       return;
     }
     const ok = await this.sendRequest(conn, { type: "cancel", ids: [parsed.subagentId] });
@@ -751,9 +777,20 @@ export class TelegramDaemon {
    *  hot-loop against the API; growing it also avoids sitting at a single
    *  fixed multi-second delay for the entire outage. */
   private async pollErrorBackoff(): Promise<void> {
-    const sleepFn = this.opts.sleep ?? sleep;
-    await sleepFn(this.pollErrorBackoffMs);
-    this.pollErrorBackoffMs = Math.min(this.pollErrorBackoffMs * 2, POLL_ERROR_BACKOFF_MAX_MS);
+    if (this.stopped) return;
+    const cancelled = Promise.withResolvers<void>();
+    this.cancelBackoff = cancelled.resolve;
+    let timer: Timer | undefined;
+    try {
+      const delay = this.opts.sleep
+        ? this.opts.sleep(this.pollErrorBackoffMs)
+        : new Promise<void>(resolve => { timer = setTimeout(resolve, this.pollErrorBackoffMs); });
+      await Promise.race([delay, cancelled.promise]);
+      if (!this.stopped) this.pollErrorBackoffMs = Math.min(this.pollErrorBackoffMs * 2, POLL_ERROR_BACKOFF_MAX_MS);
+    } finally {
+      clearTimeout(timer);
+      this.cancelBackoff = undefined;
+    }
   }
 
   private async pollTelegramLoop(): Promise<void> {
@@ -765,6 +802,7 @@ export class TelegramDaemon {
         await this.pollErrorBackoff();
         continue;
       }
+      if (this.stopped) break;
       if (!res.ok) {
         // e.g. 409 Conflict (another getUpdates owner) or 401 (revoked token) —
         // without a pause this would hot-loop against the API.
@@ -776,6 +814,7 @@ export class TelegramDaemon {
       // than staying parked at whatever ceiling a prior outage reached.
       this.pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
       for (const update of res.result) {
+        if (this.stopped) break;
         this.updateOffset = update.update_id + 1;
         await this.handleUpdate(update);
       }
@@ -784,8 +823,9 @@ export class TelegramDaemon {
 
   /** Blocks (long-poll loop) until `stop()` is called. */
   async start(): Promise<void> {
+    if (this.stopped) return;
     if (this.topics) {
-      const load = this.opts.loadTopicState ?? defaultLoadTopicState;
+      const load = this.opts.loadTopicState ?? (() => defaultLoadTopicState(this.opts.botId, this.opts.chatId));
       try {
         this.topics.load(await load());
       } catch {
@@ -793,7 +833,9 @@ export class TelegramDaemon {
         // (every session's first frame re-creates its topic from scratch).
       }
     }
+    if (this.stopped) return;
     await this.scanSessions();
+    if (this.stopped) return;
     this.scanTimer = setInterval(() => void this.scanSessions(), this.opts.scanIntervalMs ?? 3_000);
     // Catches anything left queued after a submit-time drain because the
     // burst capacity was briefly exhausted (rare at jeo's realistic message
@@ -805,8 +847,14 @@ export class TelegramDaemon {
 
   stop(): void {
     this.stopped = true;
+    this.cancelBackoff?.();
     clearInterval(this.scanTimer);
     clearInterval(this.poolTimer);
+    for (const pending of this.pendingAcks.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    this.pendingAcks.clear();
     for (const conn of this.sessions.values()) {
       try {
         conn.ws.close();
@@ -817,20 +865,24 @@ export class TelegramDaemon {
 }
 
 /** Default inbound-attachment temp-file writer: a private (0700-parent,
- *  default-mode) file under the OS temp dir, named to survive filesystem
+ *  0600-mode) file under the OS temp dir, named to survive filesystem
  *  weirdness (sanitized, length-capped) while staying traceable to its
  *  Telegram origin for debugging. */
 async function defaultWriteTempFile(bytes: Uint8Array, suggestedName: string): Promise<string> {
   const safe = (suggestedName.replace(/[^\w.-]+/g, "_").slice(-128) || "file");
-  const target = path.join(os.tmpdir(), `jeo-telegram-${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${safe}`);
-  await fs.writeFile(target, bytes);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-"));
+  await fs.chmod(directory, 0o700);
+  const target = path.join(directory, safe === "." || safe === ".." ? "file" : safe);
+  await fs.writeFile(target, bytes, { mode: 0o600, flag: "wx" });
   return target;
 }
 
-async function defaultLoadTopicState(): Promise<TopicRegistryState> {
+async function defaultLoadTopicState(botId: string | undefined, chatId: string): Promise<TopicRegistryState> {
+  if (!botId || !/^[1-9]\d*$/.test(botId)) return { topics: {} };
   try {
     const raw = await fs.readFile(notifyTopicsPath(), "utf-8");
-    return JSON.parse(raw) as TopicRegistryState;
+    const state = JSON.parse(raw) as TopicRegistryState & { botId?: string; chatId?: string };
+    return state.botId === botId && state.chatId === chatId ? state : { topics: {} };
   } catch {
     return { topics: {} };
   }
@@ -838,12 +890,13 @@ async function defaultLoadTopicState(): Promise<TopicRegistryState> {
 
 /** Atomic temp+rename write (same convention as `state.ts`'s config/workflow
  *  persistence) — a torn write must never corrupt the topic map. */
-async function defaultSaveTopicState(state: TopicRegistryState): Promise<void> {
+async function defaultSaveTopicState(state: TopicRegistryState, botId: string | undefined, chatId: string): Promise<void> {
+  if (!botId || !/^[1-9]\d*$/.test(botId)) return;
   const target = notifyTopicsPath();
   await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   const tmp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    await fs.writeFile(tmp, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await fs.writeFile(tmp, JSON.stringify({ ...state, botId, chatId }, null, 2), { encoding: "utf-8", mode: 0o600 });
     await fs.rename(tmp, target);
   } catch (err) {
     await fs.unlink(tmp).catch(() => {});
@@ -853,34 +906,113 @@ async function defaultSaveTopicState(state: TopicRegistryState): Promise<void> {
 
 // ── CLI entrypoint (`jeo notify-daemon-run`, internal) ──────────────────────────
 
-export async function runNotifyDaemonForeground(): Promise<void> {
+import { DiscordDaemon } from "./discord-daemon";
+import type { DiscordDaemonConfig, DiscordDaemonDependencies } from "./discord-daemon";
+import { DiscordApiError } from "./discord-api";
+import { SlackDaemon } from "./slack-daemon";
+import type { SlackDaemonConfig, SlackDaemonDependencies } from "./slack-daemon";
+import { SlackApi, SlackApiError } from "./slack-api";
+
+interface ForegroundTransport {
+  start(): Promise<void>;
+  stop(): void;
+}
+
+export interface NotifyForegroundOptions {
+  fetchImpl?: typeof fetch;
+  signals?: {
+    on(signal: "SIGTERM" | "SIGINT", listener: () => void): unknown;
+    off(signal: "SIGTERM" | "SIGINT", listener: () => void): unknown;
+  };
+  createTelegram?: (options: TelegramDaemonOptions) => ForegroundTransport;
+  createDiscord?: (config: DiscordDaemonConfig, dependencies: DiscordDaemonDependencies) => ForegroundTransport;
+  createSlack?: (config: SlackDaemonConfig, dependencies: SlackDaemonDependencies) => ForegroundTransport;
+}
+
+export async function runNotifyDaemonForeground(options: NotifyForegroundOptions = {}): Promise<void> {
   const lock = await acquireDaemonLock();
   if (!lock) {
-    process.stderr.write("[jeo notify-daemon] another daemon instance already holds the lock; exiting.\n");
+    process.stderr.write("[jeo notify-daemon] another daemon or pairing process holds the lock; exiting.\n");
+    process.exitCode = 1;
     return;
   }
+  const transports: { stop(): void }[] = [];
+  const polling = new AbortController();
+  const shutdown = Promise.withResolvers<void>();
+  let stopping = false;
+  let telegramRun: Promise<void> | undefined;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    for (const transport of transports) transport.stop();
+    polling.abort();
+    shutdown.resolve();
+  };
+  const signals = options.signals ?? process;
+  signals.on("SIGTERM", stop);
+  signals.on("SIGINT", stop);
   try {
-    const config = await readGlobalConfig();
-    const botToken = config.notifications?.telegram?.botToken;
-    const chatId = config.notifications?.telegram?.chatId;
-    const topicId = config.notifications?.telegram?.topicId;
-    const perSessionTopics = config.notifications?.telegram?.perSessionTopics;
-    if (!config.notifications?.enabled || !botToken || !chatId) {
-      process.stderr.write("[jeo notify-daemon] notifications not configured — run `jeo notify setup` first.\n");
-      return;
+    const n = (await readGlobalConfig()).notifications;
+    if (!n?.enabled) throw new Error("notifications disabled; run jeo notify setup first");
+    const discord = n.discord;
+    if (discord?.botToken && discord.channelId && discord.allowedUserIds?.length) {
+      const daemon = (options.createDiscord ?? ((config, dependencies) => new DiscordDaemon(config, dependencies)))({ botToken: discord.botToken, channelId: discord.channelId, allowedUserIds: discord.allowedUserIds }, {
+        onError: message => process.stderr.write(`[jeo notify-daemon] Discord: ${message}\n`),
+        onFatal: () => {
+          if (stopping) return;
+          process.exitCode = 1;
+          stop();
+        },
+      });
+      transports.push(daemon);
+      await daemon.start();
     }
-    const daemon = new TelegramDaemon({ chatId, topicId, perSessionTopics, telegram: new TelegramApi(botToken) });
-    let shuttingDown = false;
-    const shutdown = () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      daemon.stop();
-      process.exit(0);
-    };
-    process.on("SIGTERM", shutdown);
-    process.on("SIGINT", shutdown);
-    await daemon.start();
+    const slack = n.slack;
+    if (!stopping && slack?.botToken && slack.appToken && slack.channelId && slack.allowedUserIds?.length) {
+      const daemon = (options.createSlack ?? ((config, dependencies) => new SlackDaemon(config, dependencies)))(slack, {
+        api: new SlackApi(slack.botToken, slack.appToken, { fetchImpl: options.fetchImpl }),
+        onError: message => process.stderr.write(`[jeo notify-daemon] Slack: ${message}\n`),
+        onFatal: () => {
+          if (stopping) return;
+          process.exitCode = 1;
+          stop();
+        },
+      });
+      transports.push(daemon);
+      await daemon.start();
+    }
+    const telegram = n.telegram;
+    if (!stopping && telegram?.botToken && telegram.chatId) {
+      const api = new TelegramApi(telegram.botToken, ((input, init) => (options.fetchImpl ?? fetch)(input, { ...init, signal: AbortSignal.any([polling.signal, AbortSignal.timeout(35_000)]) })) as typeof fetch);
+      const me = await api.getMe();
+      const chat = await api.getChat(telegram.chatId);
+      if (!me.ok || !me.result?.is_bot || !chat.ok || !chat.result?.type) throw new Error("Telegram requires valid bot credentials and an accessible chat");
+      if (chat.result.type !== "private" && !telegram.allowedUserIds?.length) throw new Error("Telegram requires allowedUserIds for group control");
+      if (stopping) return;
+      const daemon = (options.createTelegram ?? (config => new TelegramDaemon(config)))({ ...telegram, chatId: telegram.chatId, botId: String(me.result.id), telegram: api });
+      transports.push(daemon);
+      telegramRun = daemon.start().catch(() => {
+        if (!stopping) {
+          process.stderr.write("[jeo notify-daemon] Telegram transport failed; check credentials and connectivity.\n");
+          process.exitCode = 1;
+          stop();
+        }
+      });
+    }
+    if (!transports.length) throw new Error("notifications not configured; run jeo notify setup first");
+    if (!stopping) await lock.markReady();
+    await shutdown.promise;
+  } catch (error) {
+    if (stopping) return;
+    process.stderr.write(`[jeo notify-daemon] startup failed: ${error instanceof DiscordApiError || error instanceof SlackApiError ? `${error.message}${error.status ? ` (HTTP ${error.status})` : ""}` : error instanceof Error && /^(notifications |Discord requires|Slack requires|Telegram requires)/.test(error.message) ? error.message : "check platform credentials, permissions and connectivity"}.\n`);
+    process.exitCode = 1;
   } finally {
+    stop();
+    await telegramRun;
+    // A start in flight may finish after a signal; stop those resources as well.
+    for (const transport of transports) transport.stop();
+    signals.off("SIGTERM", stop);
+    signals.off("SIGINT", stop);
     await lock.release();
   }
 }

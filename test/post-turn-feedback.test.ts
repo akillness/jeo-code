@@ -1,8 +1,13 @@
-import { test, expect, beforeAll, afterAll, mock } from "bun:test";
+import { test, expect, beforeAll, afterAll, beforeEach, afterEach, spyOn, type Mock } from "bun:test";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { runPostTurnHooks } from "../src/agent/hooks";
+import * as loop from "../src/agent/loop";
+
+let llm: Mock<typeof loop.callLlm>;
+beforeEach(() => { llm = spyOn(loop, "callLlm"); });
+afterEach(() => { llm.mockRestore(); });
 
 // cycle 13 (plan/gjc-inheritance.md): post-turn hook output FEEDBACK. A post-turn
 // hook (e.g. `tsc --noEmit`) that exits non-zero now feeds its diagnostics back to
@@ -72,9 +77,7 @@ test("match.tool gates which tool the hook fires for (strict equality)", async (
 
 test("engine appends hook diagnostics to the edit result block; tool stays (ok)", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS2345 type error' && exit 1" });
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }),
-  }));
+  llm.mockImplementation(async () => JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }));
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   await runAgentLoop(history, {
@@ -92,13 +95,11 @@ test("engine appends hook diagnostics to the edit result block; tool stays (ok)"
 
 test("a project-wide post-turn hook runs ONCE for a multi-call batch, not per edit", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo dupdiag && exit 1" });
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({
+  llm.mockImplementation(async () => JSON.stringify({
       tools: [
         { tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } },
         { tool: "edit", arguments: { filePath: "b.ts", editBlock: "y" } },
       ],
-    }),
   }));
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
@@ -137,23 +138,21 @@ test("a single edit|write hook fires for both tools, not for read", async () => 
 });
 
 // F1 (round 4, architect agent://5-Round4Discovery): a RED post-turn hook is a
-// pending failure the done guard enforces — done after a failing hook gets ONE
-// pushback naming the hook, even when an earlier bash "verification" succeeded.
+// pending failure the done guard enforces — every done attempt remains blocked,
+// even when an earlier bash verification succeeded or a later read succeeds.
 // A later CLEAN hook run clears the pending failure.
 
-test("done after a red hook gets a pushback naming the hook; second done passes", async () => {
+test("done after a red hook stays blocked after a read and repeated completion attempts", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS999 broken' && exit 1" });
   let calls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test ok" } });
       if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } });
       if (calls === 3) return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // pushed back
       if (calls === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "a.ts" } }); // takes a further action
-      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // now passes
-    },
-  }));
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // remains blocked
+  });
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const result = await runAgentLoop(history, {
@@ -166,11 +165,15 @@ test("done after a red hook gets a pushback naming the hook; second done passes"
       read: async () => ({ success: true, output: "content" }),
     },
   });
-  expect(result.done).toBe(true);
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("completion rejected");
+  expect(result.doneReason).toContain("FAILING (non-zero exit)");
   const pushback = history.find(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"));
   expect(pushback).toBeDefined(); // guard fired DESPITE the earlier green bash
   expect(pushback!.content).toContain('post-turn hook "echo');
-  expect(calls).toBe(5); // bash, edit, done(pushed back), read(action), done(escape hatch)
+  const corrections = history.filter(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"));
+  expect(corrections.length).toBeGreaterThan(1);
+  expect(calls).toBe(4 + corrections.length); // three tools, every corrective done, and the final rejected done
 });
 
 test("a later clean hook run clears the pending failure — done passes first try", async () => {
@@ -178,15 +181,13 @@ test("a later clean hook run clears the pending failure — done passes first tr
   try { await fs.unlink(flag); } catch {}
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: `[ -f ${flag} ] || { echo red; exit 1; }` });
   let calls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // hook red
       if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "y" } }); // fix → hook green
       if (calls === 3) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verification
       return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
-    },
-  }));
+  });
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const result = await runAgentLoop(history, {
@@ -208,22 +209,24 @@ test("a later clean hook run clears the pending failure — done passes first tr
 });
 
 // Stale-verification gate: a passing test/build that PREDATES the last mutation is
-// no longer trustworthy. done after verify→edit gets ONE pushback to re-verify; the
-// non-stale order (edit→verify→done) passes untouched.
+// no longer trustworthy. Read-only actions and repeated done cannot refresh it;
+// a passing verification after the mutation is required to finish.
 
-test("done after verify-then-edit gets a stale-verification pushback", async () => {
+test.each([
+  { name: "stays blocked without fresh verification", reverify: false },
+  { name: "recovers only after a fresh passing verification", reverify: true },
+])("done after verify-then-edit $name", async ({ reverify }) => {
   await setHook({ event: "post-turn", run: "echo ok" }); // clean hook, never blocks
   let calls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verify
       if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // mutate AFTER verify
       if (calls === 3) return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // stale pushback
       if (calls === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "a.ts" } }); // takes a further action
-      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // now passes
-    },
-  }));
+      if (calls === 6 && reverify) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+  });
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const result = await runAgentLoop(history, {
@@ -236,23 +239,27 @@ test("done after verify-then-edit gets a stale-verification pushback", async () 
       read: async () => ({ success: true, output: "content" }),
     },
   });
-  expect(result.done).toBe(true);
+  expect(result.done).toBe(reverify);
   const pushback = history.find(m => m.role === "user" && m.content.includes("no longer reflects the current tree"));
   expect(pushback).toBeDefined();
-  expect(calls).toBe(5); // bash, edit, done(stale pushback), read(action), done(escape hatch)
+  const corrections = history.filter(m => m.role === "user" && m.content.includes("no longer reflects the current tree"));
+  expect(corrections.length).toBeGreaterThan(1);
+  expect(calls).toBe((reverify ? 5 : 4) + corrections.length);
+  if (!reverify) {
+    expect(result.doneReason).toContain("completion rejected");
+    expect(result.doneReason).toContain("no longer reflects the current tree");
+  }
 });
 
 test("done after edit-then-verify is NOT stale — passes first try", async () => {
   await setHook({ event: "post-turn", run: "echo ok" });
   let calls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // mutate
       if (calls === 2) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verify AFTER edit
       return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
-    },
-  }));
+  });
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const result = await runAgentLoop(history, {

@@ -1,9 +1,28 @@
-import { test, expect, mock } from "bun:test";
+import { test, expect, beforeEach, afterEach, spyOn, type Mock } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as loop from "../src/agent/loop";
+
+let cwd: string;
+let llm: Mock<typeof loop.callLlm>;
+
+beforeEach(async () => {
+  cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-engine-multitool-"));
+  await fs.mkdir(path.join(cwd, ".jeo"));
+  // These tests exercise batch accounting, not the developer's global hooks.
+  await fs.writeFile(path.join(cwd, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+  llm = spyOn(loop, "callLlm");
+});
+
+afterEach(async () => {
+  llm?.mockRestore();
+  await fs.rm(cwd, { recursive: true, force: true });
+});
 
 test("runAgentLoop: batch of 3 reads -> exactly 1 LLM call and 3 onToolResult events in order", async () => {
   let llmCalls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       llmCalls++;
       if (llmCalls === 1) {
         return JSON.stringify({
@@ -15,15 +34,14 @@ test("runAgentLoop: batch of 3 reads -> exactly 1 LLM call and 3 onToolResult ev
         });
       }
       return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const toolResults: { tool: string; success: boolean; output: string }[] = [];
 
   const result = await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 5,
     budget: { maxExtensions: 0 },
     tools: {
@@ -47,8 +65,7 @@ test("runAgentLoop: batch of 3 reads -> exactly 1 LLM call and 3 onToolResult ev
 });
 
 test("runAgentLoop: mixed batch read->write->read runs write as a barrier", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       return JSON.stringify({
         tools: [
           { tool: "read", arguments: { id: 1 } },
@@ -56,8 +73,7 @@ test("runAgentLoop: mixed batch read->write->read runs write as a barrier", asyn
           { tool: "read", arguments: { id: 3 } }
         ]
       });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
@@ -66,7 +82,7 @@ test("runAgentLoop: mixed batch read->write->read runs write as a barrier", asyn
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
   await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 1,
     budget: { maxExtensions: 0 },
     tools: {
@@ -96,23 +112,21 @@ test("runAgentLoop: mixed batch read->write->read runs write as a barrier", asyn
 });
 
 test("runAgentLoop: batch with done+other tools rejects done", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       return JSON.stringify({
         tools: [
           { tool: "read", arguments: { filePath: "a.txt" } },
           { tool: "done", arguments: { reason: "finished" } }
         ]
       });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const toolResults: { tool: string; success: boolean; output: string }[] = [];
 
   const result = await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 1,
     budget: { maxExtensions: 0 },
     tools: {
@@ -134,8 +148,7 @@ test("runAgentLoop: batch with done+other tools rejects done", async () => {
 });
 
 test("runAgentLoop: >6 entries truncated", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       return JSON.stringify({
         tools: [
           { tool: "read", arguments: { id: 1 } },
@@ -147,8 +160,7 @@ test("runAgentLoop: >6 entries truncated", async () => {
           { tool: "read", arguments: { id: 7 } }
         ]
       });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
@@ -156,7 +168,7 @@ test("runAgentLoop: >6 entries truncated", async () => {
   let noticeMessage = "";
 
   await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 1,
     budget: { maxExtensions: 0 },
     tools: {
@@ -185,21 +197,19 @@ test("runAgentLoop: >6 entries truncated", async () => {
 });
 
 test("runAgentLoop: legacy single-tool object unchanged", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       return JSON.stringify({
         tool: "read",
         arguments: { filePath: "legacy.txt" }
       });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   const toolResults: { tool: string; success: boolean; output: string }[] = [];
 
   await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 1,
     budget: { maxExtensions: 0 },
     tools: {
@@ -218,8 +228,7 @@ test("runAgentLoop: legacy single-tool object unchanged", async () => {
 
 test("runAgentLoop: all-fail batch increments the consecutive-failure guard", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       turn++;
       return JSON.stringify({
         tools: [
@@ -227,15 +236,14 @@ test("runAgentLoop: all-fail batch increments the consecutive-failure guard", as
           { tool: "failtool", arguments: { turn } }
         ]
       });
-    }
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   let calls = 0;
 
   const result = await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 10,
     budget: { maxExtensions: 0 },
     tools: {
@@ -257,8 +265,7 @@ test("runAgentLoop: trivial read success cannot reset the failure streak (F6)", 
   // reset consecutiveFailures every step, so this looped to maxSteps. Now the
   // step is judged by its non-trivial (mutating) calls and stops at MAX_FAILURES.
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       turn++;
       return JSON.stringify({
         tools: [
@@ -266,14 +273,13 @@ test("runAgentLoop: trivial read success cannot reset the failure streak (F6)", 
           { tool: "edit", arguments: { filePath: `b${turn}.ts`, editBlock: `x${turn}` } },
         ],
       });
-    },
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
 
   const result = await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 12,
     budget: { maxExtensions: 0 },
     tools: {
@@ -291,8 +297,7 @@ test("runAgentLoop: read-only-only failing steps still trip the guard; mixed ok-
   // Sanity for the F6 boundary: a step whose MUTATING call SUCCEEDS resets the
   // streak even if a read in the same batch failed.
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  llm.mockImplementation(async () => {
       turn++;
       if (turn <= 8) {
         return JSON.stringify({
@@ -306,14 +311,13 @@ test("runAgentLoop: read-only-only failing steps still trip the guard; mixed ok-
       // bash step first so the guard this test is NOT about doesn't interfere.
       if (turn === 9) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok Changed Files: x Verification: y" } });
-    },
-  }));
+  });
 
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
 
   const result = await runAgentLoop(history, {
-    cwd: process.cwd(),
+    cwd,
     maxSteps: 12,
     budget: { maxExtensions: 0 },
     tools: {

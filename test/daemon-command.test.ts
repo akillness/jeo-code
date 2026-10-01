@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { runDaemonCommand } from "../src/commands/daemon";
 import { notifyDaemonLockPath } from "../src/agent/notify/paths";
 import { processStartTimeMs } from "../src/agent/notify/daemon-control";
+import { saveConfigPatch } from "../src/agent/state";
 
 let dir: string;
 const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -38,20 +39,25 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("default action (no args) is 'status'", async () => {
+test("empty argv routes to status for explicitly disabled notifications", async () => {
+  await saveConfigPatch(() => ({ notifications: { enabled: false } }));
   await runDaemonCommand([]);
   expect(logs.join("\n")).toContain("not configured");
   expect(logs.join("\n")).toContain("stopped");
 });
 
-test("status reports 'running' with pid + ISO timestamp for a live-pid lock", async () => {
+test.each([
+  { ready: false, state: "initializing" },
+  { ready: true, state: "initialized" },
+])("status reports $state with pid and start time without claiming platform connectivity", async ({ ready, state }) => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
   const startedAt = await realStartedAt(process.pid);
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt }));
+  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt, purpose: "daemon", ready }));
   await runDaemonCommand(["status"]);
   const text = logs.join("\n");
-  expect(text).toContain(`running (pid ${process.pid}`);
+  expect(text).toContain(`process ${state} (pid ${process.pid}`);
   expect(text).toContain(new Date(startedAt).toISOString());
+  expect(text).toContain("platform connectivity not checked");
 });
 
 test("status reports 'stale' for a dead-pid lock", async () => {

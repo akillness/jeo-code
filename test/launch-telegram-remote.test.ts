@@ -3,6 +3,7 @@ import type { Mock } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as updateModule from "../src/util/update-check";
 
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
 
@@ -201,44 +202,35 @@ test("notifications.enabled:true publishes a discovery file keyed by the session
 // endpoint (subagent snapshot protocol unchanged by Tier 2 — gjc-parity
 // regression guard) and can drive it with `list`.
 //
-// NOTE on `identity_header` — GENUINE TESTABILITY GAP: per session-endpoint.ts,
-// `sendIdentity()` is called synchronously, exactly once, immediately after
-// `start()` resolves — broadcasting to whatever sockets are ALREADY connected
-// at that instant, with no replay/re-send on later connections (documented in
-// the source: "a session started before the daemon connects will not
-// retroactively announce itself"). An external test client can only discover
-// the endpoint's random port by reading the discovery file `start()` itself
-// just wrote, then completing a TCP+WS handshake — strictly AFTER
-// `sendIdentity()`'s broadcast (over zero connected sockets) has already fired
-// and returned. There is no polling interval, replay buffer, or delay to race
-// against: the frame is gone before any process outside the CLI's own event
-// loop could possibly have a socket open. Verified empirically below (the
-// identity wait times out on every run). Asserting receipt of
-// `identity_header` here would assert an architecturally
-// impossible-to-observe-externally event, not a flaky timing issue — the
-// mechanism is correct (confirmed by reading the source) but only observable
-// from a daemon already connected before the session starts, never from a
-// fresh out-of-process test client.
+// Identity is retained by the endpoint and replayed to late connections. Install
+// both collectors before awaiting either frame: snapshot and identity can arrive
+// together, and neither may be lost while the other promise is awaited.
 // ---------------------------------------------------------------------------
-test("connecting to the discovery URL joins the live endpoint (snapshot protocol), and a `list` round-trip stays live", async () => {
+test("connecting to the discovery URL replays session identity and preserves snapshot/list routing", async () => {
   const s = await spawnLaunch(NOTIFY_CONFIG);
   const sessionId = await findSessionId(s.projectDir);
   const discovery = await findDiscovery(s.configDir, sessionId);
 
   const ws = connect(discovery);
-  const snap = await waitForMessage(ws, m => m.type === "snapshot");
+  const snapshot = waitForMessage(ws, m => m.type === "snapshot");
+  const identity = waitForMessage(ws, m => m.type === "identity_header");
+  const [snap, identityFrame] = await Promise.all([snapshot, identity]);
   expect(snap.sessionId).toBe(sessionId);
-  expect(Array.isArray(snap.subagents)).toBe(true);
-  expect((snap.subagents as unknown[]).length).toBe(0); // no turn has run yet — no registry attached
-
-  // Genuine gap documented above — confirmed empirically:
-  await expect(waitForMessage(ws, m => m.type === "identity_header", 1500)).rejects.toThrow();
+  expect(snap.subagents).toEqual([]);
+  expect(identityFrame).toEqual(expect.objectContaining({
+    type: "identity_header",
+    sessionId,
+    repo: path.basename(s.projectDir),
+    cwd: await fs.realpath(s.projectDir),
+  }));
 
   // The connection itself is still fully alive and answers the existing
   // subagent protocol (Tier 1 regression guard — multiplexing didn't break `list`).
+  const nextSnapshot = waitForMessage(ws, m => m.type === "snapshot");
   ws.send(JSON.stringify({ type: "list" }));
-  const snap2 = await waitForMessage(ws, m => m.type === "snapshot");
+  const snap2 = await nextSnapshot;
   expect(snap2.sessionId).toBe(sessionId);
+  expect(snap2.subagents).toEqual([]);
 }, 30_000);
 
 test("a wrong auth token against a real session's discovery URL is rejected", async () => {
@@ -378,14 +370,17 @@ afterEach(() => {
   }
 });
 
-/** Runs `runLaunchCommand` in-process against an isolated `JEO_CONFIG_DIR`
- *  (`--no-session`, so nothing touches this repo's own `.jeo/`), returning the
- *  same discovery-file poll helpers Part A uses so the test can interact with
- *  the REAL SessionNotifyEndpoint the command creates. */
+/** Isolate both global config and workspace reads: --no-session disables writes,
+ *  but interactive startup still lists cwd/.jeo/sessions before its first prompt.
+ *  Only the unrelated npm update request is stubbed; the endpoint stays real. */
 async function runInteractiveWithNotify(): Promise<{ done: Promise<void>; configDir: string }> {
   const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tg-remote-inproc-"));
-  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify(NOTIFY_CONFIG));
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tg-remote-inproc-proj-"));
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ ...NOTIFY_CONFIG, hooks: { enabled: false } }));
   const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedStaticMemory = process.env.JEO_STATIC_MEMORY;
+  const savedCwd = process.cwd();
+  process.chdir(projectDir);
   process.env.JEO_CONFIG_DIR = configDir;
   process.env.JEO_STATIC_MEMORY = "1";
   // Dynamic import is required here (not a runtime-selected specifier in the
@@ -396,9 +391,16 @@ async function runInteractiveWithNotify(): Promise<{ done: Promise<void>; config
   // which only happens on first import — a static top-level import here would
   // load launch.ts (and readline) before this file's mocks are wired.
   const { runLaunchCommand } = await import("../src/commands/launch");
+  const updateSpy = spyOn(updateModule, "checkForUpdate").mockResolvedValue(null);
   const done = runLaunchCommand(["--no-tui", "--no-session", "--no-skills"]).finally(async () => {
+    updateSpy.mockRestore();
     if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = savedCfg;
+    if (savedStaticMemory === undefined) delete process.env.JEO_STATIC_MEMORY;
+    else process.env.JEO_STATIC_MEMORY = savedStaticMemory;
+    process.chdir(savedCwd);
+    await fs.rm(configDir, { recursive: true, force: true });
+    await fs.rm(projectDir, { recursive: true, force: true });
   });
   return { done, configDir };
 }

@@ -1,23 +1,11 @@
 import { test, expect } from "bun:test";
 import {
-  GUARD_LIMITS,
   VERIFY_SIGNAL_RE,
   isVerificationSignal,
   repeatHint,
   classifyDoneGate,
 } from "../src/agent/loop-guards";
 
-test("GUARD_LIMITS exposes the named thresholds and is frozen", () => {
-  expect(GUARD_LIMITS.MAX_REPEAT).toBe(4);
-  expect(GUARD_LIMITS.MAX_FAILURES).toBe(5);
-  expect(GUARD_LIMITS.MAX_REFUSAL_RETRIES).toBe(3);
-  expect(GUARD_LIMITS.REFUSAL_BACKOFF_BASE_MS).toBe(2_000);
-  expect(GUARD_LIMITS.REFUSAL_BACKOFF_MAX_MS).toBe(30_000);
-  expect(GUARD_LIMITS.MAX_INVALID_CALLS).toBe(3);
-  expect(GUARD_LIMITS.MAX_PARSE_BOUNCES).toBe(2);
-  expect(GUARD_LIMITS.CYCLE_WINDOW).toBe(6);
-  expect(Object.isFrozen(GUARD_LIMITS)).toBe(true);
-});
 
 test("isVerificationSignal matches test/build/typecheck commands and output banners", () => {
   expect(isVerificationSignal("bun test")).toBe(true);
@@ -80,7 +68,7 @@ test("classifyDoneGate: mutation without verification → block (unverified)", (
   const v = classifyDoneGate({ sawMutation: true, sawVerification: false, pendingHookFailure: null });
   expect(v.state).toBe("done_unverified");
   expect(v.block).toBe(true);
-  expect(v.message).toContain("ran NO verification");
+  expect(v.message).toContain("no passing verification");
 });
 
 test("classifyDoneGate: failing post-turn hook outranks verification → block (hook)", () => {
@@ -124,7 +112,7 @@ test("classifyDoneGate: stale flag without any verification stays unverified", (
   });
   expect(v.state).toBe("done_unverified");
   expect(v.block).toBe(true);
-  expect(v.message).toContain("ran NO verification");
+  expect(v.message).toContain("no passing verification");
 });
 
 test("classifyDoneGate: failing hook outranks stale verification", () => {

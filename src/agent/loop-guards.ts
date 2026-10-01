@@ -41,6 +41,8 @@ export const GUARD_LIMITS = Object.freeze({
   MAX_REPEAT: 4,
   /** Consecutive different-but-failing steps before the turn stops. */
   MAX_FAILURES: 5,
+  /** Rejected completion attempts that may request a correction before stopping incomplete. */
+  MAX_DONE_CORRECTIONS: 3,
   /** Context-mutating refusal-ladder rungs (resend → reset → guidance strip) before
    *  recovery switches to unbounded backoff resends (gjc parity: never terminal). */
   MAX_REFUSAL_RETRIES: 3,
@@ -114,7 +116,7 @@ export function repeatHint(tool: string, prev?: { success: boolean; output: stri
 export interface DoneGateInput {
   /** A write/edit succeeded this turn. */
   sawMutation: boolean;
-  /** A test/build/typecheck/lint command succeeded this turn. */
+  /** The most recent recognized test/build/typecheck/lint command succeeded. */
   sawVerification: boolean;
   /**
    * A mutation landed AFTER the most recent successful verification — so the
@@ -129,7 +131,7 @@ export interface DoneGateInput {
 /** Verdict from {@link classifyDoneGate}: whether to bounce `done`, and the message. */
 export interface DoneGateVerdict {
   state: Extract<GuardState, "done_ok" | "done_unverified" | "done_stale_verification" | "done_hook_failing">;
-  /** When true, `done` should be bounced ONCE with `message` (the caller owns the once-gate). */
+  /** When true, completion must remain blocked until the condition is resolved. */
   block: boolean;
   /** Corrective message to push back on `done`; empty when `state === "done_ok"`. */
   message: string;
@@ -139,10 +141,9 @@ export interface DoneGateVerdict {
  * Classify whether a `done` should be accepted or bounced — the direct descendant of
  * gjc's `ultragoal-guard` completion gate (plan/gjc-inheritance.md B4).
  *
- * A turn that MUTATED files is blocked ONCE when its verification is missing
- * (no test/build signal), STALE (a passing run that predates the last edit), or
- * a post-turn hook is still failing. The caller owns the single-pushback latch; a
- * second `done` always passes (the escape hatch for unverifiable docs/config changes).
+ * A turn that MUTATED files remains blocked while verification is missing/failed,
+ * STALE (a passing run predates the last edit), or a post-turn hook is still failing.
+ * The caller bounds corrective retries without converting rejection into success.
  */
 export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
   const hookFailing = input.pendingHookFailure !== null;
@@ -155,8 +156,7 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
       block: true,
       message:
         `Your latest mutation left the post-turn hook "${input.pendingHookFailure}" FAILING (non-zero exit) — its diagnostics were shown in the tool result above. ` +
-        "Fix the reported problems (the hook re-runs on your next mutation), then call done. " +
-        "If the hook failure is a false positive, call done again and say why in the reason.",
+        "Fix the reported problems (the hook re-runs on your next mutation), then call done.",
     };
   }
   if (stale) {
@@ -165,16 +165,14 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
       block: true,
       message:
         "You verified earlier, but then modified files again — your last passing test/build no longer reflects the current tree. " +
-        "Re-run the narrowest verification command against the latest changes, then call done. " +
-        "If the later edits are verification-irrelevant (docs/config-only), call done again and say why in the reason.",
+        "Re-run the narrowest verification command against the latest changes, then call done.",
     };
   }
   return {
     state: "done_unverified",
     block: true,
     message:
-      "You modified files this turn but ran NO verification (no test/build/typecheck command succeeded). " +
-      "Run the narrowest command that proves your change works, then call done. " +
-      "If verification is genuinely not applicable (docs/config-only change), call done again and say why in the reason.",
+      "You modified files this turn but have no passing verification (no test/build/typecheck command succeeded, or the latest recognized verification failed). " +
+      "Run the narrowest command that proves your change works, then call done.",
   };
 }

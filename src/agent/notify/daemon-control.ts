@@ -15,6 +15,8 @@ import { readGlobalConfig } from "../state";
 export interface DaemonLockInfo {
   pid: number;
   startedAt: number;
+  purpose?: "daemon" | "pairing";
+  ready?: boolean;
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -152,32 +154,87 @@ export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
     const raw = await fs.readFile(notifyDaemonLockPath(), "utf-8");
     const parsed = JSON.parse(raw) as Partial<DaemonLockInfo>;
     if (typeof parsed.pid !== "number" || typeof parsed.startedAt !== "number") return undefined;
-    return { pid: parsed.pid, startedAt: parsed.startedAt };
+    if (!Number.isSafeInteger(parsed.pid) || parsed.pid <= 0 || !Number.isFinite(parsed.startedAt)) return undefined;
+    return { pid: parsed.pid, startedAt: parsed.startedAt, purpose: parsed.purpose, ready: parsed.ready };
   } catch {
     return undefined;
   }
 }
 
-/** Called by the daemon process itself on startup. Returns `undefined` when a
- *  live owner already holds the lock (caller must exit without polling
- *  Telegram); otherwise writes the lock and returns a `release()` closure. */
-export async function acquireDaemonLock(): Promise<{ release: () => Promise<void> } | undefined> {
+async function interruptedRecoveryMessage(): Promise<string | undefined> {
+  const guard = `${notifyDaemonLockPath()}.reclaim`;
+  const stat = await fs.stat(guard).catch(() => undefined);
+  if (stat && Date.now() - stat.mtimeMs >= 30_000) {
+    return `Notification lock recovery is blocked by ${guard}. Stop all daemon/pairing processes and verify their owners are gone before manually removing this recovery guard; it is not automatically deleted because that can race a live lock owner.`;
+  }
+  return undefined;
+}
+
+/** Exclusive process lock shared with Telegram pairing, which also owns getUpdates. */
+export async function acquireDaemonLock(purpose: "daemon" | "pairing" = "daemon"): Promise<{ release: () => Promise<void>; markReady: () => Promise<void> } | undefined> {
   await fs.mkdir(notifyDir(), { recursive: true, mode: 0o700 });
-  const existing = await readDaemonLock();
-  if (existing && existing.pid !== process.pid && (await isLockOwnerAlive(existing))) return undefined;
-  const info: DaemonLockInfo = { pid: process.pid, startedAt: Date.now() };
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify(info), { mode: 0o600 });
+  const lockPath = notifyDaemonLockPath();
+  let contents = JSON.stringify({ pid: process.pid, startedAt: await processStartTimeMs(process.pid) ?? Date.now(), purpose, ready: false, owner: crypto.randomUUID() });
+  const create = async () => {
+    // Publish a fully written record atomically; a killed writer cannot leave partial JSON.
+    const tmp = `${lockPath}.${crypto.randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(tmp, contents, { mode: 0o600, flag: "wx" });
+      await fs.link(tmp, lockPath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    } finally { await fs.unlink(tmp).catch(() => {}); }
+  };
+  if (!(await create())) {
+    // Serialize stale-owner reclamation so a second contender cannot unlink the winner.
+    let reclaim: fs.FileHandle;
+    try { reclaim = await fs.open(`${lockPath}.reclaim`, "wx", 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        const blocked = await interruptedRecoveryMessage();
+        if (blocked) throw new Error(blocked);
+        return undefined;
+      }
+      throw error;
+    }
+    try {
+      const existing = await readDaemonLock();
+      if (existing && await isLockOwnerAlive(existing)) return undefined;
+      // Recover legacy malformed locks only after a grace period for old writers.
+      if (!existing && Date.now() - (await fs.stat(lockPath)).mtimeMs < 30_000) return undefined;
+      await fs.unlink(lockPath);
+      if (!(await create())) return undefined;
+    } finally {
+      await reclaim.close();
+      await fs.unlink(`${lockPath}.reclaim`).catch(() => {});
+    }
+  }
   return {
+    markReady: async () => {
+      if (await fs.readFile(lockPath, "utf-8").catch(() => "") !== contents) throw new Error("Notification daemon lost lock ownership during startup");
+      const next = JSON.stringify({ ...JSON.parse(contents), ready: true });
+      const tmp = `${lockPath}.${crypto.randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(tmp, next, { mode: 0o600, flag: "wx" });
+        await fs.rename(tmp, lockPath);
+        contents = next;
+      } finally { await fs.unlink(tmp).catch(() => {}); }
+    },
     release: async () => {
-      await fs.unlink(notifyDaemonLockPath()).catch(() => {});
+      // An old release closure must not remove a newer owner's lock.
+      if (await fs.readFile(lockPath, "utf-8").catch(() => "") === contents) await fs.unlink(lockPath).catch(() => {});
     },
   };
 }
 
 export interface DaemonStatus {
-  /** `notifications.enabled` + a stored bot token + chat id are all present. */
+  /** Master toggle and at least one complete, authorized transport. */
   configured: boolean;
   running: boolean;
+  pairing?: boolean;
+  ready?: boolean;
   /** A lock file exists but its pid is dead — a previous daemon crashed without cleanup. */
   stale: boolean;
   pid?: number;
@@ -190,7 +247,12 @@ export interface DaemonStatus {
 
 export async function isNotifyConfigured(): Promise<boolean> {
   const config = await readGlobalConfig();
-  return Boolean(config.notifications?.enabled && config.notifications.telegram?.botToken && config.notifications.telegram?.chatId);
+  const n = config.notifications;
+  return Boolean(n?.enabled && (
+    (n.telegram?.botToken && n.telegram.chatId) ||
+    (n.discord?.botToken && n.discord.channelId && n.discord.allowedUserIds?.length) ||
+    (n.slack?.botToken && n.slack.appToken && n.slack.channelId && n.slack.allowedUserIds?.length)
+  ));
 }
 
 export async function daemonStatus(): Promise<DaemonStatus> {
@@ -199,7 +261,7 @@ export async function daemonStatus(): Promise<DaemonStatus> {
   const { alive, verified } = await inspectLockOwner(lock);
   // Surface the degraded case instead of hiding it: on a host with no `/proc` and no
   // usable `ps`, "running" is an existence-only guess that cannot rule out PID reuse.
-  return { configured, running: alive, stale: !alive, pid: lock.pid, startedAt: lock.startedAt, ownerVerified: verified };
+  return { configured, running: alive && lock.purpose !== "pairing", pairing: alive && lock.purpose === "pairing", ready: alive && lock.ready === true, stale: !alive, pid: lock.pid, startedAt: lock.startedAt, ownerVerified: verified };
 }
 
 /** Self-invocation argv for the daemon child (mirrors `memory.ts`'s
@@ -240,10 +302,11 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number, ste
   return false;
 }
 
-export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<{ ok: boolean; pid?: number; message: string }> {
+export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn, waitImpl: (predicate: () => Promise<boolean>, timeoutMs: number) => Promise<boolean> = waitFor): Promise<{ ok: boolean; pid?: number; message: string }> {
   const existing = await readDaemonLock();
   if (existing && (await isLockOwnerAlive(existing))) {
-    return { ok: true, pid: existing.pid, message: `daemon already running (pid ${existing.pid})` };
+    if (existing.purpose === "pairing") return { ok: false, message: "Telegram pairing currently owns the notification lock; finish setup first." };
+    return { ok: existing.ready === true, pid: existing.pid, message: `daemon ${existing.ready !== true ? "is still initializing" : "already running"} (pid ${existing.pid}); connectivity not checked` };
   }
   // Check BEFORE spawning: an unconfigured daemon exits almost immediately (see
   // `runNotifyDaemonForeground`), which races the readiness poll below and used to
@@ -252,24 +315,45 @@ export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<
     return { ok: false, message: "notifications not configured — run 'jeo notify setup' first." };
   }
 
+  const blocked = await interruptedRecoveryMessage();
+  if (blocked) return { ok: false, message: blocked };
+
   const cmd = daemonInvocation(process.argv[1], process.execPath, process.cwd());
   spawnImpl(cmd, process.cwd()).unref();
-  const ready = await waitFor(async () => {
+  const ready = await waitImpl(async () => {
     const lock = await readDaemonLock();
-    return Boolean(lock && isPidAlive(lock.pid));
-  }, 2_000);
-  if (!ready) return { ok: false, message: `daemon did not report ready within 2s — check ${notifyDaemonLogPath()}` };
+    return Boolean(lock && lock.purpose === "daemon" && lock.ready === true && isPidAlive(lock.pid));
+  }, 15_000);
+  if (!ready) return { ok: false, message: `daemon did not initialize within 15s — check ${notifyDaemonLogPath()}` };
   const lock = await readDaemonLock();
-  return { ok: true, pid: lock?.pid, message: `daemon started (pid ${lock?.pid})` };
+  return { ok: true, pid: lock?.pid, message: `daemon initialized (pid ${lock?.pid}); use notify health to check platform access` };
+}
+
+async function removeStoppedLock(expected: DaemonLockInfo): Promise<void> {
+  const lockPath = notifyDaemonLockPath();
+  let guard: fs.FileHandle;
+  try { guard = await fs.open(`${lockPath}.reclaim`, "wx", 0o600); }
+  catch (error) {
+    if (["EEXIST", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  }
+  try {
+    const current = await readDaemonLock();
+    if (current?.pid === expected.pid && current.startedAt === expected.startedAt && !(await isLockOwnerAlive(current))) await fs.unlink(lockPath).catch(() => {});
+  } finally {
+    await guard.close();
+    await fs.unlink(`${lockPath}.reclaim`).catch(() => {});
+  }
 }
 
 export async function stopDaemon(): Promise<{ ok: boolean; message: string }> {
   const lock = await readDaemonLock();
   const owner = lock ? await inspectLockOwner(lock) : undefined;
   if (!lock || !owner?.alive) {
-    await fs.unlink(notifyDaemonLockPath()).catch(() => {});
+    if (lock) await removeStoppedLock(lock);
     return { ok: true, message: "daemon was not running" };
   }
+  if (lock.purpose === "pairing") return { ok: false, message: "Telegram pairing is active; cancel setup in its terminal first." };
   try {
     process.kill(lock.pid, "SIGTERM");
   } catch (err) {
@@ -277,13 +361,14 @@ export async function stopDaemon(): Promise<{ ok: boolean; message: string }> {
   }
   const stopped = await waitFor(async () => !isPidAlive(lock.pid), 3_000);
   if (!stopped) return { ok: false, message: `daemon (pid ${lock.pid}) did not exit within 3s` };
-  await fs.unlink(notifyDaemonLockPath()).catch(() => {});
+  await removeStoppedLock(lock);
   const caveat = owner.verified ? "" : " (start time unverifiable on this host — PID reuse could not be ruled out)";
   return { ok: true, message: `daemon stopped (was pid ${lock.pid})${caveat}` };
 }
 
-export async function reloadDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<{ ok: boolean; message: string }> {
-  const stopRes = await stopDaemon();
+export async function reloadDaemon(spawnImpl: SpawnLike = defaultSpawn, stopImpl: typeof stopDaemon = stopDaemon): Promise<{ ok: boolean; message: string }> {
+  const stopRes = await stopImpl();
+  if (!stopRes.ok) return stopRes;
   const startRes = await startDaemon(spawnImpl);
   return { ok: startRes.ok, message: `${stopRes.message}; ${startRes.message}` };
 }

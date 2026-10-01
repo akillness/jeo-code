@@ -1,4 +1,9 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
+import { notifyTopicsPath } from "../src/agent/notify/paths";
 import {
   diffSubagentTransitions,
   formatNotifyEvent,
@@ -15,7 +20,7 @@ import {
   type NotifyEvent,
 } from "../src/agent/notify/telegram-daemon";
 import type { SubagentRecord } from "../src/agent/subagent-registry";
-import type { TelegramApi } from "../src/agent/notify/telegram-api";
+import type { TelegramApi, TelegramGetUpdatesResult } from "../src/agent/notify/telegram-api";
 
 function rec(over: Partial<SubagentRecord>): SubagentRecord {
   return { id: "executor-1", role: "executor", task: "do a thing", status: "running", startedAt: 0, ...over };
@@ -134,7 +139,7 @@ class FakeTelegramApi {
   async getMe() {
     return { ok: true, result: { id: 1, is_bot: true, username: "bot" } };
   }
-  async getUpdates() {
+  async getUpdates(): Promise<TelegramGetUpdatesResult> {
     return { ok: true, result: [] };
   }
   async createForumTopic(chatId: string | number, name: string): Promise<{ ok: boolean; result?: { message_thread_id: number } }> {
@@ -177,6 +182,7 @@ class FakeTelegramApi {
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   sent: string[] = [];
+  onSend?: (data: string) => void;
   private listeners: Record<string, Array<(ev: { data?: string }) => void>> = {};
   closed = false;
   constructor(public url: string) {
@@ -187,6 +193,7 @@ class FakeWebSocket {
   }
   send(data: string): void {
     this.sent.push(data);
+    this.onSend?.(data);
   }
   close(): void {
     this.closed = true;
@@ -205,6 +212,21 @@ function makeDaemon(telegram: FakeTelegramApi = new FakeTelegramApi()): Telegram
     WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
     ackTimeoutMs: 200,
   });
+}
+
+async function authenticate(daemon: TelegramDaemon, conn: Parameters<TelegramDaemon["handleSessionMessage"]>[0]): Promise<void> {
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [] }));
+}
+
+async function updateWithAck(daemon: TelegramDaemon, update: Parameters<TelegramDaemon["handleUpdate"]>[0]): Promise<void> {
+  for (const conn of daemon.sessions.values()) {
+    const socket = conn.ws as unknown as FakeWebSocket;
+    socket.onSend = raw => {
+      const frame = JSON.parse(raw);
+      if (frame.type === "user_message") void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+    };
+  }
+  await daemon.handleUpdate(update);
 }
 
 test("scanSessions connects to live sessions and deletes stale (dead-pid) discovery files", async () => {
@@ -233,16 +255,16 @@ test("handleSessionMessage sends a Telegram push on a status edge (not on every 
   const telegram = new FakeTelegramApi();
   const daemon = makeDaemon(telegram);
   const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.sent.length).toBe(1);
   expect(telegram.sent[0]!.text).toContain("started");
 
   // Unchanged snapshot: no new push.
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.sent.length).toBe(1);
 
   // Terminal transition: one more push.
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "completed", result: "done" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "completed", result: "done" })] }));
   expect(telegram.sent.length).toBe(2);
   expect(telegram.sent[1]!.text).toContain("completed");
 });
@@ -276,6 +298,7 @@ test("handleInboundText: /steer to a real session round-trips over the ws and re
   const fakeWs = new FakeWebSocket("ws://x");
   const sessionId = "abcd1234-0000-0000-0000-000000000000";
   daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
 
   const promise = daemon.handleInboundText("/steer abcd1234 executor-1 please hurry");
   const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
@@ -295,6 +318,7 @@ test("handleInboundText: /steer times out (no ack) and reports failure", async (
   const fakeWs = new FakeWebSocket("ws://x");
   const sessionId = "abcd1234-0000-0000-0000-000000000000";
   daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
   await daemon.handleInboundText("/steer abcd1234 executor-1 hello");
   expect(telegram.sent.at(-1)!.text).toContain("Steer failed");
 });
@@ -305,6 +329,7 @@ test("handleInboundText: /cancel round-trips and reports success", async () => {
   const fakeWs = new FakeWebSocket("ws://x");
   const sessionId = "abcd1234-0000-0000-0000-000000000000";
   daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
 
   const promise = daemon.handleInboundText("/cancel abcd1234 executor-1");
   const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
@@ -342,7 +367,7 @@ test("stop() closes every connected session's socket", () => {
 // ── handleUpdate (chat authorization trust boundary) ────────────────────────────
 
 function update(chatId: number, text?: string) {
-  return { update_id: 1, message: text === undefined ? undefined : { message_id: 1, date: 0, chat: { id: chatId, type: "private" }, text } };
+  return { update_id: 1, message: text === undefined ? undefined : { message_id: 1, date: 0, from: { id: chatId, is_bot: false }, chat: { id: chatId, type: "private" }, text } };
 }
 
 test("handleUpdate dispatches a command from the paired chat", async () => {
@@ -393,7 +418,7 @@ test("a 'started' status edge attaches an inline Cancel button", async () => {
   const telegram = new FakeTelegramApi();
   const daemon = makeDaemon(telegram);
   const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "executor-1", status: "running" })] }));
   const kb = telegram.sent[0]!.options?.replyMarkup;
   expect(kb.inline_keyboard[0][0].callback_data).toBe("cancel:abcd1234:executor-1");
 });
@@ -413,12 +438,13 @@ test("handleCallbackQuery cancels via button: round-trips over ws, answers the t
   const fakeWs = new FakeWebSocket("ws://x");
   const sessionId = "abcd1234-0000-0000-0000-000000000000";
   daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
 
   const promise = daemon.handleCallbackQuery({
     id: "cbq-1",
-    from: { id: 7, is_bot: false },
+    from: { id: 999, is_bot: false },
     data: "cancel:abcd1234:executor-1",
-    message: { message_id: 2, chat: { id: 999, type: "supergroup" } },
+    message: { message_id: 2, chat: { id: 999, type: "private" } },
   });
   const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
   expect(sentFrame.type).toBe("cancel");
@@ -436,9 +462,9 @@ test("handleCallbackQuery from an unknown session answers with a no-match toast 
   const daemon = makeDaemon(telegram);
   await daemon.handleCallbackQuery({
     id: "cbq-1",
-    from: { id: 7, is_bot: false },
+    from: { id: 999, is_bot: false },
     data: "cancel:zzzzzzzz:executor-1",
-    message: { message_id: 2, chat: { id: 999, type: "supergroup" } },
+    message: { message_id: 2, chat: { id: 999, type: "private" } },
   });
   expect(telegram.answered.at(-1)!.options?.text).toContain("No connected session matches");
 });
@@ -448,8 +474,8 @@ test("handleUpdate routes a callback_query from the paired chat", async () => {
   const daemon = makeDaemon(telegram);
   await daemon.handleUpdate({
     update_id: 1,
-    callback_query: { id: "cbq-1", from: { id: 7, is_bot: false }, data: "bogus", message: { message_id: 2, chat: { id: 999, type: "supergroup" } } },
-  } as any);
+    callback_query: { id: "cbq-1", from: { id: 999, is_bot: false }, data: "bogus", message: { message_id: 2, chat: { id: 999, type: "private" } } },
+  });
   expect(telegram.answered.at(-1)!.id).toBe("cbq-1");
 });
 
@@ -475,6 +501,7 @@ function makeTopicDaemon(telegram: FakeTelegramApi, topicId: number): TelegramDa
   return new TelegramDaemon({
     chatId: "999",
     topicId,
+    allowedUserIds: ["999"],
     telegram: telegram as unknown as TelegramApi,
     WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
     ackTimeoutMs: 200,
@@ -491,14 +518,14 @@ test("configured topicId is threaded into every outbound push", async () => {
 test("handleUpdate drops a message from a different forum topic", async () => {
   const telegram = new FakeTelegramApi();
   const daemon = makeTopicDaemon(telegram, 55);
-  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 77 } } as any);
+  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 77 } });
   expect(telegram.sent.length).toBe(0);
 });
 
 test("handleUpdate accepts a message from the configured forum topic", async () => {
   const telegram = new FakeTelegramApi();
   const daemon = makeTopicDaemon(telegram, 55);
-  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 55 } } as any);
+  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 55 } });
   expect(telegram.sent[0]!.text).toBe(HELP_TEXT);
 });
 
@@ -508,6 +535,7 @@ test("a session photo frame is relayed via sendPhoto with caption + topic", asyn
   const telegram = new FakeTelegramApi();
   const daemon = makeTopicDaemon(telegram, 55);
   const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
+  await authenticate(daemon, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "photo", url: "https://example.com/shot.png", caption: "a screenshot" }));
   expect(telegram.photos.length).toBe(1);
   expect(telegram.photos[0]!.photo).toBe("https://example.com/shot.png");
@@ -518,6 +546,7 @@ test("a session photo frame is relayed via sendPhoto with caption, topic, and re
   const telegram = new FakeTelegramApi();
   const daemon = makeTopicDaemon(telegram, 55);
   const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
+  await authenticate(daemon, conn);
   const replyMarkup = { inline_keyboard: [[{ text: "click", callback_data: "data" }]] };
   await daemon.handleSessionMessage(conn, JSON.stringify({
       type: "photo",
@@ -556,7 +585,7 @@ test("perSessionTopics: a NEW status edge from a session calls createForumTopic 
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
   expect(telegram.topicsCreated[0]!.chatId).toBe("999");
   expect(telegram.topicsCreated[0]!.name).toBe(`session ${shortSessionId(conn.sessionId)}`);
@@ -568,8 +597,8 @@ test("perSessionTopics: a SECOND frame from the SAME session reuses the cached t
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "running" })] }));
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "completed", result: "done" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "executor-1", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "executor-1", status: "completed", result: "done" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
   expect(telegram.sent.length).toBe(2);
   expect(telegram.sent[1]!.options?.messageThreadId).toBe(1000);
@@ -579,7 +608,7 @@ test("identity_header renames an already-created topic via editForumTopic ONCE, 
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
 
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
@@ -595,7 +624,7 @@ test("identity_header rename retries on the NEXT identical header after a transi
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
 
   telegram.editForumTopicImpl = async () => {
@@ -626,6 +655,7 @@ test("context_update frame sends a message reflecting phase/summary/model", asyn
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
+  await authenticate(daemon, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "context_update", sessionId: conn.sessionId, phase: "turn_start", summary: "do a thing", model: "claude" }));
   expect(telegram.sent.length).toBe(1);
   expect(telegram.sent[0]!.text).toBe("▶ Turn started (claude)\ndo a thing");
@@ -635,6 +665,7 @@ test("turn_stream frame sends HTML-converted text with parse_mode HTML (markdown
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
+  await authenticate(daemon, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "turn_stream", sessionId: conn.sessionId, text: "**bold** reply" }));
   expect(telegram.sent.length).toBe(1);
   expect(telegram.sent[0]!.options?.parseMode).toBe("HTML");
@@ -646,16 +677,16 @@ test("inbound message to a session's OWN topic (per-session-topics mode) sends a
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
 
-  await daemon.handleUpdate({
+  await updateWithAck(daemon, {
     update_id: 1,
-    message: { message_id: 5, date: 0, chat: { id: 999, type: "private" }, text: "hello session", message_thread_id: 1000 },
+    message: { message_id: 5, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text: "hello session", message_thread_id: 1000 },
   });
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
-  expect(frame).toEqual({ type: "user_message", sessionId: conn.sessionId, text: "hello session" });
+  expect(frame).toEqual({ type: "user_message", sessionId: conn.sessionId, text: "hello session", reqId: expect.any(String) });
 });
 
 test("in-thread config command ('/verbose') routes as a config_command frame instead of user_message, and does not react", async () => {
@@ -663,11 +694,11 @@ test("in-thread config command ('/verbose') routes as a config_command frame ins
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
 
   await daemon.handleUpdate({
     update_id: 1,
-    message: { message_id: 6, date: 0, chat: { id: 999, type: "private" }, text: "/verbose", message_thread_id: 1000 },
+    message: { message_id: 6, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text: "/verbose", message_thread_id: 1000 },
   });
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
@@ -686,13 +717,14 @@ test("a photo attachment in a session's topic is downloaded (getFile+downloadFil
   });
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
 
-  await daemon.handleUpdate({
+  await updateWithAck(daemon, {
     update_id: 1,
     message: {
       message_id: 7,
       date: 0,
+      from: { id: 999, is_bot: false },
       chat: { id: 999, type: "private" },
       message_thread_id: 1000,
       photo: [
@@ -725,13 +757,14 @@ test("an image document attachment (sent 'as file') in a session's topic is also
   });
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
 
-  await daemon.handleUpdate({
+  await updateWithAck(daemon, {
     update_id: 1,
     message: {
       message_id: 8,
       date: 0,
+      from: { id: 999, is_bot: false },
       chat: { id: 999, type: "private" },
       message_thread_id: 1000,
       caption: "a diagram",
@@ -768,13 +801,14 @@ test("an oversized inbound photo (downloadFile rejected) still delivers as text-
   });
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
 
-  await daemon.handleUpdate({
+  await updateWithAck(daemon, {
     update_id: 1,
     message: {
       message_id: 10,
       date: 0,
+      from: { id: 999, is_bot: false },
       chat: { id: 999, type: "private" },
       message_thread_id: 1000,
       caption: "a screenshot",
@@ -798,11 +832,11 @@ test("a plain-text inbound message that routes as user_message gets a 👀 react
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
 
-  await daemon.handleUpdate({
+  await updateWithAck(daemon, {
     update_id: 1,
-    message: { message_id: 9, date: 0, chat: { id: 999, type: "private" }, text: "hello again", message_thread_id: 1000 },
+    message: { message_id: 9, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text: "hello again", message_thread_id: 1000 },
   });
   expect(telegram.reactions.length).toBe(1);
   expect(telegram.reactions[0]).toEqual({ chatId: "999", messageId: 9, emoji: "👀" });
@@ -816,13 +850,13 @@ test("fail-closed: createForumTopic rejecting falls back to the flat/no topicId 
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
 
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "e1", status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(1);
   expect(telegram.sent.length).toBe(1);
   expect(telegram.sent[0]!.options?.messageThreadId).toBeUndefined();
 
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "completed", result: "done" })] }));
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e2", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "e1", status: "completed", result: "done" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "e2", status: "running" })] }));
 
   expect(telegram.topicsCreated.length).toBe(1);
   expect(telegram.sent.length).toBe(3);
@@ -835,14 +869,14 @@ test("fail-closed privacy gate: a non-private paired chat (group) blocks per-ses
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
 
-  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ id: "e1", status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(0);
   expect(telegram.sent.length).toBe(1);
   expect(telegram.sent[0]!.options?.messageThreadId).toBeUndefined();
   expect(telegram.chatsChecked.length).toBe(1);
 
   const conn2 = sessionConn("11112222-0000-0000-0000-000000000000");
-  await daemon.handleSessionMessage(conn2, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e2", status: "running" })] }));
+  await daemon.handleSessionMessage(conn2, JSON.stringify({ type: "snapshot", sessionId: conn2.sessionId, pid: conn2.pid, subagents: [rec({ id: "e2", status: "running" })] }));
   expect(telegram.topicsCreated.length).toBe(0);
   expect(telegram.sent.length).toBe(2);
   expect(telegram.chatsChecked.length).toBe(1);
@@ -943,4 +977,376 @@ test("pollTelegramLoop remains stoppable mid-backoff (stop() during the error sl
   });
   await daemon.start();
   expect(sleepCallCount).toBe(1);
+});
+
+test.each([
+  { name: "missing sender", from: undefined },
+  { name: "different private user", from: { id: 7, is_bot: false } },
+  { name: "bot impersonating owner", from: { id: 999, is_bot: true } },
+])("private chat rejects $name before sending commands or attachments", async ({ from }) => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({})] }));
+  telegram.sent = [];
+  await daemon.handleUpdate({ update_id: 2, message: {
+    message_id: 8, date: 0, from, chat: { id: 999, type: "private" },
+    text: "run my instruction", photo: [{ file_id: "untrusted", width: 1, height: 1 }], message_thread_id: 1000,
+  } });
+  expect((conn.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect(telegram.sent).toEqual([]);
+  expect(telegram.filesFetched).toEqual([]);
+  daemon.stop();
+});
+
+test.each([
+  { name: "owner in private chat", type: "private", actor: 999, allowedUserIds: undefined, accepted: true },
+  { name: "owner absent from explicit allowlist", type: "private", actor: 999, allowedUserIds: ["7"], accepted: false },
+  { name: "group without allowlist", type: "supergroup", actor: 999, allowedUserIds: undefined, accepted: false },
+  { name: "group listed actor", type: "supergroup", actor: 7, allowedUserIds: ["7"], accepted: true },
+  { name: "group unlisted actor", type: "supergroup", actor: 8, allowedUserIds: ["7"], accepted: false },
+])("sender authorization: $name", async ({ type, actor, allowedUserIds, accepted }) => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram, { allowedUserIds });
+  await daemon.handleUpdate({ update_id: 1, message: {
+    message_id: 1, date: 0, from: { id: actor, is_bot: false }, chat: { id: 999, type }, text: "/help",
+  } });
+  expect(telegram.sent.map(message => message.text)).toEqual(accepted ? [HELP_TEXT] : []);
+  daemon.stop();
+});
+
+test("configured topic rejects missing thread on both text and callback", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  await daemon.handleUpdate(update(999, "/help"));
+  await daemon.handleCallbackQuery({ id: "wrong-topic", from: { id: 999, is_bot: false },
+    data: "cancel:abcd1234:executor-1", message: { message_id: 2, chat: { id: 999, type: "private" } } });
+  expect((conn.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect(telegram.sent).toEqual([]);
+  daemon.stop();
+});
+
+test.each([
+  { name: "absent message", message: undefined, from: { id: 999, is_bot: false } },
+  { name: "unlisted actor", message: { message_id: 2, chat: { id: 999, type: "private" } }, from: { id: 7, is_bot: false } },
+])("callback rejects $name before session cancellation", async ({ message, from }) => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  await daemon.handleCallbackQuery({ id: "untrusted", from, data: "cancel:abcd1234:executor-1", message });
+  expect((conn.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect(telegram.sent).toEqual([]);
+  daemon.stop();
+});
+
+test("session topic cannot cancel another session through text or callback", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const first = sessionConn();
+  const second = sessionConn("bbbb1234-0000-0000-0000-000000000000");
+  for (const conn of [first, second]) {
+    daemon.sessions.set(conn.sessionId, conn);
+    await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({})] }));
+  }
+  await daemon.handleUpdate({ update_id: 1, message: {
+    message_id: 1, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" },
+    text: "/cancel bbbb1234 executor-1", message_thread_id: 1000,
+  } });
+  await daemon.handleCallbackQuery({ id: "cross-topic", from: { id: 999, is_bot: false },
+    data: "cancel:bbbb1234:executor-1", message: { message_id: 2, chat: { id: 999, type: "private" }, message_thread_id: 1000 } });
+  expect((first.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect((second.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  daemon.stop();
+});
+
+test.each(["/shell rm -rf workspace", "  /unknown do something"])("session topic never forwards unsupported slash instruction %s", async text => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({})] }));
+  await daemon.handleUpdate({ update_id: 1, message: {
+    message_id: 1, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text, message_thread_id: 1000,
+  } });
+  expect((conn.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect(telegram.reactions).toEqual([]);
+  daemon.stop();
+});
+
+test("discovery attaches authentication only to a validated loopback endpoint", async () => {
+  FakeWebSocket.instances = [];
+  const urls = ["ws://example.com:80", "wss://127.0.0.1:9", "ws://127.0.0.1.example.com:9", "ws://user@127.0.0.1:9", "ws://127.0.0.1:9/redirect", "ws://127.0.0.1:9?token=stolen", "ws://127.0.0.1:9"];
+  const daemon = new TelegramDaemon({ chatId: "999", telegram: new FakeTelegramApi() as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    readdir: async () => urls.map((_, index) => `${index}.json`),
+    readFile: async file => JSON.stringify({ url: urls[Number(file.split("/").at(-1)!.split(".")[0])], token: "private-token", pid: 1, cwd: "/tmp/project" }),
+    isPidAlive: () => true,
+  });
+  await daemon.scanSessions();
+  expect(FakeWebSocket.instances.map(socket => socket.url)).toEqual(["ws://127.0.0.1:9/?token=private-token"]);
+  daemon.stop();
+});
+
+test.each([
+  { name: "different session", sessionId: "other-session", pid: 1 },
+  { name: "different process", sessionId: "abcd1234-0000-0000-0000-000000000000", pid: 2 },
+])("snapshot from $name cannot authenticate a discovered socket", async ({ sessionId, pid }) => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId, pid, subagents: [rec({})] }));
+  await daemon.handleInboundText("/cancel abcd1234 executor-1");
+  const socket = conn.ws as unknown as FakeWebSocket;
+  expect(socket.closed).toBe(true);
+  expect(socket.sent).toEqual([]);
+  expect(telegram.sent.some(message => message.text.includes("started"))).toBe(false);
+  daemon.stop();
+});
+
+test("malformed session frames cannot publish notifications before a valid snapshot", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = sessionConn();
+  for (const raw of ["null", "{", "[]", "42", JSON.stringify({ type: "turn_stream", text: "unverified secret" })]) {
+    await daemon.handleSessionMessage(conn, raw);
+  }
+  expect(telegram.sent).toEqual([]);
+  await authenticate(daemon, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "turn_stream", sessionId: conn.sessionId, text: "verified answer" }));
+  expect(telegram.sent.map(message => message.text)).toEqual(["verified answer"]);
+  daemon.stop();
+});
+
+test("another session cannot acknowledge a request and rejection never gets a success reaction", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const target = sessionConn();
+  const stranger = sessionConn("bbbb1234-0000-0000-0000-000000000000");
+  daemon.sessions.set(target.sessionId, target);
+  daemon.sessions.set(stranger.sessionId, stranger);
+  await authenticate(daemon, stranger);
+  await daemon.handleSessionMessage(target, JSON.stringify({ type: "snapshot", sessionId: target.sessionId, pid: target.pid, subagents: [rec({})] }));
+  const requested = Promise.withResolvers<string>();
+  const socket = target.ws as unknown as FakeWebSocket;
+  socket.onSend = requested.resolve;
+  const inbound = daemon.handleUpdate({ update_id: 1, message: { message_id: 9, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text: "hello", message_thread_id: 1000 } });
+  const frame = JSON.parse(await requested.promise);
+  await daemon.handleSessionMessage(stranger, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+  await daemon.handleSessionMessage(target, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: false }));
+  await inbound;
+  expect(telegram.reactions).toEqual([]);
+  daemon.stop();
+});
+
+test("ambiguous session prefixes cannot select either cancellation target", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const first = sessionConn("abcd1234-first");
+  const second = sessionConn("abcd1234-second");
+  for (const conn of [first, second]) {
+    daemon.sessions.set(conn.sessionId, conn);
+    await authenticate(daemon, conn);
+  }
+  await daemon.handleInboundText("/cancel abcd1234 executor-1");
+  expect((first.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  expect((second.ws as unknown as FakeWebSocket).sent).toEqual([]);
+  daemon.stop();
+});
+
+test.each([
+  { name: "null record", raw: "null" },
+  { name: "malformed JSON", raw: "{" },
+  { name: "unsafe PID", raw: JSON.stringify({ url: "ws://127.0.0.1:9", token: "secret", pid: -1, cwd: "/tmp" }) },
+  { name: "nonstring token", raw: JSON.stringify({ url: "ws://127.0.0.1:9", token: { value: "secret" }, pid: 1, cwd: "/tmp" }) },
+])("discovery rejects $name without constructing a socket", async ({ raw }) => {
+  FakeWebSocket.instances = [];
+  const daemon = new TelegramDaemon({ chatId: "999", telegram: new FakeTelegramApi() as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    readdir: async () => ["bad.json"], readFile: async () => raw, isPidAlive: () => true,
+  });
+  await daemon.scanSessions();
+  expect(FakeWebSocket.instances).toEqual([]);
+  expect(daemon.sessions.size).toBe(0);
+  daemon.stop();
+});
+
+test("stop settles polling while an injected backoff remains unresolved", async () => {
+  const telegram = new FakeTelegramApi();
+  let polls = 0;
+  telegram.getUpdates = async () => { polls++; throw new Error("offline"); };
+  const sleeping = Promise.withResolvers<void>();
+  const releaseSleep = Promise.withResolvers<void>();
+  const daemon = makePollDaemon(telegram, () => { sleeping.resolve(); return releaseSleep.promise; });
+  const running = daemon.start();
+  try {
+    await sleeping.promise;
+    daemon.stop();
+    await running;
+    expect(polls).toBe(1);
+    expect(telegram.sent).toEqual([]);
+  } finally {
+    releaseSleep.resolve();
+    daemon.stop();
+  }
+});
+
+test.each(["topic load", "directory scan", "discovery read"] as const)("stop during pending %s prevents subsequent connections and polling", async stage => {
+  FakeWebSocket.instances = [];
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const pause = async (current: typeof stage) => {
+    if (current === stage) { entered.resolve(); await resume.promise; }
+  };
+  const telegram = new FakeTelegramApi();
+  let polls = 0;
+  let reads = 0;
+  let daemon: TelegramDaemon;
+  telegram.getUpdates = async () => { polls++; daemon.stop(); return { ok: true, result: [] }; };
+  daemon = makePerSessionDaemon(telegram, {
+    loadTopicState: async () => { await pause("topic load"); return { topics: {} }; },
+    readdir: async () => { await pause("directory scan"); return ["session.json"]; },
+    readFile: async () => {
+      reads++;
+      await pause("discovery read");
+      return JSON.stringify({ url: "ws://127.0.0.1:9", token: "private-token", pid: 1, cwd: "/tmp/project" });
+    },
+    isPidAlive: () => true,
+  });
+  const running = daemon.start();
+  try {
+    await entered.promise;
+    daemon.stop();
+    resume.resolve();
+    await running;
+    expect(FakeWebSocket.instances).toEqual([]);
+    expect(polls).toBe(0);
+    expect(reads).toBe(stage === "discovery read" ? 1 : 0);
+    expect(telegram.topicsCreated).toEqual([]);
+  } finally {
+    resume.resolve();
+    daemon.stop();
+  }
+});
+
+test.each(["response", "failure"] as const)("a pending Telegram poll %s cannot trigger work after stop", async outcome => {
+  const telegram = new FakeTelegramApi();
+  const polling = Promise.withResolvers<void>();
+  const response = Promise.withResolvers<TelegramGetUpdatesResult>();
+  telegram.getUpdates = () => { polling.resolve(); return response.promise; };
+  const sleeps: number[] = [];
+  const daemon = makePollDaemon(telegram, async milliseconds => { sleeps.push(milliseconds); });
+  const running = daemon.start();
+  await polling.promise;
+  daemon.stop();
+  if (outcome === "failure") response.reject(new Error("aborted"));
+  else response.resolve({ ok: true, result: [{ update_id: 1, message: { message_id: 1, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, text: "/help" } }] });
+  await running;
+  expect(sleeps).toEqual([]);
+  expect(telegram.sent).toEqual([]);
+});
+
+test("stop settles every pending command before another event-loop turn without waiting for ACK timeout", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const settled: string[] = [];
+  const commands = [
+    daemon.handleInboundText("/steer abcd1234 executor-1 hurry").then(() => settled.push("steer")),
+    daemon.handleInboundText("/cancel abcd1234 executor-1").then(() => settled.push("cancel")),
+  ];
+  daemon.stop();
+  try {
+    // A scheduler barrier, not a duration: all stop-triggered microtasks must
+    // finish before the next event-loop turn, regardless of the ACK deadline.
+    await nextEventLoopTurn();
+    expect(settled.sort()).toEqual(["cancel", "steer"]);
+    expect(telegram.sent.map(message => message.text)).toEqual([
+      "Steer failed — 'executor-1' is unknown or not running.",
+      "Cancel failed — 'executor-1' is unknown or already finished.",
+    ]);
+  } finally {
+    await Promise.all(commands);
+    daemon.stop();
+  }
+});
+
+test("stop refuses a late successful ACK for an already pending command", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const command = daemon.handleInboundText("/steer abcd1234 executor-1 hurry");
+  const frame = JSON.parse((conn.ws as unknown as FakeWebSocket).sent.at(-1)!);
+  daemon.stop();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+  await command;
+  expect(telegram.sent.map(message => message.text)).toEqual(["Steer failed — 'executor-1' is unknown or not running."]);
+});
+
+test.each(["snapshot", "photo"] as const)("stop ignores a late %s frame from a previously authenticated session", async type => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  daemon.stop();
+  await daemon.handleSessionMessage(conn, JSON.stringify({
+    type, sessionId: conn.sessionId, pid: conn.pid,
+    subagents: [rec({ status: "running" })], url: "https://example.com/late.png",
+  }));
+  expect(telegram.sent).toEqual([]);
+  expect(telegram.photos).toEqual([]);
+  expect(telegram.topicsCreated).toEqual([]);
+});
+
+test.each([
+  { name: "same bot and chat", storedScope: { botId: "1", chatId: "999" }, reused: true },
+  { name: "different bot", storedScope: { botId: "2", chatId: "999" }, reused: false },
+  { name: "different chat", storedScope: { botId: "1", chatId: "888" }, reused: false },
+  { name: "legacy unscoped cache", storedScope: {}, reused: false },
+])("topic cache routes only within its destination: $name", async ({ storedScope, reused }) => {
+  const savedConfigDir = process.env.JEO_CONFIG_DIR;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-topic-scope-"));
+  process.env.JEO_CONFIG_DIR = directory;
+  const telegram = new FakeTelegramApi();
+  const polling = Promise.withResolvers<void>();
+  const response = Promise.withResolvers<TelegramGetUpdatesResult>();
+  telegram.getUpdates = () => { polling.resolve(); return response.promise; };
+  const options = {
+    botId: "1", chatId: "999", telegram: telegram as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    perSessionTopics: true, readdir: async () => [], saveTopicState: async () => {},
+  };
+  const daemon = new TelegramDaemon(options);
+  const conn = sessionConn();
+  let running: Promise<void> | undefined;
+  try {
+    const target = notifyTopicsPath();
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify({ ...storedScope, topics: {
+      [conn.sessionId]: { topicId: 55, createdAt: 123, name: "previous session" },
+    } }));
+    running = daemon.start();
+    await polling.promise;
+    await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+    expect(telegram.sent.map(message => [message.chatId, message.options?.messageThreadId])).toEqual([["999", reused ? 55 : 1000]]);
+    expect(telegram.topicsCreated).toEqual(reused ? [] : [{ chatId: "999", name: "session abcd1234" }]);
+  } finally {
+    daemon.stop();
+    response.resolve({ ok: true, result: [] });
+    await running;
+    if (savedConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedConfigDir;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });

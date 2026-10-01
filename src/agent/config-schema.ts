@@ -104,11 +104,8 @@ export const ConfigSchema = z
         onAsk: z.boolean().optional(),
       })
       .optional(),
-    /** Remote subagent visibility/control over Telegram (gjc Telegram-daemon
-     *  parity, scoped to subagents — see `src/agent/notify/`). `enabled` is the
-     *  master toggle; a session only starts publishing its loopback endpoint
-     *  when this is true, and `jeo notify-daemon-run` refuses to poll Telegram
-     *  without a stored botToken + chatId. */
+    /** Remote session visibility/control. `enabled` is the master toggle;
+     *  each configured transport is hosted by the single notification daemon. */
     notifications: z
       .object({
         enabled: z.boolean().optional(),
@@ -123,16 +120,32 @@ export const ConfigSchema = z
           .object({
             botToken: z.string().optional(),
             chatId: z.string().optional(),
+            allowedUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
             /** Forum-topic thread id (message_thread_id) for supergroups with
              *  topics enabled — daemon pushes go into this topic. Ignored for a
              *  session-owned topic when `perSessionTopics` is true. */
             topicId: z.number().optional(),
             /** Auto-create and manage ONE forum topic per interactive session
              *  (gjc per-session-thread parity), instead of the single flat/global
-             *  `topicId` above. Requires the paired chat to be a supergroup with
-             *  Topics enabled AND private (fail-closed — see `TopicRegistry`).
+             *  `topicId` above. Requires a private chat with Threaded Mode
+             *  enabled (fail-closed — see `TopicRegistry`).
              *  Off by default; existing flat-topic/no-topic setups are unaffected. */
             perSessionTopics: z.boolean().optional(),
+          })
+          .optional(),
+        discord: z
+          .object({
+            botToken: z.string().optional(),
+            channelId: z.string().regex(/^[1-9]\d{0,19}$/).optional(),
+            allowedUserIds: z.array(z.string().regex(/^[1-9]\d{0,19}$/)).optional(),
+          })
+          .optional(),
+        slack: z
+          .object({
+            botToken: z.string().min(1),
+            appToken: z.string().min(1),
+            channelId: z.string().regex(/^[CGD][A-Z0-9]+$/),
+            allowedUserIds: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).min(1),
           })
           .optional(),
       })

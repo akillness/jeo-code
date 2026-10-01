@@ -9,6 +9,22 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Added
+- **Discord notification & remote control parity** — `jeo notify setup --provider discord` configures a Discord channel and allowed user IDs; same daemon serves both Telegram and Discord, pushing subagent state edges only. Inbound `/subagents`, `/steer`, `/cancel` commands work identically on Discord (allowed-user-ID-scoped). Requires bot `Message Content` intent and channel permissions (`View Channel`, `Send Messages`).
+- **Telegram challenge-pairing and group allowlist** — `jeo notify setup --provider telegram` without explicit `--chat-id` displays a time-limited challenge code; send it to the bot within 120 seconds to pair. Groups require explicit `--allowed-user-ids` (comma-separated Telegram user IDs). Use `jeo notify test --provider telegram` for explicit outbound verification.
+- **Daemon readiness distinction** — `jeo daemon status` and `jeo notify status` distinguish process initialization from platform connectivity. `initialized` does not prove a successful Telegram poll, Discord Gateway handshake, or Slack Socket Mode connection. `jeo notify health` checks bot identity and destination access; `jeo notify test` sends an actual message.
+- **Plain-text credential storage** — Telegram, Discord, and Slack credentials are stored in `~/.jeo/config.json` under their `notifications` entries. Authentication uses the corresponding official provider APIs; tokens are not included in chat output or logs. Telegram uses direct Bot API polling, Discord uses REST + Gateway WebSocket, and Slack uses Web API + Socket Mode. Aside is a research reference, not a runtime dependency.
+- **Bounded retries and orphan recovery** — provider-specific retry and backoff policies bound recovery; Slack does not blindly retry an uncertain POST. Telegram polling has separate error backoff. A stale daemon lock from a dead process can be reclaimed on `jeo daemon start`.
+- **Direct remote controls with session ACK** — `/steer` and `/cancel` use typed controls authorized by the configured human allowlist and chat/channel/workspace boundary. Replies reflect the local session's correlated ACK; timeout, rejection, and shutdown do not count as successful execution. Allowlisted operators must be trusted with local agent capabilities.
+- **Slack Socket Mode integration** — `jeo notify setup --provider slack --token-env SLACK_BOT_TOKEN --app-token-env SLACK_APP_TOKEN --channel-id <ID> --allowed-user-ids <HUMAN_ID>` validates bot identity, destination access, and Socket URL acquisition without opening a socket. The shared daemon supports per-session threads and literal text commands `/sessions`, `/subagents`, `/send`, `/steer`, and `/cancel`. Offline tests and scoped code, security, and TypeScript reviews passed. Live Slack connectivity remains unverified because bot/app credentials are not configured.
+
+### Changed
+- **Notification configuration unified** — one daemon manages Telegram, Discord, and Slack. `notify` operations accept `--provider telegram|discord|slack` (default: `telegram`); `jeo daemon start|stop|status|reload` operates on the shared daemon without a provider selector.
+- **Setup output accuracy** — setup confirms bot identity and channel/chat access, but does NOT claim "live bot verification"; health/test commands are explicit.
+
+### Fixed
+- **Delayed Node inspector startup detection** — `waitForInspectorUrl` now retains one pending stream read across 200ms timer ticks and clears it only after consuming a read result. A late inspector URL is no longer lost to an abandoned read. Verified with an actual Node inspector whose first stderr chunk is delayed 250ms.
+
 ## [0.11.2] - 2026-09-30
 _OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries._
 

@@ -388,7 +388,7 @@ test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endp
       models: {
         "gemini-3-pro-high": { displayName: "Gemini 3 Pro High" },
         "internal-secret": { isInternal: true },
-        "gemini-2.5-pro": {}, // denylisted upstream id
+        "gemini-2.5-pro": {}, // callable backend id, not a local denylist decision
       },
     }), { status: 200 });
   }) as unknown as typeof fetch;
@@ -398,7 +398,7 @@ test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endp
   expect(r.ok).toBe(true);
   expect(r.source).toBe("oauth");
   expect(r.fallback).toBeUndefined();
-  expect(r.models).toEqual(["antigravity/gemini-3-pro-high"]); // internal + denylisted dropped
+  expect(r.models).toEqual(["antigravity/gemini-2.5-pro", "antigravity/gemini-3-pro-high"]);
 });
 
 test("listProviderModels: Antigravity prefers the API's own agentModelSorts as the positive chat set", async () => {
@@ -444,11 +444,92 @@ test("listProviderModels: Antigravity list failure is surfaced, never papered ov
   expect(r.ok).toBe(false);
   expect(r.error).toBe("auth rejected");
   expect(r.models).toEqual([]);
+  expect(catalogOr(r)).toEqual({ provider: "antigravity", models: [], ok: false, source: "oauth", error: "auth rejected" });
 });
 
 test("parseModelsBody: Antigravity model rows are provider-qualified", () => {
   expect(parseModelsBody("antigravity", { models: [{ slug: "gemini-3-pro-low" }, { id: "claude-sonnet-4-5" }] }))
     .toEqual(["antigravity/gemini-3-pro-low", "antigravity/claude-sonnet-4-5"]);
+});
+
+// Public map-shape evidence: OmniRoute release/v3.8.52,
+// open-sse/services/usage/antigravity.ts (Object.entries(dataObj.models)).
+// The array form is this client's existing compatibility contract, not a claim
+// about a second upstream wire schema. contract-test-agent-vnext is synthetic.
+test.each(["map", "array"] as const)("parseModelsBody: Antigravity %s honors backend agent IDs instead of stale local filters", shape => {
+  const models = {
+    "gemini-2.5-pro": { model: "MODEL_PLACEHOLDER_M18" },
+    "contract-test-agent-vnext": { model: "MODEL_PLACEHOLDER_M35" },
+    "internal-agent": { isInternal: true },
+    "tab-only": {},
+  };
+  const payload = {
+    models: shape === "map" ? models : Object.entries(models).map(([id, metadata]) => ({ id, ...metadata })),
+    agentModelSorts: [{ groups: [{ modelIds: ["gemini-2.5-pro", "contract-test-agent-vnext", "internal-agent", "missing-alias-target"] }] }],
+  };
+  expect(parseModelsBody("antigravity", payload)).toEqual([
+    "antigravity/gemini-2.5-pro",
+    "antigravity/contract-test-agent-vnext",
+  ]);
+});
+
+test.each(["map", "array"] as const)("parseModelsBody: Antigravity %s excludes backend non-chat roles and deprecated IDs", shape => {
+  const models = {
+    "contract-test-agent-vnext": {},
+    "internal-agent": { isInternal: true },
+    "tab-only": {},
+    "image-only": {},
+    "audio-only": {},
+    "commit-only": {},
+    "query-only": {},
+    "retired-agent": {},
+  };
+  expect(parseModelsBody("antigravity", {
+    models: shape === "map" ? models : Object.entries(models).map(([id, metadata]) => ({ id, ...metadata })),
+    tabModelIds: ["tab-only"],
+    imageGenerationModelIds: ["image-only"],
+    audioTranscriptionModelIds: ["audio-only"],
+    commitMessageModelIds: ["commit-only"],
+    mqueryModelIds: ["query-only"],
+    deprecatedModelIds: { "retired-agent": { newModelId: "missing-alias-target" } },
+  })).toEqual(["antigravity/contract-test-agent-vnext"]);
+});
+
+test.each([
+  { name: "resource-prefixed rows", rowPrefix: "models/", rolePrefix: "" },
+  { name: "resource-prefixed roles", rowPrefix: "", rolePrefix: "models/" },
+  { name: "qualified rows", rowPrefix: "antigravity/", rolePrefix: "models/" },
+  { name: "qualified roles", rowPrefix: "models/", rolePrefix: "antigravity/" },
+])("parseModelsBody: Antigravity matches positive agent metadata with $name", ({ rowPrefix, rolePrefix }) => {
+  expect(parseModelsBody("antigravity", {
+    models: [
+      { name: `${rowPrefix}contract-test-agent-vnext` },
+      { name: `${rowPrefix}internal-agent`, isInternal: true },
+      { name: `${rowPrefix}tab-only` },
+    ],
+    agentModelSorts: [{ groups: [{ modelIds: [
+      `${rolePrefix}contract-test-agent-vnext`,
+      `${rolePrefix}internal-agent`,
+      `${rolePrefix}missing-agent`,
+    ] }] }],
+  })).toEqual(["antigravity/contract-test-agent-vnext"]);
+});
+
+test.each([
+  { name: "resource-prefixed rows", rowPrefix: "models/", rolePrefix: "" },
+  { name: "resource-prefixed roles", rowPrefix: "", rolePrefix: "models/" },
+  { name: "qualified rows", rowPrefix: "antigravity/", rolePrefix: "models/" },
+  { name: "qualified roles", rowPrefix: "models/", rolePrefix: "antigravity/" },
+])("parseModelsBody: Antigravity excludes non-chat and deprecated metadata with $name", ({ rowPrefix, rolePrefix }) => {
+  expect(parseModelsBody("antigravity", {
+    models: [
+      { name: `${rowPrefix}contract-test-agent-vnext` },
+      { name: `${rowPrefix}image-only` },
+      { name: `${rowPrefix}retired-agent` },
+    ],
+    imageGenerationModelIds: [`${rolePrefix}image-only`],
+    deprecatedModelIds: { [`${rolePrefix}retired-agent`]: { newModelId: "missing-agent" } },
+  })).toEqual(["antigravity/contract-test-agent-vnext"]);
 });
 
 test("catalogOr: an OpenAI OAuth rejection remains a failure without fabricated models", () => {

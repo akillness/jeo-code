@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -67,6 +67,51 @@ test.skipIf(!hasNode)("debug: launch pauses at program start, breakpoint hits, e
   const term = await tool({ action: "terminate" }, cwd);
   expect(term.success).toBe(true);
   expect(term.output).toContain("terminated");
+});
+
+test.skipIf(!hasNode)("debug: a late inspector URL still pauses at start and runs to completion", async () => {
+  const cwd = await tmpDir();
+  await fs.writeFile(path.join(cwd, "target.js"), 'console.log("delayed result", 6 * 7);\n');
+  const proc = Bun.spawn(["node", "--inspect-brk=0", "target.js"], {
+    cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  });
+  let firstChunk = true;
+  const stderr = proc.stderr.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    async transform(chunk, controller) {
+      if (firstChunk) {
+        firstChunk = false;
+        // Real Node/CDP I/O runs on the platform clock, not a fake clock. This
+        // integration stimulus must straddle a real inspector polling deadline.
+        // Input latency crosses one inspector polling interval; this is not a
+        // wait for the assertion to settle or an extension of the launch deadline.
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      }
+      controller.enqueue(chunk);
+    },
+  }));
+  const spawn = spyOn(Bun, "spawn").mockReturnValueOnce(new Proxy(proc, {
+    get(target, key) {
+      if (key === "stderr") return stderr;
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }));
+  try {
+    const tool = createDebugTool();
+    const launch = await tool({ action: "launch", program: "target.js" }, cwd);
+    expect(launch).toMatchObject({ success: true });
+    expect(launch.output).toContain("Paused at program start");
+    const cont = await tool({ action: "continue" }, cwd);
+    expect(cont).toMatchObject({ success: true });
+    expect(cont.output).toContain("Program finished");
+    expect((await tool({ action: "output" }, cwd)).output).toContain("delayed result 42");
+  } finally {
+    spawn.mockRestore();
+    await debugSession.terminate();
+    proc.kill();
+    await proc.exited;
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test.skipIf(!hasNode)("debug: continue past the last breakpoint reports program completion instead of hanging", async () => {

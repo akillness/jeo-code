@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { writeWorkflowState, readWorkflowState } from "../src/agent/state";
+import { createHash } from "node:crypto";
 
 // Round-7 (architect ref 7-Round7Workflow) — workflow ledger integrity:
 //  #1 a team-state left over from a PREVIOUS plan must not make the next plan
@@ -17,7 +18,10 @@ afterAll(() => {
 });
 
 async function tmpProject(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "jeo-wfint-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-wfint-"));
+  await fs.mkdir(path.join(dir, ".jeo"));
+  await fs.writeFile(path.join(dir, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+  return dir;
 }
 
 const DONE = JSON.stringify({
@@ -39,6 +43,8 @@ async function seedApprovedPlan(dir: string, slug: string, planFile: string, tas
     slug,
     plan_path: planPath,
     approved: true,
+    consensus: "okay",
+    consensus_hash: createHash("sha256").update(await fs.readFile(planPath, "utf-8")).digest("hex"),
   }, dir);
   return planPath;
 }
@@ -88,6 +94,7 @@ test("team: stale state from a previous plan restarts execution instead of no-op
     skill: "team",
     slug: "plan-a",
     plan_path: planAPath,
+    consensus_hash: createHash("sha256").update(await fs.readFile(planAPath, "utf-8")).digest("hex"),
     completed_tasks: ["old task"],
     pending_tasks: [],
   }, dir);
@@ -167,6 +174,7 @@ test("team: same-plan state still resumes (no spurious restart)", async () => {
     skill: "team",
     slug: "plan-x",
     plan_path: planPath,
+    consensus_hash: createHash("sha256").update(await fs.readFile(planPath, "utf-8")).digest("hex"),
     completed_tasks: ["only task"],
     pending_tasks: [],
   }, dir);

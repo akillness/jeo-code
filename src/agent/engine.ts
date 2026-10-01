@@ -276,15 +276,12 @@ export interface AgentLoopEvents {
   /** Step-budget change (gjc-style retry flow): the limit was extended because the
    *  turn is making progress. `limit` is the new max; `reason` is display-ready. */
   onBudget?(limit: number, reason: string): void;
-  /** Consulted when a lone `done` arrives. Return a corrective message to bounce
-   *  the done ONCE (e.g. "todo list still shows unfinished items — update it
-   *  first"); return null to let the turn finish. The engine guarantees at most
-   *  one bounce per turn, so a stubborn model can never loop here. `evidence` is
-   *  the SAME mutation/verification signal the engine's own done-gate already
-   *  computed (see `classifyDoneGate` above) — a caller-owned gate (e.g. the goal
-   *  verifier) can use it to deterministically downgrade an LLM-judged MET verdict
-   *  when the turn mutated files without a fresh passing verification, instead of
-   *  trusting the transcript self-report alone. */
+  /** Consulted on every completion attempt, including salvaged prose. Return a
+   *  corrective message to defer completion; null approves the caller-owned gate.
+   *  Corrections are bounded by GUARD_LIMITS.MAX_DONE_CORRECTIONS, after which a
+   *  rejected attempt stops incomplete. `evidence` is the SAME mutation/verification
+   *  signal the engine's own done-gate uses, so callers can reject unsupported
+   *  transcript-only success claims. */
   onBeforeDone?(
     reason: string,
     evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }
@@ -583,10 +580,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // calls (bad edits, failing commands) would otherwise burn the whole step budget.
   const MAX_FAILURES = GUARD_LIMITS.MAX_FAILURES;
   let consecutiveFailures = 0;
-  // done-verification guard (plan/gjc-inheritance.md B4, gjc ultragoal-guard 경량 계승):
-  // a turn that MUTATED files but shows no verification signal gets ONE pushback on
-  // `done` — run the relevant test/build, or call done again (the escape hatch for
-  // doc/config changes where verification is genuinely not applicable).
+  // Completion requires fresh passing verification after a successful mutation.
   let sawMutation = false;
   let sawVerification = false;
   // Monotonic ordering of mutation vs. verification events so the done gate can
@@ -595,16 +589,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let mutVerSeq = 0;
   let lastMutationSeq = 0;
   let lastVerificationSeq = 0;
-  let donePushbackUsed = false;
-  // Abuse guard for the done-pushback escape hatch: the "second done always
-  // passes" latch below is meant for turns where verification is genuinely
-  // not applicable (docs/config-only changes) — not for a model that just
-  // resends `done` immediately with zero intervening action. Reset to false
-  // when the first pushback fires; any executed tool step (even read-only)
-  // sets it back to true, so the escape hatch requires at least one attempt.
-  let sawActionSincePushback = true;
-  // Caller-owned done gate (onBeforeDone) — also strictly once per turn.
-  let beforeDoneNudgeUsed = false;
+  let doneCorrections = 0;
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
   // diagnostics the model saw but has not yet resolved (a later clean hook run
   // clears it). The done guard treats this as "verification missing" — the hook
@@ -981,6 +966,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     if (sawUsage) ev.onUsage?.({ ...acc }, lastCallUsage ? { ...lastCallUsage } : undefined);
 
     let invocation: any;
+    let salvagedAnswer = false;
     try {
       const extracted = extractJsonObjectWithSpan<any>(responseText, { preferKeys: ["tool", "tools"] });
       invocation = extracted.value;
@@ -991,30 +977,27 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       // would reinforce the corruption instead of self-correcting.
       responseText = extracted.matched;
     } catch (err) {
-      ev.onAssistant?.(responseText, null);
-      // Prose salvage: a reply with no JSON object at all is a chat-style final
-      // answer, not a malformed tool call. Bouncing it back only made the model
-      // apologize for the format — and that apology surfaced as the visible reply.
-      // Same salvage after repeated bounces: the text we have IS the best answer.
+      // Preserve chat-style final answers, but subject them to the same completion
+      // gates as explicit done calls rather than treating prose as proof of success.
       const trimmed = responseText.trim();
       parseFailures++;
       if (trimmed && (!trimmed.includes("{") || parseFailures > MAX_PARSE_BOUNCES)) {
+        salvagedAnswer = true;
+        invocation = { tool: "done", arguments: { reason: stripLeakedReasoningTags(trimmed) || trimmed } };
+      } else {
+        ev.onAssistant?.(responseText, null);
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-        // Strip leaked <think>/<parameter>/Harmony scaffolding some API-entered
-        // models emit inline so the salvaged answer doesn't surface raw tags.
-        return finish({ done: true, steps: step, doneReason: stripLeakedReasoningTags(trimmed) || trimmed });
+        history.push({
+          role: "user",
+          content:
+            `Your last reply was not a valid tool call (${(err as Error).message}). ` +
+            `Do NOT apologize or explain the formatting mistake. If that reply was your final answer, ` +
+            `resend it as {"tool":"done","arguments":{"reason":"<that answer, verbatim>"}}; ` +
+            `otherwise reply with exactly one JSON tool call: {"tool":"<name>","arguments":{...}}.`,
+        });
+        step++;
+        continue;
       }
-      pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-      history.push({
-        role: "user",
-        content:
-          `Your last reply was not a valid tool call (${(err as Error).message}). ` +
-          `Do NOT apologize or explain the formatting mistake. If that reply was your final answer, ` +
-          `resend it as {"tool":"done","arguments":{"reason":"<that answer, verbatim>"}}; ` +
-          `otherwise reply with exactly one JSON tool call: {"tool":"<name>","arguments":{...}}.`,
-      });
-      step++;
-      continue;
     }
     // A successfully parsed reply ends any bounce streak: MAX_PARSE_BOUNCES is a
     // CONSECUTIVE-failure salvage, not a cumulative one — without this reset a long
@@ -1066,64 +1049,27 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       toolCalls = toolCalls.slice(0, 6);
     }
 
-    ev.onAssistant?.(responseText, toolCalls[0]);
+    ev.onAssistant?.(responseText, salvagedAnswer ? null : toolCalls[0]);
 
     if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
-      // done-verification gate — jeo's descendant of gjc's ultragoal-guard completion
-      // state machine (plan/gjc-inheritance.md B4). The classifier owns the JUDGMENT
-      // (which named state, which message); the loop owns the once-pushback latch.
-      const doneGate = classifyDoneGate({
+      const evidence = {
         sawMutation,
         sawVerification,
         verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
-        pendingHookFailure,
-      });
-      if (doneGate.block) {
-        if (!donePushbackUsed) {
-          donePushbackUsed = true;
-          sawActionSincePushback = false; // require a real attempt before the 2nd done is honored
-          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-          history.push({ role: "user", content: doneGate.message });
-          step++;
-          continue;
+      };
+      const doneGate = classifyDoneGate({ ...evidence, pendingHookFailure });
+      const nudge = await ev.onBeforeDone?.((toolCalls[0].arguments?.reason as string) ?? "", evidence);
+      const rejection = [doneGate.block ? doneGate.message : "", nudge].filter(Boolean).join("\n\n");
+      if (rejection) {
+        if (doneCorrections >= GUARD_LIMITS.MAX_DONE_CORRECTIONS) {
+          return finish({ done: false, steps: step, doneReason: `Stopped: completion rejected after ${doneCorrections} corrections. ${rejection}` });
         }
-        if (!sawActionSincePushback) {
-          // Abuse guard: the model re-sent `done` immediately with zero intervening
-          // tool calls — not the intended "verification genuinely not applicable"
-          // escape hatch. Bounce once more instead of silently accepting it.
-          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-          history.push({
-            role: "user",
-            content:
-              `${doneGate.message}\n\nYou called 'done' again without taking any further action. ` +
-              `Either run the relevant verification (test/build/lint) or take another concrete step, ` +
-              `then call done — do not resend 'done' unchanged.`,
-          });
-          step++;
-          continue;
-        }
-        // donePushbackUsed && sawActionSincePushback: the model made at least one
-        // real attempt since the pushback — honor the escape hatch.
-      }
-      // Caller-owned done gate (e.g. stale-todo reconciliation): ONE bounded
-      // bounce, then any later done passes — field case: a 28-step turn ended
-      // [DONE] with the Todos checklist still showing 1 in-progress + 4 pending
-      // because nothing ever forced a status update.
-      if (!beforeDoneNudgeUsed && ev.onBeforeDone) {
-        const nudge = await ev.onBeforeDone((toolCalls[0].arguments?.reason as string) ?? "", {
-          sawMutation,
-          sawVerification,
-          verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
-        });
-
-        if (nudge) {
-          beforeDoneNudgeUsed = true;
-          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-          history.push({ role: "user", content: nudge });
-          ev.onNotice?.("done deferred once — final plan reconciliation requested");
-          step++;
-          continue;
-        }
+        doneCorrections++;
+        pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
+        history.push({ role: "user", content: rejection });
+        ev.onNotice?.(`done deferred — completion correction ${doneCorrections}/${GUARD_LIMITS.MAX_DONE_CORRECTIONS}`);
+        step++;
+        continue;
       }
       // Steering that arrived DURING this final step (after the top-of-loop drain,
       // while the model was generating its `done`): reopen the turn and handle it now
@@ -1148,6 +1094,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           continue;
         }
       }
+      if (salvagedAnswer) pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
       return finish({ done: true, steps: step, doneReason: stripLeakedReasoningTags((toolCalls[0].arguments?.reason as string) ?? "") });
     }
 
@@ -1445,20 +1392,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (results[i].executed) budget.record(callSigs[i], results[i].success, callTargets[i]);
 
     }
-    // done-verification guard bookkeeping: write/edit successes mark the turn as
-    // mutating; a successful bash whose command/output looks like a test/build run
-    // counts as verification. A monotonic seq records ORDER so the done gate can
-    // reject a verification that predates the last mutation (stale evidence).
+    // Only the latest recognized verification result is evidence; a later failure
+    // invalidates earlier success. Sequence numbers also reject tests before edits.
     for (let i = 0; i < toolCalls.length; i++) {
-      if (!results[i].executed || !results[i].success) continue;
+      if (!results[i].executed) continue;
       const t = toolCalls[i].tool;
-      if (t === "write" || t === "edit") {
+      if ((t === "write" || t === "edit") && results[i].success) {
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
       } else if (t === "bash") {
         const cmd = String(toolCalls[i].arguments?.command ?? "");
         if (isVerificationSignal(cmd, results[i].output)) {
-          sawVerification = true;
+          sawVerification = results[i].success;
           lastVerificationSeq = ++mutVerSeq;
         }
       }
@@ -1494,7 +1439,6 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // Executed tool step = progress: the stall budget clocks time WITHOUT this.
     if (results.some(r => r.executed)) {
       lastProgressAt = Date.now();
-      sawActionSincePushback = true; // any real step after a pushback re-enables the done escape hatch
     }
     step++;
   }

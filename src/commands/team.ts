@@ -220,16 +220,18 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     return { ok: false, reason: err.message };
   }
 
-  // Round-13: verify the plan's hash matches the consensus hash to prevent silent edits after approval
-  if (planState.consensus_hash) {
-    const currentHash = createHash("sha256").update(planContent).digest("hex");
-    if (currentHash !== planState.consensus_hash) {
-      log(
-        `[ERROR] Plan file has been modified since it was reviewed by the consensus critic.\n` +
-        `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve and execute again.`
-      );
-      return { ok: false, reason: "Plan file modified since consensus review" };
-    }
+  // Execution requires the exact reviewed bytes, including for legacy state.
+  if (!planState.consensus_hash) {
+    log(`[ERROR] Plan lacks a consensus review hash. Re-run 'jeo ralplan', then approve and execute again.`);
+    return { ok: false, reason: "Plan lacks a consensus review hash" };
+  }
+  const currentHash = createHash("sha256").update(planContent).digest("hex");
+  if (currentHash !== planState.consensus_hash) {
+    log(
+      `[ERROR] Plan file has been modified since it was reviewed by the consensus critic.\n` +
+      `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve and execute again.`
+    );
+    return { ok: false, reason: "Plan file modified since consensus review" };
   }
 
   let rawPlan: any;
@@ -288,6 +290,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         skill: "team" as const,
         slug: planState.slug,
         plan_path: planPath,
+        consensus_hash: planState.consensus_hash,
         completed_tasks: [],
         pending_tasks: [...tasks],
       };
@@ -302,8 +305,9 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     // Round-7 #1 (architect ref 7-Round7Workflow): a team-state left over from a
     // PREVIOUS plan must never be reused — pending=[] from plan A would make plan B
     // no-op into a false "all executed" success, and a mid-flight leftover would run
-    // plan-A task text under plan-B roles. A different plan reinitializes execution.
-    if (teamState.plan_path !== planPath || teamState.slug !== planState.slug) {
+    // plan-A task text under plan-B roles. Changed bytes or legacy unbound state
+    // also reinitialize execution, even when the plan path and slug are unchanged.
+    if (teamState.plan_path !== planPath || teamState.slug !== planState.slug || teamState.consensus_hash !== planState.consensus_hash) {
       log(`${categoryBadge("progress")} New plan detected (${planPath}) — restarting execution from its task list.`);
       teamState = {
         active: true,
@@ -311,6 +315,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         skill: "team" as const,
         slug: planState.slug,
         plan_path: planPath,
+        consensus_hash: planState.consensus_hash,
         completed_tasks: [],
         pending_tasks: [...tasks],
       };

@@ -8,10 +8,10 @@
  *   - subagent visibility/control (unchanged since 0.7.34): `snapshot` on
  *     connect + on change, `steer`/`cancel`/`list` requests — applied to
  *     whichever `SubagentRegistry` is currently ATTACHED (see below);
- *   - main-session mirroring (new): `identity_header` (once, at start),
+ *   - main-session mirroring: `identity_header` (cached and replayed on connect),
  *     `context_update` (turn start/end), `turn_stream` (finalized reply) sent
  *     OUT, and `user_message`/`config_command` received IN via callbacks the
- *     caller registers.
+ *     caller registers. `user_message` ACKs report callback acceptance.
  *
  * `SubagentRegistry` instances are themselves per-turn (a fresh one every
  * `runTurn` call, see launch.ts), so this endpoint does NOT own one at
@@ -47,9 +47,10 @@ import { notifySessionEndpointPath, notifySessionsDir } from "./paths";
 import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
 
 const SNAPSHOT_POLL_MS = 1_200;
+const MAX_INBOUND_BYTES = 64 * 1024;
 
-/** Session identity, pushed once as an `identity_header` frame right after
- *  `start()` — lets the daemon name/rename the session's forum topic. */
+/** Session identity, cached and replayed as an `identity_header` on connection
+ *  so a late or reconnecting daemon can name the session's forum topic. */
 export interface SessionIdentity {
   repo: string;
   branch?: string;
@@ -80,11 +81,10 @@ export class SessionNotifyEndpoint {
   private registry: SubagentRegistry | undefined;
   readonly sessionId: string;
   private readonly token: string;
+  private identityFrame: string | undefined;
 
-  /** Registered by the caller (launch.ts) to route inbound frames; both are
-   *  no-ops (frame silently dropped) until wired — matches the existing
-   *  best-effort posture of this whole module. */
-  onUserMessage: ((msg: RemoteUserMessage) => void) | undefined;
+  /** Registered by launch.ts; absent or rejected handlers return a failed ACK. */
+  onUserMessage: ((msg: RemoteUserMessage) => void | boolean | Promise<void | boolean>) | undefined;
   onConfigCommand: ((cmd: RemoteConfigCommand) => void) | undefined;
 
   constructor(
@@ -94,6 +94,7 @@ export class SessionNotifyEndpoint {
      *  falls back to a random id for session-less contexts. */
     sessionId: string = crypto.randomUUID(),
   ) {
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("Invalid notification session ID");
     this.sessionId = sessionId;
     this.token = crypto.randomUUID();
   }
@@ -136,15 +137,10 @@ export class SessionNotifyEndpoint {
     }
   }
 
-  /** Push the one-time identity header. Safe to call even with no socket
-   *  connected yet — silently dropped, matching every other push here (the
-   *  daemon reconnects and gets a fresh `snapshot`, but identity is a single
-   *  point-in-time fact with no polling fallback, so a session started before
-   *  the daemon connects will not retroactively announce itself; acceptable
-   *  since the common case is the daemon already scanning when a session
-   *  starts). */
+  /** Cache identity so a late or reconnecting daemon receives it as well. */
   sendIdentity(identity: SessionIdentity): void {
-    this.broadcast(JSON.stringify({ type: "identity_header", sessionId: this.sessionId, ...identity }));
+    this.identityFrame = JSON.stringify({ type: "identity_header", sessionId: this.sessionId, ...identity });
+    this.broadcast(this.identityFrame);
   }
 
   /** Push a turn-boundary summary (`phase: "turn_start" | "turn_end"`). */
@@ -157,13 +153,16 @@ export class SessionNotifyEndpoint {
     this.broadcast(JSON.stringify({ type: "turn_stream", sessionId: this.sessionId, phase: "finalized", text }));
   }
 
-  private handleMessage(ws: ServerWebSocket<undefined>, raw: string | Buffer): void {
+  private async handleMessage(ws: ServerWebSocket<undefined>, raw: string | Buffer): Promise<void> {
+    if (Buffer.byteLength(raw) > MAX_INBOUND_BYTES) return;
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(String(raw));
     } catch {
       return;
     }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+    if (msg.sessionId !== undefined && msg.sessionId !== this.sessionId) return;
     if (msg.type === "list") {
       try {
         ws.send(JSON.stringify(this.snapshot()));
@@ -171,9 +170,9 @@ export class SessionNotifyEndpoint {
       return;
     }
     if (msg.type === "steer") {
-      const id = String(msg.id ?? "");
-      const message = String(msg.message ?? "");
-      const ok = id && message ? (this.registry?.steer(id, message) ?? false) : false;
+      const id = typeof msg.id === "string" ? msg.id : "";
+      const message = typeof msg.message === "string" ? msg.message : "";
+      const ok = !!(id && message && this.registry?.steer(id, message));
       try {
         ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok }));
       } catch {}
@@ -188,9 +187,18 @@ export class SessionNotifyEndpoint {
       } catch {}
       return;
     }
-    if (msg.type === "user_message" && typeof msg.text === "string") {
-      const imagePaths = Array.isArray(msg.imagePaths) ? msg.imagePaths.filter((x): x is string => typeof x === "string") : undefined;
-      this.onUserMessage?.({ text: msg.text, imagePaths });
+    if (msg.type === "user_message") {
+      let ok = false;
+      const validPaths = msg.imagePaths === undefined || (Array.isArray(msg.imagePaths) && msg.imagePaths.every(x => typeof x === "string"));
+      if (typeof msg.text === "string" && !msg.text.trimStart().startsWith("/") && validPaths &&
+          (msg.text.trim() || (msg.imagePaths as string[] | undefined)?.length) && this.onUserMessage) {
+        try {
+          ok = (await this.onUserMessage({ text: msg.text, imagePaths: msg.imagePaths as string[] | undefined })) !== false;
+        } catch {}
+      }
+      try {
+        ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok }));
+      } catch {}
       return;
     }
     if (msg.type === "config_command") {
@@ -217,13 +225,15 @@ export class SessionNotifyEndpoint {
         return new Response("upgrade failed", { status: 500 });
       },
       websocket: {
+        maxPayloadLength: MAX_INBOUND_BYTES,
         open: ws => {
           this.sockets.add(ws);
           try {
             ws.send(JSON.stringify(this.snapshot()));
+            if (this.identityFrame) ws.send(this.identityFrame);
           } catch {}
         },
-        message: (ws, raw) => this.handleMessage(ws, raw),
+        message: (ws, raw) => { void this.handleMessage(ws, raw); },
         close: ws => {
           this.sockets.delete(ws);
         },
@@ -246,6 +256,7 @@ export class SessionNotifyEndpoint {
     // active handles refusing to exit.
     (this.pollTimer as { unref?: () => void }).unref?.();
     await fs.mkdir(notifySessionsDir(), { recursive: true, mode: 0o700 });
+    await fs.chmod(notifySessionsDir(), 0o700);
     const payload = {
       url: `ws://127.0.0.1:${this.server.port}`,
       token: this.token,
@@ -253,7 +264,14 @@ export class SessionNotifyEndpoint {
       cwd: this.cwd,
       startedAt: Date.now(),
     };
-    await fs.writeFile(notifySessionEndpointPath(this.sessionId), JSON.stringify(payload), { mode: 0o600 });
+    const discoveryPath = notifySessionEndpointPath(this.sessionId);
+    const temporaryPath = `${discoveryPath}.${crypto.randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporaryPath, JSON.stringify(payload), { mode: 0o600, flag: "wx" });
+      await fs.rename(temporaryPath, discoveryPath);
+    } finally {
+      await fs.unlink(temporaryPath).catch(() => {});
+    }
   }
 
   async stop(): Promise<void> {

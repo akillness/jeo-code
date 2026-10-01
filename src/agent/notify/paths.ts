@@ -1,5 +1,5 @@
 /**
- * Path helpers for the local Telegram notification daemon (gjc `notifications/`
+ * Path helpers for the shared Telegram/Discord notification daemon (`notifications/`
  * daemon-paths parity, scoped to jeo's single daemon kind). Everything lives under
  * `<jeoHome>/notifications` — the SAME root `~/.jeo` (or `JEO_CONFIG_DIR`) used by
  * `state.ts` for `config.json`, so one override env var moves both.

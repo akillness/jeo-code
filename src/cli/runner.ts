@@ -112,8 +112,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "notify",
-    summary: "Configure/inspect remote subagent notifications over Telegram (gjc notify parity).",
-    usage: "notify [setup [--token <t> --chat-id <id>]|status]",
+    summary: "Configure/inspect Telegram, Discord, and Slack notification channels.",
+    usage: "notify [setup|status|health|test] [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID|--channel-id ID] [--allowed-user-ids IDS]",
     loader: async () => {
       const m = await import("../commands/notify");
       return args => m.runNotifyCommand(args);
@@ -121,7 +121,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "daemon",
-    summary: "Manage the background Telegram notification/subagent-control daemon.",
+    summary: "Manage the shared Telegram/Discord/Slack notification daemon.",
     usage: "daemon [status|start|stop|reload]",
     loader: async () => {
       const m = await import("../commands/daemon");
@@ -197,7 +197,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "notify-daemon-run",
-    summary: "(internal) Foreground worker for the Telegram notification daemon, spawned by 'jeo daemon start'.",
+    summary: "(internal) Foreground notification worker, spawned by 'jeo daemon start'.",
     usage: "notify-daemon-run",
     loader: async () => {
       const m = await import("../agent/notify/telegram-daemon");

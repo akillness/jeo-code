@@ -209,5 +209,6 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
 }
 
 export async function runUltragoalCommand(): Promise<void> {
-  await runUltragoalEngine();
+  const result = await runUltragoalEngine();
+  if (!result.ok) process.exitCode = 1;
 }

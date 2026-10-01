@@ -403,5 +403,6 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
 }
 
 export async function runRalplanCommand(): Promise<void> {
-  await runRalplanEngine();
+  const result = await runRalplanEngine();
+  if (!result.ok) process.exitCode = 1;
 }

@@ -69,3 +69,19 @@ test("providerPickEntries surfaces default + knownModels for an unauthenticated 
   expect(openrouter.length).toBe(1);
   expect(openrouter[0]!.model.startsWith("openrouter/")).toBe(true);
 });
+
+test.each([
+  { name: "auth rejection", ok: false, error: "auth rejected" },
+  { name: "unreachable backend", ok: false, error: "unreachable" },
+  { name: "successful empty response", ok: true, error: undefined },
+])("providerPickEntries never invents Antigravity models after $name", ({ ok, error }) => {
+  const live: ProviderModelsResult[] = [
+    { provider: "antigravity", models: [], ok, source: "oauth", error },
+    { provider: "openai", models: ["gpt-5.5"], ok: true, source: "api_key" },
+  ];
+  expect(providerPickEntries(live, "antigravity")).toEqual([]);
+});
+
+test("providerPickEntries does not advertise unobserved Antigravity models", () => {
+  expect(providerPickEntries([], "antigravity")).toEqual([]);
+});

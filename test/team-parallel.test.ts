@@ -1,9 +1,11 @@
-import { test, expect, mock, afterEach } from "bun:test";
+import { test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as fssync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PlanSchema, parseYaml } from "../src/agent/plan";
+import { createHash } from "node:crypto";
+import * as loop from "../src/agent/loop";
 
 // `jeo team` executes a CONTIGUOUS run of `parallel_group`-marked plan steps
 // concurrently, each isolated in its own git worktree, then merges each
@@ -16,10 +18,17 @@ const origCwd = process.cwd();
 let tmp = "";
 const logs: string[] = [];
 const origLog = console.log;
+let origExitCode = process.exitCode;
+
+beforeEach(() => {
+  origExitCode = process.exitCode;
+  process.exitCode = 0;
+});
 
 afterEach(async () => {
+  mock.restore();
   console.log = origLog;
-  process.exitCode = 0;
+  process.exitCode = origExitCode;
   process.chdir(origCwd);
   if (tmp) await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   tmp = "";
@@ -37,6 +46,8 @@ async function initRepo(dir: string): Promise<void> {
   git(dir, ["config", "user.name", "Test"]);
   git(dir, ["config", "commit.gpgsign", "false"]);
   await fs.writeFile(path.join(dir, "README.md"), "root\n");
+  await fs.mkdir(path.join(dir, ".jeo"));
+  await fs.writeFile(path.join(dir, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", "init"]);
 }
@@ -72,7 +83,7 @@ async function seedParallelPlan(steps: SeedStep[], seedFiles: Record<string, str
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     path.join(stateDir, "ralplan-state.json"),
-    JSON.stringify({ active: true, current_phase: "complete", skill: "ralplan", slug: "demo", plan_path: planPath, approved: true }),
+    JSON.stringify({ active: true, current_phase: "complete", skill: "ralplan", slug: "demo", plan_path: planPath, approved: true, consensus: "okay", consensus_hash: createHash("sha256").update(yaml + "\n").digest("hex") }),
   );
   return dir;
 }
@@ -176,11 +187,9 @@ steps:
 });
 
 test("a size-1 parallel_group runs through the ordinary serial path, identically to an ungrouped step", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: scriptedCallLlm({
+  spyOn(loop, "callLlm").mockImplementation(scriptedCallLlm({
       "lone group step": [() => writeAction("solo.txt", "solo\n"), () => verifyAction, () => doneOk],
       "verify": [() => readAction, () => criticOkay],
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await seedParallelPlan([{ name: "lone group step", parallel_group: "solo-group" }, { name: "verify", role: "critic" }]);
@@ -201,12 +210,10 @@ test("a size-1 parallel_group runs through the ordinary serial path, identically
 });
 
 test("a two-step parallel_group with both steps mutating different files, both succeeding, merges both into the final repo", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: scriptedCallLlm({
+  spyOn(loop, "callLlm").mockImplementation(scriptedCallLlm({
       "write file a": [() => writeAction("a.txt", "a content\n"), () => verifyAction, () => doneOk],
       "write file b": [() => writeAction("b.txt", "b content\n"), () => verifyAction, () => doneOk],
       "verify": [() => readAction, () => criticOkay],
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await seedParallelPlan([
@@ -242,12 +249,10 @@ test("a two-step parallel_group with both steps mutating different files, both s
 });
 
 test("a two-step parallel_group where one step has a contract-incomplete done reason fails without merging either step", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: scriptedCallLlm({
+  spyOn(loop, "callLlm").mockImplementation(scriptedCallLlm({
       "write file a": [() => writeAction("a.txt", "a content\n"), () => verifyAction, () => doneOk],
       // "fails contract": done without the executor's required markers.
       "broken step": [() => ({ tool: "done", arguments: { reason: "I think I am finished." } })],
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await seedParallelPlan([
@@ -276,11 +281,9 @@ test("a two-step parallel_group where one step has a contract-incomplete done re
 });
 
 test("a two-step parallel_group with a genuine merge conflict aborts cleanly and does not pick a winner", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: scriptedCallLlm({
+  spyOn(loop, "callLlm").mockImplementation(scriptedCallLlm({
       "edit shared A": [() => writeAction("shared.txt", "AAAA\n"), () => verifyAction, () => doneOk],
       "edit shared B": [() => writeAction("shared.txt", "BBBB\n"), () => verifyAction, () => doneOk],
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await seedParallelPlan(

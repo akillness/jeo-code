@@ -1,7 +1,9 @@
-import { test, expect, mock, afterEach } from "bun:test";
+import { test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
+import * as loop from "../src/agent/loop";
 
 // Full-command integration: runTeamCommand reads an approved ralplan plan,
 // routes each step to its declared subagent role, and runs the loop. The LLM is
@@ -11,10 +13,18 @@ const origCwd = process.cwd();
 let tmp = "";
 const logs: string[] = [];
 const origLog = console.log;
+let origExitCode = process.exitCode;
+
+beforeEach(() => {
+  origExitCode = process.exitCode;
+  process.exitCode = 0;
+  spyOn(loop, "callLlm").mockRejectedValue(new Error("Unexpected model call in a rejection test"));
+});
 
 afterEach(async () => {
+  mock.restore();
   console.log = origLog;
-  process.exitCode = 0; // runTeamCommand sets exitCode=1 on failure paths; don't leak it to the runner
+  process.exitCode = origExitCode;
   process.chdir(origCwd);
   if (tmp) await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   tmp = "";
@@ -28,17 +38,17 @@ async function seedPlan(steps: { name: string; role?: string }[]): Promise<void>
   await fs.writeFile(planPath, yaml + "\n");
   const stateDir = path.join(tmp, ".jeo", "state");
   await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(path.join(tmp, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
   await fs.writeFile(
     path.join(stateDir, "ralplan-state.json"),
-    JSON.stringify({ active: true, current_phase: "complete", skill: "ralplan", slug: "demo", plan_path: planPath, approved: true }),
+    JSON.stringify({ active: true, current_phase: "complete", skill: "ralplan", slug: "demo", plan_path: planPath, approved: true, consensus_hash: createHash("sha256").update(yaml + "\n").digest("hex") }),
   );
   process.chdir(tmp);
 }
 
 test("runTeamCommand routes each step to its declared subagent role and completes", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: plan ready\nIn Scope: feature\nOut of Scope: refactors\nFile-level Changes: a.ts\nSequencing: step 1\nAcceptance Criteria: tests pass\nVerification: bun test\nRisks: none" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
@@ -46,8 +56,7 @@ test("runTeamCommand routes each step to its declared subagent role and complete
       if (turn === 4) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
       if (turn === 5) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: changes verified against the request\nSummary: looks correct\nRequired Fixes: none" } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
 
   await seedPlan([
@@ -77,14 +86,12 @@ test("runTeamCommand routes each step to its declared subagent role and complete
 
 test("runTeamCommand routes duplicate task names by step index, not by name", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: plan ready\nIn Scope: feature\nOut of Scope: refactors\nFile-level Changes: a.ts\nSequencing: step 1\nAcceptance Criteria: tests pass\nVerification: bun test\nRisks: none" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([
     { name: "review", role: "planner" },
@@ -140,15 +147,13 @@ test("runTeamCommand refuses unknown plan subagent roles before execution", asyn
 
 test("runTeamCommand normalizes mixed-case plan roles", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
       if (turn === 3) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "review design", role: "ARCHITECT" }, { name: "verify", role: "critic" }]);
 
@@ -162,9 +167,7 @@ test("runTeamCommand normalizes mixed-case plan roles", async () => {
 });
 
 test("runTeamCommand surfaces the engine stop reason on subagent failure", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "read", arguments: { filePath: "missing.txt" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "read", arguments: { filePath: "missing.txt" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "read missing file" }, { name: "verify", role: "critic" }]);
 
@@ -179,9 +182,7 @@ test("runTeamCommand surfaces the engine stop reason on subagent failure", async
 });
 
 test("runTeamCommand does not give write/edit/bash tools to read-only plan steps", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "write", arguments: { filePath: "pwn.txt", content: "mutated" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "write", arguments: { filePath: "pwn.txt", content: "mutated" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "review without mutation", role: "architect" }]);
 
@@ -197,11 +198,9 @@ test("runTeamCommand does not give write/edit/bash tools to read-only plan steps
 });
 
 test("runTeamCommand halts when an architect review returns a blocking verdict", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({
       tool: "done",
       arguments: { reason: "Summary: reviewed\nFindings: a blocker\nRecommendations: fix it\nArchitectural Status: BLOCK\nCode Review Recommendation: REQUEST CHANGES" },
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "review design", role: "architect" }]);
@@ -217,11 +216,9 @@ test("runTeamCommand halts when an architect review returns a blocking verdict",
 });
 
 test("runTeamCommand halts when a critic returns REJECT", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({
       tool: "done",
       arguments: { reason: "[REJECT]\nJustification:\nSummary:\nRequired Fixes:" },
-    }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "critique plan", role: "critic" }]);
@@ -237,9 +234,7 @@ test("runTeamCommand halts when a critic returns REJECT", async () => {
 });
 
 test("runTeamCommand halts when a planner report misses required sections", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "planned" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "planned" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "plan work", role: "planner" }]);
 
@@ -258,9 +253,7 @@ test("runTeamCommand halts when a planner report misses required sections", asyn
 });
 
 test("runTeamCommand refuses to run when team-state.json is corrupt (no silent restart)", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it" }, { name: "verify", role: "critic" }]);
   await fs.writeFile(path.join(tmp, ".jeo", "state", "team-state.json"), "{ not json !!!");
@@ -286,10 +279,8 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
 // pass. This is an intentional unification, not a regression to guard against.
 
 test("runTeamCommand --strict-mutations fails a mutating role that made no write/edit/bash", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    // Executor claims changed files but never actually writes/edits/bashes.
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
-  }));
+  // Executor claims changed files but never actually writes/edits/bashes.
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
 
@@ -310,14 +301,12 @@ test("runTeamCommand --strict-mutations fails a mutating role that made no write
 
 test("runTeamCommand without --strict-mutations only warns on a no-op mutating role (default)", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
 
@@ -338,16 +327,14 @@ test("runTeamCommand without --strict-mutations only warns on a no-op mutating r
 
 test("runTeamCommand --strict-mutations stays advisory when the role ran bash (bash-only)", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       // First call runs a bash command; second call signals done.
       if (turn === 1) return JSON.stringify({ tool: "bash", arguments: { command: "echo hi" } });
       if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
       if (turn === 3) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
 
@@ -375,14 +362,12 @@ test("formatRalphStreamEvent renders the warn tone distinctly from error", async
 
 test("runTeamCommand default no-op advisory uses stream:warn, strict hard-fail uses stream:error", async () => {
   let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+  spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
-    },
-  }));
+  });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
 
@@ -398,9 +383,7 @@ test("runTeamCommand default no-op advisory uses stream:warn, strict hard-fail u
 });
 
 test("runTeamCommand --strict-mutations hard-fail advisory is a stream:error (red), not warn", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
 
@@ -416,9 +399,7 @@ test("runTeamCommand --strict-mutations hard-fail advisory is a stream:error (re
 });
 
 test("runTeamCommand reports a CONCRETE git working-tree note when re-running after a prior failure", async () => {
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
-  }));
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
   // Pre-seed a failed marker so the re-run hits the prior-failure branch.
@@ -426,6 +407,7 @@ test("runTeamCommand reports a CONCRETE git working-tree note when re-running af
   await fs.writeFile(statePath, JSON.stringify({
     active: true, skill: "team", slug: "demo", current_phase: "failed", failed_task: "implement it",
     plan_path: path.join(tmp, "plan.yaml"), completed_tasks: [], pending_tasks: ["implement it"],
+    consensus_hash: createHash("sha256").update(await fs.readFile(path.join(tmp, "plan.yaml"), "utf-8")).digest("hex"),
   }));
 
   console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));

@@ -237,3 +237,16 @@ test("parseConfig: rejects a non-string notifications.telegram.botToken", () => 
   expect(r.ok).toBe(false);
   if (!r.ok) expect(r.message).toContain("notifications");
 });
+
+test.each([
+  { field: "botToken", value: 123 },
+  { field: "appToken", value: ["xapp-not-a-string"] },
+  { field: "channelId", value: 123 },
+  { field: "allowedUserIds", value: ["UOWNER", 123] },
+])("parseConfig: rejects malformed Slack $field with a located error", ({ field, value }) => {
+  const result = parseConfig({ defaultModel: "test-model", notifications: { slack: {
+    botToken: "xoxb-test", appToken: "xapp-test", channelId: "CTARGET", allowedUserIds: ["UOWNER"], [field]: value,
+  } } });
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.message).toContain(`notifications.slack.${field}`);
+});

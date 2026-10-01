@@ -182,31 +182,92 @@ jeo ultragoal
 
 `--worktree <name>` 在隔离的同级 git worktree 中运行 jeo（路径存在则复用，否则以 basename 分支创建），因此有风险或需审查的工作绝不会触及您的主检出。`jeo mcp serve` 通过 stdio 向任何支持 MCP 的控制器公开 jeo 的工具（用 `jeo mcp tools` 列出）。添加 `-q`/`--quiet`（或 `JEO_QUIET=1`）可抑制启动横幅、欢迎动画、发布说明和恢复提示，使 jeo 能够与其他代理并行运行或由机器人驱动。`-p`/`--print` 隐含 quiet。
 
-## 远程监控与控制 (Telegram)
+## 远程监控与控制 (Telegram, Discord & Slack)
+
+可选的通知功能:将子代理的状态转变(启动 → 完成/失败/取消)发送到 Telegram, Discord, 或 Slack。一个守护进程服务于所有会话,各平台都完全支持论坛话题/线程、内联键盘和图像附件。
+
+### 设置和配置
 
 ```bash
-jeo notify setup        # 配对一次 BotFather 机器人(getMe 校验 + chat-id 配对)
-jeo notify status       # 已遮蔽的令牌、已配对 chat id、守护进程状态
-jeo daemon start        # 启动单例后台守护进程
-jeo daemon status       # 检查是否正在运行
-jeo daemon stop         # 发送 SIGTERM 停止
+jeo notify setup [--provider telegram|discord|slack] [--token-env 环境变量名] [--app-token-env 环境变量名] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider telegram|discord|slack]
+jeo notify health [--provider telegram|discord|slack]              # 只读验证
+jeo notify test [--provider telegram|discord|slack]               # 发送测试消息
+jeo daemon start|stop|status|reload
 ```
 
+**设置流程:**
+
+- **Telegram**(挑战配对):运行 `jeo notify setup` 时会显示一条挑战消息,在 120 秒内将该消息发送给机器人即可自动配对。或通过 `--chat-id <ID>` 指定。群组需要 `--allowed-user-ids`(Telegram 用户 ID 精确匹配)。凭证存储在 `~/.jeo/config.json` `notifications.telegram`(明文,仅私有存储库)。
+- **Discord**:需要 `--channel-id`(状态更新的发送目标频道) + `--allowed-user-ids`(命令执行权限)。机器人需要 `Message Content` 意图和频道权限(View Channel、Send Messages)。凭证存储在 `~/.jeo/config.json` `notifications.discord`(明文,仅私有存储库)。
+- **Slack**:xoxb(机器人) + xapp(应用)令牌、Socket Mode 启用、`--channel-id`(状态更新的目标频道) + `--allowed-user-ids`(命令执行权限)是必需的。机器人需要 `chat:write`、`users:read` 作用域以及 message/app_mention 事件订阅。凭证存储在 `~/.jeo/config.json` `notifications.slack`(明文、仅私有存储库)。
+
+令牌默认来自 `JEO_TELEGRAM_BOT_TOKEN`、`JEO_DISCORD_BOT_TOKEN`、`JEO_SLACK_BOT_TOKEN` 环境变量;可用 `--token-env NAME` / `--app-token-env NAME` 指定变量名。
+
+**状态层:**
+
+- `status`:显示配置(已遮蔽令牌)、目标 ID 和守护进程状态
+- `health`:验证机器人 ID 和频道/聊天访问(只读),或 `--test` 发送真实消息
+
+**守护进程生命周期:**
+
+- `jeo daemon start`:启动单例(已运行则成功)
+- `jeo daemon status`:检查是否运行中(pid、启动时间、就绪状态: `initializing` vs `initialized` = 等待中 vs 准备就绪;不验证聊天平台连接)
+- `jeo daemon stop`:发送 SIGTERM 停止
+- `jeo daemon reload`:发送 SIGHUP 重新加载配置
+
 ```
-┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
-│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
-│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
-└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
+│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord webhooks      │
+└─────────────────────┘        └──────────────────┘         └────────────────────────┘
 ```
 
-默认关闭、延迟绑定:只有设置了 `notifications.enabled` 且真正运行了一个 detached 子代理(`task {detached:true}`)才会绑定。守护进程扫描存活的会话发现文件,为每个会话建立一条回环 WebSocket,并且只在子代理状态发生*变化*时(启动 → 完成/失败/取消)推送消息 — 绝不会重复推送"仍在运行"这类状态。收到的 Telegram 命令仅对已配对的聊天授权,其余一律静默丢弃。
+守护进程扫描会话发现文件,为每个活跃会话建立一条回环 WebSocket 连接,只在子代理状态*转变*时推送消息 — 绝不会重复"仍在运行"之类的通知。每条消息限定重试(3 次、1 秒退避)。
+
+### 入站命令
+
+远程斜杠命令仅对已配对的聊天/频道授权;其他一律静默丢弃。命令需要活跃的 jeo 会话(守护进程仅连接到活跃会话)。
+
+**Telegram**(私聊或已指定允许用户 ID 的群组):
 
 | 命令 | 效果 |
 | --- | --- |
 | `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
-| `/steer <sessionId> <subagentId> <message>` | 向正在运行的子代理发送实时消息 |
+| `/steer <sessionId> <subagentId> <message>` | 向正在运行的子代理发送实时消息; typed control 由 allowlist 授权 |
 | `/cancel <sessionId> <subagentId>` | 取消正在运行的子代理 |
 | `/help` | 显示命令参考 |
+
+**Discord**(仅限允许的用户 ID):
+
+| 命令 | 效果 |
+| --- | --- |
+| `/sessions` | 列出会话 ID 和摘要 |
+| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
+| `/send <sessionId> <text>` | 向活跃会话发送文本消息 |
+| `/steer <sessionId> <agent> <message>` | 向正在运行的代理发送实时消息; typed control 由 allowlist 授权 |
+| `/cancel <sessionId> <agent>` | 取消正在运行的代理 |
+
+**Slack**(仅限允许的用户 ID,工作区 + 频道 + 线程路由):
+
+| 命令 | 效果 |
+| --- | --- |
+| `/sessions` | 列出会话 ID 和摘要 |
+| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
+| `/send <sessionId> <text>` | 向活跃会话发送文本消息 |
+| `/steer <sessionId> <agent> <message>` | 向正在运行的代理发送实时消息; typed control 由 allowlist 授权 |
+| `/cancel <sessionId> <agent>` | 取消正在运行的代理 |
+
+仅限纯文本提及和已配置频道的线程回复;所有命令都需要 allowlist 成员资格。已知会话线程的回复被路由到其会话上下文(仅限现有线程;无自动配置);根频道提及开始新的会话发现。
+
+### 限制和保证
+
+- **每台机器 1 个守护进程**;由所有会话共享。凭证存储为明文 `~/.jeo/config.json`。
+- **Telegram** 使用单个轮询所有者(Aside API 或本地守护进程);jeo 对机器人进行一次配对后,守护进程拥有轮询。通过手动 `--chat-id` 配置可避免 Aside 依赖。
+- **Discord** 需要 Bot token、Message Content 意图、明确的频道 ID 和 human user-ID allowlist。Gateway WebSocket 连接(非 webhooks)处理入站命令。
+- **远程斜杠命令**:`/help`、`/sessions`、`/subagents`、`/send`、`/steer`、`/cancel` 是字面 text-message 命令(非本地 Discord 斜杠注册),仅允许设置的聊天/频道中的 allowlist user ID; 在运行的 jeo 会话中直接执行 typed control。
+- **孤儿恢复**:守护进程崩溃时,锁文件变为 stale → 下一个 `jeo daemon start` 自动回收(锁状态: `stale → reclaimed`)。
+
 
 ## 例行任务 (GitHub Actions)
 

@@ -9,6 +9,10 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Fixed
+- **CI test gate was order-dependent** (`test/stdio-override.ts`, `test/launch-flags.test.ts`, `test/review-fixes.test.ts`, `test/terminal-restore.test.ts`, `test/tui-app.test.ts`, `test/tui-renderer.test.ts`) — three files redefined `process.stdout.isTTY`/`columns`/`rows` with a bare `Object.defineProperty` (non-writable) and restored only when an own descriptor had existed, so on a non-TTY stdout the property stayed read-only; the next file to assign it threw "Attempted to assign to readonly property", and `terminal-restore`'s stranded fake stdin then broke every later launch test (12 failures, Linux CI only, since Bun runs files in readdir order). Overrides now restore the exact prior descriptor or delete the property.
+- **`npm-publish.yml`** — the browser tool tests run in their own `bun test` process (`JEO_SKIP_BROWSER_TESTS=1` for the main suite, `JEO_REQUIRE_BROWSER=1` for `test/browser-tool.test.ts`): in-process Chromium launch/teardown intermittently made the first later CLI spawn exit 0 with empty stdout on GitHub runners. `test/launch-oneshot-slash.test.ts` now asserts the child's exit code and includes its stderr in the failure. Actions bumped to `checkout@v7`/`setup-node@v7`/`upload-artifact@v7`, runner pinned to `ubuntu-24.04`.
+
 ## [0.11.3] - 2026-10-01
 _Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it._
 

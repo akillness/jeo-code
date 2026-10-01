@@ -2,9 +2,20 @@ import { test, expect } from "bun:test";
 import {
   checkPackage,
   importSpecifiers,
+  packedFilesFromJson,
   resolvePackedImport,
   REQUIRED_PACKAGE_FILES,
 } from "../scripts/check-package";
+
+// npm ≤ 11 prints `[manifest]`; npm ≥ 12 prints `{ "<name>": manifest }`. CI upgrades
+// npm to latest for trusted publishing, so the gate must read both or it reports every
+// required file as missing (which is exactly what happened on the first npm 12 run).
+test("packedFilesFromJson reads the npm 11 array and the npm 12 object shapes identically", () => {
+  const manifest = { id: "jeo-code@1.0.0", files: [{ path: "package.json", size: 1 }, { path: "src/cli.ts", size: 2 }] };
+  expect(packedFilesFromJson(JSON.stringify([manifest]))).toEqual(["package.json", "src/cli.ts"]);
+  expect(packedFilesFromJson(JSON.stringify({ "jeo-code": manifest }))).toEqual(["package.json", "src/cli.ts"]);
+  expect(packedFilesFromJson(JSON.stringify({ "jeo-code": { id: "jeo-code@1.0.0" } }))).toEqual([]);
+});
 
 /** Minimal packed set that satisfies every presence rule, so each test can isolate one failure. */
 function baseFiles(extra: Record<string, string> = {}): Record<string, string> {

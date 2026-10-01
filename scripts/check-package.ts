@@ -110,11 +110,20 @@ export function checkPackage(input: PackageCheckInput): string[] {
   return errors;
 }
 
-/** `npm pack --dry-run --json` file list for `dir`. */
+/** Shape of one `npm pack --json` manifest entry across npm versions. */
+interface PackManifest { files?: { path: string }[] }
+
+/** `npm pack --dry-run --json` file list for `dir`. npm ≤ 11 prints an array of
+ *  manifests; npm ≥ 12 prints an object keyed by package name. Accept both. */
+export function packedFilesFromJson(raw: string): string[] {
+  const parsed = JSON.parse(raw) as PackManifest[] | Record<string, PackManifest>;
+  const manifests = Array.isArray(parsed) ? parsed : Object.values(parsed);
+  return manifests.flatMap(manifest => (manifest.files ?? []).map(entry => entry.path));
+}
+
 function packedFilesOf(dir: string): string[] {
   const raw = execFileSync("npm", ["pack", "--dry-run", "--json", dir], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  const manifest = JSON.parse(raw) as { files: { path: string }[] }[];
-  return (manifest[0]?.files ?? []).map(entry => entry.path);
+  return packedFilesFromJson(raw);
 }
 
 /** Git-tracked paths for `dir`, or undefined outside a checkout. */

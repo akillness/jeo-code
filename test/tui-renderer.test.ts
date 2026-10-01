@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { truncate, clearLine } from "../src/tui/terminal";
 import { Renderer } from "../src/tui/renderer";
+import { overrideProperty } from "./stdio-override";
 
 test("truncate", () => {
   expect(truncate("hello", 3)).toBe("hel");
@@ -286,10 +287,9 @@ test("Renderer clears on column or row changes", () => {
   out.length = 0;
 
   // Change rows -> should clear
-  // We mock size() or process.stdout.rows. Let's temporarily mock process.stdout.rows
-  const originalRows = process.stdout.rows;
+  // Non-TTY stdout exposes `rows` as a read-only accessor; override as a data property.
+  const restoreRows = overrideProperty(process.stdout, "rows", 24);
   try {
-    process.stdout.rows = 24;
     r.render(["a", "b"]);
     out.length = 0;
 
@@ -297,7 +297,7 @@ test("Renderer clears on column or row changes", () => {
     r.render(["a", "b"]);
     expect(out.join("")).toContain("\x1b[0J");
   } finally {
-    process.stdout.rows = originalRows;
+    restoreRows();
   }
 });
 

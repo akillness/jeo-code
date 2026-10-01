@@ -12,7 +12,7 @@ const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
  *  /wiki, /evolve) are pure/local — no network/model call — so a full process
  *  spawn is cheap and gives byte-for-byte real CLI behavior instead of mocked
  *  approximations. */
-async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: number | "timeout"; stdout: string }> {
+async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: number | "timeout"; stdout: string; stderr: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oneshot-"));
   const proc = Bun.spawn([process.execPath, CLI, "--no-tui", "--no-session", "--no-skills", "-p", arg], {
     cwd: dir,
@@ -31,9 +31,20 @@ async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: numb
   ]);
   if (result === "timeout") proc.kill();
   const stdout = await stdoutPromise;
-  await stderrPromise;
+  const stderr = await stderrPromise;
   await fs.rm(dir, { recursive: true, force: true });
-  return { code: result, stdout };
+  return { code: result, stdout, stderr };
+}
+
+/** A one-shot control command must exit 0 with its panel on stdout. On failure the
+ *  child's exit code and stderr are part of the assertion message, so a CI-only
+ *  early exit explains itself instead of reporting a bare `Received: ""`. */
+function expectPanel(run: { code: number | "timeout"; stdout: string; stderr: string }, marker: string): void {
+  expect(run.code).not.toBe("timeout");
+  if (run.code !== 0 || !run.stdout.includes(marker)) {
+    throw new Error(`one-shot child exited ${run.code} without "${marker}"\n--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`);
+  }
+  expect(run.stdout).not.toContain("[step ");
 }
 
 // Regression: one-shot (`-p`/piped) slash control commands were only special-cased
@@ -43,17 +54,11 @@ async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: numb
 // a literal chat prompt. Asserting the absence of `[step ` proves no agent turn ran
 // (no model call); asserting a command-specific marker proves the real handler ran.
 test("one-shot /config prints the config panel, does not hit the model", async () => {
-  const { code, stdout } = await runOneShot("/config", 25_000);
-  expect(code).not.toBe("timeout");
-  expect(stdout).toContain("Effective runtime config:");
-  expect(stdout).not.toContain("[step ");
+  expectPanel(await runOneShot("/config", 25_000), "Effective runtime config:");
 }, 35_000);
 
 test("one-shot /settings is an alias for /config", async () => {
-  const { code, stdout } = await runOneShot("/settings", 25_000);
-  expect(code).not.toBe("timeout");
-  expect(stdout).toContain("Effective runtime config:");
-  expect(stdout).not.toContain("[step ");
+  expectPanel(await runOneShot("/settings", 25_000), "Effective runtime config:");
 }, 35_000);
 
 test("one-shot /usage prints the usage panel, does not hit the model", async () => {

@@ -5,6 +5,7 @@ import { hideCursor, showCursor, clearToEnd, enterAltScreen, leaveAltScreen } fr
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { overrideProperty } from "./stdio-override";
 
 test("LaunchTui: shows a 'calling model' status while waiting on the model, then the tool", () => {
   const out: string[] = [];
@@ -350,11 +351,10 @@ test("LaunchTui resize: live frame reflows back to full width after shrink→gro
   const realRender = Renderer.prototype.render;
   let last: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { last = f.slice(); };
-  const origCols = process.stdout.columns;
-  const origRows = process.stdout.rows;
+  const restores = [overrideProperty(process.stdout, "columns", process.stdout.columns), overrideProperty(process.stdout, "rows", process.stdout.rows)];
   const setSize = (c: number, r: number) => {
-    Object.defineProperty(process.stdout, "columns", { value: c, configurable: true });
-    Object.defineProperty(process.stdout, "rows", { value: r, configurable: true });
+    process.stdout.columns = c;
+    process.stdout.rows = r;
     process.stdout.emit("resize");
   };
   const maxWidth = (frame: string[]) => Math.max(0, ...frame.map(l => visibleWidth(l)));
@@ -382,7 +382,7 @@ test("LaunchTui resize: live frame reflows back to full width after shrink→gro
     tui.finish("done");
   } finally {
     Renderer.prototype.render = realRender;
-    setSize(origCols, origRows);
+    for (const restore of restores.reverse()) restore();
   }
 });
 test("LaunchTui resize: real renderer stays anchored when the viewport shrinks below the live frame", () => {
@@ -947,11 +947,8 @@ test("LaunchTui (alt-screen boxed): status field shows the in-flight file and st
   // Pin the viewport: on a narrow/short runner terminal the centered art/track is
   // dropped and the footer stage tag can be width-truncated, making the stage
   // assertion flaky. 200x40 keeps both deterministic. (columns/rows are accessor
-  // properties in Bun — override via defineProperty, restore the descriptors after.)
-  const savedColsDesc = Object.getOwnPropertyDescriptor(process.stdout, "columns");
-  const savedRowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
-  Object.defineProperty(process.stdout, "columns", { value: 200, configurable: true });
-  Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+  // properties in Bun — override as data properties and restore the originals after.)
+  const restores = [overrideProperty(process.stdout, "columns", 200), overrideProperty(process.stdout, "rows", 40)];
   const savedAlt = process.env.JEO_TUI_ALT_SCREEN;
   process.env.JEO_TUI_ALT_SCREEN = "1";
   try {
@@ -973,8 +970,7 @@ test("LaunchTui (alt-screen boxed): status field shows the in-flight file and st
     if (savedAlt === undefined) delete process.env.JEO_TUI_ALT_SCREEN;
     else process.env.JEO_TUI_ALT_SCREEN = savedAlt;
     Renderer.prototype.render = realRender;
-    if (savedColsDesc) Object.defineProperty(process.stdout, "columns", savedColsDesc);
-    if (savedRowsDesc) Object.defineProperty(process.stdout, "rows", savedRowsDesc);
+    for (const restore of restores.reverse()) restore();
   }
 });
 

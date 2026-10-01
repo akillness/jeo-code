@@ -1,5 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
 import { restoreTerminalState, resetTerminalRestoreLatch } from "../src/util/terminal-restore";
+import { overrideProperty } from "./stdio-override";
 
 type Stdin = NodeJS.ReadStream & { isRaw?: boolean; setRawMode?(r: boolean): void };
 
@@ -8,15 +9,15 @@ function withStdio(
   stdoutIsTTY: boolean,
   run: () => void,
 ): void {
-  const realStdin = Object.getOwnPropertyDescriptor(process, "stdin");
-  const realStdoutTTY = process.stdout.isTTY;
-  Object.defineProperty(process, "stdin", { value: stdin, configurable: true });
-  (process.stdout as { isTTY?: boolean }).isTTY = stdoutIsTTY;
+  // Both swaps happen INSIDE the try: if the second one throws, the first is still
+  // undone — a stranded fake stdin (no `.on`) would break every later test file.
+  const restores: Array<() => void> = [];
   try {
+    restores.push(overrideProperty(process, "stdin", stdin));
+    restores.push(overrideProperty(process.stdout, "isTTY", stdoutIsTTY));
     run();
   } finally {
-    if (realStdin) Object.defineProperty(process, "stdin", realStdin);
-    (process.stdout as { isTTY?: boolean }).isTTY = realStdoutTTY;
+    for (const restore of restores.reverse()) restore();
   }
 }
 

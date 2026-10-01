@@ -20,10 +20,10 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Manual dispatches should run against the explicitly requested git ref.
           ref: "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}"
@@ -35,7 +35,7 @@ jobs:
           bun-version: "1.3.14"
 
       - name: Setup Node for npm publish
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -131,14 +131,14 @@ jobs:
 
   release-binaries:
     name: Build standalone binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     # Dry-run workflow_dispatch is check-only; build/upload binaries only for publish-capable runs.
     if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Manual dispatches should run against the explicitly requested git ref.
           ref: "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}"
@@ -161,7 +161,7 @@ jobs:
         run: ls -lh dist/
 
       - name: Upload binaries as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jeo-binaries
           path: dist/jeo-*

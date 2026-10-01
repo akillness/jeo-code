@@ -6,6 +6,7 @@ import { extractJsonObject } from "../src/agent/json";
 import { editTool } from "../src/agent/tools";
 import { createSession, appendMessage, loadSession, sessionPath } from "../src/agent/session";
 import { LaunchTui } from "../src/tui/app";
+import { overrideProperty } from "./stdio-override";
 import { renderAsciiArt, getStageByIndex } from "../src/tui/components/ascii-art";
 import { resolveTheme } from "../src/tui/components/themes";
 import { renderJeoStatus } from "../src/tui/components/status";
@@ -194,13 +195,11 @@ function simulateTerminal(writes: string[]): string[] {
 // --- TUI Review Fixes ---
 
 test("FIX 1: clamp composed frame to terminal rows", () => {
-  const originalColumns = process.stdout.columns;
-  const originalRows = process.stdout.rows;
-  const originalIsTTY = process.stdout.isTTY;
-
-  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-  Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
-  Object.defineProperty(process.stdout, "rows", { value: 15, configurable: true });
+  const restores = [
+    overrideProperty(process.stdout, "isTTY", true),
+    overrideProperty(process.stdout, "columns", 80),
+    overrideProperty(process.stdout, "rows", 15),
+  ];
 
   try {
     const out: string[] = [];
@@ -226,9 +225,7 @@ test("FIX 1: clamp composed frame to terminal rows", () => {
     console.log("LINES:", JSON.stringify(lines, null, 2));
     expect(lines.length).toBeLessThanOrEqual(15);
   } finally {
-    Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
-    Object.defineProperty(process.stdout, "columns", { value: originalColumns, configurable: true });
-    Object.defineProperty(process.stdout, "rows", { value: originalRows, configurable: true });
+    for (const restore of restores.reverse()) restore();
   }
 });
 

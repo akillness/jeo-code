@@ -42,7 +42,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - **Prompt routing (cost-aware, credential-aware)** — every turn can auto-route to a tier-appropriate model among only the providers your configured credentials actually serve (`/route [status|on|off|why|history]`), with a live equivalent-model fallback whenever a routed provider is rate-limited, unauthenticated, unreachable, or silently times out — see `/route why` for the last decision, `/route history` for the recent ones.
 - **Computer use (desktop automation)** — a fail-closed `computer` tool (screenshot/click/type/scroll/drag/batch) gated by both a config flag and an independent kill-switch/heartbeat supervisor; toggle it for the current session with `/computer [status|on|off]` without touching `~/.jeo/config.json`.
-- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop — **plus any endpoint you register yourself**: `jeo provider add --id my-proxy --base-url https://…` (or `--preset litellm|vllm|sglang|azure-openai|…`) gives a LiteLLM proxy, a self-hosted vLLM box or a corporate Anthropic gateway its own routing prefix, model list and credential, instead of hijacking the built-in `openai` provider. OAuth login happens from the input box (`/provider login`), every model pick persists as the new default, and prompt routing only auto-selects usable credentialed paths: Gemini OAuth goes through the provider-qualified `antigravity/*` agent set (Gemini 3.5 Flash tiers, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6), never public `google/gemini-*` rows that require `GEMINI_API_KEY`; if a configured route points at an unready provider, jeo switches to an equivalent credentialed tier model before falling back to the default.
+- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop — **plus any endpoint you register yourself**: `jeo provider add --id my-proxy --base-url https://…` (or `--preset litellm|vllm|sglang|azure-openai|…`) gives a LiteLLM proxy, a self-hosted vLLM box or a corporate Anthropic gateway its own routing prefix, model list and credential, instead of hijacking the built-in `openai` provider. OAuth login happens from the input box (`/provider login`), every model pick persists as the new default, and prompt routing only auto-selects usable credentialed paths: Gemini OAuth goes through the provider-qualified `antigravity/*` agent set **as the account currently serves it** (live-discovered — e.g. Gemini 3.6 Flash tiers, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6; non-chat and deprecated ids filtered out, no static-catalog stand-in when the list is empty), never public `google/gemini-*` rows that require `GEMINI_API_KEY`; if a configured route points at an unready provider, jeo switches to an equivalent credentialed tier model before falling back to the default.
 
 - **Edit integrity** — read output carries content anchors (`42ab|`); anchored edits are verified against the current file, re-mapped when lines shifted, and rejected with fresh content instead of corrupting.
 - **Self-correcting verification loop** — configure a post-edit hook (tsc / eslint / tests) and the agent *sees* the diagnostics and fixes them in-loop; a red hook blocks `done` until resolved.
@@ -54,7 +54,8 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 - **Skills that compound** — a stalled turn now writes the dead end into the SAME skill's project-level file (`.jeo/skills/<name>.md`, seeded from the bundled skill on first write, deterministic keyword match, no LLM), so the next session's `$<skill>` invocation carries accumulated "Known Failure Modes"/"Anti-Patterns" knowledge instead of the bundled doc staying static forever. `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"` for manual entries; `jeo skills eval <skill>` runs a real LLM judgment on whether each recorded lesson is still covered by the skill's current guidance or has gone stale.
 - **Cheap-tier grader routing** — the `/goal` verifier, the `critic` subagent role, and unpinned `task` fan-out batches default to a cheap credentialed model instead of silently riding the same full-price model as the work they're grading/executing (`resolveVerifierModel`, vision-capability-filtered for the browser `verify` action so a text-only cheap model never silently drops an attached screenshot).
 - **`jeo routine init`** — generates a GitHub Actions workflow that runs jeo headlessly (`jeo "<prompt>" -p`) on a schedule/issue/PR trigger, on GitHub's own runners — no laptop required, and zero new attack surface inside jeo itself (no in-process scheduler or webhook listener). `--dry-run` to preview, `--no-pr` for a direct commit instead of the default PR-per-run.
-- **Remote subagent visibility (Telegram)** — pair a bot once (`jeo notify setup`), then `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) and accepts `/subagents`, `/steer <id> <subagentId> <msg>`, `/cancel <id> <subagentId>` back. Telegram Daemon now supports full `gjc` parity, including forum topics, inline keyboards, and image attachments — commands are authorized to the paired chat only.
+- **Remote monitoring & control (Telegram, Discord, Slack)** — pair a bot once (`jeo notify setup --provider telegram|discord|slack`), then one shared `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) across every live session and accepts `/subagents`, `/steer`, `/cancel` (plus `/sessions` and `/send` on Discord/Slack) back from a human allowlist. Telegram adds forum topics, inline keyboards, and image attachments; Discord uses REST + Gateway WebSocket; Slack uses Web API + Socket Mode. Every remote control is acknowledged by the local session, never assumed executed.
+- **Gates that cannot be talked around** — `approve` re-validates the exact plan digest it is approving and `team` refuses a plan whose reviewed digest changed; a `done` call is re-checked against the latest verification evidence (a later failed check invalidates an earlier pass, three correction bounces then a hard rejection); the `autopilot` ratchet records a failed rollback as `rollback_failed` and halts non-zero instead of claiming a reverted step.
 - **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions (`list`, `inspect`, `await`, `cancel`, `tail`). The inline TUI keeps each worker's live activity in its own slot and tears down every registry on session exit or Ctrl-C.
 - **Independent verifier, actually enforced** — a plan can no longer skip its architect/critic step: `PlanSchema` rejects any plan that ends with an unverified mutation (a verifier placed BEFORE the mutation it should check doesn't count either), at both `ralplan` draft time and `team`/`approve` execution time. Every architect/critic verdict must also show real evidence — zero observed `read`/`search`/`find`/`ast_grep`/`lsp` calls blocks the verdict regardless of what the text claims.
 - **Safety-boundary automatic model fallback** — an uncategorized safety refusal (a possible classifier false positive, not a genuine content-policy hit) now switches to a genuinely different-provider model instead of backing off forever on the same one — mirrors the existing rate-limit fast-fallback. A `Refusal (<category>)`-shaped deterministic hit is untouched and still hard-fails with zero fallback.
@@ -100,17 +101,35 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/fast [on\|off\|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
-|| `/new` · `/sessions` | Start a fresh session or list saved sessions |
-|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Resume a Jeo session or import a read-only exact-version GJC v5 branch into a fresh Jeo session |
-|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
+| `/computer [status\|on\|off]` | Toggle the fail-closed desktop-automation tool for this session |
+| `/new` · `/sessions` | Start a fresh session or list saved sessions |
+| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Resume a Jeo session or import a read-only exact-version GJC v5 branch into a fresh Jeo session |
+| `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
 | `/history [n\|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
 | `/usage` · `/context` · `/compact` | Token usage, context breakdown, manual compaction |
 | `/theme` · `/config` · `/help` | Theme, runtime config, help |
-| `jeo autopilot status` | Ratchet status field with score direction, keep/revert counts, and next action |
 
 > [!CAUTION]
 > **`/model <name>` locks routing for the rest of the session.** Prompt routing (`/route`) only re-evaluates per turn while no model is manually pinned. Picking a specific model via `/model <name>` freezes that choice — routing will *not* switch away from it again until you run `/model auto` (which clears the pin), or `/route on` (which *outranks* an active pin without clearing it — the pin reasserts itself the moment you run `/route off`). Missing a `roles.*` entry only guarantees a `defaultModel` fallback on the `standard` tier; the `high`/`complex` tiers otherwise scan for the strongest live-credentialed model, so they can still land on a different model each turn even when unconfigured. **Exception:** an Antigravity- or Gemini-OAuth-credentialed session re-exports Anthropic/Google/OpenAI models under one credential — `high`/`complex` there instead session-stably spread across one model per company (not necessarily the strongest), so the pick stays fixed for that session rather than varying turn to turn.
+
+## CLI commands
+
+`jeo --help` is the authoritative list; the ones you will reach for:
+
+| Command | Purpose |
+| --- | --- |
+| `jeo [prompt] [--resume [id]] [--tmux] [--worktree <path>] [-p] [-q]` | Interactive agent (default); `-p`/`--print` for headless one-shot output, `--worktree` for an isolated sibling checkout |
+| `jeo setup` · `jeo auth login\|logout\|refresh\|status [provider]` · `jeo doctor` | Providers, OAuth (PKCE) tokens with auto-refresh, live connectivity + stale-pin check |
+| `jeo provider list\|add\|remove\|presets\|test` | Named custom OpenAI/Anthropic-compatible providers (same planners as `/provider`) |
+| `jeo deep-interview` → `ralplan` → `approve` → `team` → `ultragoal` | Spec-first workflow (see below); `jeo state <skill> read\|write\|clear\|handoff` inspects the receipts |
+| `jeo notify setup\|status\|health\|test` · `jeo daemon start\|stop\|status\|reload` | Telegram / Discord / Slack notifications and the shared control daemon |
+| `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | Autonomous build loop with a score ratchet (`status` shows direction, keep/revert counts, next action) · cross-plan append-only ledger |
+| `jeo routine init …` | Generate a GitHub Actions workflow that runs jeo headlessly on a schedule or repo event |
+| `jeo skills list\|read\|sync\|lesson\|eval` | Bundled, user, and project skills; drift check; recorded lessons |
+| `jeo mcp serve\|tools` · `jeo computer <action>` | MCP stdio server for external controllers · desktop automation actions |
+| `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux session management · transcript export · tool-less streaming chat |
+| `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | Self-update from npm · bundled release notes · legacy `MEMORY.md` → OKF bundle |
 
 ## Spec-first workflow
 
@@ -191,90 +210,42 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 ## Remote monitoring & control (Telegram, Discord & Slack)
 
-Opt-in notifications push subagent state edges (started → completed/failed/cancelled) to Telegram, Discord, or Slack. One daemon serves all sessions; Telegram supports forum topics, inline keyboards, and image attachments; Discord relays text messages to a configured channel with optional existing thread routing; Slack uses Socket Mode connections with thread-per-session routing and plain-text command authorization.
-
-### Setup & Configuration
+Opt-in: one shared daemon watches every live `jeo` session on the machine and pushes a message on each **subagent state edge** (started → completed/failed/cancelled), plus the session identity header, turn start/finish summaries, and the finalized turn text — never repeated "still running" pings. Allowlisted humans can list, send, steer, and cancel from the chat; every control is relayed to the local session and reported as **acknowledged (accepted, not completed)** or **not acknowledged** — the daemon never claims a command ran.
 
 ```bash
-jeo notify setup [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
-jeo notify status [--provider telegram|discord|slack]
-jeo notify health [--provider telegram|discord|slack]              # read-only validation
-jeo notify test [--provider telegram|discord|slack]               # send explicit test message
-jeo daemon start|stop|status|reload
+jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider …]   # masked token, destination, allowlist, daemon state (stopped / stale / initializing / initialized / pairing)
+jeo notify health [--provider …]   # read-only: bot identity + destination access, nothing sent
+jeo notify test   [--provider …]   # sends one real test message
+jeo daemon start|stop|status|reload   # the shared daemon has no provider selector
 ```
 
-**Setup flow:**
+| | Telegram (default) | Discord | Slack |
+| --- | --- | --- | --- |
+| Credentials | bot token (`JEO_TELEGRAM_BOT_TOKEN` or `--token-env`) | bot token (`JEO_DISCORD_BOT_TOKEN` or `--token-env`) + **Message Content** intent | bot `xoxb` token (`JEO_SLACK_BOT_TOKEN` or `--token-env`) + app `xapp` token (`SLACK_APP_TOKEN` or `--app-token-env`), Socket Mode enabled |
+| Destination | private chat via challenge pairing (send the displayed `/start jeo_<code>` to the bot within 120 s) or explicit `--chat-id`; groups need `--allowed-user-ids` | explicit `--channel-id` (text channel, DM, announcement, or an existing thread) | explicit `--channel-id` (`C…`) the bot has joined; workspace is pinned to the token's team |
+| Allowlist | optional for a private chat, required for groups | required (human user IDs; bots are ignored) | required (human user IDs) |
+| Transport | direct Bot API `getUpdates` long-poll, one poll owner per bot token | REST for sends, Gateway WebSocket for inbound | Web API for sends, Socket Mode WebSocket for inbound |
+| Extras | forum topics, inline cancel buttons, image attachments, optional per-session topics (`notifications.telegram.perSessionTopics`, private chat with Threaded Mode only) | reply to a session notification to send that session text (24 h) | reply in a session notification's thread to send that session text (24 h); registered Slack slash commands or `@bot /command` both work |
+| Commands | `/subagents` `/steer <session> <subagent> <msg>` `/cancel <session> <subagent>` `/help` | `/sessions` `/subagents` `/send <session> <text>` `/steer …` `/cancel …` `/help` | same as Discord |
 
-- **Telegram** (`/start jeo_<challenge>` pairing): `jeo notify setup` auto-pairs one private chat if you send the exact challenge message to the bot within 120 seconds; explicit `--chat-id` skips this. Groups require `--allowed-user-ids` (must match exact Telegram user IDs). Credentials stored in `~/.jeo/config.json` `notifications.telegram` (plaintext, private storage only).
-- **Discord**: Requires explicit `--channel-id` (where to send state updates) and `--allowed-user-ids` (who can issue commands). Bot must have `View Channel`/`Send Messages` and `Message Content` intent enabled. Credentials stored in `~/.jeo/config.json` `notifications.discord` (plaintext, private storage only).
-- **Slack**: Requires explicit `--channel-id` (workspace channel ID, e.g. `C123...`), `--token-env SLACK_BOT_TOKEN` (for bot xoxb token, defaults `SLACK_BOT_TOKEN`), `--app-token-env SLACK_APP_TOKEN` (for app xapp token, defaults `SLACK_APP_TOKEN`), and `--allowed-user-ids` (comma-separated Slack user IDs, e.g. `U123,U456`). Setup validates bot identity (calls `bots.info` and `conversations.info`), acquires Socket Mode URL, and enables allowlist-scoped command authorization. Credentials stored in `~/.jeo/config.json` `notifications.slack.botToken` and `notifications.slack.appToken` (plaintext, private storage only). **Status**: test-verified offline; pending security review before live Socket Mode activation.
+What the words mean, because they are not interchangeable:
 
-Token defaults to `JEO_TELEGRAM_BOT_TOKEN` or `JEO_DISCORD_BOT_TOKEN` env var; use `--token-env NAME` to override the variable name. Explicit `--token` passes it directly (discouraged outside tests; prefers environment variables).
-
-Slack env vars default to `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`; use `--token-env`/`--app-token-env` to override the variable names.
-
-**Status layers:**
-
-- `status`: shows configuration (masked token), destination ID, and daemon state (`stopped` / `stale` / `initializing` / `initialized` / `pairing owns polling`)
-- `health`: validates bot identity and channel/chat access without sending (read-only), or with `--test` variant sends an explicit test message
-
-**Daemon lifecycle:**
-
-- `jeo daemon start`: spawns one singleton; idempotent (already running returns success)
-- `jeo daemon status`: check whether it's running (pid, uptime, readiness: `initializing` vs `initialized` means not-yet-ready-to-receive vs ready; connectivity to chat platform is NOT validated)
-- `jeo daemon stop`: SIGTERM the singleton
-- `jeo daemon reload`: stop (clear pending ACK timers, mark unacknowledged commands unsuccessful) and start (reinitialize, in-memory state reset)
+- **Setup** validates bot identity and destination access with the official API (Telegram `getMe`, Discord bot + channel lookup, Slack `auth.test`/`bots.info`/`conversations.info` and a Socket Mode URL) and stores the result in `~/.jeo/config.json` under `notifications.<provider>` — **plaintext**; keep that file private. It does not send a message and does not open a socket.
+- **`initialized`** (`jeo daemon status`) means the daemon process owns its lock and has started its transports; it is not proof of a successful Telegram poll, Discord Gateway handshake, or Slack Socket Mode connection. Use `notify health` / `notify test` for that.
+- **Changing a token or destination** resets the allowlist for Discord and Slack (you must pass `--allowed-user-ids` again) and the per-session topic map for Telegram; re-running setup with the exact same credentials and destination keeps them.
+- **Remote commands are literal text** (`/subagents`, …) authorized to the configured chat/channel and allowlist; Slack additionally accepts the same names as registered slash commands. Allowlisted operators effectively hold the local agent's capabilities — treat the list as a trust boundary.
+- **Retries are bounded per provider**: Telegram honours a 429 `retry_after` cooldown (clamped 1 s–1 h) with separate poll backoff; Discord and Slack retry at most 3 times on 429 using the server's `Retry-After`, and never re-send a POST whose outcome is unknown (the platform may already have it).
+- **Orphan recovery**: if a daemon crashes, its lock becomes `stale`; the next `jeo daemon start` reclaims it. `jeo daemon stop` refuses to signal a recycled PID when the host can report process start times, and says so when it cannot.
+- **Verified so far**: Telegram end to end (real send, polling, clean shutdown). Discord and Slack are implemented behind the same daemon with offline transport/wiring tests and code, security, and type reviews; live connectivity has not been exercised against real bot/app credentials.
 
 ```
-┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
-│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
-│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord Gateway WS   │
-└─────────────────────┘        └──────────────────┘         └────────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐        ┌───────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄──────►│ Telegram Bot API (poll)   │
+│  SubagentRegistry   │  (one  │   (singleton)    │        │ Discord REST + Gateway WS │
+│  session endpoint   │  per   │                  │        │ Slack Web API + Socket WS │
+└─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
-
-Daemon scans session discovery files, connects one loopback WebSocket per active jeo session, and pushes only on subagent state *edges* — never repeated "still running" pings. Bounded retry (3 attempts, 1s backoff) per message.
-
-### Inbound commands
-
-Remote slash commands are authorized to the paired chat/channel only; anything else is dropped silently. Commands must be in a live jeo session (the daemon connects to active sessions only).
-
-**Telegram** (private chat or group with explicit allowlist):
-
-| Command | Effect |
-| --- | --- |
-| `/subagents` | List running/recent subagents across every connected session |
-| `/steer <sessionId> <subagentId> <message>` | Send a live message into a running subagent; typed control authorized by allowlist |
-| `/cancel <sessionId> <subagentId>` | Cancel a running subagent |
-| `/help` | Show command reference |
-
-**Discord** (allowed user IDs only):
-
-| Command | Effect |
-| --- | --- |
-| `/sessions` | List session IDs and summaries |
-| `/subagents` | List running/recent subagents across every connected session |
-| `/send <sessionId> <text>` | Send a text message to a session |
-| `/steer <sessionId> <agent> <message>` | Send a live message into a running agent; typed control authorized by allowlist |
-| `/cancel <sessionId> <agent>` | Cancel a running agent |
-**Slack** (allowed user IDs only, workspace + channel + thread routing):
-
-| Command | Effect |
-| --- | --- |
-| `/sessions` | List session IDs and summaries |
-| `/subagents` | List running/recent subagents across every connected session |
-| `/send <sessionId> <text>` | Send a text message to a session |
-| `/steer <sessionId> <agent> <message>` | Send a live message into a running agent; typed control authorized by allowlist |
-| `/cancel <sessionId> <agent>` | Cancel a running agent |
-
-Slack commands require an allowlisted human in the configured workspace and channel. The daemon discovers running local sessions after its Socket Mode handshake and on a periodic local scan, then creates per-session notification threads. Replies in known threads route to that session; `/send <sessionId> <text>` targets an existing discovered session. Channel mentions do not create new jeo sessions.
-
-- **One daemon** per machine; all sessions share it. Credential storage is plaintext at `~/.jeo/config.json`.
-- **Telegram** uses direct Bot API `getUpdates` polling with one long-poll owner per bot token. `notify setup` uses an explicit `--chat-id` or challenge-pairing; the daemon then owns polling. Aside is not a runtime dependency.
-- **Discord** requires a bot token, Message Content intent, an explicit channel ID, and a human user-ID allowlist. Gateway WebSocket events carry inbound messages; REST sends replies. Existing thread destinations are supported, but the adapter does not create per-session Discord threads.
-- **Slack** requires xoxb (bot) and xapp (app) tokens, Socket Mode, an explicit channel ID, a human user-ID allowlist, and the scopes/subscriptions listed above. Setup validates access without opening a socket. Status reports process state, not live connectivity. Changing a token or destination requires explicit `--allowed-user-ids`; unchanged credentials and destination retain the current allowlist.
-- **Remote commands** are literal text-message commands, not registered native slash commands. Telegram supports `/help`, `/subagents`, `/steer`, and `/cancel`; Discord and Slack additionally support `/sessions` and `/send`. Authorization is scoped to the configured chat/channel and human allowlist, with Slack workspace validation.
-- **Orphan recovery**: if a daemon crashes, the lock file becomes stale; next `jeo daemon start` reclaims it (`stale → reclaimed`).
-
 
 ## Routines (GitHub Actions)
 
@@ -388,10 +359,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
 - **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 - **[0.11.1]** (2026-08-25) — Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited.
 - **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
-- **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

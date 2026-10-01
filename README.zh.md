@@ -38,7 +38,7 @@
 
 ## 亮点
 
-- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，模型选择即刻持久化为默认值。Prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集(Gemini 3.5 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行。
+- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，每次模型选择都会持久化为新的默认值，而 prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集，**以账号当前实际提供的为准**(实时发现 — 例如 Gemini 3.6 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6；非对话模型与已弃用的 id 会被过滤掉，列表为空时也不会用静态目录顶替)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行；如果已配置的路由指向尚未就绪的提供商，jeo 会先切换到同层级的等价凭据模型，再退回默认模型。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
@@ -49,7 +49,8 @@
 - **持续积累的技能** — 卡壳的一轮现在会把死胡同写入同一个技能的项目级文件(`.jeo/skills/<name>.md`,首次写入时从内置技能播种,采用确定性关键词匹配,不使用 LLM),因此下一个会话的 `$<skill>` 调用会带上累积的"Known Failure Modes"/"Anti-Patterns"知识,而不是让内置文档永远保持静态。手动记录用 `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"`;`jeo skills eval <skill>` 会运行一次真正的 LLM 判断,检查每条已记录的经验是否仍被技能当前的指引覆盖,还是已经过时。
 - **低价位评分模型路由** — `/goal` 验证器、`critic` 子代理角色,以及未锁定的 `task` 扇出批次,现在默认使用低价位、已配置凭证的模型,而不是悄悄搭乘与它们所评分/执行的工作相同的全价模型(`resolveVerifierModel`,针对浏览器 `verify` 动作按视觉能力过滤,确保纯文本的低价模型不会悄悄丢弃附带的截图)。
 - **`jeo routine init`** — 生成一个 GitHub Actions 工作流,在 schedule/issue/PR 触发器上以无头模式运行 jeo(`jeo "<prompt>" -p`),运行在 GitHub 自己的 runner 上 — 不需要笔记本电脑,并且不会给 jeo 自身增加任何新的攻击面(没有进程内调度器或 webhook 监听器)。`--dry-run` 可预览,`--no-pr` 则改为直接提交而非默认的每次运行一个 PR。
-- **远程子代理可见性(Telegram)** — 配对一次机器人(`jeo notify setup`)后，`jeo daemon start` 会在子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受 `/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` 回传。现在提供 Telegram 论坛主题、内联键盘、图片附件等完整 `gjc` parity；命令仅对配对的聊天授权。
+- **远程监控与控制(Telegram、Discord、Slack)** — 配对一次机器人(`jeo notify setup --provider telegram|discord|slack`)后，一个共享的 `jeo daemon start` 会在所有活跃会话中、子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受来自人类 allowlist 的 `/subagents`、`/steer`、`/cancel`(Discord/Slack 上还有 `/sessions` 和 `/send`)回传。Telegram 额外提供论坛主题、内联键盘和图片附件；Discord 使用 REST + Gateway WebSocket；Slack 使用 Web API + Socket Mode。每一条远程控制都由本地会话确认收到，绝不假定已执行。
+- **无法绕过的门禁** — `approve` 会重新校验它正在批准的那份计划的精确摘要，`team` 会拒绝已审阅摘要发生变化的计划；`done` 调用会对照最新的验证证据重新检查(后来的失败检查会使先前的通过失效，三次纠正往返后硬性拒绝)；`autopilot` ratchet 会把失败的回滚记录为 `rollback_failed` 并以非零状态停止，而不是声称该步骤已回退。
 - **不阻塞回合的会话级异步执行** — 通过 `task` 工具真实的 `tasks` 数组扇出独立工作，不阻塞父回合。detached 子代理、后台 job 和逐行 monitor 可在后续回合中继续使用 `subagent`/`job`/`monitor` 的 `list`、`inspect`、`await`、`cancel`、`tail` 控制。内联 TUI 为每个 worker 保留独立的实时 activity 槽位，并在会话退出或 Ctrl-C 时清理全部 registry。
 - **独立验证器，真正强制执行** — 计划再也无法跳过 architect/critic 步骤: `PlanSchema` 会拒绝任何以未验证变更结尾的计划(把验证器放在它该检查的变更之前也不算数)，在 `ralplan` 起草阶段和 `team`/`approve` 执行阶段都强制生效。每一次 architect/critic 裁决也都必须展示真实证据 — 观测到的 `read`/`search`/`find`/`ast_grep`/`lsp` 调用为零，无论文本怎么声称，裁决都会被拦下。
 - **安全边界自动模型回退** — 未分类的安全拒绝(可能是分类器误报，而非真实的内容策略命中)现在会切换到真正不同提供商的模型，而不是在同一个模型上无限退让 — 与现有的 rate-limit 快速回退是同一套模式。`Refusal (<category>)` 这种形态的确定性拒绝不受影响，仍然零回退硬失败。
@@ -85,26 +86,44 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 | 命令 | 说明 |
 | --- | --- |
-| `/model` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、Ralph 风格嵌套角色·thinking 选择与 OpenAI Codex 角色预设 |
+| `/model` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、Ralph 风格嵌套的"设为角色"thinking 选择与 OpenAI Codex 角色预设 |
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
 | `/provider add` · `list` · `remove` · `presets` | 将 OpenAI/Anthropic 兼容端点注册为一等提供商(15 个网关预设) |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
 | `/thinking [level]` | 查看/设置默认推理预算(low…xhigh) |
-| `/route [status\|on\|off\|why\|history [n]]` | 切换本会话的基于提示词的模型路由 · 解释最近一次路由决策 · `history [n]` 列出本会话最近 n 条(默认 10 条)路由决策(仅在已配置凭证 — OAuth 或 API 密钥 — 实际可用的模型内自动路由) |
+| `/route [status\|on\|off\|why\|history [n]]` | 切换本会话基于提示词的模型路由 · 解释最近一次路由决策 · `history [n]` 列出本会话最近 n 条(默认 10 条)路由决策(每轮自动路由到与层级匹配的模型，且只在你已配置的凭证 — OAuth 或 API 密钥 — 实际可用的模型中选择；已配置的路由未就绪时会切换到同层级的等价模型) |
 | `/fast [on\|off\|status]` | 当前模型支持 low 推理时切换 fast thinking 模式 |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
-|| `/new` · `/sessions` | 开始新会话或列出已保存会话 |
-|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | 恢复 Jeo 会话，或将只读的精确版本 GJC v5 分支导入新的 Jeo 会话 |
-|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | 显示发布说明 · 查看、等待或取消当前会话的后台任务 |
+| `/computer [status\|on\|off]` | 切换本会话的 fail-closed 桌面自动化工具 |
+| `/new` · `/sessions` | 开始新会话或列出已保存会话 |
+| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | 恢复 Jeo 会话，或将只读的精确版本 GJC v5 分支导入新的 Jeo 会话 |
+| `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | 显示发布说明 · 查看、等待或取消当前会话的后台任务 |
 | `/history [n\|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
-| `/retry` · `/btw <问题>` | 重试上次请求 · 不写入历史的旁路提问 |
+| `/retry` · `/btw <q>` | 重试上次请求 · 不写入历史的旁路提问 |
 | `/usage` · `/context` · `/compact` | Token 用量、上下文明细、手动压缩 |
 | `/theme` · `/config` · `/help` | 主题、运行时配置、帮助 |
-| `jeo autopilot status` | 显示分数方向、keep/revert 次数和下一步动作的 ratchet 状态字段 |
 
 > [!CAUTION]
 > **通过 `/model <name>` 手动指定模型后，路由会在本会话内保持锁定。** Prompt routing(`/route`)只在没有手动锁定模型时才会逐轮重新评估。用 `/model <name>` 选定具体模型后，该选择会被锁定 — 直到你运行 `/model auto`(彻底解除锁定)，或运行 `/route on`(不会清除锁定，只是优先级更高 — 一旦运行 `/route off`，锁定会立刻恢复)之前，路由都不会再切换。未配置 `roles.*` 条目时，只有 `standard` 层级会确定性地退回到 `defaultModel`；`high`/`complex` 层级通常会先实时扫描已配置凭证中最强的可用模型再决定是否回退，所以即使未配置，也可能每轮落到不同的模型上。**例外:** 通过 Antigravity 或 Gemini OAuth 授权的会话会用同一个凭证重新导出 Anthropic/Google/OpenAI 的模型 —此时 `high`/`complex` 会按公司各选一个模型、以会话为单位稳定分布(不一定是最强的那个)，因此在同一会话内保持固定，而不是逐轮变化。
+
+## CLI 命令
+
+`jeo --help` 是权威列表；下面是你最常用到的:
+
+| 命令 | 用途 |
+| --- | --- |
+| `jeo [prompt] [--resume [id]] [--tmux] [--worktree <path>] [-p] [-q]` | 交互式代理(默认)；`-p`/`--print` 用于无头单次输出，`--worktree` 用于隔离的同级检出 |
+| `jeo setup` · `jeo auth login\|logout\|refresh\|status [provider]` · `jeo doctor` | 提供商、自动刷新的 OAuth(PKCE)令牌、实时连通性 + 过期模型锁定检查 |
+| `jeo provider list\|add\|remove\|presets\|test` | 具名的自定义 OpenAI/Anthropic 兼容提供商(与 `/provider` 共用同一套 planner) |
+| `jeo deep-interview` → `ralplan` → `approve` → `team` → `ultragoal` | Spec-first 工作流(见下文)；`jeo state <skill> read\|write\|clear\|handoff` 用于检查回执 |
+| `jeo notify setup\|status\|health\|test` · `jeo daemon start\|stop\|status\|reload` | Telegram / Discord / Slack 通知与共享控制守护进程 |
+| `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | 带分数 ratchet 的自主构建循环(`status` 显示方向、keep/revert 次数和下一步动作) · 跨计划的只追加账本 |
+| `jeo routine init …` | 生成一个 GitHub Actions 工作流，按计划或仓库事件以无头模式运行 jeo |
+| `jeo skills list\|read\|sync\|lesson\|eval` | 内置、用户和项目技能；漂移检查；已记录的经验 |
+| `jeo mcp serve\|tools` · `jeo computer <action>` | 供外部控制器使用的 MCP stdio 服务器 · 桌面自动化动作 |
+| `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux 会话管理 · 导出记录 · 无工具的流式聊天 |
+| `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | 从 npm 自更新 · 内置发布说明 · 旧版 `MEMORY.md` → OKF 概念包 |
 
 ## Spec-first 工作流
 
@@ -184,90 +203,42 @@ jeo ultragoal
 
 ## 远程监控与控制 (Telegram, Discord & Slack)
 
-可选的通知功能:将子代理的状态转变(启动 → 完成/失败/取消)发送到 Telegram, Discord, 或 Slack。一个守护进程服务于所有会话,各平台都完全支持论坛话题/线程、内联键盘和图像附件。
-
-### 设置和配置
+可选功能: 一个共享守护进程监视本机上所有活跃的 `jeo` 会话，并在每次**子代理状态变化**(启动 → 完成/失败/取消)时推送消息，另附会话身份头、回合开始/结束摘要以及最终的回合文本 — 绝不会重复"仍在运行"之类的通知。allowlist 中的人类可以在聊天里列出、发送、引导和取消；每一条控制都会转发给本地会话，并报告为**已确认(已接受，未必已完成)**或**未确认** — 守护进程绝不声称某条命令已执行。
 
 ```bash
-jeo notify setup [--provider telegram|discord|slack] [--token-env 环境变量名] [--app-token-env 环境变量名] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
-jeo notify status [--provider telegram|discord|slack]
-jeo notify health [--provider telegram|discord|slack]              # 只读验证
-jeo notify test [--provider telegram|discord|slack]               # 发送测试消息
-jeo daemon start|stop|status|reload
+jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider …]   # masked token, destination, allowlist, daemon state (stopped / stale / initializing / initialized / pairing)
+jeo notify health [--provider …]   # read-only: bot identity + destination access, nothing sent
+jeo notify test   [--provider …]   # sends one real test message
+jeo daemon start|stop|status|reload   # the shared daemon has no provider selector
 ```
 
-**设置流程:**
+| | Telegram(默认) | Discord | Slack |
+| --- | --- | --- | --- |
+| 凭证 | 机器人 token(`JEO_TELEGRAM_BOT_TOKEN` 或 `--token-env`) | 机器人 token(`JEO_DISCORD_BOT_TOKEN` 或 `--token-env`)+ **Message Content** intent | 机器人 `xoxb` token(`JEO_SLACK_BOT_TOKEN` 或 `--token-env`)+ 应用 `xapp` token(`SLACK_APP_TOKEN` 或 `--app-token-env`)，并启用 Socket Mode |
+| 目标 | 通过挑战配对的私聊(在 120 秒内把显示的 `/start jeo_<code>` 发给机器人)或显式 `--chat-id`；群组需要 `--allowed-user-ids` | 显式 `--channel-id`(文字频道、DM、公告频道或已有线程) | 机器人已加入的显式 `--channel-id`(`C…`)；工作区固定为 token 所属的团队 |
+| Allowlist | 私聊可选，群组必需 | 必需(人类用户 ID；机器人会被忽略) | 必需(人类用户 ID) |
+| 传输 | 直接调用 Bot API `getUpdates` 长轮询，每个机器人 token 只有一个轮询所有者 | 发送走 REST，入站走 Gateway WebSocket | 发送走 Web API，入站走 Socket Mode WebSocket |
+| 附加能力 | 论坛主题、内联取消按钮、图片附件、可选的每会话主题(`notifications.telegram.perSessionTopics`，仅限开启 Threaded Mode 的私聊) | 回复某条会话通知即可向该会话发送文本(24 小时内) | 在会话通知的线程中回复即可向该会话发送文本(24 小时内)；已注册的 Slack 斜杠命令或 `@bot /command` 均可用 |
+| 命令 | `/subagents` `/steer <session> <subagent> <msg>` `/cancel <session> <subagent>` `/help` | `/sessions` `/subagents` `/send <session> <text>` `/steer …` `/cancel …` `/help` | 与 Discord 相同 |
 
-- **Telegram**(挑战配对):运行 `jeo notify setup` 时会显示一条挑战消息,在 120 秒内将该消息发送给机器人即可自动配对。或通过 `--chat-id <ID>` 指定。群组需要 `--allowed-user-ids`(Telegram 用户 ID 精确匹配)。凭证存储在 `~/.jeo/config.json` `notifications.telegram`(明文,仅私有存储库)。
-- **Discord**:需要 `--channel-id`(状态更新的发送目标频道) + `--allowed-user-ids`(命令执行权限)。机器人需要 `Message Content` 意图和频道权限(View Channel、Send Messages)。凭证存储在 `~/.jeo/config.json` `notifications.discord`(明文,仅私有存储库)。
-- **Slack**:xoxb(机器人) + xapp(应用)令牌、Socket Mode 启用、`--channel-id`(状态更新的目标频道) + `--allowed-user-ids`(命令执行权限)是必需的。机器人需要 `chat:write`、`users:read` 作用域以及 message/app_mention 事件订阅。凭证存储在 `~/.jeo/config.json` `notifications.slack`(明文、仅私有存储库)。
+这些词不可互换，所以说明一下它们各自的含义:
 
-令牌默认来自 `JEO_TELEGRAM_BOT_TOKEN`、`JEO_DISCORD_BOT_TOKEN`、`JEO_SLACK_BOT_TOKEN` 环境变量;可用 `--token-env NAME` / `--app-token-env NAME` 指定变量名。
-
-**状态层:**
-
-- `status`:显示配置(已遮蔽令牌)、目标 ID 和守护进程状态
-- `health`:验证机器人 ID 和频道/聊天访问(只读),或 `--test` 发送真实消息
-
-**守护进程生命周期:**
-
-- `jeo daemon start`:启动单例(已运行则成功)
-- `jeo daemon status`:检查是否运行中(pid、启动时间、就绪状态: `initializing` vs `initialized` = 等待中 vs 准备就绪;不验证聊天平台连接)
-- `jeo daemon stop`:发送 SIGTERM 停止
-- `jeo daemon reload`:发送 SIGHUP 重新加载配置
+- **Setup** 会通过官方 API 验证机器人身份和目标访问权限(Telegram `getMe`，Discord 机器人 + 频道查询，Slack `auth.test`/`bots.info`/`conversations.info` 以及一个 Socket Mode URL)，并把结果存入 `~/.jeo/config.json` 的 `notifications.<provider>` 下 — **明文**；请保持该文件私有。它不会发送消息，也不会打开 socket。
+- **`initialized`**(`jeo daemon status`)表示守护进程已持有自己的锁并启动了各传输层；它并不证明 Telegram 轮询、Discord Gateway 握手或 Slack Socket Mode 连接已经成功。要验证这些请使用 `notify health` / `notify test`。
+- **更改 token 或目标**会重置 Discord 和 Slack 的 allowlist(你必须再次传入 `--allowed-user-ids`)以及 Telegram 的每会话主题映射；用完全相同的凭证和目标重新运行 setup 则会保留它们。
+- **远程命令是字面文本**(`/subagents` 等)，仅对已配置的聊天/频道和 allowlist 授权；Slack 还额外接受同名的已注册斜杠命令。allowlist 中的操作者实际上拥有本地代理的全部能力 — 请把这份名单当作信任边界对待。
+- **重试按提供商有界**: Telegram 遵守 429 的 `retry_after` 冷却(限制在 1 秒–1 小时之间)并使用独立的轮询退避；Discord 和 Slack 在 429 时按服务器的 `Retry-After` 最多重试 3 次，且绝不重发结果未知的 POST(平台可能已经收到了它)。
+- **孤儿恢复**: 守护进程崩溃后，其锁会变为 `stale`；下一次 `jeo daemon start` 会回收它。当宿主机能够报告进程启动时间时，`jeo daemon stop` 会拒绝向已被复用的 PID 发送信号；无法报告时也会明确说明。
+- **目前已验证**: Telegram 端到端(真实发送、轮询、干净关闭)。Discord 和 Slack 基于同一个守护进程实现，配有离线的传输/接线测试以及代码、安全和类型审查；尚未用真实的机器人/应用凭证进行实际连通性验证。
 
 ```
-┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
-│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
-│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord webhooks      │
-└─────────────────────┘        └──────────────────┘         └────────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐        ┌───────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄──────►│ Telegram Bot API (poll)   │
+│  SubagentRegistry   │  (one  │   (singleton)    │        │ Discord REST + Gateway WS │
+│  session endpoint   │  per   │                  │        │ Slack Web API + Socket WS │
+└─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
-
-守护进程扫描会话发现文件,为每个活跃会话建立一条回环 WebSocket 连接,只在子代理状态*转变*时推送消息 — 绝不会重复"仍在运行"之类的通知。每条消息限定重试(3 次、1 秒退避)。
-
-### 入站命令
-
-远程斜杠命令仅对已配对的聊天/频道授权;其他一律静默丢弃。命令需要活跃的 jeo 会话(守护进程仅连接到活跃会话)。
-
-**Telegram**(私聊或已指定允许用户 ID 的群组):
-
-| 命令 | 效果 |
-| --- | --- |
-| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
-| `/steer <sessionId> <subagentId> <message>` | 向正在运行的子代理发送实时消息; typed control 由 allowlist 授权 |
-| `/cancel <sessionId> <subagentId>` | 取消正在运行的子代理 |
-| `/help` | 显示命令参考 |
-
-**Discord**(仅限允许的用户 ID):
-
-| 命令 | 效果 |
-| --- | --- |
-| `/sessions` | 列出会话 ID 和摘要 |
-| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
-| `/send <sessionId> <text>` | 向活跃会话发送文本消息 |
-| `/steer <sessionId> <agent> <message>` | 向正在运行的代理发送实时消息; typed control 由 allowlist 授权 |
-| `/cancel <sessionId> <agent>` | 取消正在运行的代理 |
-
-**Slack**(仅限允许的用户 ID,工作区 + 频道 + 线程路由):
-
-| 命令 | 效果 |
-| --- | --- |
-| `/sessions` | 列出会话 ID 和摘要 |
-| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
-| `/send <sessionId> <text>` | 向活跃会话发送文本消息 |
-| `/steer <sessionId> <agent> <message>` | 向正在运行的代理发送实时消息; typed control 由 allowlist 授权 |
-| `/cancel <sessionId> <agent>` | 取消正在运行的代理 |
-
-仅限纯文本提及和已配置频道的线程回复;所有命令都需要 allowlist 成员资格。已知会话线程的回复被路由到其会话上下文(仅限现有线程;无自动配置);根频道提及开始新的会话发现。
-
-### 限制和保证
-
-- **每台机器 1 个守护进程**;由所有会话共享。凭证存储为明文 `~/.jeo/config.json`。
-- **Telegram** 使用单个轮询所有者(Aside API 或本地守护进程);jeo 对机器人进行一次配对后,守护进程拥有轮询。通过手动 `--chat-id` 配置可避免 Aside 依赖。
-- **Discord** 需要 Bot token、Message Content 意图、明确的频道 ID 和 human user-ID allowlist。Gateway WebSocket 连接(非 webhooks)处理入站命令。
-- **远程斜杠命令**:`/help`、`/sessions`、`/subagents`、`/send`、`/steer`、`/cancel` 是字面 text-message 命令(非本地 Discord 斜杠注册),仅允许设置的聊天/频道中的 allowlist user ID; 在运行的 jeo 会话中直接执行 typed control。
-- **孤儿恢复**:守护进程崩溃时,锁文件变为 stale → 下一个 `jeo daemon start` 自动回收(锁状态: `stale → reclaimed`)。
-
 
 ## 例行任务 (GitHub Actions)
 
@@ -378,10 +349,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
 - **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 - **[0.11.1]** (2026-08-25) — Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited.
 - **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
-- **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -38,7 +38,7 @@
 
 ## ハイライト
 
-- **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio に加え、OpenAI・Anthropic 互換クラウド20以上(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai など)を均一な JSON ツールループで — **さらに自分で登録したエンドポイントも**: `jeo provider add --id my-proxy --base-url https://…`(または `--preset litellm|vllm|sglang|azure-openai|…`)で、LiteLLM プロキシ・自前ホストの vLLM・社内 Anthropic ゲートウェイが、組み込みの `openai` プロバイダを乗っ取ることなく独自のルーティング接頭辞・モデル一覧・認証情報を持てます。入力欄から OAuth ログイン(`/provider login`)、モデル選択は即座にデフォルトとして永続化。プロンプトルーティングは実際に使える認証済み経路だけを自動選択します: Gemini OAuth は provider-qualified な `antigravity/*` エージェントセット(Gemini 3.5 Flash 各ティア、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6)へ向かい、`GEMINI_API_KEY` が必要な public `google/gemini-*` 行は選びません。
+- **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio に加え、OpenAI・Anthropic 互換クラウド20以上(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai など)を均一な JSON ツールループで — **さらに自分で登録したエンドポイントも**: `jeo provider add --id my-proxy --base-url https://…`(または `--preset litellm|vllm|sglang|azure-openai|…`)で、LiteLLM プロキシ・自前ホストの vLLM・社内 Anthropic ゲートウェイが、組み込みの `openai` プロバイダを乗っ取ることなく独自のルーティング接頭辞・モデル一覧・認証情報を持てます。入力欄から OAuth ログイン(`/provider login`)、モデル選択は毎回新しいデフォルトとして永続化。プロンプトルーティングは実際に使える認証済み経路だけを自動選択します: Gemini OAuth は provider-qualified な `antigravity/*` エージェントセットへ、**アカウントが現在提供している構成のまま**向かい(ライブ検出 — 例: Gemini 3.6 Flash 各ティア、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6; チャット以外や非推奨の ID は除外され、一覧が空でも静的カタログで代用しません)、`GEMINI_API_KEY` が必要な public `google/gemini-*` 行は決して選びません。設定済みルートが未準備のプロバイダを指している場合、jeo はデフォルトへフォールバックする前に同等ティアの認証済みモデルへ切り替えます。
 - **編集の完全性** — read 出力にコンテンツアンカー(`42ab|`)が付き、アンカー付き編集は現在のファイルと照合・行移動時は自動再マッピング・不一致時は最新内容と共に拒否されます。
 - **自己修正の検証ループ** — post-edit フック(tsc / eslint / テスト)を設定すると、エージェントが診断を*自ら読み*ループ内で修正します。フックが赤のままだと `done` はブロックされます。
 - **芝居なしの本物のゲート** — `ralplan` の合議はリポジトリを実際に読む critic サブエージェントで、`[OKAY]` 評決が永続化され `jeo approve` がそれを*要求*します。`ultragoal` は誠実に報告します(スイート1回実行はグローバル信号であり、基準ごとの合格を捏造しません)。
@@ -49,7 +49,8 @@
 - **蓄積されるスキル** — 行き詰まったターンは、その行き止まりをまさに同じスキルのプロジェクトレベルファイル(`.jeo/skills/<name>.md`、初回書き込み時にバンドルスキルからシード、決定論的なキーワードマッチ、LLM不使用)に書き込むようになりました。これにより次のセッションの `$<skill>` 呼び出しは、バンドルされたドキュメントが永遠に静的なままでいる代わりに、蓄積された「Known Failure Modes」/「Anti-Patterns」の知識を引き継ぎます。`jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"` で手動記録、`jeo skills eval <skill>` は記録済みの各教訓がスキルの現行ガイダンスでまだカバーされているか、それとも陳腐化したかを実際の LLM 判定で確認します。
 - **低コスト層のグレーダールーティング** — `/goal` の検証器、`critic` サブエージェントロール、固定されていない `task` ファンアウトバッチは、採点・実行対象の作業と同じフルプライスモデルに黙って乗る代わりに、デフォルトで低コストのクレデンシャル済みモデルを使用します(`resolveVerifierModel`、ブラウザの `verify` アクションについてはビジョン対応能力でフィルタされ、テキストのみの低コストモデルが添付スクリーンショットを黙って取りこぼすことがありません)。
 - **`jeo routine init`** — スケジュール/issue/PR トリガーで jeo をヘッドレス実行する(`jeo "<prompt>" -p`) GitHub Actions ワークフローを、GitHub 自身のランナー上に生成します — ラップトップは不要で、jeo 自体の内部に新しい攻撃対象領域も一切増えません(インプロセスのスケジューラや Webhook リスナーはありません)。`--dry-run` でプレビュー、`--no-pr` でデフォルトの実行ごとの PR の代わりに直接コミット。
-- **リモートサブエージェント可視化(Telegram)** — ボットを一度ペアリング(`jeo notify setup`)すれば、`jeo daemon start` がサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、`/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` を受け付けます。Telegram フォーラムトピック、インラインキーボード、画像添付を含む `gjc` 完全パリティを提供し、コマンドはペアリングされたチャットのみ許可されます。
+- **リモート監視・制御(Telegram, Discord, Slack)** — ボットを一度ペアリング(`jeo notify setup --provider telegram|discord|slack`)すれば、共有の `jeo daemon start` 1 つが、稼働中のすべてのセッションにわたってサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、人間の許可リスト(allowlist)からの `/subagents`、`/steer`、`/cancel`(Discord/Slack ではさらに `/sessions` と `/send`)を受け付けます。Telegram はフォーラムトピック・インラインキーボード・画像添付に対応し、Discord は REST + Gateway WebSocket、Slack は Web API + Socket Mode を使います。すべてのリモート制御はローカルセッションが確認応答(acknowledge)するものであり、実行済みと決めつけることはありません。
+- **ごまかしの効かないゲート** — `approve` は承認対象そのもののプランダイジェストを再検証し、`team` はレビュー済みダイジェストが変わったプランを拒否します。`done` 呼び出しは最新の検証証拠と照らして再チェックされ(後から失敗したチェックは先の合格を無効化し、修正の差し戻し 3 回の後は強い拒否)、`autopilot` ラチェットはロールバック失敗を `rollback_failed` として記録し、ステップを戻したと主張する代わりに非ゼロで停止します。
 - **ターンをブロックしないセッション単位の非同期実行** — `task` ツールの実際の `tasks` 配列で独立した作業をファンアウトし、親ターンを止めません。detached サブエージェント、バックグラウンド job、行単位 monitor は後続ターンからも `subagent`/`job`/`monitor` の `list`、`inspect`、`await`、`cancel`、`tail` で制御できます。インライン TUI は各ワーカーのライブ activity を専用スロットに表示し、セッション終了または Ctrl-C ですべてのレジストリを破棄します。
 - **独立した検証者、実際に強制** — プランはもう architect/critic ステップをスキップできません: `PlanSchema` は未検証の変更で終わるプランを拒否し(検証対象の変更より前に置かれた verifier も無効)、`ralplan` のドラフト時点と `team`/`approve` の実行時点の両方で適用されます。すべての architect/critic 評決も実際の証拠を示す必要があり、観測された `read`/`search`/`find`/`ast_grep`/`lsp` 呼び出しがゼロなら、テキストが何を主張していても評決はブロックされます。
 - **セーフティバウンダリの自動モデルフォールバック** — 未分類のセーフティ拒否(本物のコンテンツポリシー違反ではなく、分類器の誤検知の可能性)は、同じモデルで永遠に譲歩するのではなく、実際に別プロバイダのモデルへ切り替わるようになりました — 既存のレート制限時の高速フォールバックと同じパターンです。`Refusal (<category>)` 形式の確定的な拒否は影響を受けず、引き続きフォールバックなしでハードフェイルします。
@@ -90,21 +91,39 @@ jeo --tmux               # 独立した tmux セッションで実行
 | `/provider add` · `list` · `remove` · `presets` | OpenAI/Anthropic 互換エンドポイントを正式なプロバイダとして登録(ゲートウェイプリセット15種) |
 | `/agents [role]` · `/subagent` | ロール別(executor/planner/architect/critic)モデル・thinking・ステップ設定 |
 | `/thinking [level]` | デフォルト推論予算(low…xhigh)の表示/設定 |
-| `/route [status\|on\|off\|why\|history [n]]` | セッション単位のプロンプトベース・モデルルーティングの切替 · 直近のルーティング判断の説明 · `history [n]` はこのセッションの直近 n 件(デフォルト 10 件)のルーティング判断を表示(設定済み資格情報 — OAuth または API キー — が実際に提供するモデルの中でのみ自動ルーティング) |
+| `/route [status\|on\|off\|why\|history [n]]` | セッション単位のプロンプトベース・モデルルーティングの切替 · 直近のルーティング判断の説明 · `history [n]` はこのセッションの直近 n 件(デフォルト 10 件)のルーティング判断を表示(毎ターン、設定済み資格情報 — OAuth または API キー — が実際に提供するモデルの中からティアに適したモデルへ自動ルーティングし、設定済みルートが未準備なら同等ティアのモデルへ切り替え) |
 | `/fast [on\|off\|status]` | 現在のモデルが low 推論をサポートする場合に fast thinking モードを切替 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
-|| `/new` · `/sessions` | 新しいセッションを開始、または保存済みセッションを一覧表示 |
-|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo セッションを再開、または読み取り専用の正確なバージョンの GJC v5 ブランチを新しい Jeo セッションへインポート |
-|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | リリースノートを表示 · 現在のセッションのバックグラウンドジョブを確認・待機・キャンセル |
+| `/computer [status\|on\|off]` | このセッションのフェイルクローズドなデスクトップ自動化ツールを切替 |
+| `/new` · `/sessions` | 新しいセッションを開始、または保存済みセッションを一覧表示 |
+| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo セッションを再開、または読み取り専用の正確なバージョンの GJC v5 ブランチを新しい Jeo セッションへインポート |
+| `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | リリースノートを表示 · 現在のセッションのバックグラウンドジョブを確認・待機・キャンセル |
 | `/history [n\|all]` · `/export` | 作業アクティビティ履歴を読みやすくスクロールバックへ再出力・トランスクリプト出力 |
 | `/retry` · `/btw <q>` | 直前要求の再試行 · 履歴に残らないサイド質問 |
 | `/usage` · `/context` · `/compact` | トークン使用量、コンテキスト内訳、手動コンパクション |
 | `/theme` · `/config` · `/help` | テーマ、ランタイム設定、ヘルプ |
-| `jeo autopilot status` | スコア方向、keep/revert 数、次アクションを示す ratchet ステータスフィールド |
 
 > [!CAUTION]
 > **`/model <name>` で特定モデルを手動指定すると、そのセッション中ルーティングが固定されます。** プロンプトルーティング(`/route`)はモデルが手動固定されていない間のみ毎ターン再評価されます。`/model <name>` で特定モデルを選ぶとその選択が固定され、`/model auto`(ピンを完全に解除)を実行するか、`/route on`(ピンを消さずに優先度だけ上げる — `/route off` した瞬間ピンが復活)を実行するまでルーティングは切り替わりません。`roles.*` 未設定時に `defaultModel` へ確定フォールバックするのは `standard` ティアのみで、`high`/`complex` ティアは通常フォールバック前にライブでクレデンシャル済みの最強モデルを先に探索するため、未設定でも毎ターン別モデルに着地することがあります。**例外:** Antigravity または Gemini OAuth でクレデンシャルされたセッションは一つの資格情報で Anthropic/Google/OpenAI のモデルを再公開しており、その場合 `high`/`complex` は(必ずしも最強ではなく)会社ごとに1モデルへセッション単位で安定的に分散されるため、ターンごとに変わらずそのセッション中は固定されます。
+
+## CLI コマンド
+
+`jeo --help` が正式な一覧です。よく使うものは次のとおり:
+
+| コマンド | 用途 |
+| --- | --- |
+| `jeo [prompt] [--resume [id]] [--tmux] [--worktree <path>] [-p] [-q]` | 対話エージェント(デフォルト); `-p`/`--print` でヘッドレスのワンショット出力、`--worktree` で隔離された兄弟チェックアウト |
+| `jeo setup` · `jeo auth login\|logout\|refresh\|status [provider]` · `jeo doctor` | プロバイダ、自動更新付き OAuth(PKCE)トークン、ライブ接続性 + 古いピンのチェック |
+| `jeo provider list\|add\|remove\|presets\|test` | 名前付きカスタム OpenAI/Anthropic 互換プロバイダ(`/provider` と同じプランナー) |
+| `jeo deep-interview` → `ralplan` → `approve` → `team` → `ultragoal` | Spec-first ワークフロー(後述); `jeo state <skill> read\|write\|clear\|handoff` でレシートを確認 |
+| `jeo notify setup\|status\|health\|test` · `jeo daemon start\|stop\|status\|reload` | Telegram / Discord / Slack 通知と共有制御デーモン |
+| `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | スコアラチェット付きの自律ビルドループ(`status` は方向、keep/revert 数、次アクションを表示) · プラン横断の追記専用台帳 |
+| `jeo routine init …` | スケジュールまたはリポジトリイベントで jeo をヘッドレス実行する GitHub Actions ワークフローを生成 |
+| `jeo skills list\|read\|sync\|lesson\|eval` | バンドル・ユーザー・プロジェクトのスキル; ドリフトチェック; 記録済みレッスン |
+| `jeo mcp serve\|tools` · `jeo computer <action>` | 外部コントローラ向け MCP stdio サーバー · デスクトップ自動化アクション |
+| `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux セッション管理 · トランスクリプト出力 · ツールなしのストリーミングチャット |
+| `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | npm からの自己更新 · バンドルされたリリースノート · レガシー `MEMORY.md` → OKF バンドル |
 
 ## Spec-first ワークフロー
 
@@ -184,90 +203,42 @@ jeo ultragoal
 
 ## リモート監視・制御(Telegram, Discord & Slack)
 
-オプトインの通知:サブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)を Telegram, Discord, または Slack へ送信します。1 つのデーモンがすべてのセッションを処理し、各プラットフォームがフォーラムトピック/スレッド・インラインキーボード・画像添付を完全にサポート。
-
-### セットアップと設定
+オプトイン: 共有デーモン 1 つがマシン上の稼働中の `jeo` セッションをすべて監視し、**サブエージェントの状態遷移**(開始 → 完了/失敗/キャンセル)ごとにメッセージを送ります。加えてセッション識別ヘッダー、ターンの開始/終了サマリー、確定したターンのテキストも送りますが、「まだ実行中」という繰り返しの ping は決して送りません。allowlist に登録された人間はチャットから一覧・送信・ステア・キャンセルができ、すべての制御はローカルセッションへ中継されて **確認応答済み(受理であって完了ではない)** または **未確認応答** として報告されます — デーモンがコマンドの実行完了を主張することはありません。
 
 ```bash
-jeo notify setup [--provider telegram|discord|slack] [--token-env 環境変数名] [--app-token-env 環境変数名] [--chat-id ID] [--channel-id ID] [--allowed-user-ids ID,ID,...]
-jeo notify status [--provider telegram|discord|slack]
-jeo notify health [--provider telegram|discord|slack]         # 読み取り専用検証
-jeo notify test [--provider telegram|discord|slack]          # テストメッセージを送信
-jeo daemon start|stop|status|reload
+jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
+jeo notify status [--provider …]   # マスク済みトークン、宛先、allowlist、デーモン状態(stopped / stale / initializing / initialized / pairing)
+jeo notify health [--provider …]   # 読み取り専用: ボット ID + 宛先アクセス、何も送信しない
+jeo notify test   [--provider …]   # 実際のテストメッセージを 1 件送信
+jeo daemon start|stop|status|reload   # 共有デーモンにプロバイダ選択はない
 ```
 
-**セットアップフロー:**
+| | Telegram(デフォルト) | Discord | Slack |
+| --- | --- | --- | --- |
+| 認証情報 | ボットトークン(`JEO_TELEGRAM_BOT_TOKEN` または `--token-env`) | ボットトークン(`JEO_DISCORD_BOT_TOKEN` または `--token-env`)+ **Message Content** インテント | ボット `xoxb` トークン(`JEO_SLACK_BOT_TOKEN` または `--token-env`)+ アプリ `xapp` トークン(`SLACK_APP_TOKEN` または `--app-token-env`)、Socket Mode 有効化 |
+| 宛先 | チャレンジペアリングによるプライベートチャット(表示された `/start jeo_<code>` を 120 秒以内にボットへ送信)または明示的な `--chat-id`; グループは `--allowed-user-ids` が必要 | 明示的な `--channel-id`(テキストチャネル、DM、アナウンス、または既存スレッド) | ボットが参加済みの明示的な `--channel-id`(`C…`); ワークスペースはトークンのチームに固定 |
+| allowlist | プライベートチャットでは任意、グループでは必須 | 必須(人間のユーザー ID; ボットは無視) | 必須(人間のユーザー ID) |
+| トランスポート | Bot API `getUpdates` の直接ロングポール、ボットトークンごとにポール所有者 1 つ | 送信は REST、受信は Gateway WebSocket | 送信は Web API、受信は Socket Mode WebSocket |
+| 追加機能 | フォーラムトピック、インラインのキャンセルボタン、画像添付、任意のセッション単位トピック(`notifications.telegram.perSessionTopics`、Threaded Mode のプライベートチャットのみ) | セッション通知に返信するとそのセッションへテキスト送信(24 時間) | セッション通知のスレッド内で返信するとそのセッションへテキスト送信(24 時間); 登録済み Slack スラッシュコマンドと `@bot /command` のどちらも使用可 |
+| コマンド | `/subagents` `/steer <session> <subagent> <msg>` `/cancel <session> <subagent>` `/help` | `/sessions` `/subagents` `/send <session> <text>` `/steer …` `/cancel …` `/help` | Discord と同じ |
 
-- **Telegram**(チャレンジペアリング): `jeo notify setup` を実行するとチャレンジが表示され、そのメッセージをボットに 120 秒以内に送信すると自動ペアリングされます。または `--chat-id <ID>` で指定。グループは `--allowed-user-ids` が必要(Telegram ユーザー ID 正確一致)。認証情報は `~/.jeo/config.json` `notifications.telegram`(平文、プライベートストレージのみ)。
-- **Discord**: `--channel-id`(状態更新の送信先チャネル) + `--allowed-user-ids`(コマンド実行権限)が必須。ボットに `Message Content` インテント およびチャネル権限(View Channel, Send Messages)が必要。認証情報は `~/.jeo/config.json` `notifications.discord`(平文、プライベートストレージのみ)。
-- **Slack**: xoxb(ボット) + xapp(アプリ)トークン、Socket Mode 有効化、`--channel-id`(状態更新の送信先チャネル) + `--allowed-user-ids`(コマンド実行権限)が必須。ボットは `chat:write`, `users:read` スコープと message/app_mention イベント購読が必要。認証情報は `~/.jeo/config.json` `notifications.slack`(平文、プライベートストレージのみ)。
+用語の意味 — これらは互いに置き換えられません:
 
-トークンはデフォルトで `JEO_TELEGRAM_BOT_TOKEN`、`JEO_DISCORD_BOT_TOKEN`、`JEO_SLACK_BOT_TOKEN` 環境変数; `--token-env NAME` / `--app-token-env NAME` で変数名を指定可能。
-
-**ステータスレイヤー:**
-
-- `status`: 設定(マスクされたトークン)・宛先 ID・デーモン状態を表示
-- `health`: ボット ID およびチャネル/チャット アクセス検証(読み取り専用)、または `--test` で実メッセージ送信
-
-**デーモンライフサイクル:**
-
-- `jeo daemon start`: シングルトン起動(既に実行中なら成功)
-- `jeo daemon status`: 実行中かどうかを確認(pid・起動時刻・準備状態: `initializing` vs `initialized` = 待機中 vs 準備完了; チャットプラットフォーム接続は検証しない)
-- `jeo daemon stop`: SIGTERM で停止
-- `jeo daemon reload`: SIGHUP で設定を再読み込み
+- **セットアップ**は公式 API(Telegram `getMe`、Discord のボット + チャネル検索、Slack `auth.test`/`bots.info`/`conversations.info` と Socket Mode URL)でボット ID と宛先アクセスを検証し、結果を `~/.jeo/config.json` の `notifications.<provider>` 配下に **平文** で保存します — このファイルは非公開に保ってください。メッセージは送信せず、ソケットも開きません。
+- **`initialized`**(`jeo daemon status`)はデーモンプロセスがロックを所有しトランスポートを起動したことを意味し、Telegram ポール、Discord Gateway ハンドシェイク、Slack Socket Mode 接続が成功した証明ではありません。それには `notify health` / `notify test` を使ってください。
+- **トークンや宛先を変更する**と、Discord と Slack では allowlist が(`--allowed-user-ids` を再度渡す必要があります)、Telegram ではセッション単位トピックのマップがリセットされます。まったく同じ認証情報と宛先でセットアップを再実行した場合は保持されます。
+- **リモートコマンドはリテラルなテキスト**(`/subagents` など)で、設定済みチャット/チャネルと allowlist に対して認可されます。Slack ではさらに同じ名前を登録済みスラッシュコマンドとしても受け付けます。allowlist に載ったオペレータは事実上ローカルエージェントの能力を握るため、この一覧は信頼境界として扱ってください。
+- **再試行はプロバイダごとに上限あり**: Telegram は 429 の `retry_after` クールダウン(1 秒〜1 時間にクランプ)を尊重し、ポールのバックオフは別途管理します。Discord と Slack は 429 時にサーバーの `Retry-After` を使って最大 3 回まで再試行し、結果が不明な POST を再送することはありません(プラットフォーム側がすでに受理している可能性があるため)。
+- **オーファン復旧**: デーモンがクラッシュするとロックは `stale` になり、次の `jeo daemon start` が回収します。`jeo daemon stop` は、ホストがプロセス起動時刻を報告できる場合は再利用された PID へのシグナル送信を拒否し、報告できない場合はその旨を伝えます。
+- **これまでの検証状況**: Telegram はエンドツーエンドで検証済み(実送信、ポーリング、クリーンシャットダウン)。Discord と Slack は同じデーモンの背後に実装され、オフラインのトランスポート/配線テストとコード・セキュリティ・型レビューを経ていますが、実際のボット/アプリ認証情報を使ったライブ接続はまだ行っていません。
 
 ```
-┌─────────────────────┐        ┌──────────────────┐         ┌────────────────────────┐
-│   interactive turn  │◄──ws──►│  notify daemon   │◄─poll──►│  Telegram bot or      │
-│  SubagentRegistry   │        │   (singleton)    │  (HTTP)  │  Discord webhooks      │
-└─────────────────────┘        └──────────────────┘         └────────────────────────┘
+┌─────────────────────┐        ┌──────────────────┐        ┌───────────────────────────┐
+│   interactive turn  │◄──ws──►│  notify daemon   │◄──────►│ Telegram Bot API (poll)   │
+│  SubagentRegistry   │  (one  │   (singleton)    │        │ Discord REST + Gateway WS │
+│  session endpoint   │  per   │                  │        │ Slack Web API + Socket WS │
+└─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
-
-デーモンはセッションディスカバリファイルをスキャンし、アクティブセッションごとにループバック WebSocket を接続、サブエージェント状態 *遷移*時のみメッセージ送信 — 「実行中のまま」の繰り返し通知なし。限定再試行(3 回・1 秒バックオフ)ごとのメッセージ。
-
-### インバウンドコマンド
-
-リモートスラッシュコマンドはペアリング済みチャット/チャネルのみ許可; 他は黙って破棄。コマンドはアクティブな jeo セッション必須(デーモンはアクティブセッションにのみ接続)。
-
-**Telegram**(プライベートチャットまたは許可ユーザー ID 指定済みグループ):
-
-| コマンド | 効果 |
-| --- | --- |
-| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
-| `/steer <sessionId> <subagentId> <message>` | 実行中のサブエージェントへライブメッセージ送信; typed control が allowlist で認可 |
-| `/cancel <sessionId> <subagentId>` | 実行中のサブエージェントをキャンセル |
-| `/help` | コマンドリファレンスを表示 |
-
-**Discord**(許可されたユーザー ID のみ):
-
-| コマンド | 効果 |
-| --- | --- |
-| `/sessions` | セッション ID と要約の一覧 |
-| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
-| `/send <sessionId> <text>` | アクティブセッションへテキストメッセージ送信 |
-| `/steer <sessionId> <agent> <message>` | 実行中のエージェントへライブメッセージ送信; typed control が allowlist で認可 |
-| `/cancel <sessionId> <agent>` | 実行中のエージェントをキャンセル |
-
-**Slack**(許可されたユーザー ID のみ、ワークスペース + チャネル + スレッドルーティング):
-
-| コマンド | 効果 |
-| --- | --- |
-| `/sessions` | セッション ID と要約の一覧 |
-| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
-| `/send <sessionId> <text>` | アクティブセッションへテキストメッセージ送信 |
-| `/steer <sessionId> <agent> <message>` | 実行中のエージェントへライブメッセージ送信; typed control が allowlist で認可 |
-| `/cancel <sessionId> <agent>` | 実行中のエージェントをキャンセル |
-
-プレーンテキスト言及と設定済みチャネルのスレッド返信のみ; すべてのコマンドは allowlist メンバーシップが必須。既知セッションスレッドの返信はそのセッションコンテキストにルーティング(既存スレッドのみ; 自動プロビジョニングなし); ルートチャネル言及は新規セッション発見を開始。
-
-### 制限と保証
-
-- **1 デーモン**マシンあたり; すべてのセッションで共有。認証情報ストレージは平文 `~/.jeo/config.json`。
-- **Telegram** 1 つのポール所有者を使用(Aside API またはローカルデーモン);jeo がボットを一度ペアリング後、デーモンがポーリング所有。手動 `--chat-id` 設定で Aside 依存性を回避。
-- **Discord** Bot トークン、Message Content インテント、明示的なチャネル ID および human user-ID allowlist が必須。Gateway WebSocket接続(webhooks ではない)がinbound コマンドを処理。
-- **リモートスラッシュコマンド**: `/help`, `/sessions`, `/subagents`, `/send`, `/steer`, `/cancel` は literal テキスト-メッセージコマンド(ネイティブ Discord スラッシュ登録なし)で、設定済みチャット/チャネルの allowlist user ID のみ権限あり; 実行中の jeo セッションで typed control を直接実行。
-- **オーファン復旧**: デーモンクラッシュ時はロックファイル stale → 次 `jeo daemon start` で自動回収(ロック状態: `stale → reclaimed`)。
-
 
 ## ルーティン(GitHub Actions)
 
@@ -380,10 +351,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
 - **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 - **[0.11.1]** (2026-08-25) — Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited.
 - **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
-- **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

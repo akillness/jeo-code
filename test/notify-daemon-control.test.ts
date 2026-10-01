@@ -307,7 +307,9 @@ test("reloadDaemon stops the old owner and starts a fresh one", async () => {
 // stopDaemon surface the caveat rather than hiding it.
 
 test("inspectLockOwner separates 'alive' from 'verified' so a degraded host is visible", async () => {
-  const alive = await inspectLockOwner({ pid: process.pid, startedAt: Date.now() });
+  // The suite process may have been alive for minutes by the time this file runs;
+  // a `Date.now()` stamp would then look like PID reuse (> tolerance) on a verifying host.
+  const alive = await inspectLockOwner({ pid: process.pid, startedAt: Date.now() - process.uptime() * 1_000 });
   expect(alive.alive).toBe(true);
   expect(alive.verified).toBe(canVerifyStart);
 
@@ -319,7 +321,7 @@ test("inspectLockOwner separates 'alive' from 'verified' so a degraded host is v
 
 test("daemonStatus reports whether the running claim was actually verified", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now() - process.uptime() * 1_000 }));
   const status = await daemonStatus();
   expect(status.running).toBe(true);
   expect(status.ownerVerified).toBe(canVerifyStart);

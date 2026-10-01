@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-01
+_Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it._
+
 ### Added
 - **Discord notification & remote control parity** — `jeo notify setup --provider discord` configures a Discord channel and allowed user IDs; same daemon serves both Telegram and Discord, pushing subagent state edges only. Inbound `/subagents`, `/steer`, `/cancel` commands work identically on Discord (allowed-user-ID-scoped). Requires bot `Message Content` intent and channel permissions (`View Channel`, `Send Messages`).
 - **Telegram challenge-pairing and group allowlist** — `jeo notify setup --provider telegram` without explicit `--chat-id` displays a time-limited challenge code; send it to the bot within 120 seconds to pair. Groups require explicit `--allowed-user-ids` (comma-separated Telegram user IDs). Use `jeo notify test --provider telegram` for explicit outbound verification.
@@ -16,14 +19,24 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 - **Plain-text credential storage** — Telegram, Discord, and Slack credentials are stored in `~/.jeo/config.json` under their `notifications` entries. Authentication uses the corresponding official provider APIs; tokens are not included in chat output or logs. Telegram uses direct Bot API polling, Discord uses REST + Gateway WebSocket, and Slack uses Web API + Socket Mode. Aside is a research reference, not a runtime dependency.
 - **Bounded retries and orphan recovery** — provider-specific retry and backoff policies bound recovery; Slack does not blindly retry an uncertain POST. Telegram polling has separate error backoff. A stale daemon lock from a dead process can be reclaimed on `jeo daemon start`.
 - **Direct remote controls with session ACK** — `/steer` and `/cancel` use typed controls authorized by the configured human allowlist and chat/channel/workspace boundary. Replies reflect the local session's correlated ACK; timeout, rejection, and shutdown do not count as successful execution. Allowlisted operators must be trusted with local agent capabilities.
-- **Slack Socket Mode integration** — `jeo notify setup --provider slack --token-env SLACK_BOT_TOKEN --app-token-env SLACK_APP_TOKEN --channel-id <ID> --allowed-user-ids <HUMAN_ID>` validates bot identity, destination access, and Socket URL acquisition without opening a socket. The shared daemon supports per-session threads and literal text commands `/sessions`, `/subagents`, `/send`, `/steer`, and `/cancel`. Offline tests and scoped code, security, and TypeScript reviews passed. Live Slack connectivity remains unverified because bot/app credentials are not configured.
+- **Slack Socket Mode integration** — `jeo notify setup --provider slack --token-env JEO_SLACK_BOT_TOKEN --app-token-env SLACK_APP_TOKEN --channel-id <ID> --allowed-user-ids <HUMAN_ID>` validates bot identity (`auth.test` + `bots.info`), destination access (`conversations.info`, bot must be a member, workspace pinned to the token's team), and Socket Mode URL acquisition without opening a socket. The shared daemon posts notifications to the channel and routes replies in a session notification's thread back to that session (24 h); literal `/sessions`, `/subagents`, `/send`, `/steer`, `/cancel` work as `@bot` text or as registered Slack slash commands. Offline tests and scoped code, security, and TypeScript reviews passed. Live Slack connectivity remains unverified because bot/app credentials are not configured.
+- **Live Antigravity model discovery honoured by the picker** (`src/ai/model-discovery.ts`, `src/commands/launch.ts`) — the server's `agentModelSorts` agent IDs are the source of truth: non-chat roles (`tab`/`image`/`audio`/`commit`/`mquery` lists) and `deprecatedModelIds` are excluded, `models/`-prefixed and provider-qualified rows normalize to the same id, and an empty or failed Antigravity list is reported as such instead of being papered over with the static catalog (same rule as OpenAI).
+- **Plan identity gate** (`src/commands/approve.ts`, `src/commands/team.ts`) — `approve` requires the persisted consensus hash and re-validates schema, roles, and the current plan digest even on an already-approved plan; `team` refuses a plan without a reviewed hash, persists the hash in team state, and restarts execution when the path, slug, or digest differs from the state it resumes.
+- **Completion gate re-checks** (`src/agent/engine.ts`, `src/agent/loop-guards.ts`) — every explicit or prose completion is evaluated against the latest verification evidence; a later failed check invalidates an earlier pass, and after `MAX_DONE_CORRECTIONS` (3) rejected attempts the turn stops with `done:false` and the reason instead of a fourth correction.
+- **Autopilot ratchet failure semantics** (`src/autopilot.ts`, `ralplan`/`ultragoal` wrappers) — a failed evaluator can never KEEP; a failed `--on-revert` rollback is logged as `rollback_failed` with the error and halts with exit code 1 instead of recording a reverted step that did not happen; engine `ok:false` propagates as a non-zero exit from the CLI wrappers.
+- **Telegram destination hygiene** (`src/commands/notify.ts`, `src/agent/notify/telegram-daemon.ts`) — changing the bot or chat no longer inherits the previous allowlist or per-session topic map; concurrent setup saves cannot interleave stale credentials; stopping the daemon settles every pending steer/cancel ACK; a SIGTERM during startup exits 0 instead of reporting a failed start.
 
 ### Changed
 - **Notification configuration unified** — one daemon manages Telegram, Discord, and Slack. `notify` operations accept `--provider telegram|discord|slack` (default: `telegram`); `jeo daemon start|stop|status|reload` operates on the shared daemon without a provider selector.
 - **Setup output accuracy** — setup confirms bot identity and channel/chat access, but does NOT claim "live bot verification"; health/test commands are explicit.
 
 ### Fixed
-- **Delayed Node inspector startup detection** — `waitForInspectorUrl` now retains one pending stream read across 200ms timer ticks and clears it only after consuming a read result. A late inspector URL is no longer lost to an abandoned read. Verified with an actual Node inspector whose first stderr chunk is delayed 250ms.
+- **Delayed Node inspector startup detection** (`src/agent/debug-session.ts`) — `waitForInspectorUrl` now retains one pending stream read across 200ms timer ticks and clears it only after consuming a read result. A late inspector URL is no longer lost to an abandoned read. Verified with an actual Node inspector whose first stderr chunk is delayed 250ms.
+- **Upstream PID-reuse tests stamped `Date.now()` on a minutes-old test process** (`test/notify-daemon-control.test.ts`) — the guard correctly read that as a start-time mismatch once the suite had run for more than 10 s, so two tests failed only in a full run. The fixtures now record the process's real start time; the guard is unchanged.
+
+### Verified
+- `bun run typecheck` clean; isolated `bun test` (temp `HOME`/`JEO_CONFIG_DIR`, hooks off, 30 s timeout) — **3634 pass, 0 fail** across 329 files, 13,789 assertions.
+- Telegram exercised live: real send, two successful `getUpdates` polls over a 70 s foreground monitor, clean SIGTERM shutdown, lock released. Antigravity live discovery returned the account's current eight ids and a smoke request on `gemini-3.6-flash-low` answered `OK`.
 
 ## [0.11.2] - 2026-09-30
 _OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries._
@@ -2444,7 +2457,12 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/akillness/jeo-code/releases/tag/v0.11.3
+[0.11.2]: https://github.com/akillness/jeo-code/releases/tag/v0.11.2
+[0.11.1]: https://github.com/akillness/jeo-code/releases/tag/v0.11.1
+[0.11.0]: https://github.com/akillness/jeo-code/releases/tag/v0.11.0
+[0.10.0]: https://github.com/akillness/jeo-code/releases/tag/v0.10.0
 [0.9.0]: https://github.com/akillness/jeo-code/releases/tag/v0.9.0
 [0.4.5]: https://github.com/akillness/jeo-code/releases/tag/v0.4.5
 [0.4.4]: https://github.com/akillness/jeo-code/releases/tag/v0.4.4

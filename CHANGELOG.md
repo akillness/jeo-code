@@ -9,12 +9,20 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-10-01
+_The release pipeline could not actually release: 13 tests failed on Linux CI only, and the stored npm token no longer authenticated. Both are fixed at the root — the suite is order-independent, and publishing no longer depends on a secret that can expire._
+
 ### Fixed
 - **CI test gate was order-dependent** (`test/stdio-override.ts`, `test/launch-flags.test.ts`, `test/review-fixes.test.ts`, `test/terminal-restore.test.ts`, `test/tui-app.test.ts`, `test/tui-renderer.test.ts`) — three files redefined `process.stdout.isTTY`/`columns`/`rows` with a bare `Object.defineProperty` (non-writable) and restored only when an own descriptor had existed, so on a non-TTY stdout the property stayed read-only; the next file to assign it threw "Attempted to assign to readonly property", and `terminal-restore`'s stranded fake stdin then broke every later launch test (12 failures, Linux CI only, since Bun runs files in readdir order). Overrides now restore the exact prior descriptor or delete the property.
 - **`npm-publish.yml`** — the browser tool tests run in their own `bun test` process (`JEO_SKIP_BROWSER_TESTS=1` for the main suite, `JEO_REQUIRE_BROWSER=1` for `test/browser-tool.test.ts`): in-process Chromium launch/teardown intermittently made the first later CLI spawn exit 0 with empty stdout on GitHub runners. `test/launch-oneshot-slash.test.ts` now asserts the child's exit code and includes its stderr in the failure. Actions bumped to `checkout@v7`/`setup-node@v7`/`upload-artifact@v7`, runner pinned to `ubuntu-24.04`.
 
 ### Changed
-- **npm publishing moved to trusted publishing (OIDC)** (`.github/workflows/npm-publish.yml`) — the workflow no longer reads an `NPM_TOKEN` secret (the stored one no longer authenticates: CI's `npm whoami` failed, so the token path could not publish anyway). It upgrades npm to ≥ 11.5.1, checks the OIDC prerequisites (`id-token: write`), and publishes with provenance. One-time npmjs.com setup: package `jeo-code` → Settings → Trusted Publisher → GitHub Actions (`akillness` / `jeo-code` / `npm-publish.yml`, no environment). npm is restricting bypass-2FA tokens from Aug 2026 and ending direct publishing with them in Jan 2027, so the token path had a shelf life regardless.
+- **npm publishing moved to trusted publishing (OIDC)** (`.github/workflows/npm-publish.yml`) — the workflow no longer reads an `NPM_TOKEN` secret (the stored one no longer authenticates: CI's `npm whoami` failed, so the token path could not publish anyway). It upgrades npm to ≥ 11.5.1, checks the OIDC prerequisites (`id-token: write`), and publishes with provenance. npm's registered trusted publisher for `jeo-code` is GitHub Actions / `akillness/jeo-code` / `npm-publish.yml` (`npm trust list jeo-code`). npm is restricting bypass-2FA tokens from Aug 2026 and ending direct publishing with them in Jan 2027, so the token path had a shelf life regardless.
+- **`pack:check` reads npm 12's `pack --json` output** (`scripts/check-package.ts`) — npm ≥ 12 prints `{ "<name>": manifest }` where npm ≤ 11 printed `[manifest]`, so the gate reported every required file as missing once CI upgraded npm. Both shapes are accepted and pinned by a test.
+- **A dry run on an already-released ref** reports "already published" instead of failing on npm's cannot-publish-over check.
+
+### Verified
+- Full publish workflow dry run on GitHub runners: browser hard gate, typecheck, main suite (3622 pass), browser-tool suite (15 pass), `pack:check`, packed-tarball boot smoke, OIDC prerequisites — all green, zero error/warning annotations.
 
 ## [0.11.3] - 2026-10-01
 _Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it._
@@ -2464,7 +2472,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/akillness/jeo-code/releases/tag/v0.11.4
 [0.11.3]: https://github.com/akillness/jeo-code/releases/tag/v0.11.3
 [0.11.2]: https://github.com/akillness/jeo-code/releases/tag/v0.11.2
 [0.11.1]: https://github.com/akillness/jeo-code/releases/tag/v0.11.1

@@ -64,21 +64,24 @@ test("package metadata is npm-publication ready for bun install -g jeo-code", as
   expect(cli.startsWith("#!/usr/bin/env bun")).toBe(true);
 });
 
-test("npm publish workflow is wired for NPM_TOKEN based publication", async () => {
+test("npm publish workflow is wired for trusted publishing (OIDC), not a stored token", async () => {
   const workflow = await Bun.file(".github/workflows/npm-publish.yml").text();
   expect(workflow).toContain("Publish npm package");
-  expect(workflow).toContain("secrets.NPM_TOKEN");
-  expect(workflow).toContain("Verify npm token");
-  expect(workflow).toContain("2FA bypass for publishing");
+  expect(workflow).toContain("id-token: write");
+  expect(workflow).toContain("Verify trusted-publishing prerequisites");
+  expect(workflow).toContain("npm install -g npm@latest");
   expect(workflow).toContain("npm publish --access public --registry https://registry.npmjs.org/ --provenance");
   expect(workflow).toContain("npm publish --dry-run --access public");
+  // A token would silently take precedence over OIDC and then expire again.
+  expect(workflow).not.toContain("secrets.NPM_TOKEN");
+  expect(workflow).not.toContain("NODE_AUTH_TOKEN");
 });
 
-test("README documents npm token publish permissions", async () => {
+test("README documents the trusted-publisher setup instead of token permissions", async () => {
   const readme = await Bun.file("README.md").text();
-  expect(readme).toContain("Required npm token permissions");
-  expect(readme).toContain("Automation");
-  expect(readme).toContain("Granular Access Token");
-  expect(readme).toContain("bypass 2FA");
-  expect(readme).toContain("NPM_TOKEN");
+  expect(readme).toContain("trusted publishing");
+  expect(readme).toContain("Trusted Publisher");
+  expect(readme).toContain("npm-publish.yml");
+  expect(readme).toContain("id-token: write");
+  expect(readme).not.toContain("Required npm token permissions");
 });

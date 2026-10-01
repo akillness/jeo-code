@@ -6,19 +6,28 @@ import { browserSession } from "../src/agent/browser-session";
 import { createBrowserTool } from "../src/agent/browser-tool";
 
 const requireBrowser = process.env.JEO_REQUIRE_BROWSER === "1";
+// CI runs this file in its own `bun test` process (see npm-publish.yml): the main
+// suite sets JEO_SKIP_BROWSER_TESTS=1 so Chromium launch/teardown never overlaps
+// unrelated process-spawning tests, and a second step runs ONLY this file with
+// JEO_REQUIRE_BROWSER=1 so Chromium is mandatory there, never silently skipped.
+const skipBrowser = process.env.JEO_SKIP_BROWSER_TESTS === "1" && !requireBrowser;
 const requireBrowserFailure =
   "Chromium is required when JEO_REQUIRE_BROWSER=1. Run `bunx playwright install --with-deps chromium`.";
 
-let hasChromium = true;
-try {
-  // Cheap availability probe: launch+close once up front so every test below can
-  // skip cleanly (instead of timing out) in an environment without the Chromium
-  // binary downloaded (`playwright install chromium`).
-  const { chromium } = await import("playwright");
-  const b = await chromium.launch({ headless: true });
-  await b.close();
-} catch {
-  hasChromium = false;
+let hasChromium = !skipBrowser;
+if (hasChromium) {
+  try {
+    // Cheap availability probe: launch+close once up front so every test below can
+    // skip cleanly (instead of timing out) in an environment without the Chromium
+    // binary downloaded (`playwright install chromium`). Dynamic import on purpose:
+    // module resolution is part of the probe, so a missing/broken playwright package
+    // degrades to "skip" too instead of failing this file at load time.
+    const { chromium } = await import("playwright");
+    const b = await chromium.launch({ headless: true });
+    await b.close();
+  } catch {
+    hasChromium = false;
+  }
 }
 
 if (requireBrowser && !hasChromium) {

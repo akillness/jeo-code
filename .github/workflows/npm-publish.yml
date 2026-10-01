@@ -51,10 +51,20 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Test with Chromium required
+      # Two processes on purpose. Chromium launch/teardown inside the same `bun test`
+      # process intermittently starved the FIRST later `Bun.spawn` of the CLI (it
+      # exited 0 with empty stdout; reproducible only with the browser tests in-process,
+      # never standalone). Isolating keeps every test running and makes a failure
+      # attributable to one step.
+      - name: Test (everything except the browser tool)
+        env:
+          JEO_SKIP_BROWSER_TESTS: "1"
+        run: bun test
+
+      - name: Test the browser tool with Chromium required
         env:
           JEO_REQUIRE_BROWSER: "1"
-        run: bun test
+        run: bun test test/browser-tool.test.ts
 
       - name: Check package contents
         run: bun run pack:check

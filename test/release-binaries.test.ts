@@ -124,15 +124,17 @@ test("release pipeline BOOTS the packed tarball, not just its file list", () => 
   expect(smokeIdx).toBeLessThan(publishIdx);
 });
 
-test("Check package contents keeps its place between Test and Verify npm token, preserving typecheck/test/publish order", () => {
+test("Check package contents keeps its place between Test and the publishing prerequisite check, preserving typecheck/test/publish order", () => {
   const typecheckIdx = releaseWorkflow.indexOf("run: bun run typecheck");
   const testIdx = releaseWorkflow.indexOf("run: bun test");
+  const browserTestIdx = releaseWorkflow.indexOf("run: bun test test/browser-tool.test.ts");
   const packCheckIdx = releaseWorkflow.indexOf("name: Check package contents");
-  const verifyTokenIdx = releaseWorkflow.indexOf("name: Verify npm token");
+  const verifyIdx = releaseWorkflow.indexOf("name: Verify trusted-publishing prerequisites");
   const publishIdx = releaseWorkflow.indexOf("name: Publish to npm");
   expect(typecheckIdx).toBeGreaterThan(-1);
   expect(typecheckIdx).toBeLessThan(testIdx);
-  expect(testIdx).toBeLessThan(packCheckIdx);
-  expect(packCheckIdx).toBeLessThan(verifyTokenIdx);
-  expect(verifyTokenIdx).toBeLessThan(publishIdx);
+  expect(testIdx).toBeLessThan(browserTestIdx);
+  expect(browserTestIdx).toBeLessThan(packCheckIdx);
+  expect(packCheckIdx).toBeLessThan(verifyIdx);
+  expect(verifyIdx).toBeLessThan(publishIdx);
 });

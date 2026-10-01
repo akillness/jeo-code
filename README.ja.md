@@ -336,12 +336,9 @@ bun run dev:doctor          # グローバル `jeo` がこのソースを実行�
 
 ## 公開 (Publishing)
 
-CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリース公開時に自動、または `workflow_dispatch` の手動実行(ドライラン可)。ワークフローは型チェック・テスト・トークン検証(`npm whoami`)の後、`npm publish --provenance` を実行します。
+CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリース公開時に自動、または `workflow_dispatch` の手動実行(ドライラン可)。ワークフローはブラウザのハードゲート・型チェック・テスト(ブラウザツールのテストは別プロセス)・`pack:check`・パック済み tarball の起動スモークを経て `npm publish --provenance` を実行します。
 
-必要な npm トークン権限(リポジトリシークレット `NPM_TOKEN`):
-
-- `jeo-code` パッケージへの Read/Write 権限を持つ **Granular Access Token**、またはクラシック **Automation** トークン
-- 「公開時の **bypass 2FA**」許可が必須 — Automation トークンは常にバイパス、granular トークンはオプションの有効化が必要
+公開には **npm trusted publishing(OIDC)** を使います — ローテーション・漏洩・2FA 免除が必要な `NPM_TOKEN` シークレットは存在しません(npm は 2026 年 8 月から 2FA バイパストークンを制限し、2027 年 1 月にそのトークンによる直接公開を終了します)。npmjs.com での一度きりの設定: パッケージ `jeo-code` → Settings → Trusted Publisher → GitHub Actions、owner `akillness`、repository `jeo-code`、workflow `npm-publish.yml`、environment は空欄。ジョブには `permissions.id-token: write` と npm ≥ 11.5.1 が必要です(ワークフローが npm 自体を更新します)。
 
 ## 謝辞 (Acknowledgements)
 

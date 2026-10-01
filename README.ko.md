@@ -338,12 +338,9 @@ bun run dev:doctor          # 전역 `jeo`가 이 소스를 실행하는지 보�
 
 ## 배포 (Publishing)
 
-CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리즈 게시 시 자동, 또는 `workflow_dispatch` 수동 실행(드라이런 옵션). 워크플로는 타입체크·테스트·토큰 검증(`npm whoami`) 후 `npm publish --provenance`를 실행합니다.
+CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리즈 게시 시 자동, 또는 `workflow_dispatch` 수동 실행(드라이런 옵션). 워크플로는 브라우저 하드 게이트·타입체크·테스트(브라우저 도구 테스트는 별도 프로세스)·`pack:check`·패키징된 tarball 부팅 스모크를 거친 뒤 `npm publish --provenance`를 실행합니다.
 
-필요한 npm 토큰 권한(저장소 시크릿 `NPM_TOKEN`):
-
-- `jeo-code` 패키지에 Read/Write 권한이 있는 **Granular Access Token**, 또는 클래식 **Automation** 토큰
-- "배포 시 **bypass 2FA**" 허용 필수 — Automation 토큰은 항상 우회, granular 토큰은 옵션 활성화 필요
+배포는 **npm trusted publishing(OIDC)** 을 사용합니다 — 교체·유출·2FA 예외가 필요한 `NPM_TOKEN` 시크릿이 없습니다(npm은 2026년 8월부터 2FA 우회 토큰을 제한하고 2027년 1월에 해당 토큰의 직접 배포를 종료합니다). npmjs.com에서 1회 설정: 패키지 `jeo-code` → Settings → Trusted Publisher → GitHub Actions, owner `akillness`, repository `jeo-code`, workflow `npm-publish.yml`, environment 비움. 잡에는 `permissions.id-token: write`와 npm ≥ 11.5.1이 필요합니다(워크플로가 npm을 직접 업그레이드).
 
 ## 감사의 말 (Acknowledgements)
 

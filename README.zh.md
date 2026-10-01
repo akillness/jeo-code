@@ -334,12 +334,9 @@ bun run dev:doctor          # 报告全局 `jeo` 是否运行的是本源码(lin
 
 ## 发布 (Publishing)
 
-CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release 时自动触发，或手动 `workflow_dispatch`(可选 dry-run)。工作流执行类型检查、测试、令牌校验(`npm whoami`)后运行 `npm publish --provenance`。
+CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release 时自动触发，或手动 `workflow_dispatch`(可选 dry-run)。工作流依次执行浏览器硬门禁、类型检查、测试(浏览器工具测试在独立进程中)、`pack:check`、打包 tarball 的启动冒烟，然后运行 `npm publish --provenance`。
 
-所需 npm 令牌权限(仓库 secret `NPM_TOKEN`):
-
-- 对 `jeo-code` 包具有 Read/Write 权限的 **Granular Access Token**，或经典 **Automation** 令牌
-- 必须允许"发布时 **bypass 2FA**" — Automation 令牌始终绕过，granular 令牌需启用该选项
+发布使用 **npm trusted publishing(OIDC)** — 不存在需要轮换、可能泄露或需豁免 2FA 的 `NPM_TOKEN` secret(npm 自 2026 年 8 月起限制绕过 2FA 的令牌，并于 2027 年 1 月终止用其直接发布)。在 npmjs.com 上一次性设置: 包 `jeo-code` → Settings → Trusted Publisher → GitHub Actions，owner `akillness`，repository `jeo-code`，workflow `npm-publish.yml`，environment 留空。该 job 需要 `permissions.id-token: write` 和 npm ≥ 11.5.1(工作流会自行升级 npm)。
 
 ## 致谢 (Acknowledgements)
 

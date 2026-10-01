@@ -344,12 +344,9 @@ bun run dev:doctor          # report whether global `jeo` runs this source (link
 ## Publishing
 
 
-CI publishes via `.github/workflows/npm-publish.yml` — triggered by a published GitHub release, or manually with `workflow_dispatch` (optional dry-run). The workflow typechecks, tests, verifies the token (`npm whoami`), then runs `npm publish --provenance`.
+CI publishes via `.github/workflows/npm-publish.yml` — triggered by a published GitHub release, or manually with `workflow_dispatch` (optional dry-run). The workflow runs the browser hard gate, typecheck, the test suite (browser tool tests in their own process), `pack:check`, a packed-tarball boot smoke, then `npm publish --provenance`.
 
-Required npm token permissions (repository secret `NPM_TOKEN`):
-
-- A **Granular Access Token** with Read/Write access to the `jeo-code` package, or a classic **Automation** token
-- "**bypass 2FA** for publishing" must be allowed — Automation tokens always bypass; granular tokens need the option enabled
+Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` secret to rotate, leak, or exempt from 2FA (npm restricts bypass-2FA tokens from Aug 2026 and ends direct publishing with them in Jan 2027). One-time setup on npmjs.com: package `jeo-code` → Settings → Trusted Publisher → GitHub Actions, owner `akillness`, repository `jeo-code`, workflow `npm-publish.yml`, environment blank. The job needs `permissions.id-token: write` and npm ≥ 11.5.1 (the workflow upgrades npm itself).
 
 ## Acknowledgements
 

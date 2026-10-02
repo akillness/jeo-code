@@ -49,7 +49,7 @@
 - **누적되는 스킬** — 정체된 턴은 이제 그 막다른 지점을 바로 그 스킬의 프로젝트 레벨 파일(`.jeo/skills/<name>.md`, 첫 작성 시 번들 스킬로 시드, 결정론적 키워드 매칭, LLM 미사용)에 기록하므로, 다음 세션의 `$<skill>` 호출은 번들 문서가 영원히 정적으로 남는 대신 누적된 "Known Failure Modes"/"Anti-Patterns" 지식을 함께 가져갑니다. 수동 항목은 `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"`로; `jeo skills eval <skill>`은 기록된 각 교훈이 스킬의 현재 가이던스로 여전히 커버되는지 아니면 낡았는지를 실제 LLM 판단으로 확인합니다.
 - **저비용 등급 채점 라우팅** — `/goal` 검증기, `critic` 서브에이전트 역할, 그리고 고정되지 않은 `task` 팬아웃 배치는 채점·실행 대상인 작업과 같은 풀프라이스 모델에 조용히 편승하는 대신 기본적으로 저비용 크레덴셜 모델을 사용합니다(`resolveVerifierModel`, 브라우저 `verify` 액션에 대해서는 비전 능력으로 필터링되어 텍스트 전용 저비용 모델이 첨부된 스크린샷을 조용히 누락시키지 않도록 합니다).
 - **`jeo routine init`** — 스케줄/이슈/PR 트리거에서 jeo를 헤드리스로 실행하는(`jeo "<prompt>" -p`) GitHub Actions 워크플로를 생성합니다, GitHub 자체 러너 위에서 — 노트북이 필요 없고, jeo 내부에 새로운 공격 표면도 전혀 추가되지 않습니다(인프로세스 스케줄러도 웹훅 리스너도 없음). `--dry-run`으로 미리보기, `--no-pr`로 기본값인 실행당 PR 대신 직접 커밋.
-- **원격 모니터링 & 제어(Telegram, Discord, Slack)** — 봇을 한 번 페어링(`jeo notify setup --provider telegram|discord|slack`)하면, 공유 `jeo daemon start` 하나가 모든 활성 세션에 걸쳐 서브에이전트 상태 전환(시작 → 완료/실패/취소)마다 메시지를 보내고, 사람 allowlist로부터 `/subagents`, `/steer`, `/cancel`(Discord/Slack에서는 `/sessions`, `/send` 추가)을 되받습니다. Telegram은 포럼 토픽·인라인 키보드·이미지 첨부를 더하고, Discord는 REST + Gateway WebSocket, Slack은 Web API + Socket Mode를 사용합니다. 모든 원격 제어는 로컬 세션이 확인 응답(acknowledge)하며, 실행된 것으로 가정하지 않습니다.
+- **원격 모니터링 & 제어(Telegram, Discord, Slack)** — 봇을 한 번 페어링(`jeo notify setup --provider telegram|discord|slack`)하면, 공유 `jeo daemon start` 하나가 모든 활성 세션에 걸쳐 서브에이전트 상태 전환(시작 → 완료/실패/취소)마다 메시지를 보내고, 사람 allowlist로부터 `/subagents`, `/steer`, `/cancel`(Discord/Slack에서는 `/sessions`, `/send` 추가)을 되받습니다. Telegram은 포럼 토픽·인라인 키보드·이미지 첨부를 더하고, Discord는 REST + Gateway WebSocket, Slack은 Web API + Socket Mode를 사용합니다. 플랫폼별 상세 가이드 및 설치 가능한 에이전트 스킬(`channel-notify`)을 제공합니다.
 - **말로 넘길 수 없는 게이트** — `approve`는 승인 대상인 바로 그 플랜 다이제스트를 재검증하고, `team`은 리뷰된 다이제스트가 바뀐 플랜을 거부합니다. `done` 호출은 최신 검증 증거와 대조해 재확인되며(나중에 실패한 검사가 앞선 통과를 무효화하고, 교정 반송 3회 뒤에는 하드 거부), `autopilot` ratchet은 실패한 롤백을 `rollback_failed`로 기록하고 되돌린 스텝이라고 주장하는 대신 0이 아닌 코드로 중단합니다.
 - **턴을 막지 않는 세션 범위 비동기 실행** — `task` 도구의 실제 `tasks` 배열로 독립 작업을 팬아웃해 부모 턴을 막지 않습니다. detached 서브에이전트, 백그라운드 job, 줄 단위 monitor는 이후 턴에서도 `subagent`/`job`/`monitor`의 `list`, `inspect`, `await`, `cancel`, `tail`로 계속 제어할 수 있습니다. 인라인 TUI는 각 워커의 실시간 activity를 별도 슬롯에 표시하고 세션 종료 또는 Ctrl-C에서 모든 레지스트리를 정리합니다.
 - **실제로 강제되는 독립 검증자** — 플랜은 이제 architect/critic 단계를 건너뛸 수 없습니다: `PlanSchema`는 미검증 변이로 끝나는 모든 플랜을 거부하며(검증 대상 변이보다 앞에 배치된 검증자도 인정하지 않음), `ralplan` 드래프트 시점과 `team`/`approve` 실행 시점 양쪽 모두에 적용됩니다. 모든 architect/critic 평결도 실제 증거를 제시해야 하며, 관찰된 `read`/`search`/`find`/`ast_grep`/`lsp` 호출이 0건이면 텍스트가 무엇을 주장하든 평결이 차단됩니다.
@@ -206,6 +206,13 @@ jeo ultragoal
 
 옵트인: 공유 데몬 하나가 머신의 모든 활성 `jeo` 세션을 지켜보다가 **서브에이전트 상태 전환**(시작 → 완료/실패/취소)마다 메시지를 보내고, 세션 식별 헤더, 턴 시작/종료 요약, 확정된 턴 텍스트도 함께 전송합니다 — "여전히 실행 중" 반복 핑은 절대 보내지 않습니다. allowlist에 등록된 사람은 채팅에서 목록 조회·전송·조종·취소를 할 수 있고, 모든 제어는 로컬 세션으로 중계되어 **확인 응답됨(수락됨, 완료 아님)** 또는 **확인 응답 안 됨**으로 보고됩니다 — 데몬은 명령이 실행됐다고 절대 주장하지 않습니다.
 
+플랫폼별 상세 단독 가이드:
+- 📖 [채널 연동 개요 & 아키텍처](docs/integrations/README.md) — 기능 매트릭스 및 구조 개요
+- 📱 [Telegram 연동 상세 가이드](docs/integrations/telegram.md) — 내장 백그라운드 데몬, BotFather 대화형 페어링, 포럼 토픽, `/steer` 원격 명령
+- 🎮 [Discord 연동 상세 가이드](docs/integrations/discord.md) — 즉각적인 채널 알림을 위한 웹훅, 양방향 상호작용을 위한 봇 및 임베드 카드 포맷
+- 💬 [Slack 연동 상세 가이드](docs/integrations/slack.md) — 워크스페이스 알림용 Incoming Webhook, 팀 협업용 Slack App / Socket Mode, Block Kit 카드
+- 🧩 [에이전트 스킬 설치 가이드](docs/integrations/agent-skills.md) — `jeo`, Claude Code, Cursor, Codex 등 다양한 에이전트에 채널 알림 스킬 설치하기
+
 ```bash
 jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
 jeo notify status [--provider …]   # 마스킹된 토큰, 목적지, allowlist, 데몬 상태 (stopped / stale / initializing / initialized / pairing)
@@ -241,6 +248,41 @@ jeo daemon start|stop|status|reload   # 공유 데몬에는 프로바이더 선�
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
 
+
+### Discord & Slack (웹훅 & 봇 앱)
+
+팀 워크스페이스를 위해 표준 웹훅 또는 봇 자격증명을 환경 변수로 설정합니다:
+
+```bash
+# Discord Webhook
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+# Slack Incoming Webhook
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+작업 상태, 소요 시간, 커밋 및 PR 링크가 포함된 풍부한 임베드(Discord) 및 Block Kit 카드(Slack)를 전송할 수 있습니다. 페이로드 스키마와 CI 자동화 스니펫은 [Discord 가이드](docs/integrations/discord.md) 및 [Slack 가이드](docs/integrations/slack.md)를 참고하세요.
+
+### 에이전트 스킬로 설치
+
+표준 [Agent Skills](https://agentskills.io) CLI를 사용하여 `jeo` 및 다른 AI 코딩 에이전트에 채널 알림 스킬을 즉시 설치할 수 있습니다:
+
+```bash
+# 현재 저장소에 channel-notify 스킬 설치:
+npx skills add akillness/jeo-code --skill channel-notify
+
+# 또는 모든 프로젝트에서 사용하도록 전역(-g) 설치:
+npx skills add akillness/jeo-code --skill channel-notify -g
+```
+
+설치 후 에이전트는 작업 수행 중 자동으로 상태를 브로드캐스트할 수 있습니다:
+```bash
+# jeo에서 원샷 호출:
+jeo $channel-notify "테스트 47개 전수 통과 완료. 리뷰 준비됨."
+
+# Claude Code에서 호출:
+/channel-notify "빌드 성공. PR: https://github.com/..."
+```
 
 ## 루틴 (GitHub Actions)
 

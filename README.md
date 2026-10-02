@@ -54,7 +54,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 - **Skills that compound** — a stalled turn now writes the dead end into the SAME skill's project-level file (`.jeo/skills/<name>.md`, seeded from the bundled skill on first write, deterministic keyword match, no LLM), so the next session's `$<skill>` invocation carries accumulated "Known Failure Modes"/"Anti-Patterns" knowledge instead of the bundled doc staying static forever. `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"` for manual entries; `jeo skills eval <skill>` runs a real LLM judgment on whether each recorded lesson is still covered by the skill's current guidance or has gone stale.
 - **Cheap-tier grader routing** — the `/goal` verifier, the `critic` subagent role, and unpinned `task` fan-out batches default to a cheap credentialed model instead of silently riding the same full-price model as the work they're grading/executing (`resolveVerifierModel`, vision-capability-filtered for the browser `verify` action so a text-only cheap model never silently drops an attached screenshot).
 - **`jeo routine init`** — generates a GitHub Actions workflow that runs jeo headlessly (`jeo "<prompt>" -p`) on a schedule/issue/PR trigger, on GitHub's own runners — no laptop required, and zero new attack surface inside jeo itself (no in-process scheduler or webhook listener). `--dry-run` to preview, `--no-pr` for a direct commit instead of the default PR-per-run.
-- **Remote monitoring & control (Telegram, Discord, Slack)** — pair a bot once (`jeo notify setup --provider telegram|discord|slack`), then one shared `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) across every live session and accepts `/subagents`, `/steer`, `/cancel` (plus `/sessions` and `/send` on Discord/Slack) back from a human allowlist. Telegram adds forum topics, inline keyboards, and image attachments; Discord uses REST + Gateway WebSocket; Slack uses Web API + Socket Mode. Every remote control is acknowledged by the local session, never assumed executed.
+- **Remote monitoring & control (Telegram, Discord, Slack)** — pair a bot once (`jeo notify setup --provider telegram|discord|slack`), then one shared `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) across every live session and accepts `/subagents`, `/steer`, `/cancel` (plus `/sessions` and `/send` on Discord/Slack) back from a human allowlist. Telegram adds forum topics, inline keyboards, and image attachments; Discord uses REST + Gateway WebSocket; Slack uses Web API + Socket Mode. Dedicated standalone setup guides and an installable Agent Skill (`channel-notify`) are included.
 - **Gates that cannot be talked around** — `approve` re-validates the exact plan digest it is approving and `team` refuses a plan whose reviewed digest changed; a `done` call is re-checked against the latest verification evidence (a later failed check invalidates an earlier pass, three correction bounces then a hard rejection); the `autopilot` ratchet records a failed rollback as `rollback_failed` and halts non-zero instead of claiming a reverted step.
 - **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions (`list`, `inspect`, `await`, `cancel`, `tail`). The inline TUI keeps each worker's live activity in its own slot and tears down every registry on session exit or Ctrl-C.
 - **Independent verifier, actually enforced** — a plan can no longer skip its architect/critic step: `PlanSchema` rejects any plan that ends with an unverified mutation (a verifier placed BEFORE the mutation it should check doesn't count either), at both `ralplan` draft time and `team`/`approve` execution time. Every architect/critic verdict must also show real evidence — zero observed `read`/`search`/`find`/`ast_grep`/`lsp` calls blocks the verdict regardless of what the text claims.
@@ -212,6 +212,13 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 Opt-in: one shared daemon watches every live `jeo` session on the machine and pushes a message on each **subagent state edge** (started → completed/failed/cancelled), plus the session identity header, turn start/finish summaries, and the finalized turn text — never repeated "still running" pings. Allowlisted humans can list, send, steer, and cancel from the chat; every control is relayed to the local session and reported as **acknowledged (accepted, not completed)** or **not acknowledged** — the daemon never claims a command ran.
 
+Detailed standalone guides:
+- 📖 [Channel Integrations Overview](docs/integrations/README.md) — Feature matrix and architecture overview
+- 📱 [Telegram Integration Guide](docs/integrations/telegram.md) — Built-in background daemon, interactive BotFather pairing, forum topics, and `/steer` commands
+- 🎮 [Discord Integration Guide](docs/integrations/discord.md) — Webhooks for instant channel updates, Discord Bot for bidirectional interactions, and embed formats
+- 💬 [Slack Integration Guide](docs/integrations/slack.md) — Incoming Webhooks for workspace notifications, Slack App / Socket Mode for team collaboration, and Block Kit cards
+- 🧩 [Agent Skills Installation Guide](docs/integrations/agent-skills.md) — Install channel notification capabilities into `jeo`, Claude Code, Cursor, Codex, and other agents
+
 ```bash
 jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
 jeo notify status [--provider …]   # masked token, destination, allowlist, daemon state (stopped / stale / initializing / initialized / pairing)
@@ -245,6 +252,27 @@ What the words mean, because they are not interchangeable:
 │  SubagentRegistry   │  (one  │   (singleton)    │        │ Discord REST + Gateway WS │
 │  session endpoint   │  per   │                  │        │ Slack Web API + Socket WS │
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
+```
+
+### Install as an Agent Skill
+
+Install channel notification capabilities into `jeo` or any other AI coding agent using the standard [Agent Skills](https://agentskills.io) CLI:
+
+```bash
+# Install channel-notify skill into the current repository:
+npx skills add akillness/jeo-code --skill channel-notify
+
+# Or install globally across all your projects:
+npx skills add akillness/jeo-code --skill channel-notify -g
+```
+
+Once installed, agents can automatically broadcast status updates during tasks:
+```bash
+# One-shot invocation in jeo:
+jeo $channel-notify "All 47 tests passed. Ready for review."
+
+# In Claude Code:
+/channel-notify "Build #108 succeeded. PR: https://github.com/..."
 ```
 
 ## Routines (GitHub Actions)

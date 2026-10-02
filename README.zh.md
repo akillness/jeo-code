@@ -49,7 +49,7 @@
 - **持续积累的技能** — 卡壳的一轮现在会把死胡同写入同一个技能的项目级文件(`.jeo/skills/<name>.md`,首次写入时从内置技能播种,采用确定性关键词匹配,不使用 LLM),因此下一个会话的 `$<skill>` 调用会带上累积的"Known Failure Modes"/"Anti-Patterns"知识,而不是让内置文档永远保持静态。手动记录用 `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"`;`jeo skills eval <skill>` 会运行一次真正的 LLM 判断,检查每条已记录的经验是否仍被技能当前的指引覆盖,还是已经过时。
 - **低价位评分模型路由** — `/goal` 验证器、`critic` 子代理角色,以及未锁定的 `task` 扇出批次,现在默认使用低价位、已配置凭证的模型,而不是悄悄搭乘与它们所评分/执行的工作相同的全价模型(`resolveVerifierModel`,针对浏览器 `verify` 动作按视觉能力过滤,确保纯文本的低价模型不会悄悄丢弃附带的截图)。
 - **`jeo routine init`** — 生成一个 GitHub Actions 工作流,在 schedule/issue/PR 触发器上以无头模式运行 jeo(`jeo "<prompt>" -p`),运行在 GitHub 自己的 runner 上 — 不需要笔记本电脑,并且不会给 jeo 自身增加任何新的攻击面(没有进程内调度器或 webhook 监听器)。`--dry-run` 可预览,`--no-pr` 则改为直接提交而非默认的每次运行一个 PR。
-- **远程监控与控制(Telegram、Discord、Slack)** — 配对一次机器人(`jeo notify setup --provider telegram|discord|slack`)后，一个共享的 `jeo daemon start` 会在所有活跃会话中、子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受来自人类 allowlist 的 `/subagents`、`/steer`、`/cancel`(Discord/Slack 上还有 `/sessions` 和 `/send`)回传。Telegram 额外提供论坛主题、内联键盘和图片附件；Discord 使用 REST + Gateway WebSocket；Slack 使用 Web API + Socket Mode。每一条远程控制都由本地会话确认收到，绝不假定已执行。
+- **远程监控与控制(Telegram、Discord、Slack)** — 配对一次机器人(`jeo notify setup --provider telegram|discord|slack`)后，一个共享的 `jeo daemon start` 会在所有活跃会话中、子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受来自人类 allowlist 的 `/subagents`、`/steer`、`/cancel`(Discord/Slack 上还有 `/sessions` 和 `/send`)回传。Telegram 额外提供论坛主题、内联键盘和图片附件；Discord 使用 REST + Gateway WebSocket；Slack 使用 Web API + Socket Mode。附带各平台详细配置指南及可安装的 Agent Skill(`channel-notify`)。
 - **无法绕过的门禁** — `approve` 会重新校验它正在批准的那份计划的精确摘要，`team` 会拒绝已审阅摘要发生变化的计划；`done` 调用会对照最新的验证证据重新检查(后来的失败检查会使先前的通过失效，三次纠正往返后硬性拒绝)；`autopilot` ratchet 会把失败的回滚记录为 `rollback_failed` 并以非零状态停止，而不是声称该步骤已回退。
 - **不阻塞回合的会话级异步执行** — 通过 `task` 工具真实的 `tasks` 数组扇出独立工作，不阻塞父回合。detached 子代理、后台 job 和逐行 monitor 可在后续回合中继续使用 `subagent`/`job`/`monitor` 的 `list`、`inspect`、`await`、`cancel`、`tail` 控制。内联 TUI 为每个 worker 保留独立的实时 activity 槽位，并在会话退出或 Ctrl-C 时清理全部 registry。
 - **独立验证器，真正强制执行** — 计划再也无法跳过 architect/critic 步骤: `PlanSchema` 会拒绝任何以未验证变更结尾的计划(把验证器放在它该检查的变更之前也不算数)，在 `ralplan` 起草阶段和 `team`/`approve` 执行阶段都强制生效。每一次 architect/critic 裁决也都必须展示真实证据 — 观测到的 `read`/`search`/`find`/`ast_grep`/`lsp` 调用为零，无论文本怎么声称，裁决都会被拦下。
@@ -205,6 +205,13 @@ jeo ultragoal
 
 可选功能: 一个共享守护进程监视本机上所有活跃的 `jeo` 会话，并在每次**子代理状态变化**(启动 → 完成/失败/取消)时推送消息，另附会话身份头、回合开始/结束摘要以及最终的回合文本 — 绝不会重复"仍在运行"之类的通知。allowlist 中的人类可以在聊天里列出、发送、引导和取消；每一条控制都会转发给本地会话，并报告为**已确认(已接受，未必已完成)**或**未确认** — 守护进程绝不声称某条命令已执行。
 
+各平台详细独立指南：
+- 📖 [渠道集成概览与架构](docs/integrations/README.md) — 功能对比矩阵与架构图
+- 📱 [Telegram 集成指南](docs/integrations/telegram.md) — 内置后台守护进程、BotFather 交互配对、论坛主题与 `/steer` 命令
+- 🎮 [Discord 集成指南](docs/integrations/discord.md) — 即时频道通知 Webhook、双向交互机器人与 Embed 卡片规范
+- 💬 [Slack 集成指南](docs/integrations/slack.md) — 工作区通知 Incoming Webhook、团队协作 Slack App / Socket Mode 与 Block Kit 卡片
+- 🧩 [Agent Skill 安装指南](docs/integrations/agent-skills.md) — 将渠道通知技能一键安装至 `jeo`、Claude Code、Cursor、Codex 等环境
+
 ```bash
 jeo notify setup  [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID | --channel-id ID] [--allowed-user-ids ID,ID,...]
 jeo notify status [--provider …]   # masked token, destination, allowlist, daemon state (stopped / stale / initializing / initialized / pairing)
@@ -238,6 +245,41 @@ jeo daemon start|stop|status|reload   # the shared daemon has no provider select
 │  SubagentRegistry   │  (one  │   (singleton)    │        │ Discord REST + Gateway WS │
 │  session endpoint   │  per   │                  │        │ Slack Web API + Socket WS │
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
+```
+
+### Discord & Slack (Webhook 与 Bot App)
+
+为团队工作区配置标准 Webhook 或 Bot 凭证环境变量：
+
+```bash
+# Discord Webhook
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+# Slack Incoming Webhook
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+支持发送包含任务状态、耗时、Git 提交与 PR 链接的富文本 Embed(Discord) 及 Block Kit 卡片(Slack)。详见 [Discord 指南](docs/integrations/discord.md) 与 [Slack 指南](docs/integrations/slack.md)。
+
+### 安装为 Agent Skill
+
+使用标准的 [Agent Skills](https://agentskills.io) CLI，可将渠道通知技能快速安装到 `jeo` 或其它 AI 编码代理中：
+
+```bash
+# 安装 channel-notify 技能到当前仓库：
+npx skills add akillness/jeo-code --skill channel-notify
+
+# 或全局(-g)安装，供所有项目使用：
+npx skills add akillness/jeo-code --skill channel-notify -g
+```
+
+安装后，代理可在执行任务时自主发送进度通知：
+```bash
+# 在 jeo 中单次调用：
+jeo $channel-notify "所有 47 个测试均已通过，等待代码审查。"
+
+# 在 Claude Code 中调用：
+/channel-notify "构建成功。PR 链接: https://github.com/..."
 ```
 
 ## 例行任务 (GitHub Actions)

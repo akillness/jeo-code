@@ -10,7 +10,7 @@ import { jeoEnv } from "../../util/env";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 const DEPRECATED_TEMPERATURE = "`temperature` is deprecated for this model.";
-const CLAUDE_CODE_VERSION = "2.1.63";
+const CLAUDE_CODE_VERSION = "2.1.289";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 /** Betas needed for API-key requests: interleaved-thinking enables thinking+tools,
@@ -324,7 +324,11 @@ export function anthropicPayload(
       if (thinkingMode === "budget-effort" && !disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
     }
   } else if (includeTemperature && options.temperature !== undefined) {
-    payload.temperature = options.temperature;
+    // Opus/Sonnet 5.5 reject custom sampling even without explicit thinking.
+    const version = parseAnthropicVersion(model);
+    const fixedSampling = version && (version.kind === "opus" || version.kind === "sonnet")
+      && (version.major > 5 || (version.major === 5 && version.minor >= 5));
+    if (!fixedSampling) payload.temperature = options.temperature;
   }
   if (options.tools?.length) {
     // NATIVE tool-calling: declare jeo's tools as Anthropic functions. tool_choice

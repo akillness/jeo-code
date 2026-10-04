@@ -476,9 +476,10 @@ test("resolveTierModel (via routePrompt) auto-select: complex tier picks the STR
   )) as RouteDecision;
   expect(decision).not.toBeNull();
   expect(decision.tier).toBe("complex");
-  // claude-fable-5: xhigh thinking + 128k output + 1M context — strongest catalogued
-  // credentialed model (matches current external agentic-benchmark leadership).
-  expect(decision.model).toBe("claude-fable-5");
+  // claude-opus-5-5: ties claude-fable-5 / claude-sonnet-5-5 on every strength key (xhigh thinking,
+  // 128k output, 1M context); its 2026-09 releaseDate beats fable-5's 2026-06 on the recency
+  // tiebreak, and "claude-opus-5-5" < "claude-sonnet-5-5" breaks the same-date tie.
+  expect(decision.model).toBe("claude-opus-5-5");
 });
 
 test("resolveTierModel auto-select constrains candidates to ONLY credentialed providers (single-provider config never cross-selects an uncredentialed provider's model)", async () => {

@@ -20,7 +20,7 @@ test("normalizeBaseUrl defaults, adds scheme, strips trailing slash", () => {
 
 test("chooseDefaultModel: blank → provider's recommended", () => {
   expect(chooseDefaultModel("", "openai").model).toBe("gpt-5.5");
-  expect(chooseDefaultModel("   ", "anthropic").model).toBe("claude-sonnet-5");
+  expect(chooseDefaultModel("   ", "anthropic").model).toBe("claude-sonnet-5-5");
 });
 
 test("chooseDefaultModel: known id accepted; provider mismatch warns", () => {
@@ -42,7 +42,9 @@ test("chooseDefaultModel: unknown id accepted with suggestions", () => {
 test("recommendedModelsFor returns annotated id lines", () => {
   const lines = recommendedModelsFor("anthropic", 3);
   expect(lines.length).toBeLessThanOrEqual(3);
-  expect(lines[0]).toContain("claude-sonnet-5");
+  // setup.ts takes the first token of line 0 as the accept-on-Enter default, so it must be exactly the recommended id
+  // (a substring match would also pass for the older `claude-sonnet-5`).
+  expect(lines[0]!.split(" ")[0]).toBe("claude-sonnet-5-5");
   expect(lines[0]).toContain("—"); // note separator
 });
 

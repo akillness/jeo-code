@@ -407,7 +407,7 @@ test("sessionKey: two turns routed to DIFFERENT models within one session produc
   );
   expect(calls.length).toBe(2);
   expect(calls[0].model).toBe("claude-haiku-4-5");
-  expect(calls[1].model).toBe("claude-fable-5");
+  expect(calls[1].model).toBe("claude-opus-5-5"); // strongest anthropic-credentialed: ties fable-5 on strength keys, newer releaseDate wins
   expect(calls[0].sessionKey).toBeDefined();
   expect(calls[1].sessionKey).toBeDefined();
   expect(calls[0].sessionKey).not.toBe(calls[1].sessionKey);

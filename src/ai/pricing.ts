@@ -30,6 +30,10 @@ const PRICE_TABLE: ReadonlyArray<readonly [pattern: string, price: ModelPrice]> 
   ["claude-opus-4-8", { inPerM: 5, outPerM: 25 }],
   ["claude-fable", { inPerM: 10, outPerM: 50 }],
   ["claude-mythos", { inPerM: 10, outPerM: 50 }],
+  // Opus 5.5 = $4/$20 (Anthropic pricing page). MUST precede the generic `claude-opus` row or the
+  // substring match prices it at the legacy $15/$75 and skews cost-ranked routing. Sonnet 5.5 shares
+  // Sonnet 5's $2/$10 and is already covered by the `claude-sonnet-5` row below.
+  ["claude-opus-5-5", { inPerM: 4, outPerM: 20 }],
   ["claude-opus", { inPerM: 15, outPerM: 75 }],
   ["claude-sonnet-5", { inPerM: 2, outPerM: 10 }],
   ["claude-sonnet", { inPerM: 3, outPerM: 15 }],

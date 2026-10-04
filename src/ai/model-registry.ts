@@ -15,6 +15,12 @@ export const BUILTIN_ALIASES: ModelAliases = {
   flash: "gemini-2.5-flash",
   grok: "grok-4.3",
   kimi: "kimi-k2-0711-preview",
+  // Anthropic 5.5 generation: spellings that name the version. Bare `opus`/`sonnet` above stay on the
+  // 4.6 ids (pinned backward-compat); users opt into 5.5 by naming the version.
+  "opus-5.5": "claude-opus-5-5",
+  "sonnet-5.5": "claude-sonnet-5-5",
+  "opus5.5": "claude-opus-5-5",
+  "sonnet5.5": "claude-sonnet-5-5",
   // Antigravity's backend DEPRECATED this wire id (deprecatedModelIds:
   // { "gemini-3.1-pro-high": { newModelId: "gemini-pro-agent" } }) — keep
   // existing configs/roles pinned to the old id working on the successor.

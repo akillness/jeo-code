@@ -12,6 +12,9 @@ import {
   decodeResultUrl,
 } from "../src/agent/web-search";
 import { webSearchCardLines } from "../src/tui/components/forge";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
 const SEARCH_ENV_KEYS = [
   "JEO_SEARCH_PROVIDER",
@@ -357,6 +360,121 @@ test("webSearchTool: gemini without a real API key skips straight to DuckDuckGo 
     }
   });
 });
+
+// ── Anthropic OAuth identity: Claude Code minimum-version gate ────────────────
+// Live OAuth probe: Opus 5.5 answered HTTP 400 `claude_code_version_too_old: version 2.1.280
+// minimum` while older models were served, because the OAuth cloak advertised 2.1.63. web_search
+// keeps its OWN copy of that cloak (it does not import the adapter's), so it can drift on its own.
+// The floor below is the SERVER's minimum, not "whatever we ship today": the test pins >= floor and
+// User-Agent/billing agreement, never the exact current version, so bumping the constant stays
+// green and regressing below the floor turns it red. Hermetic: fake OAuth token in a throwaway
+// config dir, stubbed fetch, no network.
+const MIN_CLAUDE_CODE_VERSION = "2.1.280";
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const SEARCH_OPUS_5_5_IDS = ["claude-opus-5-5", "claude-opus-5-5-20261001"];
+// Env that could swap the OAuth credential for an API key or add a second OAuth source.
+const OAUTH_SANDBOX_ENV = ["JEO_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] as const;
+
+/** Numeric, component-wise compare. NEVER string-compare: "2.1.63" > "2.1.280" lexicographically. */
+function compareVersions(a: string, b: string): number {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** The two places the OAuth cloak states a Claude Code version: User-Agent and the billing system block. */
+function advertisedVersions(headers: Record<string, string>, system: { text: string }[] | undefined): { userAgent?: string; billing?: string } {
+  return {
+    userAgent: /^claude-cli\/(\d+\.\d+\.\d+)(?:\s|$)/.exec(headers["user-agent"] ?? "")?.[1],
+    billing: /cc_version=(\d+\.\d+\.\d+)(?:\.[0-9a-f]+)?;/.exec(system?.[0]?.text ?? "")?.[1],
+  };
+}
+
+interface SearchWireCall {
+  url: string;
+  headers: Record<string, string>;
+  body: { model?: string; system?: { text: string }[] };
+}
+
+/** Runs `run` with Anthropic OAuth as the only credential, JEO_SEARCH_MODEL=`model`, and a fetch
+ *  stub that emulates the live server gate: HTTP 400 `claude_code_version_too_old` when EITHER
+ *  advertised version is missing or below the floor, otherwise the search fixture echoing the
+ *  requested model. Every outbound request is recorded in `calls`. */
+async function withAnthropicOauthSearch(model: string, run: (calls: SearchWireCall[]) => Promise<void>): Promise<void> {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-web-search-oauth-"));
+  const savedEnv = new Map(OAUTH_SANDBOX_ENV.map(k => [k, process.env[k]] as const));
+  const realFetch = globalThis.fetch;
+  const calls: SearchWireCall[] = [];
+  try {
+    for (const k of OAUTH_SANDBOX_ENV) delete process.env[k];
+    await fs.writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({ providers: {}, oauth: { anthropic: { access: "test-oauth-access" } }, defaultModel: "claude-sonnet-4-6" }),
+      "utf-8",
+    );
+    process.env.JEO_CONFIG_DIR = configDir;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const call: SearchWireCall = {
+        url: String(input instanceof Request ? input.url : input),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : {},
+      };
+      calls.push(call);
+      if (call.url !== ANTHROPIC_MESSAGES_URL) return new Response("unexpected fetch", { status: 403 });
+      const { userAgent, billing } = advertisedVersions(call.headers, call.body.system);
+      const tooOld = [userAgent, billing].some(v => v === undefined || compareVersions(v, MIN_CLAUDE_CODE_VERSION) < 0);
+      if (tooOld) {
+        return new Response(
+          JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `claude_code_version_too_old: version ${MIN_CLAUDE_CODE_VERSION} minimum` } }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ...ANTHROPIC_FIXTURE, model: call.body.model }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    await withSearchEnv({ JEO_SEARCH_PROVIDER: "anthropic", JEO_SEARCH_MODEL: model }, () => run(calls));
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await fs.rm(configDir, { recursive: true, force: true });
+  }
+}
+
+for (const model of SEARCH_OPUS_5_5_IDS) {
+  test(`webSearchTool: Anthropic OAuth search with JEO_SEARCH_MODEL=${model} sends that exact model and one agreeing Claude Code version >= ${MIN_CLAUDE_CODE_VERSION} in User-Agent and billing header (one fetch, accepted)`, async () => {
+    await withAnthropicOauthSearch(model, async calls => {
+      const query = "hermes agent philosophy";
+      const res = await webSearchTool({ query });
+
+      // A version rejection is not recoverable by retrying: the only passing shape is ONE accepted
+      // Anthropic fetch — no failover to DuckDuckGo masking a gate failure.
+      expect({ success: res.success, error: res.error, urls: calls.map(c => c.url) }).toEqual({
+        success: true,
+        error: undefined,
+        urls: [ANTHROPIC_MESSAGES_URL],
+      });
+
+      const sent = calls[0]!;
+      expect(sent.body.model).toBe(model);
+      expect(sent.headers.authorization).toBe("Bearer test-oauth-access");
+
+      const { userAgent, billing } = advertisedVersions(sent.headers, sent.body.system);
+      // Both must parse AND be equal; two `undefined`s must not pass vacuously.
+      expect(userAgent).toBeDefined();
+      expect(billing).toBe(userAgent);
+      expect(compareVersions(userAgent!, MIN_CLAUDE_CODE_VERSION)).toBeGreaterThanOrEqual(0);
+
+      // Response shape preserved end to end: the tool returns the server answer, formatted unchanged.
+      expect(res.output).toBe(formatWebSearchOutput(query, parseAnthropicSearchResponse({ ...ANTHROPIC_FIXTURE, model })));
+    });
+  });
+}
 
 // ── Runtime failover through the chain (real fetch path, mocked transport) ────
 

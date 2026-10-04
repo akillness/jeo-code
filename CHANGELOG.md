@@ -9,6 +9,23 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-04
+_Anthropic login now runs Opus 5.5 and Sonnet 5.5 as the selected models: the OAuth client version gate and incompatible fast-mode temperature are fixed, with real request and streaming responses verified._
+
+### Added
+- **Anthropic 5.5 model selection** — `opus5.5` / `opus-5.5` select `claude-opus-5-5`; `sonnet5.5` / `sonnet-5.5` select `claude-sonnet-5-5`. Catalog metadata reflects the official 1M context, 128K output and adaptive-thinking support; Opus 5.5 pricing is $4 input / $20 output per million tokens.
+
+### Fixed
+- **Opus 5.5 rejected after OAuth login** — update the shared request User-Agent and billing-header client version from 2.1.63 to 2.1.289, satisfying Anthropic's observed 2.1.280 minimum. The companion Anthropic web-search OAuth path uses the same supported version.
+- **Fast-mode 5.5 requests rejected on temperature** — omit custom temperature for Opus/Sonnet 5.5 and newer before the first request; retain the selected wire model and existing older-model recovery behavior.
+
+### Changed
+- **Anthropic setup recommendation and automatic routing** — Sonnet 5.5 is the recommended setup model and high-tier automatic pick; the complex-tier automatic pick moves from Fable 5 to Opus 5.5 under the existing catalog ranking. Explicit model pins and the legacy bare `opus` / `sonnet` aliases remain unchanged.
+
+### Verified
+- Real Anthropic OAuth requests returned HTTP 200 with exact `claude-opus-5-5` and `claude-sonnet-5-5` response identities in both low-effort and fast mode. Both models also completed real streaming requests with matching `message_start.model` and `message_stop`.
+- Modified behavioral regressions: 292 pass, 0 fail across 11 files; `bun run typecheck` passed. Regression coverage enforces OAuth client version eligibility, first-request sampling compatibility, exact model preservation, setup defaults, pricing and web-search headers.
+
 ## [0.11.4] - 2026-10-01
 _The release pipeline could not actually release: 13 tests failed on Linux CI only, and the stored npm token no longer authenticated. Both are fixed at the root — the suite is order-independent, and publishing no longer depends on a secret that can expire._
 

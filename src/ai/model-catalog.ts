@@ -80,7 +80,13 @@ const STD: ThinkLevel[] = ["low", "medium", "high"];
  *  (`cheapestCredentialed`/`strongestCredentialed`/`compareStrengthAscending`)
  *  now tiebreak on `releaseDate` directly rather than relying on position. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
-  // Anthropic (newest first: sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6). 4.5-and-below dropped from jeo's exposed model list per user direction.
+  // Anthropic (newest first: sonnet-5-5 > opus-5-5 > sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6). 4.5-and-below dropped from jeo's exposed model list per user direction.
+  // 5.5 generation (platform.claude.com/docs/en/models/{opus-5-5,sonnet-5-5}/overview): dateless pinned wire ids
+  // `claude-opus-5-5` (released 2026-09-22) / `claude-sonnet-5-5` (2026-09-28), 1M ctx / 128k sync max output, adaptive
+  // thinking (Opus 5.5 always on; Sonnet 5.5 on by default), text+image input. Canonical == wire id; anthropic.ts already
+  // classifies major >= 5 as adaptive + display:"summarized".
+  { canonical: "claude-sonnet-5-5", provider: "anthropic", providerModel: "claude-sonnet-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-09" },
+  { canonical: "claude-opus-5-5", provider: "anthropic", providerModel: "claude-opus-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-09" },
   { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
   // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.

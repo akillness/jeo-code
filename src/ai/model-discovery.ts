@@ -9,6 +9,7 @@
  */
 import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { listAgyModels } from "../agent/antigravity-cli";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
 import {
@@ -32,7 +33,7 @@ export interface ProviderModelsResult {
   models: string[];
   ok: boolean;
   /** How the request authenticated (for display). */
-  source: "oauth" | "api_key" | "keyless" | "none";
+  source: "oauth" | "api_key" | "keyless" | "cli_session" | "none";
   /** Opaque OAuth account scope for account-specific cache rows. */
   accountId?: string;
   /** Actual custom endpoint queried, for endpoint-scoped persistent caches. */
@@ -50,6 +51,9 @@ export interface DiscoveryOptions {
   /** Per-request timeout; default 5000ms. */
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Working directory and executable override for the externally managed agy CLI. */
+  cwd?: string;
+  executable?: string;
   /** Cap returned ids; OpenAI and Antigravity default to the full account list. */
   limit?: number;
   /** Config snapshot used for provider base URLs. */
@@ -210,6 +214,10 @@ function isGeminiChatModel(id: string): boolean {
 type CodexModelRow = { slug?: string; id?: string; visibility?: string; supported_in_api?: boolean; priority?: number };
 type AntigravityModelRow = { slug?: string; id?: string; name?: string; isInternal?: boolean; model?: string };
 
+function normalizeAntigravityModelId(id: string): string {
+  return id.replace(/^models\//, "").replace(/^antigravity\//, "");
+}
+
 /** Parse a provider's models response body into normalized, chat-capable model ids. */
 export function parseModelsBody(provider: ProviderName, body: unknown, opts: { openaiCompatible?: boolean } = {}): string[] {
   const data = body as {
@@ -241,13 +249,14 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
     // "gemini-3-flash"); the entry's `model` field is an internal enum
     // (MODEL_PLACEHOLDER_*) and must never be surfaced. The response's OWN
     // metadata decides what to show — no hard-coded model lists:
-    //  1. `agentModelSorts` groups are the API's positive agent/chat set
-    //     (exactly what Antigravity's model picker offers) — prefer it.
-    //  2. Otherwise fall back to excluding the API's non-chat role lists
-    //     (tab completion, image generation, transcription, deprecations).
+    // Agent sorts and tiered model ids are complementary chat offerings, not
+    // interchangeable allowlists. Include both plus the declared default;
+    // only older responses without these fields need non-chat role filtering.
     const payload = body as {
       models?: Record<string, AntigravityModelRow> | AntigravityModelRow[];
       agentModelSorts?: { groups?: { modelIds?: string[] }[] }[];
+      tieredModelIds?: Record<string, string[]>;
+      defaultAgentModelId?: string;
       tabModelIds?: string[];
       imageGenerationModelIds?: string[];
       audioTranscriptionModelIds?: string[];
@@ -256,16 +265,21 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       /** Array of ids OR an object keyed by deprecated id. */
       deprecatedModelIds?: string[] | Record<string, unknown>;
     };
-    const normalizeId = (id: string): string => id.replace(/^models\//, "").replace(/^antigravity\//, "");
-    const roleIds = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(normalizeId) : []);
+    const roleIds = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(normalizeAntigravityModelId) : []);
     const deprecated = Array.isArray(payload.deprecatedModelIds)
       ? roleIds(payload.deprecatedModelIds)
-      : Object.keys(payload.deprecatedModelIds ?? {}).map(normalizeId);
+      : Object.keys(payload.deprecatedModelIds ?? {}).map(normalizeAntigravityModelId);
     const agentIds = new Set(
       (Array.isArray(payload.agentModelSorts) ? payload.agentModelSorts : [])
         .flatMap(sort => (Array.isArray(sort?.groups) ? sort.groups : []))
         .flatMap(group => roleIds(group?.modelIds)),
     );
+    for (const ids of Object.values(payload.tieredModelIds ?? {})) {
+      for (const id of roleIds(ids)) agentIds.add(id);
+    }
+    if (typeof payload.defaultAgentModelId === "string") agentIds.add(normalizeAntigravityModelId(payload.defaultAgentModelId));
+    const hasChatModelMetadata = Array.isArray(payload.agentModelSorts)
+      || payload.tieredModelIds !== undefined || payload.defaultAgentModelId !== undefined;
     const nonChat = new Set([
       ...roleIds(payload.tabModelIds),
       ...roleIds(payload.imageGenerationModelIds),
@@ -279,11 +293,11 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       ? rawModels.map(model => [model?.slug ?? model?.id ?? model?.name ?? "", model] as const)
       : Object.entries(rawModels ?? {});
     return entries
-      .map(([id, model]) => [typeof id === "string" ? normalizeId(id) : "", model] as const)
+      .map(([id, model]) => [typeof id === "string" ? normalizeAntigravityModelId(id) : "", model] as const)
       .filter(([id, model]) =>
         id.length > 0 &&
         model?.isInternal !== true &&
-        (Array.isArray(payload.agentModelSorts) ? agentIds.has(id) : !nonChat.has(id)))
+        (hasChatModelMetadata ? agentIds.has(id) : !nonChat.has(id)))
       .map(([id]) => `antigravity/${id}`);
   }
   if (provider === "gemini") {
@@ -320,6 +334,8 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   if (result.ok && result.models.length > 0) return result;
   // OpenAI has live list endpoints for both auth modes. Neither a failed request
   // nor an authoritative empty list establishes access to the static snapshot.
+  // Argon CLI catalogs are live, process-local, and never synthesized from jeo's static catalog.
+  if (result.provider === "agy") return result;
   if (result.provider === "openai") return result;
   // Antigravity's available models depend on the Cloud Code Assist agent backend
   // and must never be faked from a hard-coded catalog.
@@ -357,6 +373,17 @@ export async function listProviderModels(
   provider: ProviderName,
   opts: DiscoveryOptions = {},
 ): Promise<ProviderModelsResult> {
+  if (provider === "agy") {
+    try {
+      const models = await listAgyModels({ cwd: opts.cwd, timeoutMs: opts.timeoutMs, signal: opts.signal, executable: opts.executable });
+      const unique = [...new Set(models)];
+      recordLiveProviderModels("agy", unique, { source: "cli_session", replace: true });
+      return { provider: "agy", models: unique, ok: true, source: "cli_session" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { provider: "agy", models: [], ok: false, source: "cli_session", error: message };
+    }
+  }
   const fetchImpl = opts.fetchImpl ?? fetch;
   const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
   let baseUrl = opts.baseUrl;
@@ -496,20 +523,25 @@ export async function listProviderModels(
       const sorts = payload?.agentModelSorts;
       const invalidSorts = sorts !== undefined && (!Array.isArray(sorts) || sorts.some(sort =>
         !sort || typeof sort !== "object" || !Array.isArray(sort.groups) || sort.groups.some((group: { modelIds?: unknown } | null) =>
-          !group || !Array.isArray(group.modelIds) || group.modelIds.some(id => typeof id !== "string" || !id.trim()))));
+          !group || !Array.isArray(group.modelIds) || group.modelIds.some(id => typeof id !== "string" || !normalizeAntigravityModelId(id).trim()))));
       const invalidRoles = ["tabModelIds", "imageGenerationModelIds", "audioTranscriptionModelIds", "commitMessageModelIds", "mqueryModelIds"].some(field => {
         const ids = payload?.[field];
-        return ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !id.trim()));
+        return ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !normalizeAntigravityModelId(id).trim()));
       });
       const deprecated = payload?.deprecatedModelIds;
       const invalidDeprecated = deprecated !== undefined && (Array.isArray(deprecated)
-        ? deprecated.some(id => typeof id !== "string" || !id.trim())
-        : !deprecated || typeof deprecated !== "object");
-      if (!rows || rows.some(([id, row]) => !row || typeof row !== "object" || Array.isArray(row)
-        || (Array.isArray(models)
-          ? ![row.slug, row.id, row.name].some(value => typeof value === "string" && value.trim().length > 0)
-          : !id.trim()))
-        || invalidSorts || invalidRoles || invalidDeprecated) {
+        ? deprecated.some(id => typeof id !== "string" || !normalizeAntigravityModelId(id).trim())
+        : !deprecated || typeof deprecated !== "object" || Object.keys(deprecated).some(id => !normalizeAntigravityModelId(id).trim()));
+      const tiered = payload?.tieredModelIds;
+      const invalidTiered = tiered !== undefined && (!tiered || typeof tiered !== "object" || Array.isArray(tiered)
+        || Object.values(tiered).some(ids => !Array.isArray(ids) || ids.some(id => typeof id !== "string" || !normalizeAntigravityModelId(id).trim())));
+      const defaultId = payload?.defaultAgentModelId;
+      const invalidDefault = defaultId !== undefined && (typeof defaultId !== "string" || !normalizeAntigravityModelId(defaultId).trim());
+      if (!rows || rows.some(([id, row]) => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) return true;
+        const modelId = Array.isArray(models) ? row.slug ?? row.id ?? row.name : id;
+        return typeof modelId !== "string" || !normalizeAntigravityModelId(modelId).trim();
+      }) || invalidSorts || invalidRoles || invalidDeprecated || invalidTiered || invalidDefault) {
         return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
       }
     }
@@ -593,9 +625,14 @@ export async function discoverModels(
 ): Promise<ProviderModelsResult[]> {
   const cfg = opts.config ?? (await readGlobalConfig());
   const providers = opts.providers ?? [...PROVIDER_NAMES];
+  const agyExplicit = opts.providers?.includes("agy") ?? false;
+  const agyDefault = typeof cfg.defaultModel === "string" && cfg.defaultModel.trim().toLowerCase().startsWith("agy/");
   const useFallback = opts.catalogFallback !== false;
   const results = await Promise.all(
-    providers.map(async p => {
+    providers.map(async (p): Promise<ProviderModelsResult[]> => {
+      if (p === "agy" && !agyExplicit && !agyDefault) {
+        return [{ provider: "agy", models: [], ok: false, source: "none", error: "official CLI discovery requires explicit selection" }];
+      }
       const discoveryOpts = {
         ...opts,
         config: cfg,

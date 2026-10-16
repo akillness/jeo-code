@@ -1,7 +1,7 @@
 import type { Credential } from "../auth";
 
 /** Providers compiled into jeo (built-ins + the OpenAI/Anthropic-compatible catalog). */
-export type BuiltinProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
+export type BuiltinProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "agy" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
 
 /**
  * A provider id at runtime: a compiled-in name, OR a user-registered custom provider id

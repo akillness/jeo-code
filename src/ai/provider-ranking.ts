@@ -46,7 +46,7 @@ export const FAMOUS_PROVIDER_ORDER: readonly string[] = [
   "openai",
   "gemini",
   "antigravity",
-  "xai",
+  "agy",
   "kimi",
   "zai",
   "minimax",
@@ -142,7 +142,7 @@ export function sortRankedProviders<T extends RankableProvider>(providers: reado
 /** Map a jeo `ProviderStatus`-shaped record onto the ranking's auth-state vocabulary. */
 export function authStateFor(status: {
   ready: boolean;
-  kind: "api_key" | "oauth" | "keyless" | "none";
+  kind: "api_key" | "oauth" | "keyless" | "cli_session" | "none";
   loggedIn?: boolean;
 }): ProviderAuthState {
   if (status.ready) return status.kind === "oauth" ? "valid" : "configured";

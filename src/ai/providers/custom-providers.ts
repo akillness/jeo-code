@@ -76,7 +76,7 @@ export const RESERVED_PROVIDER_IDS: readonly string[] = [
   "antigravity",
   "ollama",
   "lmstudio",
-  "xai",
+  "agy",
   "kimi",
   // Reserved so a future built-in cannot be shadowed by a stale user entry.
   "google",

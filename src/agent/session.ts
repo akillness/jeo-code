@@ -13,6 +13,8 @@ export interface SessionHeader {
   /** Model id pinned to this session; restored on resume so each session can carry
    *  its own model independent of the global default (per-session model selection). */
   model?: string;
+  /** Latest CLI-owned conversation, folded from append-only metadata records. */
+  agy?: { conversationId: string; messageCount: number };
   /** Unsent input-box draft at last save, restored into the prompt on `/resume`
    *  (gajae-code parity: an in-progress cursor survives a quit + resume instead
    *  of being silently lost). Absent/empty when there was nothing to restore. */
@@ -135,6 +137,26 @@ export async function appendMessages(
   await fs.appendFile(file, chunk, "utf8");
 }
 
+function isAgySessionState(value: unknown): value is NonNullable<SessionHeader["agy"]> {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Record<string, unknown>;
+  return typeof state.conversationId === "string" && state.conversationId.length > 0
+    && state.conversationId.length <= 1024 && !/[\s\u0000-\u001f\u007f]/.test(state.conversationId)
+    && typeof state.messageCount === "number" && Number.isSafeInteger(state.messageCount) && state.messageCount >= 0;
+}
+
+/** Append metadata instead of rewriting a header while transcript messages arrive. */
+export async function appendAgySession(
+  id: string,
+  state: NonNullable<SessionHeader["agy"]>,
+  cwd = process.cwd(),
+): Promise<void> {
+  if (!isAgySessionState(state)) throw new Error("Invalid official CLI session metadata");
+  await fs.appendFile(sessionPath(id, cwd), JSON.stringify({
+    type: "agy_session", timestamp: new Date().toISOString(), state,
+  }) + "\n", "utf8");
+}
+
 export async function appendCompaction(
   id: string,
   seq: number,
@@ -185,6 +207,9 @@ export async function loadSession(
           rawMessages.push(entry.message);
         } else if (entry.type === "compaction") {
           compactions.push(entry as CompactionEntry);
+        } else if (entry.type === "agy_session" && header) {
+          if (isAgySessionState(entry.state)) header.agy = entry.state;
+          else delete header.agy;
         }
       }
     } catch (err) {

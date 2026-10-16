@@ -112,11 +112,31 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 > [!CAUTION]
 > **`/model <name>` locks routing for the rest of the session.** Prompt routing (`/route`) only re-evaluates per turn while no model is manually pinned. Picking a specific model via `/model <name>` freezes that choice — routing will *not* switch away from it again until you run `/model auto` (which clears the pin), or `/route on` (which *outranks* an active pin without clearing it — the pin reasserts itself the moment you run `/route off`). Missing a `roles.*` entry only guarantees a `defaultModel` fallback on the `standard` tier; the `high`/`complex` tiers otherwise scan for the strongest live-credentialed model, so they can still land on a different model each turn even when unconfigured. **Exception:** an Antigravity- or Gemini-OAuth-credentialed session re-exports Anthropic/Google/OpenAI models under one credential — `high`/`complex` there instead session-stably spread across one model per company (not necessarily the strongest), so the pick stays fixed for that session rather than varying turn to turn.
-### Antigravity account model discovery
+### Antigravity account models and the official agy bridge
 
-**Live model discovery** — `/model provider antigravity` and `/agents <role> provider antigravity` show your OAuth account's actual available models from Cloud Code Assist. The picker honors only models your account holds; no Argon is guaranteed for every account. Empty account lists are reported honestly instead of falling back to static catalogs. Account scope is preserved across session refreshes.
+**Cloud Code Assist (`antigravity/<CCA-id>`)** — `/model provider antigravity` and `/agents <role> provider antigravity` show the models returned by Cloud Code Assist for the selected jeo OAuth account. Discovery combines `agentModelSorts`, `tieredModelIds`, and `defaultAgentModelId`; account-scoped caches remain isolated across refreshes. Empty or failed discovery is reported honestly, without a static catalog fallback. CLI model slugs are not CCA wire IDs, and CLI availability does not establish direct CCA Argon support.
 
-**Example:** `jeo auth login antigravity` discovers and caches your account's available models. Pick one with `/model antigravity/<model-id>` or `/agents executor provider antigravity`, then use it for the session or persist it as default via `/model save antigravity/<model-id>`.
+**CCA example:** `jeo auth login antigravity` discovers and caches that account's models. Select `/model antigravity/<CCA-id>` or `/agents executor provider antigravity`, or persist the default with `/model save antigravity/<CCA-id>`.
+
+**Official CLI (`agy/<official-cli-slug>`)** — explicitly opt in to a separate full-agent backend using the installed `agy` executable on `PATH`. Authenticate through the official CLI's own supported workflow; jeo does not manage or import its credentials. `agy models` supplies the live list and exact slugs, not a static catalog or CCA aliases. Its session/account is not assumed to match jeo's OAuth account, and its model catalog stays process-local rather than using jeo's account-scoped disk cache. Empty lists remain empty; discovery failures are shown, not replaced with invented models.
+
+```sh
+agy models
+jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"
+```
+
+Use a slug actually returned by your CLI. In an interactive jeo session, browse, select, and optionally save it as the persistent default:
+
+```text
+/model provider agy
+/model agy/gemini-4-argon-low
+/model save agy/gemini-4-argon-low
+```
+
+> [!WARNING]
+> **The official agy agent owns its tools, sandbox, permissions, and conversation. jeo's approvals do not mediate its inner tool calls.** `--plan` selects the CLI's plan mode; it does not transfer tool approval to jeo. This bridge is opt-in and text-only, is excluded from automatic raw-model/subagent routing, and rejects image attachments and jeo-only tool/system/step/thinking controls it cannot enforce.
+
+When jeo session persistence is enabled, resume uses that session's saved CLI conversation ID, never the CLI's unrelated latest conversation. Cancellation and bounded timeouts stop the CLI turn. The exact selected model and upstream errors, including quota failures, are preserved; no silent fallback to CCA, another model, or another account occurs.
 
 ## CLI commands
 
@@ -389,8 +409,8 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.2]** (2026-10-16) — Select Argon through the official agy full agent, with its own live catalog and session, separately from jeo's Cloud Code Assist backend.
 - **[0.12.1]** (2026-10-16) — Logged-in OpenAI subscription models were invisible on proxy-configured machines.
-- **[0.12.1]** (2026-10-16) — Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend.
 - **[0.12.0]** (2026-10-16) — Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router.
 - **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 

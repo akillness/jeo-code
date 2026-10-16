@@ -346,6 +346,21 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const ollamaResult = await probeOllama(ollamaBase);
   for (const p of cloudProbes) probes.push(p);
   probes.push({ name: "ollama", credKind: "none (local)", result: ollamaResult });
+  if (defaultProvider === "agy") {
+    let executable: string | undefined;
+    try {
+      executable = Bun.which("agy") ?? undefined;
+    } catch {
+      executable = undefined;
+    }
+    probes.push({
+      name: "agy",
+      credKind: "external CLI session",
+      result: executable
+        ? { status: "skipped", detail: `UNKNOWN — agy CLI available at ${executable}; auth/permissions are externally managed; model generation not probed` }
+        : { status: "fail", detail: "agy CLI not found on PATH — install/login with the official agy CLI; jeo does not manage its credentials" },
+    });
+  }
 
   const oauthHealth: { provider: string; refreshable: boolean; expiresInMin?: number; email?: string }[] = [];
   for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
@@ -360,7 +375,9 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   }
 
   const defaultProbe = probes.find(p => p.name === defaultProvider);
-  const ready = defaultProbe?.result.status === "ok";
+  const ready = defaultProvider === "agy"
+    ? defaultProbe?.result.status === "skipped"
+    : defaultProbe?.result.status === "ok";
 
   // --- JSON output mode (CI / scripting) ---
   if (json) {

@@ -37,6 +37,7 @@ export function resolveProvider(model: string): ProviderName {
   if (m.startsWith("ollama/")) return "ollama";
   if (m.startsWith("lmstudio/")) return "lmstudio";
   if (m.startsWith("antigravity/")) return "antigravity";
+  if (m.startsWith("agy/")) return "agy";
   if (m.startsWith("xai/")) return "xai";
   if (m.startsWith("kimi/")) return "kimi";
   // Built-ins FIRST, then user-registered custom providers: a custom id can never be a
@@ -59,6 +60,7 @@ const STATIC_ID_PREFIX: Partial<Record<ProviderName, string>> = {
   openai: "openai/",
   gemini: "google/",
   antigravity: "antigravity/",
+  agy: "agy/",
   ollama: "ollama/",
   lmstudio: "lmstudio/",
   xai: "xai/",
@@ -95,6 +97,7 @@ export function providerModelFor(model: string): string {
     model.startsWith("antigravity/") ||
     model.startsWith("lmstudio/") ||
     model.startsWith("xai/") ||
+    model.startsWith("agy/") ||
     model.startsWith("kimi/") ||
     isOpenAICompatProvider(model.split("/")[0])
   ) {
@@ -350,6 +353,7 @@ export function oauthServesModel(provider: AuthProvider, model: string): boolean
  * - a configured OpenAI base URL is the keyless local-proxy path — any model.
  */
 export function modelServableWithConfig(provider: ProviderName, model: string, config: Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>): boolean {
+  if (provider === "agy") return false;
   if (provider === "ollama" || provider === "lmstudio") return true;
   if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini);
   if (provider === "openai" && config.openaiBaseUrl) return true;
@@ -428,6 +432,9 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
   const model = expandAlias(options.model ?? config.defaultModel, { ...BUILTIN_ALIASES, ...aliases });
   const provider = resolveProvider(model);
+  if (provider === "agy") {
+    throw new Error("agy models are full-agent CLI sessions, not raw LLM calls; run the selected agy model through the explicit CLI bridge.");
+  }
   const adapter = providerRegistry.get(provider)!;
 
   const baseUrl =

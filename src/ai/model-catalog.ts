@@ -278,7 +278,7 @@ export function resetLiveCodexModels(): void {
  *  this process. Unlike `liveCodexModels`, this is NOT an OAuth allow-list; it is a
  *  routing supplement so API-key and OpenAI-compatible catalogs discovered at runtime
  *  can participate in prompt routing without waiting for a static release. */
-type LiveProviderModelSource = "oauth" | "api_key" | "keyless" | "none";
+type LiveProviderModelSource = "oauth" | "api_key" | "keyless" | "none" | "cli_session";
 interface LiveProviderModelRecord {
   row: CatalogModel;
   source: LiveProviderModelSource;
@@ -339,6 +339,7 @@ function liveCanonicalId(provider: ProviderName, id: string): string {
       : `openai/${trimmed}`;
   }
   if (provider === "xai" || provider === "kimi") return trimmed;
+  if (provider === "agy") return `${provider}/${trimmed}`;
   return openaiCompatDef(provider) || provider === "ollama" || provider === "lmstudio" || provider === "antigravity"
     ? `${provider}/${trimmed}`
     : trimmed;
@@ -391,7 +392,7 @@ export function recordLiveProviderModels(
   if (provider === "openai" && source === "oauth" && scopedAccountId) {
     setOpenAIOauthAccountScope(scopedAccountId);
   }
-  const shouldReplace = provider === "antigravity" || (provider === "openai" && !!opts.replace);
+  const shouldReplace = provider === "antigravity" || provider === "agy" || (provider === "openai" && !!opts.replace);
   if (shouldReplace) {
     for (const [key, record] of liveProviderModels) {
       const sameScope = provider === "openai"
@@ -679,5 +680,6 @@ export function companyLabel(provider: string, entry?: { company?: string }): st
   const compat = openaiCompatDef(low);
   if (compat) return compat.label;
   if (low === "antigravity") return "Antigravity";
+  if (low === "agy") return "Argon CLI";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }

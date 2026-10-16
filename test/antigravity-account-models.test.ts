@@ -289,6 +289,39 @@ test("listProviderModels: an older in-flight account response cannot replace a n
   expect(isLiveProviderModel("antigravity", "antigravity/account-b-model")).toBe(true);
   expect(isLiveProviderModel("antigravity", "antigravity/account-a-model")).toBe(false);
 });
+test("listProviderModels: reverting disk credentials to A lets A commit after B without exposing B", async () => {
+  await writeAntigravityConfig("revert-access-a", "revert-refresh-a", "revert-project-a");
+  let releaseA!: () => void;
+  const aReleased = new Promise<void>(resolve => { releaseA = resolve; });
+  let aStarted!: () => void;
+  const aStartedPromise = new Promise<void>(resolve => { aStarted = resolve; });
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    const auth = String((init?.headers as Record<string, string>)?.authorization ?? "");
+    if (url.includes("fetchAvailableModels") && auth === "Bearer revert-access-a") {
+      aStarted();
+      await aReleased;
+      return Response.json(modelsPayload(["revert-account-a-model"]));
+    }
+    if (url.includes("fetchAvailableModels") && auth === "Bearer revert-access-b") {
+      return Response.json(modelsPayload(["revert-account-b-model"]));
+    }
+    throw new Error(`unexpected injected request: ${url}`);
+  }) as typeof fetch;
+
+  const pendingA = listProviderModels("antigravity", { fetchImpl });
+  await aStartedPromise;
+  await writeAntigravityConfig("revert-access-b", "revert-refresh-b", "revert-project-b");
+  const resultB = await listProviderModels("antigravity", { fetchImpl });
+  await writeAntigravityConfig("revert-access-a", "revert-refresh-a", "revert-project-a");
+  releaseA();
+  const resultA = await pendingA;
+
+  expect(resultB.ok).toBe(true);
+  expect(resultA.ok).toBe(true);
+  expect(isLiveProviderModel("antigravity", "antigravity/revert-account-a-model")).toBe(true);
+  expect(isLiveProviderModel("antigravity", "antigravity/revert-account-b-model")).toBe(false);
+});
 test("resolveAntigravityProjectId: does not persist a discovered project into a rotated stored credential", async () => {
   await writeAntigravityConfig("stored-access-token", "stored-refresh-token");
   const credential = {

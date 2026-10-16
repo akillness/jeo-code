@@ -17,7 +17,7 @@ import {
   setAntigravityAccountScope,
 } from "../src/ai/model-catalog";
 
-const ENV_KEYS = ["GEMINI_OAUTH_TOKEN", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID"] as const;
+const ENV_KEYS = ["GEMINI_OAUTH_TOKEN", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID", "JEO_GEMINI_CREDS_PATH"] as const;
 const originalConfigDir = process.env.JEO_CONFIG_DIR;
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 let configDir: string;
@@ -67,6 +67,47 @@ test("antigravityAccountScope: resolves the account scope without exposing OAuth
   expect(scope).not.toContain("cache-access-a");
   expect(scope).not.toContain("cache-refresh-a");
   expect(scope).not.toContain("cache-project-a");
+});
+test("antigravityAccountScope: no-argument scope lookup does not refresh an expired stored credential", async () => {
+  await writeConfig({ antigravity: {
+    access: "expired-scope-access",
+    refresh: "expired-scope-refresh",
+    expires: Date.now() - 1,
+    projectId: "expired-scope-project",
+  } });
+  const before = await fs.readFile(path.join(configDir, "config.json"), "utf8");
+  const previousFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls++;
+    throw new Error("scope lookup must not refresh credentials");
+  }) as typeof fetch;
+  try {
+    const scope = await cache.antigravityAccountScope?.();
+    expect(scope).toEqual(expect.any(String));
+    expect(fetchCalls).toBe(0);
+    expect(await fs.readFile(path.join(configDir, "config.json"), "utf8")).toBe(before);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("antigravityAccountScope: explicit Gemini credential fixture is not auto-imported during a no-argument peek", async () => {
+  await writeConfig({});
+  const credsPath = path.join(configDir, "gemini-oauth-creds.json");
+  await fs.writeFile(credsPath, JSON.stringify({
+    access_token: "fixture-import-access",
+    refresh_token: "fixture-import-refresh",
+    expiry_date: Date.now() + 60_000,
+  }), "utf8");
+  process.env.JEO_GEMINI_CREDS_PATH = credsPath;
+
+  const scope = await cache.antigravityAccountScope?.();
+  const persisted = JSON.parse(await fs.readFile(path.join(configDir, "config.json"), "utf8")) as {
+    oauth?: { gemini?: unknown };
+  };
+  expect(scope).toBeUndefined();
+  expect(persisted.oauth?.gemini).toBeUndefined();
 });
 test("antigravityAccountScope: normalized same-email re-login keeps the account scope across token rotation", async () => {
   expect(typeof cache.antigravityAccountScope).toBe("function");

@@ -516,6 +516,7 @@ export async function listProviderModels(
       if (currentScope !== scope.accountId && currentScope !== initialAntigravityScope) {
         return { provider, models: [], ok: false, source, error: "account changed during model discovery", ...scope };
       }
+      setAntigravityAccountScope(scope.accountId);
     }
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery

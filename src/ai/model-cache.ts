@@ -20,8 +20,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { jeoEnv } from "../util/env";
 import { recordLiveCodexModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope } from "./model-catalog";
-import { resolveCredential, type Credential } from "../auth";
-import { getStoredOAuth } from "../auth/storage";
+import type { Credential } from "../auth";
+import { getStoredOAuth, snapshotProvider } from "../auth/storage";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import type { ProviderName } from "./types";
 
@@ -59,13 +59,16 @@ function cachePath(): string {
   return path.join(cacheDir(), "model-catalog-cache.json");
 }
 
-/** Resolve an opaque account scope for the selected Antigravity/Gemini OAuth slot. */
+/** Peek at the selected OAuth account without importing or refreshing credentials. */
 export async function antigravityAccountScope(credential?: Credential): Promise<string | undefined> {
   try {
     let selected = credential;
     if (!selected) {
-      selected = await resolveCredential("antigravity");
-      if (selected.kind !== "oauth") selected = await resolveCredential("gemini");
+      const own = await snapshotProvider("antigravity");
+      const provider = own.oauth ? "antigravity" : "gemini";
+      const snapshot = own.oauth ? own : await snapshotProvider("gemini");
+      if (!snapshot.oauth) return undefined;
+      selected = { kind: "oauth", provider, token: snapshot.oauth };
     }
     if (selected.kind !== "oauth" || (selected.provider !== "antigravity" && selected.provider !== "gemini")) return undefined;
     const providerSlot = selected.provider;
@@ -80,6 +83,7 @@ export async function antigravityAccountScope(credential?: Credential): Promise<
           : `access:${selected.token}`
       : `access:${selected.token}`;
     const projectId = selected.projectId?.trim()
+      || (accessMatches ? stored?.projectId?.trim() : undefined)
       || process.env.GOOGLE_CLOUD_PROJECT?.trim()
       || process.env.GOOGLE_CLOUD_PROJECT_ID?.trim()
       || "";

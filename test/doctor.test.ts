@@ -306,7 +306,8 @@ test("runDoctorCommand --json: routing preview auto-selects DIFFERENT providers 
   const byTier = Object.fromEntries(report.routing.preview.map((p: { tier: string }) => [p.tier, p]));
   expect(byTier.trivial).toEqual({ tier: "trivial", model: "gemini-2.0-flash", provider: "gemini", source: "auto-selected: cheapest credentialed" });
   expect(byTier.standard).toEqual({ tier: "standard", model: "claude-sonnet-4-6", provider: "anthropic", source: "defaultModel" });
-  expect(byTier.complex).toEqual({ tier: "complex", model: "claude-fable-5", provider: "anthropic", source: "auto-selected: strongest credentialed" });
+  // claude-opus-5-5 ties claude-fable-5 on every strength key; its newer releaseDate wins the recency tiebreak.
+  expect(byTier.complex).toEqual({ tier: "complex", model: "claude-opus-5-5", provider: "anthropic", source: "auto-selected: strongest credentialed" });
   // The actual point of this feature: trivial and complex land on DIFFERENT providers
   // than each other (and standard), proving the split is real, not a same-provider no-op.
   expect(byTier.trivial.provider).not.toBe(byTier.complex.provider);
@@ -335,7 +336,7 @@ test("runDoctorCommand (human output): routing preview prints tier -> model (pro
   expect(output).toContain("trivial");
   expect(output).toContain("gemini-2.0-flash");
   expect(output).toContain("complex");
-  expect(output).toContain("claude-fable-5");
+  expect(output).toContain("claude-opus-5-5");
   expect(output).toContain("auto-selected: cheapest credentialed");
   expect(output).toContain("auto-selected: strongest credentialed");
 });

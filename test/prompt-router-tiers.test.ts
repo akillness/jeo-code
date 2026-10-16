@@ -65,12 +65,13 @@ test("resolveTierModel: high tier auto-selects the strongest MID-CLASS credentia
   const complex = resolveTierModel("complex", config);
 
   expect(trivial).toBe("gemini-2.0-flash"); // cheapest
-  expect(complex).toBe("claude-fable-5"); // strongest flagship (unclassified id, catalog-wide search)
+  expect(complex).toBe("claude-opus-5-5"); // strongest flagship (catalog-wide search; ties fable-5 / sonnet-5-5 on every strength key, then newest releaseDate + canonical id)
   // "high" must land on a genuinely mid-class (sonnet/pro-suffixed) model — never
   // colliding with either of the other two tiers' picks.
   expect(high).not.toBe(trivial);
   expect(high).not.toBe(complex);
-  expect(["claude-sonnet-4-6", "claude-sonnet-5", "gemini-2.5-pro"]).toContain(high);
+  // Strongest mid-class pick: claude-sonnet-5-5 (ties sonnet-5 / sonnet-4-6 on thinking+128k+1M; newest releaseDate wins).
+  expect(high).toBe("claude-sonnet-5-5");
 });
 
 test("resolveTierModel: high tier falls through to defaultModel when the ONLY credentialed provider has no mid-class-suffixed model", () => {
@@ -96,7 +97,7 @@ test("resolveTierModel: no cross-call caching — sequential calls with differen
   const secondTrivial = resolveTierModel("trivial", config, "session-x");
 
   expect(firstTrivial).toBe("gemini-2.0-flash"); // cheapest credentialed
-  expect(complex).toBe("claude-fable-5"); // strongest credentialed (unrelated to trivial's pick)
+  expect(complex).toBe("claude-opus-5-5"); // strongest credentialed (unrelated to trivial's pick)
   expect(secondTrivial).toBe(firstTrivial); // re-evaluated fresh, not left holding "complex"'s result
   expect(secondTrivial).not.toBe(complex);
 });

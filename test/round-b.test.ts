@@ -223,7 +223,9 @@ test("anthropicPayload: OAuth calls include Claude Code prelude before the real 
     anthropicOauth,
   ));
   expect(payload.system).toHaveLength(3);
-  expect(payload.system[0].text).toStartWith("x-anthropic-billing-header: cc_version=2.1.63.");
+  // Exact Claude Code version is deliberately not pinned here: the server enforces a minimum
+  // (see anthropic-5-5-wire.test.ts), so this test defends the cloak SHAPE only.
+  expect(payload.system[0].text).toMatch(/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
   expect(payload.system[0].cache_control).toBeUndefined();
   expect(payload.system[1]).toEqual({ type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." });
   expect(payload.system[2]).toEqual({ type: "text", text: "SYS", cache_control: { type: "ephemeral" } });
@@ -264,7 +266,7 @@ test("anthropicRequest: OAuth headers use Claude Code-compatible Anthropic beta 
   expect(headers["anthropic-beta"]).toContain("claude-code-20250219");
   expect(headers["anthropic-beta"]).toContain("oauth-2025-04-20");
   expect(headers["anthropic-beta"]).toContain("prompt-caching-scope-2026-01-05");
-  expect(headers["user-agent"]).toBe("claude-cli/2.1.63 (external, cli)");
+  expect(headers["user-agent"]).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
   expect(headers["x-stainless-runtime"]).toBe("node");
 });
 

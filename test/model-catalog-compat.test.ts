@@ -36,7 +36,7 @@ test("catalogForProvider lists recommended first", () => {
 });
 
 test("recommendedModel returns a recommended id per provider", () => {
-  expect(recommendedModel("anthropic")).toBe("claude-sonnet-5");
+  expect(recommendedModel("anthropic")).toBe("claude-sonnet-5-5");
   expect(recommendedModel("openai")).toBe("gpt-5.5");
   expect(recommendedModel("gemini")).toBe("gemini-3-flash");
   // Antigravity's recommended default is the code-agent model ("Gemini 3.1 Pro

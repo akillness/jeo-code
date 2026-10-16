@@ -43,9 +43,12 @@ test("modelHint badges reasoning / recommended / readiness", () => {
   const h = modelHint(o1, false, true);
   expect(h).toContain("reasoning");
   expect(h).toContain("no credential");
-  const sonnet = findCatalogEntry("claude-sonnet-5")!;
+  const sonnet = findCatalogEntry("claude-sonnet-5-5")!; // Anthropic's recommended default
   expect(modelHint(sonnet, true, true)).toContain("recommended");
   expect(modelHint(sonnet, true, true)).toContain("ready");
+  // The badge moved with the default: the previous generation and its Opus sibling are NOT recommended.
+  expect(modelHint(findCatalogEntry("claude-sonnet-5")!, true, true)).not.toContain("recommended");
+  expect(modelHint(findCatalogEntry("claude-opus-5-5")!, true, true)).not.toContain("recommended");
 });
 
 test("buildModelChoices lists ready providers first and groups them", () => {

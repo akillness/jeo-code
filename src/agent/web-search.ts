@@ -76,7 +76,7 @@ const SEARCH_SYSTEM_PROMPT =
 
 // Claude Code OAuth request shape (mirrors src/ai/providers/anthropic.ts —
 // Anthropic OAuth tokens are scoped to Claude Code-shaped requests).
-const CLAUDE_CODE_VERSION = "2.1.63";
+const CLAUDE_CODE_VERSION = "2.1.289";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const ANTHROPIC_OAUTH_BETA = [
   "claude-code-20250219",

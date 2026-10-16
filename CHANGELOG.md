@@ -9,6 +9,21 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-10-16
+_Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability._
+
+### Added
+- **Live Antigravity model discovery scoped to account** (`src/ai/model-discovery.ts`, `src/commands/launch.ts`) — OAuth account's real `agentModelSorts` models from the Cloud Code Assist endpoint are cached and rehydrated at launch, scoped to the selected account. Picker `/model provider antigravity` and `/agents <role> provider antigravity` offer only the account's live model list (no static fallback catalog, no Argon guarantee for every account). Empty or failed discovery is reported honestly.
+
+### Changed
+- **Model picker account scoping** — OpenAI and Antigravity pickers honor the selected OAuth account; prior-account stale models are suppressed. Cache keys include provider, account ID, and source (oauth/api_key) for isolation.
+
+### Fixed
+- **Picker empty results** — an authoritative empty Antigravity account list no longer falls back to fabricated static rows. Project lookup is best-effort; mismatches between discovered and stored project IDs are handled safely.
+
+### Verified
+- Live Antigravity OAuth account discovery: account scope is honored on picker refresh and cache refresh. Model picker respects discovered list with no static fallback. `bun run typecheck` clean.
+
 ## [0.11.5] - 2026-10-04
 _Anthropic login now runs Opus 5.5 and Sonnet 5.5 as the selected models: the OAuth client version gate and incompatible fast-mode temperature are fixed, with real request and streaming responses verified._
 

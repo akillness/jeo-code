@@ -112,6 +112,11 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 > [!CAUTION]
 > **`/model <name>` locks routing for the rest of the session.** Prompt routing (`/route`) only re-evaluates per turn while no model is manually pinned. Picking a specific model via `/model <name>` freezes that choice — routing will *not* switch away from it again until you run `/model auto` (which clears the pin), or `/route on` (which *outranks* an active pin without clearing it — the pin reasserts itself the moment you run `/route off`). Missing a `roles.*` entry only guarantees a `defaultModel` fallback on the `standard` tier; the `high`/`complex` tiers otherwise scan for the strongest live-credentialed model, so they can still land on a different model each turn even when unconfigured. **Exception:** an Antigravity- or Gemini-OAuth-credentialed session re-exports Anthropic/Google/OpenAI models under one credential — `high`/`complex` there instead session-stably spread across one model per company (not necessarily the strongest), so the pick stays fixed for that session rather than varying turn to turn.
+### Antigravity account model discovery
+
+**Live model discovery** — `/model provider antigravity` and `/agents <role> provider antigravity` show your OAuth account's actual available models from Cloud Code Assist. The picker honors only models your account holds; no Argon is guaranteed for every account. Empty account lists are reported honestly instead of falling back to static catalogs. Account scope is preserved across session refreshes.
+
+**Example:** `jeo auth login antigravity` discovers and caches your account's available models. Pick one with `/model antigravity/<model-id>` or `/agents executor provider antigravity`, then use it for the session or persist it as default via `/model save antigravity/<model-id>`.
 
 ## CLI commands
 
@@ -384,10 +389,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 - **[0.11.5]** (2026-10-04) — Anthropic login now runs Opus 5.5 and Sonnet 5.5 as the selected models: the OAuth client version gate and incompatible fast-mode temperature are fixed, with real request and streaming responses verified.
 - **[0.11.4]** (2026-10-01) — The release pipeline could not actually release: 13 tests failed on Linux CI only, and the stored npm token no longer authenticated. Both are fixed at the root — the suite is order-independent, and publishing no longer depends on a secret that can expire.
 - **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
-- **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

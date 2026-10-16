@@ -107,6 +107,11 @@ jeo --tmux               # 独立した tmux セッションで実行
 > [!CAUTION]
 > **`/model <name>` で特定モデルを手動指定すると、そのセッション中ルーティングが固定されます。** プロンプトルーティング(`/route`)はモデルが手動固定されていない間のみ毎ターン再評価されます。`/model <name>` で特定モデルを選ぶとその選択が固定され、`/model auto`(ピンを完全に解除)を実行するか、`/route on`(ピンを消さずに優先度だけ上げる — `/route off` した瞬間ピンが復活)を実行するまでルーティングは切り替わりません。`roles.*` 未設定時に `defaultModel` へ確定フォールバックするのは `standard` ティアのみで、`high`/`complex` ティアは通常フォールバック前にライブでクレデンシャル済みの最強モデルを先に探索するため、未設定でも毎ターン別モデルに着地することがあります。**例外:** Antigravity または Gemini OAuth でクレデンシャルされたセッションは一つの資格情報で Anthropic/Google/OpenAI のモデルを再公開しており、その場合 `high`/`complex` は(必ずしも最強ではなく)会社ごとに1モデルへセッション単位で安定的に分散されるため、ターンごとに変わらずそのセッション中は固定されます。
 
+### Antigravity アカウント モデル ライブディスカバリー
+
+**ライブ モデル ディスカバリー** — `/model provider antigravity` と `/agents <ロール> provider antigravity` は OAuth アカウントが Cloud Code Assist で実際に保有するモデルを表示します。ピッカーはアカウントが持つモデルのみを認め、すべてのアカウントが Argon を備えていることは保証しません。空のアカウント一覧は正直に報告され、静的なカタログでの代用はしません。アカウントスコープはセッションのリフレッシュ全体を通じて保持されます。
+
+**例:** `jeo auth login antigravity` はアカウントの実際に利用可能なモデルを発見しキャッシュします。`/model antigravity/<モデル-id>` または `/agents executor provider antigravity` で選択し、セッション中に利用するか `/model save antigravity/<モデル-id>` で既定値として設定します。
 ## CLI コマンド
 
 `jeo --help` が正式な一覧です。よく使うものは次のとおり:
@@ -390,10 +395,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 - **[0.11.5]** (2026-10-04) — Anthropic login now runs Opus 5.5 and Sonnet 5.5 as the selected models: the OAuth client version gate and incompatible fast-mode temperature are fixed, with real request and streaming responses verified.
 - **[0.11.4]** (2026-10-01) — The release pipeline could not actually release: 13 tests failed on Linux CI only, and the stored npm token no longer authenticated. Both are fixed at the root — the suite is order-independent, and publishing no longer depends on a secret that can expire.
 - **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
-- **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

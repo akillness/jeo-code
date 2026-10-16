@@ -107,6 +107,11 @@ jeo --tmux               # 在独立 tmux 会话中运行
 > [!CAUTION]
 > **通过 `/model <name>` 手动指定模型后，路由会在本会话内保持锁定。** Prompt routing(`/route`)只在没有手动锁定模型时才会逐轮重新评估。用 `/model <name>` 选定具体模型后，该选择会被锁定 — 直到你运行 `/model auto`(彻底解除锁定)，或运行 `/route on`(不会清除锁定，只是优先级更高 — 一旦运行 `/route off`，锁定会立刻恢复)之前，路由都不会再切换。未配置 `roles.*` 条目时，只有 `standard` 层级会确定性地退回到 `defaultModel`；`high`/`complex` 层级通常会先实时扫描已配置凭证中最强的可用模型再决定是否回退，所以即使未配置，也可能每轮落到不同的模型上。**例外:** 通过 Antigravity 或 Gemini OAuth 授权的会话会用同一个凭证重新导出 Anthropic/Google/OpenAI 的模型 —此时 `high`/`complex` 会按公司各选一个模型、以会话为单位稳定分布(不一定是最强的那个)，因此在同一会话内保持固定，而不是逐轮变化。
 
+### Antigravity 账户 模型 实时发现
+
+**实时模型发现** — `/model provider antigravity` 与 `/agents <角色> provider antigravity` 会显示你的 OAuth 账户在 Cloud Code Assist 实际拥有的模型。选择器仅认可账户持有的模型；并不保证每个账户都备有 Argon。空的账户列表会被诚实报告，不会被静态目录代用。账户范围在会话刷新全程得以保留。
+
+**示例:** `jeo auth login antigravity` 会发现并缓存你账户的实际可用模型。选择: `/model antigravity/<模型-id>` 或 `/agents executor provider antigravity`，之后在本会话内使用，或通过 `/model save antigravity/<模型-id>` 设为默认值。
 ## CLI 命令
 
 `jeo --help` 是权威列表；下面是你最常用到的:
@@ -388,10 +393,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 - **[0.11.5]** (2026-10-04) — Anthropic login now runs Opus 5.5 and Sonnet 5.5 as the selected models: the OAuth client version gate and incompatible fast-mode temperature are fixed, with real request and streaming responses verified.
 - **[0.11.4]** (2026-10-01) — The release pipeline could not actually release: 13 tests failed on Linux CI only, and the stored npm token no longer authenticated. Both are fixed at the root — the suite is order-independent, and publishing no longer depends on a secret that can expire.
 - **[0.11.3]** (2026-10-01) — Remote control grew from one Telegram bot into one shared daemon serving Telegram, Discord, and Slack — and the workflow gates that were meant to block unverified work (`approve`/`team` plan identity, `done` re-checks, the autopilot ratchet) now actually block it.
-- **[0.11.2]** (2026-09-30) — OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -63,6 +63,17 @@ export interface DiscoveryOptions {
    * queries both OpenAI catalogs when both credentials are configured.
    */
   preferOAuth?: boolean;
+  /**
+   * Query the ChatGPT Codex OAuth catalog even when a custom OpenAI base URL
+   * (config `openaiBaseUrl` or `OPENAI_BASE_URL`) is configured. A stored
+   * subscription is an independent catalog that lives at ChatGPT, never at
+   * the proxy — without this, a proxy-configured machine silently drops the
+   * OAuth credential, probes the proxy keyless, and surfaces zero models
+   * despite a valid login. Implies `preferOAuth` for OpenAI. Used by
+   * `discoverModels`' second pass and the post-login report; has no effect
+   * on other providers.
+   */
+  codexCatalog?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 5000;
@@ -106,6 +117,7 @@ export function discoveryRequest(
   cred: Credential | undefined,
   baseUrl?: string,
   oauthAccountId?: string,
+  opts?: { forceCodexCatalog?: boolean },
 ): { url: string; headers: Record<string, string>; method?: "GET" | "POST"; body?: string } {
   // Catalog-driven compat providers: OpenAI `${base}/models` (Bearer) or Anthropic
   // `${base}/v1/models` (x-api-key). Both return { data: [{ id }] }.
@@ -123,7 +135,7 @@ export function discoveryRequest(
       return { url: "https://api.anthropic.com/v1/models", headers: anthropicHeaders(cred!) };
     case "openai": {
       const token = cred?.kind === "oauth" || cred?.kind === "api_key" ? cred.token : "";
-      if (cred?.kind === "oauth" && !baseUrl && !process.env.OPENAI_BASE_URL) {
+      if (cred?.kind === "oauth" && (opts?.forceCodexCatalog || (!baseUrl && !process.env.OPENAI_BASE_URL))) {
         const accountId = extractChatgptAccountId(token) || oauthAccountId;
         const headers: Record<string, string> = {
           Authorization: `Bearer ${token}`,
@@ -348,6 +360,11 @@ export async function listProviderModels(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
   let baseUrl = opts.baseUrl;
+  // An explicit Codex-catalog request (discoverModels' second pass, the
+  // post-login report) ignores every custom base URL: the subscription
+  // catalog lives at ChatGPT, never at the proxy. Function-scoped (not
+  // block-scoped) so the request builder below can see it.
+  const forceCodexCatalog = provider === "openai" && !!opts.codexCatalog;
 
   let cred: Credential | undefined;
   let oauthAccountId: string | undefined;
@@ -365,7 +382,7 @@ export async function listProviderModels(
     cred = raw;
     source = cred.kind === "oauth" ? "oauth" : cred.kind === "api_key" ? "api_key" : "none";
     const config = opts.config ?? (await readGlobalConfig());
-    if (provider === "openai") baseUrl = (baseUrl ?? config.openaiBaseUrl ?? process.env.OPENAI_BASE_URL)?.replace(/\/+$/, "");
+    if (provider === "openai" && !forceCodexCatalog) baseUrl = (baseUrl ?? config.openaiBaseUrl ?? process.env.OPENAI_BASE_URL)?.replace(/\/+$/, "");
 
     if (provider === "antigravity") {
       // Antigravity lists models from the LIVE Cloud Code Assist endpoint
@@ -390,12 +407,13 @@ export async function listProviderModels(
     // no api-key header), so never swap its credential to an api_key.
     // `preferOAuth` (post-login report only) skips this swap so the report
     // reflects the freshly stored OAuth credential, not an unrelated key.
-    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov] && !opts.preferOAuth) {
+    // `codexCatalog` implies the same (plus base-URL immunity above).
+    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov] && !opts.preferOAuth && !forceCodexCatalog) {
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
     }
-    if (provider === "openai" && baseUrl && cred.kind === "oauth") {
+    if (provider === "openai" && baseUrl && cred.kind === "oauth" && !forceCodexCatalog) {
       // Subscription credentials belong to ChatGPT, not a configured proxy.
       const key = config.providers?.openai;
       cred = key ? { kind: "api_key", provider: "openai", token: key } : { kind: "none", provider: "openai" };
@@ -456,7 +474,7 @@ export async function listProviderModels(
       }
       setAntigravityAccountScope(scope.accountId);
     }
-    const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, baseUrl, oauthAccountId);
+    const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, baseUrl, oauthAccountId, forceCodexCatalog ? { forceCodexCatalog: true } : undefined);
     const res = await fetchImpl(url, { method: method ?? "GET", headers, body: requestBody, signal });
     if (!res.ok) {
       const reason = res.status === 401 || res.status === 403 ? "auth rejected" : `HTTP ${res.status}`;
@@ -584,12 +602,17 @@ export async function discoverModels(
         baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "lmstudio" ? (cfg.lmstudioBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
       };
       const primary = await listProviderModels(p, discoveryOpts);
-      // Both credentials can coexist. API discovery alone omits subscription-only
-      // models and never teaches the Codex call gate what this account can serve.
-      if (p === "openai" && primary.source === "api_key" && !discoveryOpts.baseUrl && !process.env.OPENAI_BASE_URL) {
+      // A stored ChatGPT subscription is a second, independent catalog: the
+      // primary pass may have covered an API key or a custom proxy (or failed
+      // keyless against one) without ever asking the Codex endpoint. Whenever
+      // the primary pass did NOT already return the OAuth catalog, query it as
+      // an additional result so logged-in subscription models stay visible —
+      // otherwise a proxy-configured machine shows zero OpenAI models despite
+      // a valid login. The Codex pass ignores any custom base URL by construction.
+      if (p === "openai" && primary.source !== "oauth") {
         const credential = await resolveCredential("openai");
         if (credential.kind === "oauth") {
-          return [primary, await listProviderModels(p, { ...discoveryOpts, preferOAuth: true })];
+          return [primary, await listProviderModels(p, { ...discoveryOpts, baseUrl: undefined, preferOAuth: true, codexCatalog: true })];
         }
       }
       return [primary];

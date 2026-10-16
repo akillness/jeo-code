@@ -9,6 +9,33 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-16
+_Logged-in OpenAI subscription models were invisible on proxy-configured machines._
+
+### Fixed
+- **OpenAI OAuth catalog discarded when a custom base URL is set** (`src/ai/model-discovery.ts`) — with `OPENAI_BASE_URL`/config `openaiBaseUrl` configured, discovery dropped the stored OAuth credential, probed the proxy keyless (`auth rejected`), and the Codex second pass never fired (it only covered `api_key` primaries). OpenAI has no static fallback by design, so the picker showed zero models despite a valid login. New `codexCatalog` option queries the ChatGPT subscription catalog ignoring any custom base URL; `discoverModels` now appends it whenever the primary pass did not already return the OAuth catalog. The post-login report (`jeo auth login openai`) uses it too.
+
+### Verified
+- Live on a proxy-configured machine: `openai` rows went from 1 failed keyless row to keyless-fail + 7-model OAuth catalog; `providerPickEntries` returns 7 rows. `bun run typecheck` clean; discovery suites green including 2 new regression tests.
+
+## [0.12.1] - 2026-10-16
+_Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend._
+
+### Added
+- **Opt-in official agy discovery and execution** — `agy/<official-cli-slug>` selects the installed, externally authenticated official CLI as a full agent, not a raw-model adapter or CCA alias. `/model provider agy` reads the live `agy models` list, preserves exact slugs, and reports empty lists and failures without static fallback. CLI catalogs stay process-local; no identity or credential parity with jeo OAuth is assumed.
+- **Session-owned resume and process lifecycle** — saved jeo sessions retain their own CLI conversation ID rather than resuming the CLI's unrelated latest conversation. Turns support cancellation and bounded timeouts. The requested model and upstream quota/auth/permission errors remain visible, with no fallback to CCA, another model, or another account.
+- **Explicit execution boundary** — the CLI owns its tools, sandbox, permissions, and conversation; jeo approvals do not mediate its inner tool calls. The bridge is text-only, excluded from automatic raw-model/subagent routing, and rejects images and jeo-only tool/system/step/thinking controls it cannot enforce.
+
+### Changed
+- **CCA account model discovery** — combine `agentModelSorts`, `tieredModelIds`, and `defaultAgentModelId` instead of treating one metadata list as the whole chat catalog. Existing `antigravity/<CCA-id>` discovery remains scoped to the selected jeo OAuth account, without claiming direct CCA Argon support.
+
+### Fixed
+- **Malformed normalized CCA IDs** — reject invalid discovery responses instead of replacing an account's known-good cache with malformed IDs. Authoritative empty lists remain empty, failed discovery remains a failure, and existing account-cache isolation is preserved.
+
+### Verification and release status
+- A real, isolated source-jeo invocation of `jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"` exited **0**, reporting **30.5k input / 11 output tokens**. This verifies that CLI bridge invocation, not direct CCA Argon access or availability for every account.
+- Three independent code, TypeScript, and security reviewers identified six failure-path issues; test-first fixes and regression coverage are in progress. Final release gates and public publication are not yet claimed.
+
 ## [0.12.0] - 2026-10-16
 _Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router._
 

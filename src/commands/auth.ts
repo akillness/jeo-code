@@ -156,7 +156,13 @@ const LIVE_MODEL_REPORT_PROVIDERS = new Set<AuthProvider>(["openai", "anthropic"
 
 async function reportLiveModels(provider: AuthProvider): Promise<void> {
   try {
-    const result = await listProviderModels(provider, { preferOAuth: true });
+    // The OpenAI subscription catalog lives at ChatGPT, never at a custom
+    // proxy — request it explicitly so the report works on proxy-configured
+    // machines too (otherwise the OAuth credential is discarded for the
+    // proxy and the report shows nothing despite a fresh login).
+    const result = await listProviderModels(provider, provider === "openai"
+      ? { preferOAuth: true, codexCatalog: true }
+      : { preferOAuth: true });
     if (result.ok) {
       // Persist immediately: the very next `jeo` launch then knows this account's
       // real model set (including ids newer than the maintained static snapshot)

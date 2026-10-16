@@ -100,6 +100,7 @@ export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
     const row = entry as Partial<CachedProviderModels>;
     if (!row || typeof row.provider !== "string" || !Array.isArray(row.models)) continue;
     const provider = row.provider as ProviderName;
+    if (provider === "agy") continue;
     const source: ModelCacheSource =
       row.source === "oauth" || row.source === "api_key" || row.source === "keyless" || row.source === "none" ? row.source : "none";
     const baseUrl = typeof row.baseUrl === "string" ? row.baseUrl.replace(/\/+$/, "") : undefined;
@@ -150,7 +151,7 @@ export function isModelCacheStale(cache: ModelCacheFile | null, now = Date.now()
  */
 export function mergeCacheEntries(
   previous: readonly CachedProviderModels[],
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string; fallback?: boolean }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource | "cli_session"; baseUrl?: string; accountId?: string; fallback?: boolean }[],
 ): CachedProviderModels[] {
   const byKey = new Map<string, CachedProviderModels>();
   const isScopedOAuth = (provider: ProviderName, source: ModelCacheSource): boolean =>
@@ -159,10 +160,12 @@ export function mergeCacheEntries(
     `${provider}\u0000${baseUrl?.replace(/\/+$/, "") ?? ""}\u0000${isScopedOAuth(provider, source ?? "none") ? accountId ?? "" : ""}\u0000${provider === "openai" || provider === "antigravity" ? source ?? "none" : ""}`;
   for (const entry of previous) {
     const scoped = isScopedOAuth(entry.provider, entry.source);
+    if (entry.provider === "agy") continue;
     if ((scoped && !entry.accountId) || (entry.provider === "antigravity" && entry.source !== "oauth")) continue;
     byKey.set(keyOf(entry.provider, entry.baseUrl, entry.accountId, entry.source), entry);
   }
   for (const result of results) {
+    if (result.provider === "agy" || result.source === "cli_session") continue;
     const source: ModelCacheSource = result.source ?? "none";
     const scoped = isScopedOAuth(result.provider, source);
     const isAntigravity = result.provider === "antigravity";
@@ -183,13 +186,14 @@ export function mergeCacheEntries(
 
 /** Persist discovery results (best-effort; never throws, never blocks a turn). */
 export async function writeModelCache(
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string; fallback?: boolean }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource | "cli_session"; baseUrl?: string; accountId?: string; fallback?: boolean }[],
 ): Promise<void> {
   // Same hermeticity rule as saveGlobalConfig: a test run may only write into an
   // explicitly sandboxed JEO_CONFIG_DIR, never the developer's real ~/.jeo.
   if (process.env.NODE_ENV === "test" && !jeoEnv("CONFIG_DIR")) return;
   // A failed/fallback-only refresh must not make an old snapshot appear fresh.
   const hasFreshResult = results.some(result => {
+    if (result.provider === "agy" || result.source === "cli_session") return false;
     if (!result.ok || result.fallback) return false;
     if (result.provider === "antigravity") return result.source === "oauth" && !!result.accountId?.trim();
     if (result.provider === "openai") return result.models.length > 0 || !(result.source === "oauth" && !result.accountId?.trim());
@@ -220,6 +224,7 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
   if (!cache) return 0;
   let applied = 0;
   for (const entry of cache.providers) {
+    if (entry.provider === "agy") continue;
     const isOpenAIOAuth = entry.provider === "openai" && entry.source === "oauth";
     const isAntigravityOAuth = entry.provider === "antigravity" && entry.source === "oauth";
     if (isOpenAIOAuth && (!openAIScope || entry.accountId !== openAIScope)) continue;

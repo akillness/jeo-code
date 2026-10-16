@@ -50,6 +50,7 @@ test("provider ids normalize to lowercase and reject the shapes that would break
   // Built-ins are reserved so a user entry can never shadow a shipped provider.
   expect(() => assertValidProviderId("openai")).toThrow(/reserved/);
   expect(() => assertValidProviderId("anthropic")).toThrow(/reserved/);
+  expect(() => assertValidProviderId("agy")).toThrow(/reserved/);
 });
 
 test("base URLs must be absolute http(s); the path is preserved and the trailing slash dropped", () => {

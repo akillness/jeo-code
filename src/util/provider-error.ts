@@ -7,6 +7,8 @@
 import { isUsageLimitError, isRefusalError, isConnectionError, ConnectionContextError } from "./retry";
 import { companyLabel } from "../ai/model-catalog";
 import { ProviderHttpError, ProviderStreamError } from "../ai/providers/errors";
+import { AgyCliError } from "../agent/antigravity-cli";
+import { sanitizeForTerminal } from "../tui/components/code-view";
 // Re-export: engine.ts and callers import the refusal predicate from here; the
 // definition lives in retry.ts so defaultRetryable can fail fast without a cycle.
 export { isRefusalError } from "./retry";
@@ -71,6 +73,7 @@ function retryAfterMsOf(err: unknown): number | undefined {
 }
 
 export function friendlyProviderError(err: unknown): string {
+  if (err instanceof AgyCliError) return sanitizeForTerminal(err.message);
   if (err instanceof ConnectionContextError) {
     const provider = companyLabel(err.provider);
     const target = err.baseUrl ? ` at ${err.baseUrl}` : "";

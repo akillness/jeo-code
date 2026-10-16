@@ -54,6 +54,10 @@ import chalk from "chalk";
 import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
+import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
+import { runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
+import { runAgySessionTurn } from "./launch/agy-turn";
+import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
@@ -350,7 +354,7 @@ export function providerPickEntries(live: ProviderModelsResult[], want: Provider
   if (fromLive.length) return fromLive;
   // An OpenAI or Antigravity empty/error response is authoritative for this picker.
   // Offering the static capability catalog here would fabricate account availability.
-  if (want === "openai" || want === "antigravity") return [];
+  if (want === "openai" || want === "antigravity" || want === "agy") return [];
   const catalog = catalogByProvider(want);
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
@@ -420,9 +424,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   } catch {}
   const cfg = await readGlobalConfig();
   const defaultModel = cfg.defaultModel;
-  const initialSessionModel =
+  let initialSessionModel =
     flags.model ??
     (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
+  if (flags.provider === "agy" && !flags.model && !flags.modelRole) {
+    const available = await listProviderModels("agy", { config: cfg });
+    if (!available.ok || !available.models.length) {
+      console.error(sanitizeForTerminal(`error: ${available.error ?? "the official agy CLI returned no available models"}`));
+      process.exitCode = 1;
+      return;
+    }
+    initialSessionModel = available.models[0];
+  }
   if (flags.provider && initialSessionModel) {
     const { provider } = await describeModel(initialSessionModel);
     if (provider !== flags.provider) {
@@ -955,6 +968,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const subagentRegistry = new SubagentRegistry();
   const jobRegistry = new JobRegistry();
   let activeTui: LaunchTui | null = null;
+  let activeAgyController: AbortController | undefined;
+  let activeAgyTurn: Promise<AgyTurnResult> | undefined;
   const monitorRegistry = new MonitorRegistry({
     onLine: (record, line) => {
       const notice = `[monitor ${record.id}] ${line}`;
@@ -968,6 +983,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const cleanupSession = async (): Promise<void> => {
     if (cleanedUp) return;
     cleanedUp = true;
+    activeAgyController?.abort();
+    await activeAgyTurn?.catch(() => undefined);
     subagentRegistry.cancelAll();
     jobRegistry.cancelAll();
     monitorRegistry.cancelAll();
@@ -1048,6 +1065,96 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // gjc-style); a string → show that compact label instead of the raw input.
     opts?: { userCard?: string | null },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
+    const selectedModel = sessionModel || defaultModel;
+    if (selectedModel.startsWith("agy/")) {
+      const oneShot = !!flags.print || flags.message.length > 0 || !process.stdin.isTTY;
+      if (flags.noTools || flags.tools || flags.maxSteps > 0 || flags.systemPrompt || flags.appendSystemPrompt || flags.thinking) {
+        if (oneShot) process.exitCode = 1;
+        throw new AgyCliError("The official agy agent owns its tools, system prompt, step budget, and reasoning settings. Remove jeo's raw-model tool/system/step/thinking flags and select an exact agy model slug instead.", "protocol", 1);
+      }
+      const cliTui = useTui ? new LaunchTui({ model: selectedModel, provider: "agy", sessionId, maxSteps: 0, cwd, branch }) : null;
+      const notice = (message: string): void => {
+        const safe = sanitizeForTerminal(message);
+        if (cliTui) cliTui.events().onNotice?.(safe);
+        else console.error(safe);
+      };
+      let hardExit = false;
+      const harness = createInFlightAbortHarness({
+        captureEsc: !!cliTui,
+        onAbortNotice: notice,
+        onNoise: () => cliTui?.repaint(),
+        pasteActive: () => queueBusyPasteActive?.() ?? false,
+        onBufferedInput: chunk => {
+          if (queueBusyInput?.(chunk) && jeoEnv("NO_LIVE_DRAFT") !== "1") {
+            cliTui?.setLivePromptInput(expandSentinel(queueBusySnapshot?.().text ?? ""));
+          }
+        },
+        onHardExit: () => { hardExit = true; },
+      });
+      activeAgyController = harness.controller;
+      activeTui = cliTui;
+      interactiveTurnActive = !!cliTui;
+      lastUserInput = userInput;
+      lastTurnReasoning = "";
+      lastTurnArtifacts = [];
+      try {
+        cliTui?.start();
+        cliTui?.setTurnTitle(userInput);
+        const card = opts?.userCard === undefined ? userInput : opts.userCard;
+        if (card?.trim()) cliTui?.flushUserCard(card);
+        notice("Official agy agent: uses its own tools, sandbox, and permissions; jeo approvals do not mediate its inner tool calls.");
+        const pre = await runPreToolHooks(cwd, "agy", { model: selectedModel, prompt: userInput }, harness.controller.signal, notice);
+        if (pre.vetoed) throw new AgyCliError(pre.error ?? "Official CLI delegation blocked by a jeo hook", "upstream", 1);
+        sessionNotifyEndpoint?.sendContextUpdate("turn_start", notifyRedact ? "[redacted]" : userInput.slice(0, 200), { model: selectedModel });
+        let streamed = "";
+        activeAgyTurn = runAgySessionTurn({
+          model: selectedModel, prompt: userInput, cwd, history, sessionId, images,
+          signal: harness.controller.signal,
+          mode: flags.modelRole === "plan" ? "plan" : undefined,
+          onNotice: notice,
+          onText: cliTui ? text => {
+            streamed += sanitizeForTerminal(text);
+            cliTui.events().onModelStream?.(streamed);
+          } : undefined,
+        });
+        const result = await activeAgyTurn;
+        const post = await runPostTurnHooks(cwd, "agy", { model: selectedModel, prompt: userInput }, true, result.response, harness.controller.signal, notice);
+        if (post.diags.length) throw new AgyCliError(`Official CLI completed, but a jeo post-turn hook failed: ${post.diags.map(diag => diag.output).join("\n")}`, "upstream", 1);
+        const reply = sanitizeForTerminal(result.response);
+        lastReply = result.response;
+        lastActiveModel = selectedModel;
+        if (result.usage) {
+          sessionUsage.inputTokens += result.usage.inputTokens;
+          sessionUsage.outputTokens += result.usage.outputTokens;
+          cliTui?.events().onUsage?.(result.usage);
+        }
+        sessionUsage.turns++;
+        const usage = result.usage ? `\n${formatUsage(result.usage)}` : "";
+        sessionNotifyEndpoint?.sendContextUpdate("turn_end", notifyRedact ? "[redacted]" : reply.slice(0, 200), { model: selectedModel, usage });
+        sessionNotifyEndpoint?.sendTurnStream(notifyRedact ? "[redacted]" : reply);
+        cliTui?.events().onStep?.(result.steps);
+        cliTui?.finish(reply);
+        return { done: true, steps: result.steps, reply, rendered: !!cliTui, usage };
+      } catch (error) {
+        if (oneShot) {
+          process.exitCode = error instanceof AgyCliError
+            ? (error.kind === "cancelled" ? 130 : Math.max(1, error.exitCode ?? 1))
+            : 1;
+        }
+        cliTui?.finish(`! ${friendlyProviderError(error)}`, { ok: false });
+        throw error;
+      } finally {
+        harness.dispose();
+        activeAgyTurn = undefined;
+        activeAgyController = undefined;
+        activeTui = null;
+        interactiveTurnActive = false;
+        if (hardExit) {
+          process.exitCode = 130;
+          if (!oneShot) forceExitFromCtrlC();
+        }
+      }
+    }
     const turnConfig = await readGlobalConfig();
     // Fall back to the model resolved at THIS session's start (frozen snapshot), NOT
     // the live global default. A concurrent `jeo` session running `/model` persists the
@@ -1965,7 +2072,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // > 0) and stays silent (no stdout noise) since one-shot output may be
   // piped/parsed by a script.
   const maybeDistillOneShot = async (): Promise<void> => {
-    if (sessionUsage.turns > 0) {
+    if (sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
       await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
     }
   };
@@ -5152,7 +5259,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // hermes-style experience distill (plan/gjc-inheritance.md B6) — now handed to a
   // DETACHED child (round-16): /exit and ^C^C return the shell IMMEDIATELY instead
   // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
-  if (sessionUsage.turns > 0) {
+  if (sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
     const spawned = await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
     if (spawned) console.log(chalk.gray("(session memory distilling in background)"));
   }

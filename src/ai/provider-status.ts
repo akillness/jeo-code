@@ -14,7 +14,7 @@ import { customProviderDef, customProviderNames, credentialSourceOf, resolveCust
 
 /** Compiled-in providers, in declaration order. Custom providers are NOT here — they
  *  are discovered at runtime, so use {@link allProviderNames} for anything the user sees. */
-export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
+export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "agy", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
 
 /** Built-in providers PLUS the user's registered custom providers. Every user-facing
  *  surface (pickers, `/provider`, autocomplete, doctor) should list from here so a
@@ -27,7 +27,7 @@ export function allProviderNames(): readonly ProviderName[] {
 /** Cloud providers that authenticate via API key / OAuth. Ollama is keyless. */
 export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
 
-export type CredentialKind = "api_key" | "oauth" | "keyless" | "none";
+export type CredentialKind = "api_key" | "oauth" | "keyless" | "cli_session" | "none";
 
 export interface ProviderStatus {
   name: ProviderName;
@@ -54,6 +54,7 @@ export interface ProviderStatus {
  *  own (e.g. HF_TOKEN, NANO_GPT_API_KEY); built-ins use `<PROVIDER>_API_KEY`. */
 export function providerEnvVar(name: ProviderName): string | undefined {
   if (name === "ollama" || name === "lmstudio" || name === "antigravity") return undefined;
+  if (name === "agy") return undefined;
   const def = openaiCompatDef(name);
   if (def) return def.apiKeyEnv;
   return `${name.toUpperCase()}_API_KEY`;
@@ -77,6 +78,8 @@ export function credentialLabel(kind: CredentialKind): string {
       return "keyless (local)";
     case "none":
       return "none (run 'jeo setup' or 'jeo auth login')";
+    case "cli_session":
+      return "external CLI session (agy; auth and permissions managed by the CLI)";
   }
 }
 
@@ -133,6 +136,22 @@ function effectiveCredential(provider: AuthProvider, cred: Credential, cfg: Conf
 /** Resolve the status of a single provider. */
 export async function describeProvider(name: ProviderName, config?: Config): Promise<ProviderStatus> {
   const cfg = config ?? (await readGlobalConfig());
+  if (name === "agy") {
+    let executable: string | undefined;
+    try {
+      executable = Bun.which("agy") ?? undefined;
+    } catch {
+      executable = undefined;
+    }
+    return {
+      name,
+      kind: "cli_session",
+      label: executable
+        ? `UNKNOWN — external CLI session (agy available at ${executable}; auth/permissions are externally managed; not probed)`
+        : "external CLI session unavailable — agy CLI not found on PATH; install/login with the official agy CLI; jeo does not manage its credentials",
+      ready: !!executable,
+    };
+  }
   // Custom providers resolve their credential from their OWN env var / stored literal,
   // not from the fixed `providers` union — report that source verbatim so a user who
   // set the wrong env var sees WHICH variable jeo is looking at.

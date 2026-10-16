@@ -227,6 +227,20 @@ export const VERIFICATION_DIRECTIVE =
   "Distinguish a passing test from a met requirement: never weaken, skip, or narrow a test to make it pass. " +
   "When you write tests, exercise observable behavior, edge values, branch conditions, invariants, and error handling — never assert defaults or tautologies.";
 
+/** Karpathy behavioral guardrails (multica-ai/andrej-karpathy-skills, MIT):
+ *  think-before-coding, simplicity-first, surgical-changes, goal-driven
+ *  execution — operationalized for jeo's tool loop. Kept SEPARATE from
+ *  WORKING_DISCIPLINE so existing prompt contracts stay byte-stable; callers
+ *  opt in by appending this block. Mirrors the bundled `karpathy-guidelines`
+ *  skill's SKILL.md in compact system-prompt form. */
+export const KARPATHY_DISCIPLINE = [
+  "Karpathy discipline (caution over speed on non-trivial work; use judgment on trivial one-liners):",
+  "- Think before coding: state assumptions explicitly; when multiple interpretations exist, present them instead of picking silently; push back when a simpler approach exists; stop and ask when confused.",
+  "- Simplicity first: minimum code that solves the problem — no unasked features, no single-use abstractions, no speculative flexibility, no impossible-scenario error handling. If 200 lines could be 50, rewrite it.",
+  "- Surgical changes: touch only what the request requires; match existing style; mention unrelated dead code instead of deleting it; remove only the orphans YOUR changes created. Every changed line must trace to the request.",
+  "- Goal-driven execution: turn tasks into verifiable goals (repro test before fix, tests-before/after for refactors, per-step verify checks) and loop until the verification signal passes — a stale pass from before the last edit does not count.",
+].join("\n");
+
 
 export function executorSystemPrompt(
   role = "Executor Agent, a senior software developer",
@@ -238,6 +252,7 @@ export function executorSystemPrompt(
     `Accomplish the user's request by calling tools and verifying your work.\n\n` +
     `${protocol}\n\n` +
     `${WORKING_DISCIPLINE}\n\n` +
+    `${KARPATHY_DISCIPLINE}\n\n` +
     `${OUTPUT_DISCIPLINE}\n\n` +
     verificationDirective
   );

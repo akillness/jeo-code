@@ -9,6 +9,18 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-16
+_Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router._
+
+### Added
+- **Bundled `karpathy-guidelines` skill** (`src/prompts/skills/karpathy-guidelines/SKILL.md`, registered in `src/skills/catalog.ts`) — the four `multica-ai/andrej-karpathy-skills` principles (think before coding, simplicity first, surgical changes, goal-driven execution), operationalized for jeo: ambiguity handling points at `deep-interview`, goal-driven verification points at the done-verification gate. Guidance-only, no executor or MCP tool.
+- **Always-on `KARPATHY_DISCIPLINE` prompt block** (`src/agent/engine.ts`, `src/commands/launch.ts`) — appended to `executorSystemPrompt()` and the interactive system prompt alongside `WORKING_DISCIPLINE`. Existing discipline constants are byte-stable; the Karpathy block is additive. The JEO workflow-routing brief now states the guidelines apply to every coding turn without an explicit skill invocation.
+- **ECC + Jev-style skill router** (`src/agent/skill-router.ts`, `docs/ecc-jev-routing.md`) — heuristic advisory `routeSkillsForTask()` (Jev `route-skills` parity: gate 0.30 / fit 0.30, `sharded` vs `shortlist` strategy, top-k 3, stopword-filtered overlap with a decisive explicit-name bonus, fail-open explicit-none) plus `inventorySkillConflicts()` (ECC single-harness rule: one skill identity, one source — duplicate normalized names from distinct paths are reported, never silently mixed). The router only suggests; `$skill` remains the sole execution entrypoint and the model is never switched.
+- **ECC/Jev operation-flow doc** (`docs/ecc-jev-routing.md`) — source analysis of `andrej-karpathy-skills`, ECC, and the Jev control plane, with the jeo-code mapping table and the per-turn flow.
+
+### Verified
+- `bun run typecheck` clean; new `test/karpathy-skill-router.test.ts` (8 tests: skill registration, four-principle prompt wiring, explicit-name routing, gate/fit explicit-none, sharded/shortlist strategy, inventory conflicts) green alongside the skill/prompt/engine suites (228 pass across 17 files).
+
 ## [0.11.6] - 2026-10-16
 _Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability._
 

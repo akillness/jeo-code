@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { PassThrough } from "node:stream";
-import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
 
@@ -645,6 +645,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const baseSystemPromptNoMemory =
     preamble + "\n\n" + protocol + "\n\n" +
     WORKING_DISCIPLINE + "\n\n" +
+    KARPATHY_DISCIPLINE + "\n\n" +
     OUTPUT_DISCIPLINE + "\n\n" +
     VERIFICATION_DIRECTIVE +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
@@ -664,6 +665,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
     "- Advertise both bundled workflow skills and configured skills below. Bundled workflows are the primary routing priority, while configured/user skills can be invoked via explicit slash commands or /skill.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
+    "- The karpathy-guidelines skill is always-on discipline (already in your system prompt): think before coding, simplicity first, surgical changes, goal-driven execution. Apply it to every coding turn without needing an explicit skill invocation.\n" +
+    "- ECC single-harness rule: one skill identity, one source. If two loaded skills share a normalized name from different paths, treat it as a duplicate installation — prefer the highest-precedence path and report the conflict instead of mixing both.\n" +
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
     "- Before writing code or files in a domain a loaded skill covers, read that SKILL.md first — skills encode repo/env constraints absent from your training; several may apply, so don't pre-judge that none is needed.\n" +
     "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +

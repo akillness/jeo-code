@@ -3,6 +3,7 @@ import deepDiveSkillRaw from "../prompts/skills/deep-dive/SKILL.md" with { type:
 import ralplanSkillRaw from "../prompts/skills/ralplan/SKILL.md" with { type: "text" };
 import teamSkillRaw from "../prompts/skills/team/SKILL.md" with { type: "text" };
 import ultragoalSkillRaw from "../prompts/skills/ultragoal/SKILL.md" with { type: "text" };
+import karpathyGuidelinesSkillRaw from "../prompts/skills/karpathy-guidelines/SKILL.md" with { type: "text" };
 
 const MAX_SKILL_SUMMARY_CHARS = 180;
 const MAX_SKILL_DETAILS_CHARS = 8_000;
@@ -28,6 +29,7 @@ export const SKILLS: SkillDoc[] = [
   parseSkillMarkdown("ralplan", ralplanSkillRaw),
   parseSkillMarkdown("team", teamSkillRaw),
   parseSkillMarkdown("ultragoal", ultragoalSkillRaw),
+  parseSkillMarkdown("karpathy-guidelines", karpathyGuidelinesSkillRaw),
 ];
 export const BUILTIN_SKILL_NAMES = SKILLS.map(s => s.name.toLowerCase());
 

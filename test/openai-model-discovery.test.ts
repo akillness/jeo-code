@@ -119,3 +119,35 @@ test("discoveryRequest accepts stored account identity when token has no JWT cla
   expect(discoveryRequest("openai", { kind: "oauth", provider: "openai", token: "opaque" }, undefined, "test-account")
     .headers["chatgpt-account-id"]).toBe("test-account");
 });
+
+test("proxy-configured machine with only OAuth still surfaces the Codex subscription catalog", async () => {
+  // Repro: OPENAI_BASE_URL set + stored OpenAI OAuth + no API key. The primary
+  // pass must probe the proxy (keyless) AND the stored subscription must still
+  // surface via the Codex second pass — previously the OAuth credential was
+  // silently discarded and the picker showed zero OpenAI models.
+  await writeFile(join(dir, "config.json"), JSON.stringify({ defaultModel: "gpt-5.5" }));
+  await setOauthCredentialNoLock("openai", { access: "opaque-token", accountId: "test-account" });
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:8787/v1";
+  const fetchImpl = (async input => String(input).includes("chatgpt.com")
+    ? response({ models: [{ slug: "gpt-subscription", visibility: "list" }] })
+    : new Response("unauthorized", { status: 401 })) as typeof fetch;
+  const results = await discoverModels({ providers: ["openai"], fetchImpl });
+  expect(results.map(row => row.source)).toEqual(["keyless", "oauth"]);
+  expect(results[0]).toMatchObject({ ok: false, error: "auth rejected" });
+  expect(results[1]!.models).toEqual(["gpt-subscription"]);
+  expect(flattenModels(results).map(row => row.model)).toEqual(["gpt-subscription"]);
+});
+
+test("codexCatalog queries the ChatGPT catalog even with OPENAI_BASE_URL set", async () => {
+  await setOauthCredentialNoLock("openai", { access: "opaque-token", accountId: "test-account" });
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:8787/v1";
+  let url = "";
+  const fetchImpl = (async (input) => {
+    url = String(input);
+    return response({ models: [{ slug: "gpt-sub", visibility: "list" }] });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl, codexCatalog: true });
+  expect(url).toContain("chatgpt.com");
+  expect(r.source).toBe("oauth");
+  expect(r.models).toEqual(["gpt-sub"]);
+});

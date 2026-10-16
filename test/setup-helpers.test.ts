@@ -33,11 +33,12 @@ test("chooseDefaultModel: known id accepted; provider mismatch warns", () => {
 });
 
 test("chooseDefaultModel: unknown id accepted with suggestions", () => {
-  const r = chooseDefaultModel("claude-sonnet-46", "anthropic"); // typo
+  const r = chooseDefaultModel("claude-sonnet-5x", "anthropic"); // typo
   expect(r.known).toBe(false);
   expect(r.warning).toContain("not in the model catalog");
-  expect(r.suggestions).toContain("claude-sonnet-4-6");
+  expect(r.suggestions).toContain("claude-sonnet-5-5");
 });
+
 
 test("recommendedModelsFor returns annotated id lines", () => {
   const lines = recommendedModelsFor("anthropic", 3);

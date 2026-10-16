@@ -80,7 +80,9 @@ const STD: ThinkLevel[] = ["low", "medium", "high"];
  *  (`cheapestCredentialed`/`strongestCredentialed`/`compareStrengthAscending`)
  *  now tiebreak on `releaseDate` directly rather than relying on position. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
-  // Anthropic (newest first: sonnet-5-5 > opus-5-5 > sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6). 4.5-and-below dropped from jeo's exposed model list per user direction.
+  // Anthropic (newest first: sonnet-5-5 > opus-5-5 > sonnet-5 > fable-5 > mythos-5).
+  // claude-4.x and below removed: live API discovery (https://api.anthropic.com/v1/models)
+  // returns the account's actual available models; the static catalog is fallback-only.
   // 5.5 generation (platform.claude.com/docs/en/models/{opus-5-5,sonnet-5-5}/overview): dateless pinned wire ids
   // `claude-opus-5-5` (released 2026-09-22) / `claude-sonnet-5-5` (2026-09-28), 1M ctx / 128k sync max output, adaptive
   // thinking (Opus 5.5 always on; Sonnet 5.5 on by default), text+image input. Canonical == wire id; anthropic.ts already
@@ -92,17 +94,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
   { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, limitedAvailability: true, releaseDate: "2026-06" },
-  // NOTE: opus 4.6+ use Anthropic ADAPTIVE thinking (type:"adaptive" + output_config.effort).
-  // opus 4.7/4.8 OMIT visible thought unless the request opts into `display: "summarized"` —
-  // anthropic.ts sets that on the adaptive transport so reasoning streams again (gjc parity).
-  // The nativizable path still replays signature-only thinking blocks for cross-turn continuity.
-  // The 4.6 generation onward is 1M context / 128k sync max output (Anthropic docs:
-  // Opus 4.8 & Sonnet 5 comparison table; Opus 4.6/4.7, Sonnet 4.6 share the gen's
-  // dateless-snapshot 1M/128k + 300k batch-output beta).
-  { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-05" },
-  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
-  { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
-  { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
+
   // OpenAI (newest first: gpt-5.6 > gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
   { canonical: "gpt-5.6", provider: "openai", providerModel: "gpt-5.6", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
@@ -278,7 +270,7 @@ export function resetLiveCodexModels(): void {
  *  this process. Unlike `liveCodexModels`, this is NOT an OAuth allow-list; it is a
  *  routing supplement so API-key and OpenAI-compatible catalogs discovered at runtime
  *  can participate in prompt routing without waiting for a static release. */
-type LiveProviderModelSource = "oauth" | "api_key" | "keyless" | "none";
+type LiveProviderModelSource = "oauth" | "api_key" | "keyless" | "none" | "cli_session";
 interface LiveProviderModelRecord {
   row: CatalogModel;
   source: LiveProviderModelSource;
@@ -339,6 +331,7 @@ function liveCanonicalId(provider: ProviderName, id: string): string {
       : `openai/${trimmed}`;
   }
   if (provider === "xai" || provider === "kimi") return trimmed;
+  if (provider === "agy") return `${provider}/${trimmed}`;
   return openaiCompatDef(provider) || provider === "ollama" || provider === "lmstudio" || provider === "antigravity"
     ? `${provider}/${trimmed}`
     : trimmed;
@@ -391,7 +384,7 @@ export function recordLiveProviderModels(
   if (provider === "openai" && source === "oauth" && scopedAccountId) {
     setOpenAIOauthAccountScope(scopedAccountId);
   }
-  const shouldReplace = provider === "antigravity" || (provider === "openai" && !!opts.replace);
+  const shouldReplace = provider === "antigravity" || provider === "agy" || (provider === "openai" && !!opts.replace);
   if (shouldReplace) {
     for (const [key, record] of liveProviderModels) {
       const sameScope = provider === "openai"
@@ -679,5 +672,6 @@ export function companyLabel(provider: string, entry?: { company?: string }): st
   const compat = openaiCompatDef(low);
   if (compat) return compat.label;
   if (low === "antigravity") return "Antigravity";
+  if (low === "agy") return "Argon CLI";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }

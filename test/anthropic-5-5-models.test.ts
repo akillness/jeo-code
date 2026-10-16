@@ -109,14 +109,14 @@ test("built-in aliases: each of Opus and Sonnet has at least one alias resolving
 // Version-explicit spellings are the opt-in to 5.5: dotted (`opus-5.5`) and compact (`opus5.5`),
 // for both families. Bare `opus` / `sonnet` are pinned to the 4.6 ids for backward compatibility, so
 // a user who typed the bare name before 5.5 shipped keeps the same model.
-test("built-in aliases: dotted and compact 5.5 spellings (opus-5.5, opus5.5, sonnet-5.5, sonnet5.5) resolve to the dashed 5.5 wire ids, while bare opus / sonnet stay on the pinned 4.6 ids", async () => {
+test("built-in aliases: dotted and compact 5.5 spellings (opus-5.5, opus5.5, sonnet-5.5, sonnet5.5) resolve to the dashed 5.5 wire ids, and bare opus / sonnet also resolve to the 5.5 generation", async () => {
   const cases: { spelling: string; wire: string }[] = [
     { spelling: "opus-5.5", wire: "claude-opus-5-5" },
     { spelling: "opus5.5", wire: "claude-opus-5-5" },
     { spelling: "sonnet-5.5", wire: "claude-sonnet-5-5" },
     { spelling: "sonnet5.5", wire: "claude-sonnet-5-5" },
-    { spelling: "opus", wire: "claude-opus-4-6" },
-    { spelling: "sonnet", wire: "claude-sonnet-4-6" },
+    { spelling: "opus", wire: "claude-opus-5-5" },
+    { spelling: "sonnet", wire: "claude-sonnet-5-5" },
   ];
   for (const c of cases) {
     const m = await describeModel(c.spelling, {});
@@ -124,6 +124,7 @@ test("built-in aliases: dotted and compact 5.5 spellings (opus-5.5, opus5.5, son
     expect({ spelling: c.spelling, wire: providerModelFor(m.resolved) }).toEqual({ spelling: c.spelling, wire: c.wire });
   }
 });
+
 
 test("recommended default: Sonnet 5.5 is the single recommended Anthropic row, and the setup default, the setup suggestion list, and the catalog ordering all resolve to it — not Opus 5.5 or Sonnet 5", () => {
   const anthropic = catalogForProvider("anthropic");

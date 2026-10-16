@@ -8,26 +8,28 @@ import { MODEL_CATALOG, findCatalogModel, recordLiveProviderModels, resetLivePro
 import { providerModelFor, resolveProvider } from "../src/ai/model-manager";
 import { expandAlias } from "../src/ai/model-registry";
 
-test("catalog keeps the 4.6-generation entries and drops haiku + sub-4.6 Anthropic ids", () => {
-  const sonnet46 = findCatalogModel("claude-sonnet-4-6");
-  expect(sonnet46).toBeDefined();
-  expect(sonnet46!.provider).toBe("anthropic");
-  expect(sonnet46!.contextTokens).toBe(1_000_000);
-  expect(sonnet46!.maxOutputTokens).toBe(128_000);
-  expect(sonnet46!.thinking).toEqual(["low", "medium", "high", "xhigh"]);
-  expect(sonnet46!.images).toBe(true);
+test("catalog drops claude-4.x and below; keeps claude-5.x entries", () => {
+  // claude-5.x are present
+  expect(findCatalogModel("claude-sonnet-5-5")).toBeDefined();
+  expect(findCatalogModel("claude-opus-5-5")).toBeDefined();
+  expect(findCatalogModel("claude-sonnet-5")).toBeDefined();
+  expect(findCatalogModel("claude-fable-5")).toBeDefined();
 
-  const opus46 = findCatalogModel("claude-opus-4-6");
-  expect(opus46).toBeDefined();
-  expect(opus46!.contextTokens).toBe(1_000_000);
-
-  // haiku-4-5 and other sub-4.6 Anthropic ids are no longer curated in the catalog.
-  expect(findCatalogModel("claude-haiku-4-5")).toBeUndefined();
-  expect(findCatalogModel("claude-3-5-sonnet")).toBeUndefined();
-  expect(findCatalogModel("claude-sonnet-4-5")).toBeUndefined();
-  expect(findCatalogModel("claude-opus-4-1")).toBeUndefined();
-  expect(findCatalogModel("claude-opus-4-5")).toBeUndefined();
+  // Direct anthropic claude-4.x removed from static catalog (live API discovery used instead).
+  // antigravity/claude-sonnet-4-6 still exists as an Antigravity-provider entry but is
+  // not an anthropic-provider row, so anthropic 4.x are effectively gone.
+  const anthropicOnly4x = ["claude-opus-4-8", "claude-opus-4-7", "claude-haiku-4-5", "claude-3-5-sonnet"];
+  for (const id of anthropicOnly4x) {
+    const m = findCatalogModel(id);
+    expect(m === undefined || m.provider !== "anthropic").toBe(true);
+  }
+  const s46 = findCatalogModel("claude-sonnet-4-6");
+  expect(s46 === undefined || s46.provider !== "anthropic").toBe(true);
+  const o46 = findCatalogModel("claude-opus-4-6");
+  expect(o46 === undefined || o46.provider !== "anthropic").toBe(true);
 });
+
+
 
 test("providerModelFor maps correctly", () => {
   expect(providerModelFor("qwen2.5")).toBe("ollama/qwen2.5:0.5b");
@@ -86,17 +88,18 @@ test("resolveProvider: static catalog + substring heuristics still win when no l
   resetLiveProviderModels();
   // Static catalog entry — unaffected by the live-catalog check (it returns before
   // findLiveCatalogModel is ever consulted).
-  expect(resolveProvider("claude-sonnet-4-6")).toBe("anthropic");
+  expect(resolveProvider("claude-sonnet-5-5")).toBe("anthropic");
   // Uncatalogued + never live-discovered — falls through to the substring heuristics
   // exactly as before.
   expect(resolveProvider("grok-99-nonexistent")).toBe("xai");
   expect(resolveProvider("totally-unknown-id")).toBe("anthropic");
 });
 
-test("alias sonnet/opus resolve to the 4.6 generation", () => {
-  expect(expandAlias("sonnet")).toBe("claude-sonnet-4-6");
-  expect(expandAlias("opus")).toBe("claude-opus-4-6");
+test("alias sonnet/opus resolve to the 5.5 generation", () => {
+  expect(expandAlias("sonnet")).toBe("claude-sonnet-5-5");
+  expect(expandAlias("opus")).toBe("claude-opus-5-5");
 });
+
 
 test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
   const originalConfigDir = process.env.JEO_CONFIG_DIR;

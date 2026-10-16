@@ -232,25 +232,26 @@ test("resolveCall: reasoningEffort 'none' explicitly disables thinking, ignoring
   process.env.JEO_CONFIG_DIR = tempDir;
 
   try {
-    // Write a temp config with thinkingLevel = "medium" and defaultModel = "claude-sonnet-4-6"
+    // Write a temp config with thinkingLevel = "medium" and defaultModel = "claude-sonnet-5-5"
     const configPath = require("node:path").join(tempDir, "config.json");
     require("node:fs").writeFileSync(configPath, JSON.stringify({
-      defaultModel: "claude-sonnet-4-6",
+      defaultModel: "claude-sonnet-5-5",
       thinkingLevel: "medium",
       providers: { anthropic: "sk-mock" }
     }));
 
     // 1. Without reasoningEffort override: falls back to global default (medium -> medium)
-    const resDefault = await resolveCall({ model: "claude-sonnet-4-6" });
+    const resDefault = await resolveCall({ model: "claude-sonnet-5-5" });
     expect(resDefault.callOptions.reasoningEffort).toBe("medium");
 
     // 2. With reasoningEffort: "none": disables thinking (resolves to undefined)
-    const resNone = await resolveCall({ model: "claude-sonnet-4-6", reasoningEffort: "none" });
+    const resNone = await resolveCall({ model: "claude-sonnet-5-5", reasoningEffort: "none" });
     expect(resNone.callOptions.reasoningEffort).toBeUndefined();
 
     // 3. With explicit level override: honors the override (low -> low)
-    const resLow = await resolveCall({ model: "claude-sonnet-4-6", reasoningEffort: "low" });
+    const resLow = await resolveCall({ model: "claude-sonnet-5-5", reasoningEffort: "low" });
     expect(resLow.callOptions.reasoningEffort).toBe("low");
+
   } finally {
     if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = originalConfigDir;

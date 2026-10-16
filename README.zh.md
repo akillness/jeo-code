@@ -107,11 +107,32 @@ jeo --tmux               # 在独立 tmux 会话中运行
 > [!CAUTION]
 > **通过 `/model <name>` 手动指定模型后，路由会在本会话内保持锁定。** Prompt routing(`/route`)只在没有手动锁定模型时才会逐轮重新评估。用 `/model <name>` 选定具体模型后，该选择会被锁定 — 直到你运行 `/model auto`(彻底解除锁定)，或运行 `/route on`(不会清除锁定，只是优先级更高 — 一旦运行 `/route off`，锁定会立刻恢复)之前，路由都不会再切换。未配置 `roles.*` 条目时，只有 `standard` 层级会确定性地退回到 `defaultModel`；`high`/`complex` 层级通常会先实时扫描已配置凭证中最强的可用模型再决定是否回退，所以即使未配置，也可能每轮落到不同的模型上。**例外:** 通过 Antigravity 或 Gemini OAuth 授权的会话会用同一个凭证重新导出 Anthropic/Google/OpenAI 的模型 —此时 `high`/`complex` 会按公司各选一个模型、以会话为单位稳定分布(不一定是最强的那个)，因此在同一会话内保持固定，而不是逐轮变化。
 
-### Antigravity 账户 模型 实时发现
+### Antigravity 账户模型与官方 agy 桥接
 
-**实时模型发现** — `/model provider antigravity` 与 `/agents <角色> provider antigravity` 会显示你的 OAuth 账户在 Cloud Code Assist 实际拥有的模型。选择器仅认可账户持有的模型；并不保证每个账户都备有 Argon。空的账户列表会被诚实报告，不会被静态目录代用。账户范围在会话刷新全程得以保留。
+**Cloud Code Assist (`antigravity/<CCA-id>`)** — `/model provider antigravity` 与 `/agents <角色> provider antigravity` 显示 Cloud Code Assist 为所选 jeo OAuth 账户返回的模型。发现过程合并 `agentModelSorts`、`tieredModelIds` 和 `defaultAgentModelId`，账户级缓存在刷新后仍保持隔离。空列表或发现失败会如实报告，不会退回静态目录。CLI 模型 slug 不是 CCA 的通信 ID，CLI 中可用也不代表支持通过 CCA 直接调用 Argon。
 
-**示例:** `jeo auth login antigravity` 会发现并缓存你账户的实际可用模型。选择: `/model antigravity/<模型-id>` 或 `/agents executor provider antigravity`，之后在本会话内使用，或通过 `/model save antigravity/<模型-id>` 设为默认值。
+**CCA 示例：** `jeo auth login antigravity` 会发现并缓存该账户的模型。通过 `/model antigravity/<CCA-id>` 或 `/agents executor provider antigravity` 选择，或通过 `/model save antigravity/<CCA-id>` 保存默认值。
+
+**官方 CLI (`agy/<official-cli-slug>`)** — 显式选择一个独立的完整代理后端，使用已安装在 `PATH` 上的 `agy` 可执行文件。认证通过官方 CLI 自身支持的流程管理；jeo 不管理或导入其凭证。`agy models` 提供真实列表和准确的 slug，不使用静态目录或 CCA 别名。不能假定 CLI 会话、账户与 jeo OAuth 账户相同；CLI 模型列表仅保存在当前进程内，不使用 jeo 的账户级磁盘缓存。空列表保持为空，发现失败则显示错误，不会编造模型。
+
+```sh
+agy models
+jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"
+```
+
+请使用自己的 CLI 实际返回的 slug。在交互式 jeo 会话中查看列表、选择模型，并按需保存为持久默认值：
+
+```text
+/model provider agy
+/model agy/gemini-4-argon-low
+/model save agy/gemini-4-argon-low
+```
+
+> [!WARNING]
+> **官方 agy 代理自行管理工具、沙箱、权限和对话。jeo 的审批不介入其内部工具调用。** `--plan` 只选择 CLI 的计划模式，不会将工具审批权交给 jeo。此桥接必须显式选择，仅支持文本，不参与自动原始模型或子代理路由；图片附件以及无法强制执行的 jeo 专用工具、系统、步骤数、thinking 控制会被拒绝。
+
+启用 jeo 会话持久化时，恢复会使用该会话保存的 CLI 对话 ID，而不是 CLI 中无关的最近对话。取消和有界超时会停止 CLI 轮次。准确保留所选模型及上游 CLI 错误，包括配额错误；不会静默回退到 CCA、其他模型或其他账户。
+
 ## CLI 命令
 
 `jeo --help` 是权威列表；下面是你最常用到的:
@@ -393,10 +414,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.3]** (2026-10-17) — Anthropic static model catalog trimmed to claude-5.x; live API discovery now drives the model list for logged-in accounts.
 - **[0.12.1]** (2026-10-16) — Logged-in OpenAI subscription models were invisible on proxy-configured machines.
 - **[0.12.1]** (2026-10-16) — Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend.
 - **[0.12.0]** (2026-10-16) — Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router.
-- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

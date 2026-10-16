@@ -24,13 +24,14 @@ test("isAlias distinguishes aliases from concrete ids", () => {
 test("describeAlias resolves target + catalog knownness", () => {
   const d = describeAlias("sonnet");
   expect(d.isAlias).toBe(true);
-  expect(d.target).toBe("claude-sonnet-4-6");
+  expect(d.target).toBe("claude-sonnet-5-5");
   expect(d.knownTarget).toBe(true);
   // concrete id passes through
   const c = describeAlias("gpt-4o");
   expect(c.isAlias).toBe(false);
   expect(c.target).toBe("gpt-4o");
 });
+
 
 test("validateAliases flags only targets missing from the catalog", () => {
   // all built-in alias targets are catalogued

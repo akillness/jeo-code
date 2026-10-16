@@ -140,8 +140,8 @@ test("inferCatalogMetadata: non-reasoning + unknown ids stay conservative", () =
   expect(inferCatalogMetadata("totally-unknown-model")).toBeUndefined();
   expect(catalogMetadata("totally-unknown-model")).toBeUndefined();
 });
-test("4.6+ Anthropic models are catalogued as 1M/128k with full thinking", () => {
-  for (const id of ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"]) {
+test("5.x+ Anthropic models are catalogued as 1M/128k with full thinking", () => {
+  for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5-5", "claude-opus-5-5"]) {
     const m = findCatalogModel(id);
     expect(m?.provider).toBe("anthropic");
     expect(m?.providerModel).toBe(id); // dateless pinned snapshot — canonical == wire id
@@ -149,9 +149,12 @@ test("4.6+ Anthropic models are catalogued as 1M/128k with full thinking", () =>
     expect(m?.maxOutputTokens).toBe(128_000);
     expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
   }
-  // haiku-4-5 (sub-4.6) was dropped from the exposed catalog per user direction.
+  // claude-4.x and below removed from static catalog; live API discovery used instead.
+  expect(findCatalogModel("claude-opus-4-6")).toBeUndefined();
+  expect(findCatalogModel("claude-opus-4-8")).toBeUndefined();
   expect(findCatalogModel("claude-haiku-4-5")).toBeUndefined();
 });
+
 
 test("inferCatalogMetadata: fable/mythos + single-digit 5th-gen ids infer Anthropic thinking", () => {
   for (const id of ["claude-fable-6", "claude-mythos-6", "claude-sonnet-6"]) {

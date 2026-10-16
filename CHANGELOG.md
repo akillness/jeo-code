@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-10-17
+_Anthropic static model catalog trimmed to claude-5.x; live API discovery now drives the model list for logged-in accounts._
+
+### Changed
+- **Anthropic claude-4.x entries removed from the static catalog** (`src/ai/model-catalog.ts`) — `claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-opus-4-6` dropped. Static catalog is now a fallback-only claude-5.x set (`sonnet-5-5`, `opus-5-5`, `sonnet-5`, `fable-5`, `mythos-5`).
+- **`sonnet` / `opus` built-in aliases updated to claude-5.5** (`src/ai/model-registry.ts`) — `sonnet` → `claude-sonnet-5-5`, `opus` → `claude-opus-5-5`.
+- **Live `https://api.anthropic.com/v1/models` is the primary model source** — when logged in, the API returns the account's actual available models; the static catalog serves as fallback only.
+
+### Verified
+- `bun run typecheck` clean. Catalog/alias tests updated and green.
+
 ## [0.12.1] - 2026-10-16
 _Logged-in OpenAI subscription models were invisible on proxy-configured machines._
 

@@ -107,11 +107,31 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 
 > [!CAUTION]
 > **`/model <name>`으로 특정 모델을 수동 지정하면 그 세션 동안 라우팅이 고정됩니다.** 프롬프트 라우팅(`/route`)은 모델이 수동으로 고정되지 않은 동안만 매 턴 재평가됩니다. `/model <name>`으로 특정 모델을 선택하면 그 선택이 그대로 고정되며, `/model auto`(핀을 완전히 해제)를 실행하거나 `/route on`(핀을 지우지 않고 그보다 우선순위를 높임 — `/route off` 하는 즉시 핀이 다시 살아남)을 실행하기 전까지는 라우팅이 다시 전환되지 않습니다. `roles.*` 항목 미설정 시 `defaultModel`로 확정 폴백되는 건 `standard` 티어뿐이며, `high`/`complex` 티어는 보통 폴백 전에 실시간으로 크레덴셜된 가장 강력한 모델을 먼저 탐색하므로, 설정이 없어도 매 턴 다른 모델로 갈 수 있습니다. **예외:** Antigravity 또는 Gemini OAuth로 크레덴셜된 세션은 하나의 크레덴셜로 Anthropic/Google/OpenAI 모델을 함께 재노출하는데, 이 경우 `high`/`complex`는 (항상 최강 모델이 아니라) 회사당 모델 1개로 세션-안정적으로 분산되어, 턴마다 바뀌지 않고 해당 세션 내내 고정됩니다.
-### Antigravity 계정 모델 라이브 디스커버리
+### Antigravity 계정 모델과 공식 agy 브리지
 
-**실시간 모델 디스커버리** — `/model provider antigravity`와 `/agents <역할> provider antigravity`는 OAuth 계정이 Cloud Code Assist에서 실제로 보유한 모델을 보여줍니다. 피커는 계정이 가진 모델만 인정하며, 모든 계정이 Argon을 갖추었다고 보장하지 않습니다. 빈 계정 목록은 정직하게 보고되며, 정적 카탈로그로 대체하지 않습니다. 계정 스코프는 세션 리프레시 전체에서 보존됩니다.
+**Cloud Code Assist (`antigravity/<CCA-id>`)** — `/model provider antigravity`와 `/agents <역할> provider antigravity`는 선택한 jeo OAuth 계정에 대해 Cloud Code Assist가 반환한 모델을 보여줍니다. 디스커버리는 `agentModelSorts`, `tieredModelIds`, `defaultAgentModelId`를 합치며, 계정별 캐시는 리프레시 후에도 서로 격리됩니다. 빈 목록이나 디스커버리 실패는 정적 카탈로그로 대체하지 않고 그대로 보고합니다. CLI 모델 슬러그는 CCA 통신용 ID가 아니며, CLI에서 이용 가능하다고 해서 CCA를 통한 Argon 직접 호출이 지원된다는 뜻은 아닙니다.
 
-**예시:** `jeo auth login antigravity`는 계정의 실제 이용 가능한 모델을 발견하고 캐시합니다. `/model antigravity/<모델-id>` 또는 `/agents executor provider antigravity`로 선택한 뒤 세션 동안 사용하거나 `/model save antigravity/<모델-id>`로 기본값 설정.
+**CCA 예시:** `jeo auth login antigravity`로 해당 계정의 모델을 발견하고 캐시합니다. `/model antigravity/<CCA-id>` 또는 `/agents executor provider antigravity`로 선택하거나 `/model save antigravity/<CCA-id>`로 기본값을 저장합니다.
+
+**공식 CLI (`agy/<official-cli-slug>`)** — `PATH`에 설치된 `agy` 실행 파일을 사용하는 별도의 전체 에이전트 백엔드를 명시적으로 선택합니다. 인증은 공식 CLI가 지원하는 자체 절차로 진행하며, jeo는 그 자격 증명을 관리하거나 가져오지 않습니다. `agy models`가 실제 목록과 정확한 슬러그를 제공하며, 정적 카탈로그나 CCA 별칭을 사용하지 않습니다. CLI 세션·계정과 jeo OAuth 계정이 같다고 가정하지 않으며, CLI 모델 목록은 jeo의 계정별 디스크 캐시 대신 현재 프로세스에만 보관합니다. 빈 목록은 빈 상태로, 디스커버리 실패는 오류로 보고하며 모델을 만들어 넣지 않습니다.
+
+```sh
+agy models
+jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"
+```
+
+자신의 CLI가 실제로 반환한 슬러그를 사용하세요. 대화형 jeo 세션에서 목록을 보고 선택한 뒤, 필요하면 영구 기본값으로 저장합니다:
+
+```text
+/model provider agy
+/model agy/gemini-4-argon-low
+/model save agy/gemini-4-argon-low
+```
+
+> [!WARNING]
+> **공식 agy 에이전트가 자체 도구·샌드박스·권한·대화를 관리합니다. jeo의 승인은 그 내부 도구 호출을 중재하지 않습니다.** `--plan`은 CLI의 계획 모드를 선택할 뿐, 도구 승인 권한을 jeo로 넘기지 않습니다. 이 브리지는 명시적 선택이 필요한 텍스트 전용 기능이며, 자동 원시 모델·서브에이전트 라우팅에서 제외됩니다. 이미지 첨부와 강제할 수 없는 jeo 전용 도구·시스템·단계 수·thinking 제어는 거부합니다.
+
+jeo 세션 저장이 켜져 있으면 재개 시 해당 세션에 저장된 CLI 대화 ID를 사용하며, 무관한 CLI 최신 대화를 이어받지 않습니다. 취소와 제한된 타임아웃은 CLI 턴을 중단합니다. 선택한 정확한 모델과 쿼터 오류를 포함한 상위 CLI 오류를 보존하며, CCA·다른 모델·다른 계정으로 조용히 폴백하지 않습니다.
 
 ## CLI 명령
 
@@ -397,10 +417,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.3]** (2026-10-17) — Anthropic static model catalog trimmed to claude-5.x; live API discovery now drives the model list for logged-in accounts.
 - **[0.12.1]** (2026-10-16) — Logged-in OpenAI subscription models were invisible on proxy-configured machines.
 - **[0.12.1]** (2026-10-16) — Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend.
 - **[0.12.0]** (2026-10-16) — Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router.
-- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

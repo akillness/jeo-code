@@ -107,11 +107,32 @@ jeo --tmux               # 独立した tmux セッションで実行
 > [!CAUTION]
 > **`/model <name>` で特定モデルを手動指定すると、そのセッション中ルーティングが固定されます。** プロンプトルーティング(`/route`)はモデルが手動固定されていない間のみ毎ターン再評価されます。`/model <name>` で特定モデルを選ぶとその選択が固定され、`/model auto`(ピンを完全に解除)を実行するか、`/route on`(ピンを消さずに優先度だけ上げる — `/route off` した瞬間ピンが復活)を実行するまでルーティングは切り替わりません。`roles.*` 未設定時に `defaultModel` へ確定フォールバックするのは `standard` ティアのみで、`high`/`complex` ティアは通常フォールバック前にライブでクレデンシャル済みの最強モデルを先に探索するため、未設定でも毎ターン別モデルに着地することがあります。**例外:** Antigravity または Gemini OAuth でクレデンシャルされたセッションは一つの資格情報で Anthropic/Google/OpenAI のモデルを再公開しており、その場合 `high`/`complex` は(必ずしも最強ではなく)会社ごとに1モデルへセッション単位で安定的に分散されるため、ターンごとに変わらずそのセッション中は固定されます。
 
-### Antigravity アカウント モデル ライブディスカバリー
+### Antigravity アカウントモデルと公式 agy ブリッジ
 
-**ライブ モデル ディスカバリー** — `/model provider antigravity` と `/agents <ロール> provider antigravity` は OAuth アカウントが Cloud Code Assist で実際に保有するモデルを表示します。ピッカーはアカウントが持つモデルのみを認め、すべてのアカウントが Argon を備えていることは保証しません。空のアカウント一覧は正直に報告され、静的なカタログでの代用はしません。アカウントスコープはセッションのリフレッシュ全体を通じて保持されます。
+**Cloud Code Assist (`antigravity/<CCA-id>`)** — `/model provider antigravity` と `/agents <ロール> provider antigravity` は、選択した jeo OAuth アカウントに対して Cloud Code Assist が返したモデルを表示します。ディスカバリーは `agentModelSorts`、`tieredModelIds`、`defaultAgentModelId` を統合し、アカウント別キャッシュは更新後も分離されます。空の一覧や取得失敗は静的カタログで置き換えず、そのまま報告します。CLI のモデルスラッグは CCA の通信上の ID ではなく、CLI で利用できても CCA 経由で Argon を直接呼び出せることを意味しません。
 
-**例:** `jeo auth login antigravity` はアカウントの実際に利用可能なモデルを発見しキャッシュします。`/model antigravity/<モデル-id>` または `/agents executor provider antigravity` で選択し、セッション中に利用するか `/model save antigravity/<モデル-id>` で既定値として設定します。
+**CCA の例:** `jeo auth login antigravity` でそのアカウントのモデルを取得し、キャッシュします。`/model antigravity/<CCA-id>` または `/agents executor provider antigravity` で選択するか、`/model save antigravity/<CCA-id>` で既定値を保存します。
+
+**公式 CLI (`agy/<official-cli-slug>`)** — `PATH` にインストールされた `agy` 実行ファイルを使う、別のフルエージェントバックエンドを明示的に選択します。認証は公式 CLI がサポートする独自の手順で行い、jeo はその認証情報を管理・取り込みしません。`agy models` が実際の一覧と正確なスラッグを提供し、静的カタログや CCA の別名は使いません。CLI のセッション・アカウントが jeo の OAuth アカウントと同一であるとは仮定せず、CLI のモデル一覧は jeo のアカウント別ディスクキャッシュではなく、現在のプロセス内にのみ保持します。空の一覧は空のまま、取得失敗はエラーとして報告し、モデルを捏造しません。
+
+```sh
+agy models
+jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"
+```
+
+自分の CLI が実際に返したスラッグを使用してください。対話型 jeo セッションで一覧を表示して選択し、必要なら永続的な既定値として保存できます:
+
+```text
+/model provider agy
+/model agy/gemini-4-argon-low
+/model save agy/gemini-4-argon-low
+```
+
+> [!WARNING]
+> **公式 agy エージェントが独自のツール・サンドボックス・権限・会話を管理します。jeo の承認はその内部ツール呼び出しを仲介しません。** `--plan` は CLI の計画モードを選ぶだけで、ツール承認を jeo に移しません。このブリッジは明示的な選択が必要なテキスト専用機能で、自動の生モデル・サブエージェントルーティングから除外されます。画像添付と、強制できない jeo 専用のツール・システム・ステップ数・thinking 制御は拒否します。
+
+jeo のセッション保存が有効な場合、再開にはそのセッションに保存された CLI 会話 ID を使用し、無関係な CLI の最新会話は再開しません。キャンセルと期限付きタイムアウトは CLI ターンを停止します。選択した正確なモデルと、クォータエラーを含む上流 CLI のエラーを保持し、CCA・別のモデル・別のアカウントへ暗黙にフォールバックしません。
+
 ## CLI コマンド
 
 `jeo --help` が正式な一覧です。よく使うものは次のとおり:
@@ -395,10 +416,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.3]** (2026-10-17) — Anthropic static model catalog trimmed to claude-5.x; live API discovery now drives the model list for logged-in accounts.
 - **[0.12.1]** (2026-10-16) — Logged-in OpenAI subscription models were invisible on proxy-configured machines.
 - **[0.12.1]** (2026-10-16) — Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend.
 - **[0.12.0]** (2026-10-16) — Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router.
-- **[0.11.6]** (2026-10-16) — Live Antigravity account model discovery now serves the actual account's available models instead of assuming static availability.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

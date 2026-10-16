@@ -12,8 +12,8 @@ import {
 import { resolveProvider } from "../src/ai/model-manager";
 
 test("findCatalogEntry is normalized + adapts to {id,provider,contextWindow,reasoning}", () => {
-  const e = findCatalogEntry("CLAUDE-SONNET-4-6")!;
-  expect(e.id).toBe("claude-sonnet-4-6");
+  const e = findCatalogEntry("CLAUDE-SONNET-5-5")!;
+  expect(e.id).toBe("claude-sonnet-5-5");
   expect(e.provider).toBe("anthropic");
   expect(e.contextWindow).toBeGreaterThan(0);
   expect(typeof e.reasoning).toBe("boolean");
@@ -21,6 +21,7 @@ test("findCatalogEntry is normalized + adapts to {id,provider,contextWindow,reas
   expect(findCatalogEntry("gpt-4o")!.provider).toBe("openai");
   expect(findCatalogEntry("totally-made-up")).toBeUndefined();
 });
+
 
 test("adapted entries route to their declared provider", () => {
   for (const id of catalogIds()) {
@@ -55,10 +56,11 @@ test("validateModelId reports known + provider match", () => {
 
 test("editDistance + suggestModels correct typos", () => {
   expect(editDistance("kitten", "sitting")).toBe(3);
-  expect(suggestModels("claude-sonnet-46")).toContain("claude-sonnet-4-6");
+  expect(suggestModels("claude-sonnet-5-5x")).toContain("claude-sonnet-5-5");
   expect(suggestModels("gpt").length).toBeGreaterThan(0);
   expect(suggestModels("")).toEqual([]);
 });
+
 
 test("normalizeModelId trims + lowercases", () => {
   expect(normalizeModelId("  GPT-4o ")).toBe("gpt-4o");

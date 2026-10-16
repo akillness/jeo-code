@@ -12,8 +12,9 @@ test("qualifyModelId matches all spec cases", () => {
   // 3. (ollama/qwen2.5:0.5b, ollama) unchanged
   expect(qualifyModelId("ollama/qwen2.5:0.5b", "ollama")).toBe("ollama/qwen2.5:0.5b");
 
-  // 4. (claude-sonnet-4-6, anthropic) unchanged
-  expect(qualifyModelId("claude-sonnet-4-6", "anthropic")).toBe("claude-sonnet-4-6");
+  // 4. (claude-sonnet-5-5, anthropic) unchanged
+  expect(qualifyModelId("claude-sonnet-5-5", "anthropic")).toBe("claude-sonnet-5-5");
+
 
   // 5. (gpt-5.5, openai) unchanged
   expect(qualifyModelId("gpt-5.5", "openai")).toBe("gpt-5.5");

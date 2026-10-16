@@ -58,11 +58,12 @@ test("buildModelChoices lists ready providers first and groups them", () => {
   expect(["openai — OpenAI", "ollama — Ollama"]).toContain(choices[0]!.group);
   // every catalogued model id appears
   expect(choices.some(c => c.value === "gpt-4o")).toBe(true);
-  const sonnetChoice = choices.find(c => c.value === "claude-sonnet-4-6");
-  expect(sonnetChoice?.label).toBe("claude-sonnet-4-6 (Anthropic)");
+  const sonnetChoice = choices.find(c => c.value === "claude-sonnet-5-5");
+  expect(sonnetChoice?.label).toBe("claude-sonnet-5-5 (Anthropic)");
   // unready providers carry a "(no credential)" group label
   expect(choices.some(c => c.group === "anthropic — Anthropic (no credential)")).toBe(true);
 });
+
 
 test("modelPicker excludes unready providers when includeUnready:false", () => {
   const statuses = [status("anthropic", false), status("openai", true), status("gemini", false), status("ollama", false)];

@@ -8,10 +8,11 @@ import {
 test("expandAlias: expand known builtin aliases", () => {
   expect(expandAlias("fast")).toBe("ollama/qwen2.5:0.5b");
   expect(expandAlias("local")).toBe("ollama/qwen2.5:0.5b");
-  expect(expandAlias("sonnet")).toBe("claude-sonnet-4-6");
+  expect(expandAlias("sonnet")).toBe("claude-sonnet-5-5");
   expect(expandAlias("gpt")).toBe("gpt-5.5");
   expect(expandAlias("flash")).toBe("gemini-2.5-flash");
 });
+
 
 test("expandAlias: pass through unknown aliases/model ids unchanged", () => {
   expect(expandAlias("gpt-4o")).toBe("gpt-4o");
@@ -38,8 +39,9 @@ test("resolveModelId and listAliases", async () => {
 
   const aliases = await listAliases();
   expect(aliases.fast).toBe("ollama/qwen2.5:0.5b");
-  expect(aliases.sonnet).toBe("claude-sonnet-4-6");
+  expect(aliases.sonnet).toBe("claude-sonnet-5-5");
 });
+
 
 import { describeModel } from "../src/ai/model-manager";
 
@@ -49,8 +51,9 @@ test("describeModel: expands aliases and reports the routed provider", async () 
   expect(fast.provider).toBe("ollama");
 
   const sonnet = await describeModel("sonnet");
-  expect(sonnet.resolved).toBe("claude-sonnet-4-6");
+  expect(sonnet.resolved).toBe("claude-sonnet-5-5");
   expect(sonnet.provider).toBe("anthropic");
+
 
   // A concrete id passes through unchanged.
   const direct = await describeModel("gpt-4o");

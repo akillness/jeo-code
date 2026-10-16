@@ -6,6 +6,7 @@ import { providerHttpError, ProviderStreamError } from "./errors";
 import { serializeToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { geminiThinkingConfig, type GeminiThinkingConfig } from "./gemini";
+import { saveConfigPatch } from "../../agent/state";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -133,10 +134,12 @@ export async function resolveAntigravityProjectId(
   discoveredProjects.set(credential.token, projectId);
 
   const persist = opts.persist ?? (async (id: string) => {
-    const { getStoredOAuth, setOauthCredential } = await import("../../auth/storage");
     const owner = credential.provider === "antigravity" ? "antigravity" : "gemini";
-    const stored = await getStoredOAuth(owner);
-    if (stored && !stored.projectId) await setOauthCredential(owner, { ...stored, projectId: id });
+    await saveConfigPatch(raw => {
+      const stored = raw.oauth?.[owner];
+      if (!stored || typeof stored === "string" || stored.access !== credential.token || stored.projectId) return {};
+      return { oauth: { ...raw.oauth, [owner]: { ...stored, projectId: id } } };
+    });
   });
   try {
     await persist(projectId);

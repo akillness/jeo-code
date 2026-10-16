@@ -444,7 +444,9 @@ test("listProviderModels: Antigravity list failure is surfaced, never papered ov
   expect(r.ok).toBe(false);
   expect(r.error).toBe("auth rejected");
   expect(r.models).toEqual([]);
-  expect(catalogOr(r)).toEqual({ provider: "antigravity", models: [], ok: false, source: "oauth", error: "auth rejected" });
+  expect(catalogOr(r)).toEqual(expect.objectContaining({ provider: "antigravity", models: [], ok: false, source: "oauth", error: "auth rejected", accountId: expect.any(String) }));
+  expect(catalogOr(r).accountId).not.toContain("oauth-gem");
+  expect(catalogOr(r).accountId).not.toContain("proj-1");
 });
 
 test("parseModelsBody: Antigravity model rows are provider-qualified", () => {

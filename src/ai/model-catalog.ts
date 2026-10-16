@@ -202,6 +202,7 @@ export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4", "gpt-5.4-m
 const EPHEMERAL_OPENAI_OAUTH_SCOPE = "__jeo-openai-oauth-ephemeral__";
 let activeOpenAIOauthScope = EPHEMERAL_OPENAI_OAUTH_SCOPE;
 const liveCodexModels = new Map<string, Set<string>>();
+let activeAntigravityAccountScope: string | undefined;
 
 function normalizeOpenAIOauthScope(scope: string | undefined): string {
   return typeof scope === "string" ? scope.trim() : "";
@@ -231,6 +232,18 @@ export function setOpenAIOauthAccountScope(accountId: string | undefined): void 
   }
   for (const [recordKey, record] of liveProviderModels.entries()) {
     if (record.row.provider === "openai" && record.source === "oauth" && oauthScope(record.accountId) !== nextScope) {
+      removeLiveProviderRecord(recordKey, record);
+    }
+  }
+}
+
+/** Select the current Antigravity OAuth account and evict every other account's live rows. */
+export function setAntigravityAccountScope(accountId: string | undefined): void {
+  const nextScope = normalizeOpenAIOauthScope(accountId) || undefined;
+  activeAntigravityAccountScope = nextScope;
+  for (const [recordKey, record] of liveProviderModels.entries()) {
+    if (record.row.provider === "antigravity" && record.source === "oauth"
+      && normalizeOpenAIOauthScope(record.accountId) !== nextScope) {
       removeLiveProviderRecord(recordKey, record);
     }
   }
@@ -338,8 +351,8 @@ function liveModelRecordKey(
   accountId?: string,
   source?: LiveProviderModelSource,
 ): string {
-  const normalizedAccountId = provider === "openai" ? normalizeOpenAIOauthScope(accountId) : "";
-  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${provider === "openai" ? source ?? "none" : ""}\u0000${canonical}`;
+  const normalizedAccountId = (provider === "openai" || provider === "antigravity") ? normalizeOpenAIOauthScope(accountId) : "";
+  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${provider === "openai" || provider === "antigravity" ? source ?? "none" : ""}\u0000${canonical}`;
 }
 
 function liveModelFallbackRow(provider: ProviderName, canonical: string, providerModel: string): CatalogModel {
@@ -358,8 +371,8 @@ function liveModelFallbackRow(provider: ProviderName, canonical: string, provide
   };
 }
 
-/** Record live ids. Complete OpenAI refreshes may replace their matching scope;
- *  partial observations and other providers remain additive. */
+/** Record live ids. Complete OpenAI and Antigravity refreshes replace their matching scope;
+ * partial observations and other providers remain additive. */
 export function recordLiveProviderModels(
   provider: ProviderName,
   ids: readonly string[],
@@ -367,16 +380,26 @@ export function recordLiveProviderModels(
 ): void {
   const source = opts.source ?? "none";
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
-  const scopedAccountId = provider === "openai" && source === "oauth"
+  const scopedAccountId = (provider === "openai" || provider === "antigravity") && source === "oauth"
     ? normalizeOpenAIOauthScope(opts.accountId) || undefined
     : undefined;
+  // A complete discovery refresh must not reactivate an account that was
+  // superseded while its request was in flight. Non-refresh observations may
+  // remain hidden until that account is explicitly selected.
+  if (provider === "antigravity" && (!scopedAccountId || source !== "oauth")) return;
+  if (provider === "antigravity" && opts.replace && scopedAccountId !== activeAntigravityAccountScope) return;
   if (provider === "openai" && source === "oauth" && scopedAccountId) {
     setOpenAIOauthAccountScope(scopedAccountId);
   }
-  if (provider === "openai" && opts.replace) {
+  const shouldReplace = provider === "antigravity" || (provider === "openai" && !!opts.replace);
+  if (shouldReplace) {
     for (const [key, record] of liveProviderModels) {
-      if (record.row.provider === provider && record.source === source && record.baseUrl === baseUrl
-        && oauthScope(record.accountId) === oauthScope(scopedAccountId)) {
+      const sameScope = provider === "openai"
+        ? oauthScope(record.accountId) === oauthScope(scopedAccountId)
+        : provider === "antigravity"
+          ? normalizeOpenAIOauthScope(record.accountId) === normalizeOpenAIOauthScope(scopedAccountId)
+          : true;
+      if (record.row.provider === provider && record.source === source && record.baseUrl === baseUrl && sameScope) {
         removeLiveProviderRecord(key, record);
       }
     }
@@ -405,6 +428,10 @@ function liveRecordMatchesConfig(
   record: LiveProviderModelRecord,
   config?: { openaiBaseUrl?: string; openaiOauthScope?: string },
 ): boolean {
+  if (record.row.provider === "antigravity") {
+    return record.source === "oauth" && activeAntigravityAccountScope !== undefined
+      && normalizeOpenAIOauthScope(record.accountId) === activeAntigravityAccountScope;
+  }
   if (record.row.provider !== "openai") return true;
   const wanted = normalizeBaseUrl(config?.openaiBaseUrl);
   if (wanted || record.baseUrl) {
@@ -434,7 +461,8 @@ export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string; ope
 export function findLiveCatalogModel(canonical: string): CatalogModel | undefined {
   for (const record of liveProviderModels.values()) {
     if (record.row.canonical !== canonical) continue;
-    if (record.row.provider === "openai" && record.source === "oauth" && !liveRecordMatchesConfig(record)) continue;
+    if ((record.row.provider === "openai" && record.source === "oauth" && !liveRecordMatchesConfig(record))
+      || (record.row.provider === "antigravity" && !liveRecordMatchesConfig(record))) continue;
     return record.row;
   }
   return undefined;
@@ -461,6 +489,7 @@ export function isLiveProviderModel(provider: ProviderName, model: string, confi
 export function resetLiveProviderModels(): void {
   liveProviderModels.clear();
   liveModelIdIndex.clear();
+  activeAntigravityAccountScope = undefined;
 }
 
 

@@ -17,10 +17,14 @@ import {
   recordLiveCodexModels,
   recordLiveProviderModels,
   setOpenAIOauthAccountScope,
+  setAntigravityAccountScope,
 } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { getStoredOAuth } from "../auth/storage";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
+import { antigravityAccountScope } from "./model-cache";
+import { getAntigravityUserAgent, resolveAntigravityProjectId } from "./providers/antigravity";
+import { discoverGoogleProjectId, ANTIGRAVITY_DISCOVERY_METADATA } from "../auth/flows/google-project";
 
 export interface ProviderModelsResult {
   provider: ProviderName;
@@ -29,7 +33,7 @@ export interface ProviderModelsResult {
   ok: boolean;
   /** How the request authenticated (for display). */
   source: "oauth" | "api_key" | "keyless" | "none";
-  /** Stable OpenAI OAuth account scope for account-specific cache rows. */
+  /** Opaque OAuth account scope for account-specific cache rows. */
   accountId?: string;
   /** Actual custom endpoint queried, for endpoint-scoped persistent caches. */
   baseUrl?: string;
@@ -46,7 +50,7 @@ export interface DiscoveryOptions {
   /** Per-request timeout; default 5000ms. */
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Cap returned ids; OpenAI defaults to the full list, other providers to 100. */
+  /** Cap returned ids; OpenAI and Antigravity default to the full account list. */
   limit?: number;
   /** Config snapshot used for provider base URLs. */
   config?: Config;
@@ -147,9 +151,9 @@ export function discoveryRequest(
       const token = cred?.kind === "oauth" ? cred.token : "";
       return {
         url: ANTIGRAVITY_MODELS_URL,
-        headers: token ? { authorization: `Bearer ${token}`, "content-type": "application/json", "User-Agent": "antigravity/1.104.0" } : {},
+        headers: token ? { authorization: `Bearer ${token}`, "content-type": "application/json", "User-Agent": getAntigravityUserAgent() } : {},
         method: "POST",
-        body: "{}",
+        body: JSON.stringify(cred?.kind === "oauth" && cred.projectId ? { project: cred.projectId } : {}),
       };
     }
     case "ollama": {
@@ -267,7 +271,7 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       .filter(([id, model]) =>
         id.length > 0 &&
         model?.isInternal !== true &&
-        (agentIds.size > 0 ? agentIds.has(id) : !nonChat.has(id)))
+        (Array.isArray(payload.agentModelSorts) ? agentIds.has(id) : !nonChat.has(id)))
       .map(([id]) => `antigravity/${id}`);
   }
   if (provider === "gemini") {
@@ -342,7 +346,7 @@ export async function listProviderModels(
   opts: DiscoveryOptions = {},
 ): Promise<ProviderModelsResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const limit = opts.limit ?? (provider === "openai" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
+  const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
   let baseUrl = opts.baseUrl;
 
   let cred: Credential | undefined;
@@ -376,6 +380,7 @@ export async function listProviderModels(
         }
       }
       if (cred.kind !== "oauth") {
+        setAntigravityAccountScope(undefined);
         return { provider, models: [], ok: false, source, error: "not logged in with Antigravity OAuth" };
       }
     }
@@ -417,11 +422,41 @@ export async function listProviderModels(
     }
   }
 
-  const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, baseUrl, oauthAccountId);
   const scope = { ...(oauthAccountId ? { accountId: oauthAccountId } : {}), ...(baseUrl ? { baseUrl } : {}) };
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT;
-  const signal = opts.signal ?? AbortSignal.timeout(timeout);
+  let signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
+  let initialAntigravityScope: string | undefined;
   try {
+    if (provider === "antigravity" && cred?.kind === "oauth") {
+      initialAntigravityScope = await antigravityAccountScope(cred);
+      scope.accountId = initialAntigravityScope;
+      try {
+        const projectId = await resolveAntigravityProjectId(cred, {
+          signal,
+          discover: token => discoverGoogleProjectId(token, {
+            fetchImpl,
+            metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA },
+            extraHeaders: { "User-Agent": getAntigravityUserAgent() },
+            alwaysOnboard: true,
+            signal,
+            requestTimeoutMs: timeout,
+          }),
+        });
+        cred = { ...cred, projectId };
+      } catch (error) {
+        // The OAuth models endpoint also accepts {}. Project lookup is optional
+        // for listing, so an onboarding failure must not hide account models.
+        if (opts.signal?.aborted) throw error;
+      }
+      signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
+      scope.accountId = await antigravityAccountScope(cred);
+      const currentScope = await antigravityAccountScope();
+      if (currentScope !== scope.accountId && currentScope !== initialAntigravityScope) {
+        return { provider, models: [], ok: false, source, error: "account changed during model discovery", ...scope };
+      }
+      setAntigravityAccountScope(scope.accountId);
+    }
+    const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, baseUrl, oauthAccountId);
     const res = await fetchImpl(url, { method: method ?? "GET", headers, body: requestBody, signal });
     if (!res.ok) {
       const reason = res.status === 401 || res.status === 403 ? "auth rejected" : `HTTP ${res.status}`;
@@ -433,6 +468,30 @@ export async function listProviderModels(
       const rows = Array.isArray(payload?.models) ? payload.models : payload?.data;
       if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object"
         || ![row.slug, row.id].some(id => typeof id === "string" && id.trim().length > 0))) {
+        return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
+      }
+    }
+    if (provider === "antigravity") {
+      const payload = body as ({ models?: unknown; agentModelSorts?: unknown } & Record<string, unknown>) | null;
+      const models = payload?.models;
+      const rows = models && typeof models === "object" ? Object.entries(models) : undefined;
+      const sorts = payload?.agentModelSorts;
+      const invalidSorts = sorts !== undefined && (!Array.isArray(sorts) || sorts.some(sort =>
+        !sort || typeof sort !== "object" || !Array.isArray(sort.groups) || sort.groups.some((group: { modelIds?: unknown } | null) =>
+          !group || !Array.isArray(group.modelIds) || group.modelIds.some(id => typeof id !== "string" || !id.trim()))));
+      const invalidRoles = ["tabModelIds", "imageGenerationModelIds", "audioTranscriptionModelIds", "commitMessageModelIds", "mqueryModelIds"].some(field => {
+        const ids = payload?.[field];
+        return ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !id.trim()));
+      });
+      const deprecated = payload?.deprecatedModelIds;
+      const invalidDeprecated = deprecated !== undefined && (Array.isArray(deprecated)
+        ? deprecated.some(id => typeof id !== "string" || !id.trim())
+        : !deprecated || typeof deprecated !== "object");
+      if (!rows || rows.some(([id, row]) => !row || typeof row !== "object" || Array.isArray(row)
+        || (Array.isArray(models)
+          ? ![row.slug, row.id, row.name].some(value => typeof value === "string" && value.trim().length > 0)
+          : !id.trim()))
+        || invalidSorts || invalidRoles || invalidDeprecated) {
         return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
       }
     }
@@ -452,14 +511,20 @@ export async function listProviderModels(
     }
     const allModels = [...new Set(ids)].sort();
     const models = allModels.slice(0, limit);
+    if (provider === "antigravity") {
+      const currentScope = await antigravityAccountScope();
+      if (currentScope !== scope.accountId && currentScope !== initialAntigravityScope) {
+        return { provider, models: [], ok: false, source, error: "account changed during model discovery", ...scope };
+      }
+    }
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery
     // must not make OAuth Codex calls accept unrelated API models.
     recordLiveProviderModels(provider, allModels, {
       source,
       baseUrl,
-      replace: provider === "openai",
-      ...(provider === "openai" && source === "oauth" && oauthAccountId ? { accountId: oauthAccountId } : {}),
+      replace: provider === "openai" || provider === "antigravity",
+      ...(source === "oauth" && scope.accountId ? { accountId: scope.accountId } : {}),
     });
     if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthAccountId);
     return {
@@ -470,7 +535,7 @@ export async function listProviderModels(
       ...scope,
     };
   } catch (err) {
-    const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";
+    const msg = signal.aborted || (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";
     return { provider, models: [], ok: false, source, error: msg, ...scope };
   }
 }

@@ -60,6 +60,21 @@ function cachePath(): string {
   return path.join(cacheDir(), "model-catalog-cache.json");
 }
 
+/** Account-bound catalog identity; opaque manual bearers must not share a scope. */
+export async function openAIOauthAccountScope(credential?: Credential): Promise<string | undefined> {
+  let selected = credential;
+  if (!selected) {
+    const snapshot = await snapshotProvider("openai");
+    if (!snapshot.oauth) return undefined;
+    selected = { kind: "oauth", provider: "openai", token: snapshot.oauth };
+  }
+  if (selected.kind !== "oauth" || selected.provider !== "openai") return undefined;
+  const stored = await getStoredOAuth("openai");
+  const accountId = extractChatgptAccountId(selected.token)
+    || (stored?.access === selected.token ? stored.accountId?.trim() : undefined);
+  return accountId || `token:${createHash("sha256").update(selected.token).digest("hex")}`;
+}
+
 /** Peek at the selected OAuth account without importing or refreshing credentials. */
 export async function antigravityAccountScope(credential?: Credential): Promise<string | undefined> {
   try {
@@ -251,14 +266,7 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
 /** Read + apply in one step. Returns the cache so callers can decide about refreshing. */
 export async function rehydrateLiveModels(): Promise<ModelCacheFile | null> {
   const cache = await readModelCache();
-  let accountId: string | undefined;
-  try {
-    const stored = await getStoredOAuth("openai");
-    const jwtAccountId = stored ? extractChatgptAccountId(stored.access) : undefined;
-    accountId = jwtAccountId || stored?.accountId;
-  } catch {
-    accountId = undefined;
-  }
+  const accountId = await openAIOauthAccountScope();
   const antigravityAccountId = await antigravityAccountScope();
   setOpenAIOauthAccountScope(accountId);
   setAntigravityAccountScope(antigravityAccountId);

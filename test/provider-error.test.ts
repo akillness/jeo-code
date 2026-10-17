@@ -141,3 +141,78 @@ test("relabelProviderError passes through non-provider errors unchanged", () => 
   expect(relabeled).toBe(orig);
   expect(relabeled).toBeInstanceOf(Error);
 });
+
+test("friendlyProviderError: OpenAI and Codex auth failures name real OpenAI recovery commands and omit unrelated Google guidance", () => {
+  for (const provider of ["OpenAI", "OpenAI Codex"]) {
+    const out = friendlyProviderError(new ProviderHttpError(provider, 401, "super-secret-provider-response"));
+    expect(out).toContain("jeo auth login openai");
+    expect(out).toContain("/provider login openai");
+    expect(out).not.toMatch(/antigravity|google|gemini/i);
+    expect(out).not.toContain("super-secret-provider-response");
+  }
+});
+
+test("friendlyProviderError: Gemini API and Antigravity auth failures retain provider-specific recovery guidance", () => {
+  const gemini = friendlyProviderError(new ProviderHttpError("Gemini", 403, "unauthorized"));
+  expect(gemini).toContain("GEMINI_API_KEY");
+  expect(gemini).toContain("antigravity/*");
+  expect(gemini).toContain("jeo auth login antigravity");
+  expect(gemini).toContain("/provider login antigravity");
+
+  const antigravity = friendlyProviderError(new ProviderHttpError("Antigravity", 403, "unauthorized"));
+  expect(antigravity).toContain("jeo auth login antigravity");
+  expect(antigravity).toContain("/provider login antigravity");
+});
+
+test("friendlyProviderError: raw HTTP 401 and 403 messages preserve their exact status", () => {
+  const unauthorized = friendlyProviderError(new Error("OpenAI request failed (HTTP 401): unauthorized"));
+  const forbidden = friendlyProviderError(new Error("OpenAI request failed (HTTP 403): forbidden"));
+  expect(unauthorized).toContain("HTTP 401");
+  expect(unauthorized).not.toContain("HTTP 401/403");
+  expect(forbidden).toContain("HTTP 403");
+  expect(forbidden).not.toContain("HTTP 401/403");
+});
+
+test("friendlyProviderError: a structured non-auth status is not classified from a 401 in its body", () => {
+  const out = friendlyProviderError(new ProviderHttpError("OpenAI", 400, "upstream trace contains HTTP 401"));
+  expect(out).not.toContain("rejected the credential");
+  expect(out).not.toContain("jeo auth login openai");
+});
+
+test("friendlyProviderError: provider-specific auth formatting is idempotent across registered and unknown labels", () => {
+  for (const provider of ["OpenAI", "OpenAI Codex", "Gemini", "Antigravity", "xAI", "Groq", "DeepSeek", "Mistral", "OpenRouter", "Together", "Cerebras", "Fireworks", "NVIDIA", "Hugging Face", "NanoGPT", "Synthetic", "Venice", "ZenMux", "Qianfan", "Xiaomi", "MiniMax", "Tencent", "DeepInfra", "LiteLLM", "Moonshot", "Registered API Cloud"]) {
+    const first = friendlyProviderError(new ProviderHttpError(provider, 401, "unauthorized"));
+    expect(friendlyProviderError(new Error(first))).toBe(first);
+  }
+});
+
+test("friendlyProviderError: API-only provider labels give key commands instead of OAuth login", () => {
+  const cases = [
+    { label: "Groq", id: "groq", env: "GROQ_API_KEY" },
+    { label: "DeepSeek", id: "deepseek", env: "DEEPSEEK_API_KEY" },
+    { label: "xAI", id: "xai", env: "XAI_API_KEY" },
+  ] as const;
+  for (const c of cases) {
+    const out = friendlyProviderError(new ProviderHttpError(c.label, 401, "opaque-provider-secret"));
+    expect(out).toContain(`/provider key ${c.id}`);
+    expect(out).toContain(c.env);
+    expect(out).toContain("--token");
+    expect(out).not.toContain(`/provider login ${c.id}`);
+    expect(out).not.toContain("opaque-provider-secret");
+  }
+});
+test("friendlyProviderError: Kimi/Moonshot auth explains both API-key and subscription paths", () => {
+  const out = friendlyProviderError(new ProviderHttpError("Moonshot", 401, "opaque-provider-secret"));
+  expect(out).toContain("KIMI_API_KEY");
+  expect(out).toContain("/provider key kimi");
+  expect(out).toContain("jeo auth login kimi");
+  expect(out).not.toContain("/provider login kimi");
+  expect(out).not.toContain("opaque-provider-secret");
+});
+
+test("friendlyProviderError: unknown auth labels do not echo credential-looking prefixes", () => {
+  const out = friendlyProviderError(new Error("sk-secret request failed (HTTP 401): unauthorized"));
+  expect(out).toContain("the provider rejected the credential (HTTP 401)");
+  expect(out).not.toContain("sk-secret");
+  expect(out).not.toContain("/provider login");
+});

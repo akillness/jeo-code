@@ -9,6 +9,8 @@ import { companyLabel } from "../ai/model-catalog";
 import { ProviderHttpError, ProviderStreamError } from "../ai/providers/errors";
 import { AgyCliError } from "../agent/antigravity-cli";
 import { sanitizeForTerminal } from "../tui/components/code-view";
+import { OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS } from "../auth/storage";
+import { openaiCompatDef, allCompatNames } from "../ai/providers/openai-compatible-catalog";
 // Re-export: engine.ts and callers import the refusal predicate from here; the
 // definition lives in retry.ts so defaultRetryable can fail fast without a cycle.
 export { isRefusalError } from "./retry";
@@ -72,6 +74,12 @@ function retryAfterMsOf(err: unknown): number | undefined {
   return err instanceof ProviderHttpError ? err.retryAfterMs : undefined;
 }
 
+function authProviderForLabel(label: string): string | undefined {
+  const normalized = label.toLowerCase() === "openai codex" ? "openai" : label.toLowerCase();
+  const matches = (id: string) => id === normalized || companyLabel(id).toLowerCase() === normalized;
+  return OAUTH_PROVIDERS.find(matches) ?? API_KEY_ONLY_PROVIDERS.find(matches) ?? allCompatNames().find(matches);
+}
+
 export function friendlyProviderError(err: unknown): string {
   if (err instanceof AgyCliError) return sanitizeForTerminal(err.message);
   if (err instanceof ConnectionContextError) {
@@ -92,7 +100,10 @@ export function friendlyProviderError(err: unknown): string {
   // Tencent/groq that speak Anthropic's/OpenAI's wire protocol — see
   // `relabelProviderError`); only guess from message text for errors that never
   // carried a `.provider` field (bare Error, a re-wrapped doneReason string, …).
-  const provider = knownErrorProvider(err) ?? (
+  const reportedProvider = knownErrorProvider(err) ?? /^(?:Error:\s*)?([^\r\n]+?) (?:request failed|stream failed|rejected the credential)\b/i.exec(msg)?.[1] ?? /^(?:Error:\s*)?(OpenAI(?: Codex)?|Antigravity|Anthropic|Gemini|Google)\b/i.exec(msg)?.[1];
+  // A raw prefix may contain a secret, not a provider name. Only registry labels
+  // may survive redaction or the round trip through an engine's doneReason.
+  const provider = reportedProvider && authProviderForLabel(reportedProvider) ? reportedProvider : (
     /antigravity/i.test(msg)
       ? "Antigravity"
       : /anthropic/i.test(msg)
@@ -117,8 +128,28 @@ export function friendlyProviderError(err: unknown): string {
       : "";
     return `Rate limited by ${provider} (HTTP 429).${retry} Auto-retry cannot clear this window right now — slow your request rate, wait for the reset, or switch model with /model (a local ollama model never rate-limits).`;
   }
-  if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
-    return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
+  const credentialStatus = status ?? Number(/\b(401|403)\b/.exec(msg)?.[1]);
+  if (credentialStatus === 401 || credentialStatus === 403) {
+    const authProvider = authProviderForLabel(provider);
+    let hint = "Check the configured credentials with 'jeo setup' or /provider.";
+    if (authProvider === "openai") {
+      hint = "For ChatGPT/Codex, run 'jeo auth login openai' or /provider login openai. For API/custom endpoints, check OPENAI_API_KEY and OPENAI_BASE_URL (config: providers.openai / openaiBaseUrl).";
+    } else if (authProvider === "gemini") {
+      hint = "Check GEMINI_API_KEY. For Google OAuth, select an antigravity/* model and run 'jeo auth login antigravity' or /provider login antigravity.";
+    } else if (authProvider === "antigravity") {
+      hint = "Run 'jeo auth login antigravity' or /provider login antigravity; a Gemini login only works when Cloud Code Assist authorizes that token.";
+    } else if (authProvider === "kimi") {
+      hint = "For Kimi Code, run 'jeo auth login kimi'. For the Moonshot API, check KIMI_API_KEY or set it with /provider key kimi <key>.";
+    } else if (authProvider && !OAUTH_PROVIDERS.some(id => id === authProvider)) {
+      const apiKeyEnv = openaiCompatDef(authProvider)?.apiKeyEnv ?? `${authProvider.toUpperCase()}_API_KEY`;
+      const command = API_KEY_ONLY_PROVIDERS.some(id => id === authProvider)
+        ? ` Set the key with /provider key ${authProvider} <key> or 'jeo auth login ${authProvider} --token <key>'.`
+        : " Update the custom provider's configured credentials.";
+      hint = `Check ${apiKeyEnv} or providers.${authProvider}.${command}`;
+    } else if (authProvider) {
+      hint = `Run 'jeo auth login ${authProvider}' or /provider login ${authProvider}; for API keys, check providers.${authProvider}.`;
+    }
+    return `${provider} rejected the credential (HTTP ${credentialStatus}). Run 'jeo auth status'. ${hint}`;
   }
   // A persistent 5xx (server-side fault on the provider's backend) — `ProviderHttpError`
   // already embeds the numeric status directly in its message ("… failed (HTTP 500) …",

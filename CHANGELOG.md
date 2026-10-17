@@ -9,6 +9,14 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-10-17
+_Preserve OpenAI subscription authentication behind configured proxies, isolate account catalogs, and give provider-specific recovery instructions while retaining Antigravity OAuth calls._
+
+### Fixed
+- **OpenAI subscription startup behind a configured proxy** — account-confirmed Codex models keep their OAuth transport instead of sending a keyless request to the OpenAI-compatible endpoint. Cold calls confirm the subscription catalog first; explicit per-call URLs, configured proxy keys, and endpoint-discovered models retain their existing routes. Subscription requests use the direct Codex backend, not the configured proxy.
+- **Provider-specific authentication recovery** — HTTP 401/403 errors name the appropriate login or API-key configuration, omit unrelated Antigravity advice for OpenAI, preserve exact status codes, and no longer treat a structured non-authentication failure as a credential rejection merely because its body mentions 401.
+- **Account-bound subscription catalogs** — distinguish opaque bearer identities without exposing tokens, reject discovery results that finish after an account switch, share concurrent same-account catalog requests, and keep cancellation of one caller from interrupting other callers.
+
 ## [0.12.5] - 2026-10-17
 _Antigravity and Kimi provider support in interactive setup, Kimi live model cache rehydration, immediate discovery caching on provider probing._
 
@@ -2579,7 +2587,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.6...HEAD
+[0.12.6]: https://github.com/akillness/jeo-code/releases/tag/v0.12.6
 [0.11.4]: https://github.com/akillness/jeo-code/releases/tag/v0.11.4
 [0.11.3]: https://github.com/akillness/jeo-code/releases/tag/v0.11.3
 [0.11.2]: https://github.com/akillness/jeo-code/releases/tag/v0.11.2

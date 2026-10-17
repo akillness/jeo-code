@@ -255,10 +255,15 @@ export function recordLiveCodexModels(ids: readonly string[], accountId?: string
 }
 
 /** A confirmed account catalog is authoritative; use the snapshot before discovery. */
-export function isCodexModel(model: string): boolean {
+export function isCodexModel(model: string, accountId = activeOpenAIOauthScope): boolean {
   const wire = model.startsWith("openai/") ? model.slice(7) : model;
-  const confirmed = liveCodexModels.get(activeOpenAIOauthScope);
+  const confirmed = liveCodexModels.get(oauthScope(accountId));
   return confirmed ? confirmed.has(wire) : CODEX_MODELS.includes(wire);
+}
+
+/** Whether discovery (including a restored account cache) established a Codex catalog. */
+export function hasConfirmedCodexCatalog(accountId = activeOpenAIOauthScope): boolean {
+  return liveCodexModels.has(oauthScope(accountId));
 }
 
 /** Test-only reset for live Codex observations and the active account scope. */

@@ -6,12 +6,15 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel, hasConfirmedCodexCatalog, isLiveProviderModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
+import { listProviderModels } from "./model-discovery";
+import type { ProviderModelsResult } from "./model-discovery";
+import { openAIOauthAccountScope } from "./model-cache";
 
 
 
@@ -404,6 +407,8 @@ interface Resolved {
   baseUrl: string | undefined;
 }
 
+const codexCatalogInFlight = new Map<string, Promise<ProviderModelsResult>>();
+
 /**
  * The credential to actually use for a provider call. A configured local OpenAI-compatible base
  * URL must use the standard /chat/completions path, but the openai adapter dispatches on
@@ -436,7 +441,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   }
   const adapter = providerRegistry.get(provider)!;
 
-  const baseUrl =
+  let baseUrl =
     options.baseUrl ??
     (provider === "openai" ? config.openaiBaseUrl : undefined) ??
     (provider === "ollama" ? config.ollamaBaseUrl : undefined) ??
@@ -503,6 +508,47 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   const credentialProvider = provider as AuthProvider;
   const credential = await resolveCredential(credentialProvider);
   const effective = effectiveCredentialForProvider(credentialProvider, credential, config, model);
+  // A subscription catalog is independent of a configured OpenAI-compatible
+  // endpoint. Keep its OAuth transport rather than replacing it with "no-key".
+  // Explicit endpoint overrides, proxy keys and endpoint-discovered models win.
+  if (provider === "openai" && baseUrl && options.baseUrl === undefined
+    && effective.kind === "oauth" && !config.providers.openai
+    && !isLiveProviderModel("openai", model, { openaiBaseUrl: baseUrl })) {
+    options.signal?.throwIfAborted();
+    const accountScope = await openAIOauthAccountScope(effective);
+    if (accountScope && !hasConfirmedCodexCatalog(accountScope)) {
+      let discovery = codexCatalogInFlight.get(accountScope);
+      if (!discovery) {
+        // One caller's cancellation must not cancel another agent's catalog read.
+        discovery = listProviderModels("openai", { config, codexCatalog: true });
+        codexCatalogInFlight.set(accountScope, discovery);
+        void discovery.finally(() => codexCatalogInFlight.delete(accountScope)).catch(() => {});
+      }
+      const signal = options.signal;
+      if (signal) {
+        const aborted = Promise.withResolvers<never>();
+        const onAbort = () => aborted.reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          signal.throwIfAborted();
+          await Promise.race([discovery, aborted.promise]);
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+      } else {
+        await discovery;
+      }
+    }
+    options.signal?.throwIfAborted();
+    if (await openAIOauthAccountScope() !== accountScope) {
+      throw new Error("OpenAI credential changed during model discovery; retry the request.");
+    }
+    // Never infer cloud eligibility from the bundled snapshot when discovery fails.
+    if (accountScope && hasConfirmedCodexCatalog(accountScope) && isCodexModel(model, accountScope)) {
+      baseUrl = undefined;
+      callOptions.baseUrl = undefined;
+    }
+  }
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
   if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !oauthServesModel("openai", model)) {
     throw new Error(

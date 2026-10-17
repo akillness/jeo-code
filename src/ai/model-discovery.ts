@@ -24,7 +24,7 @@ import {
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { getStoredOAuth } from "../auth/storage";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
-import { antigravityAccountScope } from "./model-cache";
+import { antigravityAccountScope, openAIOauthAccountScope } from "./model-cache";
 import { getAntigravityUserAgent, resolveAntigravityProjectId } from "./providers/antigravity";
 import { discoverGoogleProjectId, ANTIGRAVITY_DISCOVERY_METADATA } from "../auth/flows/google-project";
 import { getKimiCommonHeaders } from "../auth/flows/kimi";
@@ -412,6 +412,7 @@ export async function listProviderModels(
 
   let cred: Credential | undefined;
   let oauthAccountId: string | undefined;
+  let oauthCatalogScope: string | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
   if (provider === "xai") {
     // xAI (Grok) is API-key only and not an OAuth AuthProvider: resolve its key
@@ -466,8 +467,9 @@ export async function listProviderModels(
     if (provider === "openai" && source === "oauth" && cred.kind === "oauth") {
       const stored = await getStoredOAuth("openai").catch(() => undefined);
       const jwtAccountId = extractChatgptAccountId(cred.token);
-      oauthAccountId = jwtAccountId || stored?.accountId;
-      setOpenAIOauthAccountScope(oauthAccountId);
+      oauthAccountId = jwtAccountId || (stored?.access === cred.token ? stored.accountId : undefined);
+      oauthCatalogScope = await openAIOauthAccountScope(cred);
+      setOpenAIOauthAccountScope(oauthCatalogScope);
     }
     // Gemini models are exposed ONLY under API-key auth: a gemini OAuth token can
     // still list models from generativelanguage.googleapis.com, but it can no
@@ -484,7 +486,7 @@ export async function listProviderModels(
     }
   }
 
-  const scope = { ...(oauthAccountId ? { accountId: oauthAccountId } : {}), ...(baseUrl ? { baseUrl } : {}) };
+  const scope = { ...(oauthCatalogScope ? { accountId: oauthCatalogScope } : {}), ...(baseUrl ? { baseUrl } : {}) };
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   let signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
   let initialAntigravityScope: string | undefined;
@@ -578,6 +580,12 @@ export async function listProviderModels(
     }
     const allModels = [...new Set(ids)].sort();
     const models = allModels.slice(0, limit);
+    if (provider === "openai" && source === "oauth" && !baseUrl) {
+      if (await openAIOauthAccountScope() !== oauthCatalogScope) {
+        return { provider, models: [], ok: false, source, error: "account changed during model discovery", ...scope };
+      }
+      setOpenAIOauthAccountScope(oauthCatalogScope);
+    }
     if (provider === "antigravity") {
       const currentScope = await antigravityAccountScope();
       if (currentScope !== scope.accountId && currentScope !== initialAntigravityScope) {
@@ -594,7 +602,7 @@ export async function listProviderModels(
       replace: provider === "openai" || provider === "antigravity",
       ...(source === "oauth" && scope.accountId ? { accountId: scope.accountId } : {}),
     });
-    if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthAccountId);
+    if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthCatalogScope);
     if (provider === "kimi" && source === "oauth") recordLiveKimiCodeModels(allModels);
     return {
       provider,

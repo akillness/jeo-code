@@ -1154,16 +1154,51 @@ test("rate-limit fast fallback: rateLimitFallbackAvailable() is false when no cr
   await withRoutingProviderEnvCleared(async () => {
     runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
 
-    // Zero providers credentialed, routing off, no /model pin: the turn still runs on
-    // defaultModel (routing not active this turn), but the tier pool is empty — nothing
-    // is credentialed for ANY provider, so there is genuinely no candidate to switch to.
+    // Zero providers credentialed, routing ON, no /model pin: the turn still runs on
+    // defaultModel, but the tier pool is empty — nothing is credentialed for ANY
+    // provider, so there is genuinely no candidate to switch to.
     await runOneTurn({
       providers: {},
       defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
     }, "what is this?");
 
     expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
     expect(capturedRateLimitAvailability).toEqual([false]);
+  });
+});
+
+test("routing OFF: model is fixed — a 429 is NOT failed over, the engine gets no bail predicates, and the reply names '/route on'", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async () => ({ done: false, steps: 1, doneReason: "Error: Rate limited by OpenAI (HTTP 429)." });
+
+    // Two credentialed providers => an equivalent fallback WOULD exist if routing were on
+    // (see the routing-on sibling tests above); with routing off it must never be used.
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "gpt-4o-mini",
+    }, "what is this?");
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(capturedRateLimitAvailability).toEqual([undefined]);
+    expect(capturedSafetyFallbackAvailability).toEqual([undefined]);
+    expect(logs.join("\n")).toContain("routing is off");
+    expect(logs.join("\n")).not.toContain("switching to equivalent");
+  });
+});
+
+test("routing OFF via '/route off' mid-session beats routing.enabled in config: the NEXT 429 is not failed over", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async () => ({ done: false, steps: 1, doneReason: "Error: Rate limited by OpenAI (HTTP 429)." });
+
+    const { calls } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "gpt-4o-mini",
+      routing: { enabled: true },
+    }, ["/route off", "what is this?"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(capturedRateLimitAvailability).toEqual([undefined]);
   });
 });
 

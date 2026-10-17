@@ -55,7 +55,11 @@ export function findCatalogEntry(id: string): ModelCatalogEntry | undefined {
   const direct = findCatalogModel(id);
   if (direct) return adapt(direct);
   const n = normalizeModelId(id);
-  const hit = MODEL_CATALOG.find(m => normalizeModelId(m.canonical) === n || normalizeModelId(m.providerModel) === n);
+  const hit = MODEL_CATALOG.find(m =>
+    normalizeModelId(m.canonical) === n
+    || normalizeModelId(`${m.provider}/${m.providerModel}`) === n
+    || (!m.canonical.startsWith(`${m.provider}/`) && normalizeModelId(m.providerModel) === n),
+  );
   return hit ? adapt(hit) : undefined;
 }
 

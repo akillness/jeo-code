@@ -518,7 +518,11 @@ export function formatTokens(n: number): string {
 /** Exact lookup by canonical id or provider model id. */
 export function findCatalogModel(idOrModel: string): CatalogModel | undefined {
   const q = idOrModel.trim();
-  return MODEL_CATALOG.find(m => m.canonical === q || m.providerModel === q || `${m.provider}/${m.providerModel}` === q);
+  return MODEL_CATALOG.find(m =>
+    m.canonical === q
+    || `${m.provider}/${m.providerModel}` === q
+    || (!m.canonical.startsWith(`${m.provider}/`) && m.providerModel === q),
+  );
 }
 
 /**
@@ -645,7 +649,10 @@ export function catalogMetadata(modelId: string): CatalogModel | undefined {
   if (direct) return direct;
   // Tolerate provider-prefixed or bare provider model ids.
   const bare = modelId.replace(/^[a-z-]+\//, "");
-  const hit = MODEL_CATALOG.find(m => m.providerModel === bare || m.providerModel.endsWith(`/${bare}`) || m.canonical === bare);
+  const hit = MODEL_CATALOG.find(m =>
+    m.canonical === bare
+    || (!m.canonical.startsWith(`${m.provider}/`) && (m.providerModel === bare || m.providerModel.endsWith(`/${bare}`))),
+  );
   if (hit) return hit;
   // Last resort: infer capabilities from the model family so a brand-new
   // revision still surfaces reasoning/thinking like its catalogued siblings.

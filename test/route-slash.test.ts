@@ -40,7 +40,7 @@ const decision: RouteDecision = {
 test("/route (bare) reports effective state off when nothing is configured", async () => {
   const result = await runRouteSlash("/route", baseCtx());
   expect(result.sessionRouteOverride).toBeUndefined();
-  expect(result.lines).toEqual(["routing: off (this session)"]);
+  expect(result.lines).toEqual(["routing: off (this session) — model fixed, no failover"]);
 });
 
 test("/route status reports effective state on when config.routing.enabled is true", async () => {
@@ -50,7 +50,7 @@ test("/route status reports effective state on when config.routing.enabled is tr
 
 test("/route status: sessionRouteOverride wins over routingConfigEnabled", async () => {
   const off = await runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true, sessionRouteOverride: false }));
-  expect(off.lines).toEqual(["routing: off (this session)"]);
+  expect(off.lines).toEqual(["routing: off (this session) — model fixed, no failover"]);
 
   const on = await runRouteSlash("/route status", baseCtx({ routingConfigEnabled: false, sessionRouteOverride: true }));
   expect(on.lines).toEqual(["routing: on (this session)"]);
@@ -66,7 +66,7 @@ test("/route status includes a one-line summary of the last real decision", asyn
 
 test("/route status omits a decision summary when only a {note} placeholder exists", async () => {
   const result = await runRouteSlash("/route status", baseCtx({ lastRouteDecision: { note: "routing not active this turn" } }));
-  expect(result.lines).toEqual(["routing: off (this session)"]);
+  expect(result.lines).toEqual(["routing: off (this session) — model fixed, no failover"]);
 });
 
 test("/route on sets sessionRouteOverride true and reports it", async () => {
@@ -78,7 +78,7 @@ test("/route on sets sessionRouteOverride true and reports it", async () => {
 test("/route off sets sessionRouteOverride false and reports it", async () => {
   const result = await runRouteSlash("/route off", baseCtx({ sessionRouteOverride: true }));
   expect(result.sessionRouteOverride).toBe(false);
-  expect(result.lines).toEqual(["routing: off (this session)"]);
+  expect(result.lines).toEqual(["routing: off (this session) — model fixed, no failover"]);
 });
 
 test("/route why prints full detail from a real RouteDecision", async () => {
@@ -219,7 +219,7 @@ test("/route off save persists routing.enabled=false to config", async () => {
   await saveConfigPatch(() => ({ routing: { enabled: true } }));
   const result = await runRouteSlash("/route off save", baseCtx({ sessionRouteOverride: true }));
   expect(result.sessionRouteOverride).toBe(false);
-  expect(result.lines).toEqual(["routing: off (this session) — saved to ~/.jeo/config.json"]);
+  expect(result.lines).toEqual(["routing: off (this session) — model fixed, no failover — saved to ~/.jeo/config.json"]);
   const saved = await readGlobalConfig();
   expect(saved.routing?.enabled).toBe(false);
 });

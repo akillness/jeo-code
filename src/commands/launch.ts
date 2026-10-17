@@ -1659,7 +1659,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const fullTools = {
           ...DEFAULT_TOOLS,
           task: createTaskTool({
-            config: { ...turnConfig, defaultModel: activeModel },
+            // Subagents inherit the parent's EFFECTIVE routing state (`/route on|off`
+            // override ?? config) — task-tool.ts gates its failover reroute on it.
+            config: { ...turnConfig, defaultModel: activeModel, routing: { ...turnConfig.routing, enabled: routingEnabled } },
+
             signal: ac.signal,
             steer: drainSteer,
             registry: subagentRegistry,
@@ -1710,12 +1713,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // mutated in place (`.add`) as the fallback loop below tries more models — this
         // closure always reads its live contents, never a stale snapshot.
         const attemptedRouteModels = new Set<string>([activeModel]);
-        // A NON-routed turn (routing disabled, or the user pinned a model via /model)
-        // still needs the equivalent-pool fallback on a usage-limit/rate-limit/credential
-        // failure — the exact "5-hour usage window exhausted, model just stops working"
-        // case this loop exists to fix. Synthesize a same-size-class RouteDecision
-        // (inferTierForModel) so `equivalentRouteFallback` has a tier/pool to search even
-        // with routing off; a real `routed` decision (routing enabled) is used unchanged.
+        // The synthesized decision below is only the BASE for `equivalentRouteFallback`'s
+        // tier/pool search when the pre-call router produced no decision (routing on but
+        // fail-open, or a /model pin with `/route on`). It is inert when routing is off:
+        // the reroute loop and the engine's bail predicates are both gated on
+        // `routingEnabled`, so `/route off` means a FIXED model with no failover.
+        // (`inferTierForModel` gives the same-size-class tier/pool to search.)
+
         let fallbackBaseDecision: RouteDecision = routed ?? {
           model: activeModel,
           thinking: activeThinking,
@@ -1785,8 +1789,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           signal: ac.signal,
           sessionKey: cacheKey,
           steer: drainSteer,
-          rateLimitFallbackAvailable,
-          safetyFallbackAvailable,
+          // Withheld when routing is off: the bail predicates only make sense paired
+          // with the reroute loop below, which `routingEnabled` also gates.
+          ...(routingEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
+
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
@@ -1866,7 +1872,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const routeFallbackMax = Number.isFinite(routeFallbackMaxRaw) && routeFallbackMaxRaw >= 0
           ? Math.floor(routeFallbackMaxRaw)
           : 3;
-        for (let routeFallbackAttempt = 0; routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
+        for (let routeFallbackAttempt = 0; routingEnabled && routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
+
           // A loop guard is a local safety boundary, not a provider failure. A
           // fresh loop on an equivalent model loses the guard state and could
           // re-execute a previously skipped mutation.
@@ -1962,10 +1969,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
     // failure ("reached the 3-step limit" after the model called done at step 3).
-    const reply = stripSafetyFallbackTag(result.doneReason ?? "")
+    const baseReply = stripSafetyFallbackTag(result.doneReason ?? "")
       || (result.done
         ? `(done in ${result.steps} step${result.steps === 1 ? "" : "s"} — the model returned no summary)`
         : `(reached the ${result.steps}-step limit without signaling done)`);
+    // Routing off = the model is fixed and nothing fails over. When the turn died on
+    // an account-level limit, say so and name the one switch that re-enables failover.
+    const failoverHint = !routingEnabled && !result.done && (() => {
+      const failure = new Error(result.doneReason ?? "");
+      return isRateLimitError(failure) || isUsageLimitError(failure);
+    })()
+      ? "\n(routing is off — the model is fixed and no equivalent-model failover was attempted. Run '/route on' to allow failover.)"
+      : "";
+    const reply = `${baseReply}${failoverHint}`;
+
     if (sessionNotifyEndpoint) {
       const usageStr = result.usage ? formatUsage(result.usage) : undefined;
       if (notifyRedact) {

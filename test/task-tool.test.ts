@@ -516,6 +516,7 @@ test("createTaskTool: executor's 429 with a genuinely different-credential-scope
       oauth: { anthropic: OAUTH_STAMP },
       defaultModel: "claude-sonnet-4-6",
       subagents: { executor: { model: "claude-sonnet-4-6" } },
+      routing: { enabled: true }, // failover only runs when routing is on
     },
   });
 
@@ -554,6 +555,7 @@ test("createTaskTool: executor's 429 with NO fallback available (single-provider
       oauth: { anthropic: OAUTH_STAMP },
       defaultModel: "claude-sonnet-4-6",
       subagents: { executor: { model: "claude-sonnet-4-6" } },
+      routing: { enabled: true }, // failover only runs when routing is on
     },
     onEvent: ev => { if (ev.kind === "step" && ev.detail) notices.push(ev.detail); },
   });
@@ -611,6 +613,7 @@ test("createTaskTool: executor's uncategorized refusal with a different-provider
         oauth: { anthropic: OAUTH_STAMP },
         defaultModel: "claude-sonnet-4-6",
         subagents: { executor: { model: "claude-sonnet-4-6" } },
+        routing: { enabled: true }, // failover only runs when routing is on
       },
       onEvent: e => { if (e.kind === "step" && e.detail) notices.push(e.detail); },
     });
@@ -657,6 +660,7 @@ test("createTaskTool: a SECOND uncategorized refusal (on the first fallback) exc
         oauth: { anthropic: OAUTH_STAMP },
         defaultModel: "claude-sonnet-4-6",
         subagents: { executor: { model: "claude-sonnet-4-6" } },
+        routing: { enabled: true }, // failover only runs when routing is on
       },
     });
 
@@ -706,6 +710,7 @@ test("createTaskTool: an uncategorized refusal with NO different-provider fallba
         oauth: { anthropic: OAUTH_STAMP },
         defaultModel: "claude-sonnet-4-6",
         subagents: { executor: { model: "claude-sonnet-4-6" } },
+        routing: { enabled: true }, // failover only runs when routing is on
       },
       onEvent: e => { if (e.kind === "step" && e.detail) notices.push(e.detail); },
     });
@@ -808,4 +813,34 @@ test("createTaskTool: a single-task call (no tasks array) is unaffected by the f
   expect(res.success).toBe(true);
   expect(modelsCalled).toEqual(["ollama/fast"]);
   expect(modelsCalled).not.toContain("mid-tier-override-model");
+});
+test("createTaskTool: routing OFF fixes the subagent's model — a 429 is neither bailed on nor failed over even when an equivalent exists", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  const onRetryReturns: (void | false)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { model?: string; onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      modelsCalled.push(options.model);
+      onRetryReturns.push(options.onRetry?.(1, { status: 429, message: "rate limited" }, 2000));
+      throw { status: 429, message: "Rate limited by Anthropic (HTTP 429)." };
+    },
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      // Same shape as the failover test above (an independent-key openai candidate
+      // exists) but routing is explicitly OFF.
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      subagents: { executor: { model: "claude-sonnet-4-6" } },
+      routing: { enabled: false },
+    },
+  });
+
+  const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+  expect(onRetryReturns).toEqual([undefined]);
+  expect(modelsCalled).toEqual(["claude-sonnet-4-6"]);
+  expect(res.success).toBe(false);
 });

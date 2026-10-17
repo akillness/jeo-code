@@ -454,7 +454,7 @@ export async function runAgyTurn(options: AgyTurnOptions): Promise<AgyTurnResult
   const timer = setTimeout(() => terminate("timeout"), timeoutMs);
   try {
     await proc.stdin.write(input);
-    proc.stdin.end();
+    await proc.stdin.end();
     const exitCode = await proc.exited;
     await Promise.all([stdoutPromise, stderrPromise]);
     if (cancelled) throw new AgyCliError("Agy turn was cancelled.", "cancelled", exitCode, stderr);

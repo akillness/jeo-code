@@ -433,6 +433,10 @@ export async function runSubagentOnce(
   // "false positive -> try a different model" design this implements.
   const safetyFallbackAvailable = (): boolean => safetyFallbackCandidates().length > 0;
 
+  // Failover (reroute to an equivalent model) is part of routing: it only runs when
+  // `routing.enabled` is on. `launch.ts` passes the parent session's EFFECTIVE state
+  // (`/route on|off` override ?? config) in `config.routing.enabled`.
+  const failoverEnabled = !!opts.config.routing?.enabled;
   let activeModel = initialModel;
   emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model: activeModel });
   const runOnce = () => {
@@ -448,8 +452,7 @@ export async function runSubagentOnce(
       signal,
       steer,
       tools: subagentToolset(role),
-      rateLimitFallbackAvailable,
-      safetyFallbackAvailable,
+      ...(failoverEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
       events: {
         onStep: n => { currentStep = n; },
         // Live reasoning preview (native extended-thinking models only — the JSON-protocol
@@ -494,7 +497,10 @@ export async function runSubagentOnce(
   };
 
   let result = await runOnce();
-  for (let attempt = 0; attempt < MAX_SUBAGENT_REROUTES; attempt++) {
+  // `routing.enabled` off = the model is FIXED: no failover reroute at all (the
+  // engine bail predicates above are withheld too, so a 429 rides its normal
+  // backoff ladder instead of bailing early with nowhere to go).
+  for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {
     const rateLimited = !result.done && isRateLimitError(new Error(result.doneReason ?? ""));
     const safetyBail = !result.done && !rateLimited && isSafetyFallbackBail(result.doneReason);
     if (!rateLimited && !safetyBail) break;

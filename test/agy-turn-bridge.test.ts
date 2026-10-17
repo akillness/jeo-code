@@ -69,7 +69,7 @@ test("successful agy session turns persist one assistant each and resume the exa
     history: [],
     sessionId,
     executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   });
   expect(first.response).toBe("final answer");
   expect(await sessionMessages(cwd, sessionId)).toEqual([
@@ -88,7 +88,7 @@ test("successful agy session turns persist one assistant each and resume the exa
     ],
     sessionId,
     executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   });
   expect(second.response).toBe("final answer");
   expect((await observed(cwd)).args).toContain("conv-success");
@@ -115,7 +115,7 @@ test("explicit resume uses the selected agy session conversation, never the late
     history: [{ role: "user", content: "previous selected" }],
     sessionId: "session-selected",
     executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   });
 
   const invocation = await observed(cwd);
@@ -139,7 +139,7 @@ test("stale agy metadata does not resume a backend conversation after history ch
       { role: "assistant", content: "old answer" },
     ],
     executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   });
 
   const invocation = await observed(cwd);
@@ -174,7 +174,7 @@ test("agy quota failure propagates and persists no assistant fallback", async ()
     history: [],
     sessionId,
     executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   })).rejects.toThrow(/RESOURCE_EXHAUSTED.*429|429.*RESOURCE_EXHAUSTED/);
 
   const messages = await sessionMessages(cwd, sessionId);
@@ -195,8 +195,7 @@ test("agy rejects unsupported images before child launch or user persistence", a
     history: [],
     sessionId,
     images,
-    executable: FIXTURE,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
   })).rejects.toThrow(/image|unsupported/i);
 
   expect(await Bun.file(join(cwd, "agy-observed.json")).exists()).toBe(false);

@@ -44,6 +44,11 @@ export interface RouteSlashResult {
   lines: string[];
 }
 
+/** Off means a FIXED model: no prompt routing AND no equivalent-model failover. */
+function stateLabel(enabled: boolean): string {
+  return enabled ? "routing: on (this session)" : "routing: off (this session) — model fixed, no failover";
+}
+
 const USAGE = "Usage: /route [status|on|off|why|history [n]|save|on save|off save]";
 
 function isRealDecision(decision: RouteDecision | { note: string } | null): decision is RouteDecision {
@@ -92,7 +97,7 @@ export async function runRouteSlash(input: string, ctx: RouteSlashCtx): Promise<
   const effective = ctx.sessionRouteOverride ?? ctx.routingConfigEnabled;
 
   if (!sub || sub === "status") {
-    const lines = [`routing: ${effective ? "on" : "off"} (this session)`];
+    const lines = [stateLabel(effective)];
     if (isRealDecision(ctx.lastRouteDecision)) {
       lines.push(`last decision: ${ctx.lastRouteDecision.tier} → ${ctx.lastRouteDecision.model} (${ctx.lastRouteDecision.source}: ${ctx.lastRouteDecision.signals.join(", ") || "none"}, confidence ${ctx.lastRouteDecision.confidence.toFixed(2)})`);
     }
@@ -113,9 +118,9 @@ export async function runRouteSlash(input: string, ctx: RouteSlashCtx): Promise<
     const enabled = sub === "on";
     if (arg === "save") {
       await saveConfigPatch(raw => ({ routing: { ...raw.routing, enabled } }));
-      return { sessionRouteOverride: enabled, lines: [`routing: ${enabled ? "on" : "off"} (this session) — saved to ~/.jeo/config.json`] };
+      return { sessionRouteOverride: enabled, lines: [`${stateLabel(enabled)} — saved to ~/.jeo/config.json`] };
     }
-    return { sessionRouteOverride: enabled, lines: [`routing: ${enabled ? "on" : "off"} (this session)`] };
+    return { sessionRouteOverride: enabled, lines: [stateLabel(enabled)] };
   }
 
   // Bare `/route save` persists whatever is CURRENTLY effective (a prior

@@ -10,15 +10,34 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 ## [Unreleased]
 
 ## [0.12.3] - 2026-10-17
-_Anthropic static model catalog trimmed to claude-5.x; live API discovery now drives the model list for logged-in accounts._
+_Anthropic static model catalog trimmed to claude-5.x with live API discovery, and `/route off` strictly fixes the active model with no failover._
 
 ### Changed
 - **Anthropic claude-4.x entries removed from the static catalog** (`src/ai/model-catalog.ts`) — `claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-opus-4-6` dropped. Static catalog is now a fallback-only claude-5.x set (`sonnet-5-5`, `opus-5-5`, `sonnet-5`, `fable-5`, `mythos-5`).
 - **`sonnet` / `opus` built-in aliases updated to claude-5.5** (`src/ai/model-registry.ts`) — `sonnet` → `claude-sonnet-5-5`, `opus` → `claude-opus-5-5`.
 - **Live `https://api.anthropic.com/v1/models` is the primary model source** — when logged in, the API returns the account's actual available models; the static catalog serves as fallback only.
+- **`/route off` fixes the model with no failover** (`src/commands/launch.ts`, `src/commands/launch/route-slash.ts`, `src/agent/task-tool.ts`) — when routing is off (via config or `/route off`), neither main turns nor delegated subagents bail early or fail over to equivalent models on 429/refusal, and `/route` status reports `routing: off (this session) — model fixed, no failover`.
+
+### Fixed
+- **Provider-qualified catalog entries no longer hijack bare model IDs** (`src/ai/model-catalog.ts`, `src/ai/model-catalog-compat.ts`) — `findCatalogModel`, `findCatalogEntry`, and `catalogMetadata` only match a bare `providerModel` when the catalog row itself is not provider-qualified (`!canonical.startsWith(`${provider}/`)`), preventing `antigravity/claude-sonnet-4-6` from misrouting bare `claude-sonnet-4-6` to `antigravity`.
 
 ### Verified
-- `bun run typecheck` clean. Catalog/alias tests updated and green.
+- `bun run typecheck`, `bun run pack:check`, and full regression suites green.
+
+## [0.12.2] - 2026-10-16
+_Select Argon through the official agy full agent, with its own live catalog and session, separately from jeo's Cloud Code Assist backend._
+
+### Added
+- **Explicit official CLI bridge** — `agy/<official-cli-slug>` runs the installed, externally authenticated official agent. `/model provider agy` reads its live `agy models` list without inventing static availability or assuming the CLI and jeo OAuth use the same account. CLI catalogs remain process-local.
+- **CLI-owned execution and session resume** — each jeo session preserves its own upstream conversation ID and exact model. The CLI owns its tools, sandbox and permissions; jeo approvals do not mediate inner tool calls. This text-only profile is opt-in, excluded from automatic raw-model/subagent routing, and rejects jeo-only tool/system/step/thinking controls it cannot enforce.
+
+### Fixed
+- **CCA tier/default model discovery** — combine `agentModelSorts`, `tieredModelIds` and `defaultAgentModelId`; preserve exact backend IDs and account scoping. Malformed normalized IDs cannot replace a known-good account catalog; authoritative empty lists remain empty. This does not claim direct CCA Argon access.
+- **CLI failure boundaries** — validate relevant stream events and resumed conversation identity, preserve quota/auth/permission errors without fallback, sanitize terminal diagnostics, and bound cancellation, timeout and child-process cleanup.
+
+### Verified
+- Isolated source and compiled **0.12.2** turns with `--model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills` completed with exit **0**. The compiled run reported **30.6k input / 13 output tokens**. Availability still depends on the official CLI's signed-in account and quota.
+- Focused CLI/account regressions: **203 pass, 0 fail** across 9 files. Typecheck, standalone build and the **299-file** npm package/import-closure gate passed.
 
 ## [0.12.1] - 2026-10-16
 _Logged-in OpenAI subscription models were invisible on proxy-configured machines._
@@ -28,24 +47,6 @@ _Logged-in OpenAI subscription models were invisible on proxy-configured machine
 
 ### Verified
 - Live on a proxy-configured machine: `openai` rows went from 1 failed keyless row to keyless-fail + 7-model OAuth catalog; `providerPickEntries` returns 7 rows. `bun run typecheck` clean; discovery suites green including 2 new regression tests.
-
-## [0.12.1] - 2026-10-16
-_Explicitly select the official agy full agent with its own live model catalog and session, separate from jeo's Cloud Code Assist backend._
-
-### Added
-- **Opt-in official agy discovery and execution** — `agy/<official-cli-slug>` selects the installed, externally authenticated official CLI as a full agent, not a raw-model adapter or CCA alias. `/model provider agy` reads the live `agy models` list, preserves exact slugs, and reports empty lists and failures without static fallback. CLI catalogs stay process-local; no identity or credential parity with jeo OAuth is assumed.
-- **Session-owned resume and process lifecycle** — saved jeo sessions retain their own CLI conversation ID rather than resuming the CLI's unrelated latest conversation. Turns support cancellation and bounded timeouts. The requested model and upstream quota/auth/permission errors remain visible, with no fallback to CCA, another model, or another account.
-- **Explicit execution boundary** — the CLI owns its tools, sandbox, permissions, and conversation; jeo approvals do not mediate its inner tool calls. The bridge is text-only, excluded from automatic raw-model/subagent routing, and rejects images and jeo-only tool/system/step/thinking controls it cannot enforce.
-
-### Changed
-- **CCA account model discovery** — combine `agentModelSorts`, `tieredModelIds`, and `defaultAgentModelId` instead of treating one metadata list as the whole chat catalog. Existing `antigravity/<CCA-id>` discovery remains scoped to the selected jeo OAuth account, without claiming direct CCA Argon support.
-
-### Fixed
-- **Malformed normalized CCA IDs** — reject invalid discovery responses instead of replacing an account's known-good cache with malformed IDs. Authoritative empty lists remain empty, failed discovery remains a failure, and existing account-cache isolation is preserved.
-
-### Verification and release status
-- A real, isolated source-jeo invocation of `jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skills "Explain this repository"` exited **0**, reporting **30.5k input / 11 output tokens**. This verifies that CLI bridge invocation, not direct CCA Argon access or availability for every account.
-- Three independent code, TypeScript, and security reviewers identified six failure-path issues; test-first fixes and regression coverage are in progress. Final release gates and public publication are not yet claimed.
 
 ## [0.12.0] - 2026-10-16
 _Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router._

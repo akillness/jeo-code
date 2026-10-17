@@ -259,9 +259,9 @@ test("runAgyTurn aborts an in-flight child after fixture readiness, escalates cl
 });
 
 test("runAgyTurn times out after fixture readiness and cleans up a child whose descendant retains stdout", async () => {
-  const cwd = await fixtureDir({ readyThenHang: true, spawnDescendantMs: 250 });
+  const cwd = await fixtureDir({ readyThenHang: true, spawnDescendantMs: 2_000 });
   const started = performance.now();
-  const pending = run(cwd, { timeoutMs: 50 });
+  const pending = run(cwd, { timeoutMs: 500 });
   void pending.catch(() => {});
   await waitForFixtureFile(cwd, "agy-ready");
   await expect(pending).rejects.toThrow(/timeout|timed out/i);

@@ -31,6 +31,7 @@ import {
   normalizeProviderId,
 } from "../ai/providers/custom-providers";
 import { listProviderModels } from "../ai/model-discovery";
+import { writeModelCache } from "../ai/model-cache";
 import { describeProvider } from "../ai/provider-status";
 
 const USAGE = [
@@ -186,6 +187,7 @@ async function probe(id: string, opts: { failOnError: boolean }): Promise<void> 
     if (shown.length) console.log(`              ${shown.join(", ")}${result.models.length > shown.length ? ", …" : ""}`);
     const first = result.models[0];
     console.log(`  status    : OK — use it with 'jeo launch --model ${first ? qualify(first) : `${id}/<model>`}'`);
+    await writeModelCache([result]);
     return;
   }
 

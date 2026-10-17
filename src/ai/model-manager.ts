@@ -6,7 +6,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, findLiveCatalogModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
@@ -329,8 +329,7 @@ export function oauthServesModel(provider: AuthProvider, model: string): boolean
     return isCodexModel(model);
   }
   if (provider === "kimi") {
-    const wire = model.startsWith("kimi/") ? model.slice(5) : model;
-    return KIMI_CODE_MODELS.includes(wire);
+    return isKimiCodeModel(model);
   }
   if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) return false;
   return true;

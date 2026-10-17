@@ -16,6 +16,7 @@ import {
   catalogByProvider,
   KIMI_CODE_MODELS,
   recordLiveCodexModels,
+  recordLiveKimiCodeModels,
   recordLiveProviderModels,
   setOpenAIOauthAccountScope,
   setAntigravityAccountScope,
@@ -26,7 +27,7 @@ import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 import { antigravityAccountScope } from "./model-cache";
 import { getAntigravityUserAgent, resolveAntigravityProjectId } from "./providers/antigravity";
 import { discoverGoogleProjectId, ANTIGRAVITY_DISCOVERY_METADATA } from "../auth/flows/google-project";
-
+import { getKimiCommonHeaders } from "../auth/flows/kimi";
 export interface ProviderModelsResult {
   provider: ProviderName;
   /** Discovered model ids (provider-qualified where the router expects it). */
@@ -185,6 +186,15 @@ export function discoveryRequest(
       return { url: "https://api.x.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
     }
     case "kimi": {
+      if (cred?.kind === "oauth") {
+        return {
+          url: "https://api.kimi.com/coding/v1/models",
+          headers: {
+            ...getKimiCommonHeaders(),
+            Authorization: `Bearer ${cred.token}`,
+          },
+        };
+      }
       const token = cred?.kind === "api_key" ? cred.token : "";
       return { url: "https://api.moonshot.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
     }
@@ -585,6 +595,7 @@ export async function listProviderModels(
       ...(source === "oauth" && scope.accountId ? { accountId: scope.accountId } : {}),
     });
     if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthAccountId);
+    if (provider === "kimi" && source === "oauth") recordLiveKimiCodeModels(allModels);
     return {
       provider,
       models,
@@ -657,6 +668,12 @@ export async function discoverModels(
         const credential = await resolveCredential("openai");
         if (credential.kind === "oauth") {
           return [primary, await listProviderModels(p, { ...discoveryOpts, baseUrl: undefined, preferOAuth: true, codexCatalog: true })];
+        }
+      }
+      if (p === "kimi" && primary.source !== "oauth") {
+        const credential = await resolveCredential("kimi");
+        if (credential.kind === "oauth") {
+          return [primary, await listProviderModels(p, { ...discoveryOpts, preferOAuth: true })];
         }
       }
       return [primary];

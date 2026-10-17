@@ -501,6 +501,30 @@ export const KIMI_CODE_MODELS: readonly string[] = [
   "kimi-k2",
 ];
 
+const liveKimiCodeModels = new Set<string>();
+
+/** Record ids confirmed by the Kimi Code OAuth `/v1/models` endpoint so brand-new
+ *  subscription models work immediately without waiting for a static catalog release. */
+export function recordLiveKimiCodeModels(ids: readonly string[]): void {
+  for (const id of ids) {
+    const trimmed = id.trim();
+    if (!trimmed) continue;
+    const wire = trimmed.startsWith("kimi/") ? trimmed.slice(5) : trimmed;
+    if (wire) liveKimiCodeModels.add(wire);
+  }
+}
+
+/** Whether `model` is served by the Kimi Code OAuth subscription endpoint. */
+export function isKimiCodeModel(model: string): boolean {
+  const wire = model.startsWith("kimi/") ? model.slice(5) : model;
+  return KIMI_CODE_MODELS.includes(wire) || liveKimiCodeModels.has(wire);
+}
+
+/** Test-only reset for live Kimi Code observations. */
+export function resetLiveKimiCodeModels(): void {
+  liveKimiCodeModels.clear();
+}
+
 /** Recency compare for `releaseDate` ("YYYY-MM"): `>0` when `a` is newer; a
  *  missing date sorts oldest, so an unconfirmed date never outranks a
  *  verified-newer model. */
@@ -637,6 +661,20 @@ export function inferCatalogMetadata(modelId: string): CatalogModel | undefined 
       thinking: nonReasoning ? [] : FULL,
       images: !id.includes("code"),
       company: "xAI",
+    };
+  }
+  // Kimi / Moonshot
+  const kimi = id.match(/^kimi-(k\d+|latest|for-coding)/);
+  if (kimi) {
+    return {
+      canonical: raw,
+      provider: "kimi",
+      providerModel: id,
+      contextTokens: 256_000,
+      maxOutputTokens: 16_384,
+      thinking: FULL,
+      images: false,
+      company: "Moonshot",
     };
   }
 

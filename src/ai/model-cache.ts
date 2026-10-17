@@ -19,7 +19,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { jeoEnv } from "../util/env";
-import { recordLiveCodexModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope } from "./model-catalog";
+import { recordLiveCodexModels, recordLiveKimiCodeModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope } from "./model-catalog";
 import type { Credential } from "../auth";
 import { getStoredOAuth, snapshotProvider } from "../auth/storage";
 import { getAntigravityUserAgent } from "./providers/antigravity";
@@ -158,7 +158,7 @@ export function mergeCacheEntries(
   const isScopedOAuth = (provider: ProviderName, source: ModelCacheSource): boolean =>
     (provider === "openai" || provider === "antigravity") && source === "oauth";
   const keyOf = (provider: ProviderName, baseUrl?: string, accountId?: string, source?: ModelCacheSource) =>
-    `${provider}\u0000${baseUrl?.replace(/\/+$/, "") ?? ""}\u0000${isScopedOAuth(provider, source ?? "none") ? accountId ?? "" : ""}\u0000${provider === "openai" || provider === "antigravity" ? source ?? "none" : ""}`;
+    `${provider}\u0000${baseUrl?.replace(/\/+$/, "") ?? ""}\u0000${isScopedOAuth(provider, source ?? "none") ? accountId ?? "" : ""}\u0000${provider === "openai" || provider === "antigravity" || provider === "kimi" ? source ?? "none" : ""}`;
   for (const entry of previous) {
     const scoped = isScopedOAuth(entry.provider, entry.source);
     if (entry.provider === "agy") continue;
@@ -239,6 +239,9 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
     });
     if (isOpenAIOAuth && entry.accountId && !entry.baseUrl) {
       recordLiveCodexModels(entry.models, entry.accountId);
+    }
+    if (entry.provider === "kimi" && entry.source === "oauth") {
+      recordLiveKimiCodeModels(entry.models);
     }
     applied += entry.models.length;
   }

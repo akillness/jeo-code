@@ -152,7 +152,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
  * already succeeded and is not rolled back by this check. Prints only model
  * ids/count — no tokens/secrets.
  */
-const LIVE_MODEL_REPORT_PROVIDERS = new Set<AuthProvider>(["openai", "anthropic", "antigravity"]);
+const LIVE_MODEL_REPORT_PROVIDERS = new Set<AuthProvider>(["openai", "anthropic", "antigravity", "kimi"]);
 
 async function reportLiveModels(provider: AuthProvider): Promise<void> {
   try {
@@ -249,6 +249,7 @@ async function runAuthImport(rest: string[]): Promise<void> {
     }
     const expiryMsg = expires ? fmtExpiry(expires) : "";
     console.log(`Expiry status:${expiryMsg || " valid"}`);
+    await reportLiveModels("antigravity");
   } catch (err: any) {
     console.log(`[FAILED] ${err.message}`);
     process.exitCode = 1;
@@ -335,8 +336,16 @@ async function selectProvider(
   console.log("  1) anthropic   (real PKCE OAuth, verified end-to-end)");
   console.log("  2) openai      (real PKCE OAuth, Codex backend)");
   console.log("  3) gemini      (real Google OAuth, Cloud Code Assist)");
-  const ans = (await rl.question("Choose [1-3]: ")).trim();
-  const map: Record<string, AuthProvider> = { "1": "anthropic", "2": "openai", "3": "gemini" };
+  console.log("  4) antigravity (Google Cloud Code Assist OAuth)");
+  console.log("  5) kimi        (Kimi Code OAuth device authorization)");
+  const ans = (await rl.question("Choose [1-5]: ")).trim();
+  const map: Record<string, AuthProvider> = {
+    "1": "anthropic",
+    "2": "openai",
+    "3": "gemini",
+    "4": "antigravity",
+    "5": "kimi",
+  };
   const p = map[ans];
   if (!p) {
     console.log("Invalid choice.");

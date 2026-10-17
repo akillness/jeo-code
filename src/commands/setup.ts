@@ -24,12 +24,14 @@ function reportModelChoice(r: { warning?: string; suggestions: string[] }): void
   if (r.suggestions.length) console.log(`  Did you mean: ${r.suggestions.join(", ")}?`);
 }
 
-type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
+type ProviderChoice = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi" | "ollama" | "lmstudio" | "openai-compatible";
 
 const DEFAULT_MODELS: Record<ProviderChoice, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
+  antigravity: "antigravity/gemini-3-flash",
+  kimi: "kimi-k2.5",
   ollama: "ollama/llama3.1:8b",
   lmstudio: "openai/local-model",
   "openai-compatible": "openai/local-model",
@@ -87,16 +89,19 @@ export async function runSetupCommand(): Promise<void> {
   console.log("  1) anthropic           — Claude (API key or OAuth bearer)");
   console.log("  2) openai              — GPT (API key or OAuth bearer)");
   console.log("  3) gemini              — Google AI Studio (API key or OAuth bearer)");
-  console.log("  4) ollama              — local Ollama (no auth)");
-  console.log("  5) lmstudio            — local LM Studio (OpenAI-compatible)");
-  console.log("  6) openai-compatible   — custom OpenAI-compatible (vLLM, llama-cpp-server, ...)");
-  console.log("  7) skip                — keep existing values, just change defaults\n");
+  console.log("  4) antigravity         — Google Cloud Code Assist (OAuth)");
+  console.log("  5) kimi                — Kimi / Moonshot (API key or Kimi Code OAuth)");
+  console.log("  6) ollama              — local Ollama (no auth)");
+  console.log("  7) lmstudio            — local LM Studio (OpenAI-compatible)");
+  console.log("  8) openai-compatible   — custom OpenAI-compatible (vLLM, llama-cpp-server, ...)");
+  console.log("  9) skip                — keep existing values, just change defaults\n");
 
-  const sel = (await rl.question("Configure which provider? [1-7]: ")).trim();
+  const sel = (await rl.question("Configure which provider? [1-9]: ")).trim();
   const map: Record<string, ProviderChoice | "skip"> = {
     "1": "anthropic", "2": "openai", "3": "gemini",
-    "4": "ollama",    "5": "lmstudio", "6": "openai-compatible",
-    "7": "skip",
+    "4": "antigravity", "5": "kimi",
+    "6": "ollama",    "7": "lmstudio", "8": "openai-compatible",
+    "9": "skip",
   };
   const choice = map[sel] ?? "skip";
 
@@ -108,7 +113,7 @@ export async function runSetupCommand(): Promise<void> {
   next.providers = next.providers || {};
   next.oauth = next.oauth || {};
 
-  if (choice === "anthropic" || choice === "openai" || choice === "gemini") {
+  if (choice === "anthropic" || choice === "openai" || choice === "gemini" || choice === "antigravity" || choice === "kimi") {
     const authMode = (
       await rl.question("Auth mode: (b)rowser OAuth login, (t)oken paste, or api (k)ey? [b]: ")
     ).trim().toLowerCase();
@@ -223,7 +228,7 @@ export async function runSetupCommand(): Promise<void> {
   rl.close();
 
   // Drop empty oauth/providers to keep config tidy.
-  if (next.oauth && !next.oauth.anthropic && !next.oauth.openai && !next.oauth.gemini) delete next.oauth;
+  if (next.oauth && Object.keys(next.oauth).length === 0) delete next.oauth;
 
   await saveGlobalConfig(next);
   console.log("\n[SUCCESS] Configuration saved to ~/.jeo/config.json");

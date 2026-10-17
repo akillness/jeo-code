@@ -9,6 +9,19 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-10-17
+_Antigravity and Kimi provider support in interactive setup, Kimi live model cache rehydration, immediate discovery caching on provider probing._
+
+### Added
+- **Interactive Setup Provider Options** (`src/commands/setup.ts`, `src/commands/setup-helpers.ts`) — added `antigravity` (Google Cloud Code Assist OAuth) and `kimi` (Moonshot API key / Kimi Code OAuth) to interactive setup provider selection, enabling browser OAuth, bearer token paste, or API key configuration with default models (`antigravity/gemini-3-flash`, `kimi-k2.5`). Updated `buildEnabledProviders` to recognize configured `kimi` credentials.
+- **Kimi Live Model Cache Rehydration** (`src/ai/model-cache.ts`) — cache hits for Kimi OAuth (`provider === 'kimi' && source === 'oauth'`) now rehydrate `recordLiveKimiCodeModels(entry.models)` alongside OpenAI Codex models.
+- **Immediate Model Cache on Provider Probe** (`src/commands/provider.ts`) — successful `jeo provider test <id>` and `jeo provider add` probing now immediately writes discovered custom/compatible models to the disk cache (`writeModelCache([result])`).
+
+### Fixed
+- **Model Cache Key Scoping** (`src/ai/model-cache.ts`) — fixed `keyOf` helper scoping and included `kimi` in source distinction so OAuth and API key catalogs do not clobber each other.
+- **OAuth Token Preservation in Setup** (`src/commands/setup.ts`) — fixed `delete next.oauth` condition to check `Object.keys(next.oauth).length === 0` so non-Anthropic/OpenAI/Gemini OAuth credentials (such as `antigravity` or `kimi`) are not inadvertently dropped on save.
+- **Auth Import Model Reporting** (`src/commands/auth.ts`) — added `antigravity` reporting to `reportLiveModels` following Gemini OAuth import.
+
 ## [0.12.4] - 2026-10-17
 _Refresh Antigravity provider (`antigravity/*`) account catalogs with `antigravity/hub/2.23.1` so entitled Gemini 4 Argon and Gemini 3.8 Flash tiers appear directly in `/model provider antigravity`._
 

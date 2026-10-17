@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-10-17
+_Refresh Antigravity provider (`antigravity/*`) account catalogs with `antigravity/hub/2.23.1` so entitled Gemini 4 Argon and Gemini 3.8 Flash tiers appear directly in `/model provider antigravity`._
+
+### Fixed
+- **Antigravity provider client identity & Argon catalog visibility** (`src/ai/providers/antigravity.ts`, `src/ai/model-discovery.ts`) — updated `getAntigravityUserAgent()` from `antigravity/1.104.0` to `antigravity/hub/2.23.1` (`jeopi` v16.6.3 parity) so `daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` returns entitled `gemini-4-argon-{low,medium,high}` and `gemini-3.8-flash-*` tiers. Preserved named non-recommended chat models (`displayName`) alongside `agentModelSorts`/`tieredModelIds`/`defaultAgentModelId` while excluding explicit non-chat (`tabModelIds`, `imageGenerationModelIds`, `audioTranscriptionModelIds`, `deprecatedModelIds`), internal, and unnamed rows.
+- **Client-UA-scoped Antigravity model cache invalidation** (`src/ai/model-cache.ts`) — included `getAntigravityUserAgent()` in `antigravityAccountScope` so client User-Agent updates immediately invalidate stale cached model lists without waiting for the 6-hour TTL.
+- **In-name `-medium` thinking depth recognition** (`src/ai/providers/gemini.ts`, `src/ai/model-catalog.ts`) — `geminiNamedEffort` and `inferCatalogMetadata` now recognize `-medium` model suffixes (`gemini-4-argon-medium`, `gemini-3.8-flash-medium`) so unset `reasoningEffort` defaults to `medium` thinking depth.
+
+### Verified
+- Focused Antigravity/Gemini/discovery/catalog regression suites (`175 pass, 0 fail`), `bun run typecheck`, `bun run build`, `bun run pack:check`, and live `antigravity/gemini-4-argon-{low,medium,high}` discovery + `antigravity/gemini-4-argon-medium` inference (`HTTP 200`).
+
 ## [0.12.3] - 2026-10-17
 _Anthropic static model catalog trimmed to claude-5.x with live API discovery, and `/route off` strictly fixes the active model with no failover._
 

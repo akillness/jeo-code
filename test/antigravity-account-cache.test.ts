@@ -221,3 +221,21 @@ test("writeModelCache: retains every Antigravity model when the account has more
 
   expect(cacheFile?.providers).toEqual([row("account-a", models)]);
 });
+
+test("antigravityAccountScope: invalidates cached scope when client User-Agent version changes", async () => {
+  await writeConfig({ antigravity: { access: "ua-access", refresh: "ua-refresh", projectId: "ua-project" } });
+  const prevVersion = process.env.PI_AI_ANTIGRAVITY_VERSION;
+  try {
+    process.env.PI_AI_ANTIGRAVITY_VERSION = "1.104.0";
+    const oldScope = await cache.antigravityAccountScope?.();
+    process.env.PI_AI_ANTIGRAVITY_VERSION = "2.23.1";
+    const newScope = await cache.antigravityAccountScope?.();
+    expect(oldScope).toEqual(expect.any(String));
+    expect(newScope).toEqual(expect.any(String));
+    expect(newScope).not.toBe(oldScope);
+  } finally {
+    if (prevVersion === undefined) delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+    else process.env.PI_AI_ANTIGRAVITY_VERSION = prevVersion;
+  }
+});
+

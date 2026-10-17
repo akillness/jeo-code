@@ -60,8 +60,18 @@ test("antigravityRequest: gemini-2.5 + effort keeps the numeric budget (gjc GOOG
   expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
 });
 
-test("getAntigravityUserAgent follows Antigravity platform/arch shape", () => {
-  expect(getAntigravityUserAgent()).toMatch(/^antigravity\/\d+\.\d+\.\d+ .+\/.+$/);
+test("getAntigravityUserAgent follows Antigravity hub platform/arch shape", () => {
+  expect(getAntigravityUserAgent()).toMatch(/^antigravity\/hub\/\d+\.\d+\.\d+ .+\/.+$/);
+});
+
+test("antigravityRequest: gemini-4-argon-medium honors in-name -medium effort when reasoningEffort is unset", () => {
+  const payload = JSON.parse(antigravityRequest(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "antigravity/gemini-4-argon-medium" } as any,
+    cred,
+  ).body);
+  expect(payload.model).toBe("gemini-4-argon-medium");
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
 });
 
 test("antigravityRequest: Claude + reasoning enables thinking (includeThoughts) and the interleaved-thinking beta header", () => {

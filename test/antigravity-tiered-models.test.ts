@@ -266,3 +266,37 @@ test("tiered opaque id survives saved-role selection and reaches the exact outbo
   );
   expect(JSON.parse(request.body).model).toBe(OPAQUE);
 });
+
+test("listProviderModels: surfaces Gemini 4 Argon tiers and named non-recommended chat models while excluding non-chat and unnamed rows", async () => {
+  const body = {
+    models: {
+      "gemini-4-argon-low": { displayName: "Gemini 4 Argon (Low)", model: "MODEL_PLACEHOLDER_ARGON_LOW" },
+      "gemini-4-argon-medium": { displayName: "Gemini 4 Argon (Medium)", model: "MODEL_PLACEHOLDER_ARGON_MED" },
+      "gemini-4-argon-high": { displayName: "Gemini 4 Argon (High)", model: "MODEL_PLACEHOLDER_ARGON_HIGH" },
+      "gemini-3-flash-agent": { displayName: "Gemini 3.5 Flash (High)", model: "MODEL_PLACEHOLDER_M84" },
+      "tab_flash_lite_preview": { model: "MODEL_PLACEHOLDER_M19" },
+      "gemini-3.1-flash-image": { displayName: "Gemini 3.1 Flash Image", model: "MODEL_PLACEHOLDER_M21" },
+      "chat_20706": { isInternal: true, model: "MODEL_CHAT_20706" },
+    },
+    agentModelSorts: [{
+      groups: [{
+        modelIds: ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"],
+      }],
+    }],
+    tieredModelIds: { flash: ["gemini-3.8-flash-tiered"] },
+    defaultAgentModelId: "gemini-4-argon-medium",
+    tabModelIds: ["chat_20706"],
+    imageGenerationModelIds: ["gemini-3.1-flash-image"],
+  };
+
+  const result = await listProviderModels("antigravity", { fetchImpl: jsonFetch(body) });
+
+  expect(result.ok).toBe(true);
+  expect(result.models).toEqual([
+    "antigravity/gemini-3-flash-agent",
+    "antigravity/gemini-4-argon-high",
+    "antigravity/gemini-4-argon-low",
+    "antigravity/gemini-4-argon-medium",
+  ]);
+});
+

@@ -48,6 +48,7 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
  *  the documented thought-token burn protection). Expects a lowercased id. */
 function geminiNamedEffort(m: string): CallOptions["reasoningEffort"] | undefined {
   return m.includes("-high") ? "high"
+    : m.includes("-medium") ? "medium"
     : m.includes("-low") ? "low"
     : m.includes("thinking") ? "medium"
     : undefined;

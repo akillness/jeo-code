@@ -416,10 +416,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.4]** (2026-10-17) — Refresh Antigravity provider (`antigravity/*`) account catalogs with `antigravity/hub/2.23.1` so entitled Gemini 4 Argon and Gemini 3.8 Flash tiers appear directly in `/model provider antigravity`.
 - **[0.12.3]** (2026-10-17) — Anthropic static model catalog trimmed to claude-5.x with live API discovery, and `/route off` strictly fixes the active model with no failover.
 - **[0.12.2]** (2026-10-16) — Select Argon through the official agy full agent, with its own live catalog and session, separately from jeo's Cloud Code Assist backend.
 - **[0.12.1]** (2026-10-16) — Logged-in OpenAI subscription models were invisible on proxy-configured machines.
-- **[0.12.0]** (2026-10-16) — Karpathy behavioral guardrails become always-on discipline, and skill routing gains an ECC single-harness inventory plus a Jev-style advisory router.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

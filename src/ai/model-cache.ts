@@ -22,6 +22,7 @@ import { jeoEnv } from "../util/env";
 import { recordLiveCodexModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope } from "./model-catalog";
 import type { Credential } from "../auth";
 import { getStoredOAuth, snapshotProvider } from "../auth/storage";
+import { getAntigravityUserAgent } from "./providers/antigravity";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import type { ProviderName } from "./types";
 
@@ -87,7 +88,7 @@ export async function antigravityAccountScope(credential?: Credential): Promise<
       || process.env.GOOGLE_CLOUD_PROJECT?.trim()
       || process.env.GOOGLE_CLOUD_PROJECT_ID?.trim()
       || "";
-    return createHash("sha256").update(`${providerSlot}\u0000${identity}\u0000${projectId}`, "utf8").digest("hex");
+    return createHash("sha256").update(`${providerSlot}\u0000${identity}\u0000${projectId}\u0000${getAntigravityUserAgent()}`, "utf8").digest("hex");
   } catch {
     return undefined;
   }

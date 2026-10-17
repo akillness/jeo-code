@@ -212,7 +212,7 @@ function isGeminiChatModel(id: string): boolean {
 }
 
 type CodexModelRow = { slug?: string; id?: string; visibility?: string; supported_in_api?: boolean; priority?: number };
-type AntigravityModelRow = { slug?: string; id?: string; name?: string; isInternal?: boolean; model?: string };
+type AntigravityModelRow = { slug?: string; id?: string; name?: string; displayName?: string; isInternal?: boolean; model?: string };
 
 function normalizeAntigravityModelId(id: string): string {
   return id.replace(/^models\//, "").replace(/^antigravity\//, "");
@@ -250,8 +250,9 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
     // (MODEL_PLACEHOLDER_*) and must never be surfaced. The response's OWN
     // metadata decides what to show — no hard-coded model lists:
     // Agent sorts and tiered model ids are complementary chat offerings, not
-    // interchangeable allowlists. Include both plus the declared default;
-    // only older responses without these fields need non-chat role filtering.
+    // interchangeable allowlists. Include both plus the declared default and
+    // named non-recommended chat models; exclude explicit non-chat roles and
+    // unnamed unreferenced rows.
     const payload = body as {
       models?: Record<string, AntigravityModelRow> | AntigravityModelRow[];
       agentModelSorts?: { groups?: { modelIds?: string[] }[] }[];
@@ -280,13 +281,16 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
     if (typeof payload.defaultAgentModelId === "string") agentIds.add(normalizeAntigravityModelId(payload.defaultAgentModelId));
     const hasChatModelMetadata = Array.isArray(payload.agentModelSorts)
       || payload.tieredModelIds !== undefined || payload.defaultAgentModelId !== undefined;
-    const nonChat = new Set([
+    const explicitNonChat = new Set([
       ...roleIds(payload.tabModelIds),
       ...roleIds(payload.imageGenerationModelIds),
       ...roleIds(payload.audioTranscriptionModelIds),
+      ...deprecated,
+    ]);
+    const nonChat = new Set([
+      ...explicitNonChat,
       ...roleIds(payload.commitMessageModelIds),
       ...roleIds(payload.mqueryModelIds),
-      ...deprecated,
     ]);
     const rawModels = payload.models;
     const entries = Array.isArray(rawModels)
@@ -297,7 +301,10 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
       .filter(([id, model]) =>
         id.length > 0 &&
         model?.isInternal !== true &&
-        (hasChatModelMetadata ? agentIds.has(id) : !nonChat.has(id)))
+        !explicitNonChat.has(id) &&
+        (hasChatModelMetadata
+          ? agentIds.size > 0 && (agentIds.has(id) || (!nonChat.has(id) && typeof model?.displayName === "string" && model.displayName.trim().length > 0))
+          : !nonChat.has(id)))
       .map(([id]) => `antigravity/${id}`);
   }
   if (provider === "gemini") {

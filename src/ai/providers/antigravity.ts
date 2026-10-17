@@ -28,10 +28,10 @@ function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"])
 const ENDPOINTS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
 export function getAntigravityUserAgent(): string {
-  const version = process.env.PI_AI_ANTIGRAVITY_VERSION || "1.104.0";
+  const version = process.env.PI_AI_ANTIGRAVITY_VERSION || "2.23.1";
   const os = process.platform === "win32" ? "windows" : process.platform;
   const arch = process.arch === "x64" ? "amd64" : process.arch === "ia32" ? "386" : process.arch;
-  return `antigravity/${version} ${os}/${arch}`;
+  return `antigravity/hub/${version} ${os}/${arch}`;
 }
 
 function antigravityModelId(model: string): string {

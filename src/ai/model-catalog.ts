@@ -618,7 +618,7 @@ export function inferCatalogMetadata(modelId: string): CatalogModel | undefined 
       providerModel: id,
       contextTokens: 1_000_000,
       maxOutputTokens: 65_536,
-      thinking: !reasons ? [] : big3 || id.includes("thinking") || id.includes("-high") || id.includes("-low") ? FULL : STD,
+      thinking: !reasons ? [] : big3 || id.includes("thinking") || id.includes("-high") || id.includes("-medium") || id.includes("-low") ? FULL : STD,
       images: true,
       company: antigravity ? "Google Antigravity" : "Google",
     };

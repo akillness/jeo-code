@@ -180,13 +180,15 @@ test("geminiAdapter: api_key credential keeps using the public generativelanguag
     globalThis.fetch = prevFetch;
   }
 });
-test("geminiThinkingBudget: in-name depth marker (-high/-low/-thinking) overrides the unset floor", () => {
+test("geminiThinkingBudget: in-name depth marker (-high/-medium/-low/-thinking) overrides the unset floor", () => {
   // An explicit `-thinking` variant must NOT fall to the silent flash floor of 0.
   expect(geminiThinkingBudget("gemini-2.5-flash-thinking")).toBe(8192);
-  // `-high`/`-low` select depth even with no effort — the variant choice IS the thinking
+  // `-high`/`-medium`/`-low` select depth even with no effort — the variant choice IS the thinking
   // opt-in, so it beats the bare pro floor of 128 (budget path; gemini-3 uses levels).
   expect(geminiThinkingBudget("gemini-2.5-pro-high")).toBe(16384);
+  expect(geminiThinkingBudget("gemini-4-argon-medium")).toBe(8192);
   expect(geminiThinkingBudget("gemini-2.5-pro-low")).toBe(4096);
+  expect(geminiThinkingConfig("gemini-3.8-flash-medium")).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
   // An explicit caller effort still wins over the in-name marker.
   expect(geminiThinkingBudget("gemini-2.5-pro-high", "low")).toBe(4096);
   // Unmarked thinking-capable ids keep the off-by-default floor (cross-provider parity).

@@ -87,6 +87,7 @@ export function buildResponsesInput(messages: Message[], modelKey: string, strip
         && nonSystem[i - 1].role === "assistant" && responsesNativizable(nonSystem[i - 1], modelKey)) {
       for (const tr of m.toolResults) items.push({ type: "function_call_output", call_id: tr.id, output: tr.output });
       if (m.toolResultExtra) items.push({ role: "user", content: [{ type: "input_text", text: m.toolResultExtra }] });
+      if (m.images?.length) items.push({ role: "user", content: m.images.map(img => ({ type: "input_image", image_url: `data:${img.mediaType};base64,${img.data}` })) });
       return;
     }
     items.push(plain(m));

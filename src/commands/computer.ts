@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { computerSupervisor } from "../agent/computer-supervisor";
+import type { ImageAttachment } from "../ai/types";
 import { readGlobalConfig } from "../agent/state";
 
 export interface ComputerAction {
@@ -36,9 +37,11 @@ async function logAudit(action: ComputerAction, success: boolean, error?: string
 async function runCommand(cmd: string[]): Promise<{ success: boolean; stdout: string; stderr: string }> {
   try {
     const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-    await proc.exited;
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
     return {
       success: proc.exitCode === 0,
       stdout,
@@ -53,7 +56,7 @@ async function runCommand(cmd: string[]): Promise<{ success: boolean; stdout: st
   }
 }
 
-export async function executeComputerAction(action: ComputerAction, opts?: { enabledOverride?: boolean }): Promise<{ success: boolean; output: string; error?: string }> {
+export async function executeComputerAction(action: ComputerAction, opts?: { enabledOverride?: boolean }): Promise<{ success: boolean; output: string; error?: string; images?: ImageAttachment[] }> {
   let enabled = opts?.enabledOverride;
   if (enabled === undefined) {
     const config = await readGlobalConfig().catch(() => null);
@@ -68,6 +71,18 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
   }
 
 
+  if (!action || typeof action !== "object") return { success: false, output: "", error: "Expected a computer action object." };
+  for (const field of ["x", "y", "deltaX", "deltaY", "duration"] as const) {
+    if (action[field] !== undefined && (typeof action[field] !== "number" || !Number.isFinite(action[field]))) {
+      return { success: false, output: "", error: `Invalid finite number for ${field}.` };
+    }
+  }
+  if (action.duration !== undefined && (action.duration < 0 || action.duration > 60)) {
+    return { success: false, output: "", error: "duration must be between 0 and 60 seconds." };
+  }
+  if (os.platform() !== "darwin" && os.platform() !== "linux") {
+    return { success: false, output: "", error: "Computer use supports macOS and Linux/X11 only." };
+  }
   // Read-only actions don't need supervisor inputAllowed check
   const isReadOnly = action.action === "screenshot" || action.action === "wait";
   if (!isReadOnly) {
@@ -83,7 +98,7 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
   switch (action.action) {
     case "screenshot": {
       const tmpDir = os.tmpdir();
-      const screenPath = path.join(tmpDir, `jeo-screen-${Date.now()}.png`);
+      const screenPath = path.join(tmpDir, `jeo-screen-${crypto.randomUUID()}.png`);
       let cmd: string[];
       if (isMac) {
         cmd = ["screencapture", "-x", screenPath];
@@ -100,7 +115,7 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
         const base64 = bytes.toString("base64");
         await fs.unlink(screenPath).catch(() => {});
         await logAudit(action, true);
-        return { success: true, output: base64 };
+        return { success: true, output: "Screenshot captured.", images: [{ mediaType: "image/png", data: base64 }] };
       } catch (err: any) {
         await logAudit(action, false, err.message);
         return { success: false, output: "", error: `Failed to read screenshot file: ${err.message}` };
@@ -164,9 +179,9 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
       }
       let cmd: string[];
       if (isMac) {
-        cmd = ["cliclick", `dd:${action.x},${action.y}`];
+        cmd = ["cliclick", "dd:.", `dm:${action.x},${action.y}`, `du:${action.x},${action.y}`];
       } else {
-        cmd = ["xdotool", "mousemove", String(action.x), String(action.y), "mousedown", "1"];
+        cmd = ["xdotool", "mousedown", "1", "mousemove", String(action.x), String(action.y), "mouseup", "1"];
       }
       const res = await runCommand(cmd);
       await logAudit(action, res.success, res.success ? undefined : res.stderr);
@@ -179,9 +194,14 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
       let cmd: string[];
       const dx = action.deltaX ?? 0;
       const dy = action.deltaY ?? 0;
+      if (!Number.isInteger(dx) || !Number.isInteger(dy) || Math.abs(dx) > 1000 || Math.abs(dy) > 1000) {
+        return { success: false, output: "", error: "Scroll deltas must be integers between -1000 and 1000." };
+      }
+      if (dx === 0 && dy === 0) return { success: true, output: "Scroll skipped (zero deltas)." };
       if (isMac) {
-        // cliclick scroll deltaY deltaX
-        cmd = ["cliclick", `w:${dy},${dx}`];
+        // cliclick's w: command WAITS; it cannot scroll. Use Quartz line events.
+        cmd = ["/usr/bin/osascript", "-l", "JavaScript", "-e",
+          `ObjC.import('Cocoa'); var event = $.CGEventCreateScrollWheelEvent(null, 1, 2, ${dy}, ${dx}); $.CGEventPost(0, event);`];
       } else {
         // xdotool click 4 (scroll up), 5 (scroll down), 6 (scroll left), 7 (scroll right)
         const actions: string[] = [];
@@ -212,7 +232,7 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
       if (isMac) {
         cmd = ["cliclick", `t:${action.text}`];
       } else {
-        cmd = ["xdotool", "type", action.text];
+        cmd = ["xdotool", "type", "--clearmodifiers", "--", action.text];
       }
       const res = await runCommand(cmd);
       await logAudit(action, res.success, res.success ? undefined : res.stderr);
@@ -227,7 +247,16 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
       }
       let cmd: string[];
       if (isMac) {
-        cmd = ["cliclick", `kp:${action.key}`];
+        const aliases: Record<string, string> = { return: "return", enter: "return", escape: "esc", backspace: "delete", arrowup: "arrow-up", arrowdown: "arrow-down", arrowleft: "arrow-left", arrowright: "arrow-right", pageup: "page-up", pagedown: "page-down" };
+        const parts = action.key.toLowerCase().split("+");
+        const key = parts.pop()!;
+        const modifiers = parts.map(p => ({ command: "cmd", meta: "cmd", control: "ctrl", option: "alt" }[p] ?? p));
+        if (modifiers.some(p => !["cmd", "ctrl", "alt", "shift", "fn"].includes(p))) {
+          return { success: false, output: "", error: "Unknown key modifier." };
+        }
+        const press = key.length === 1 ? `t:${key}` : `kp:${aliases[key] ?? key}`;
+        cmd = ["cliclick", ...(modifiers.length ? [`kd:${modifiers.join(",")}`] : []), press,
+          ...(modifiers.length ? [`ku:${modifiers.join(",")}`] : [])];
       } else {
         cmd = ["xdotool", "key", action.key];
       }
@@ -250,6 +279,7 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
         return { success: false, output: "", error: "Missing actions array for batch action." };
       }
       const results: string[] = [];
+      const images: ImageAttachment[] = [];
       for (let i = 0; i < action.actions.length; i++) {
         const subAction = action.actions[i];
         const res = await executeComputerAction(subAction, opts);
@@ -257,12 +287,13 @@ export async function executeComputerAction(action: ComputerAction, opts?: { ena
         if (!res.success) {
           const err = `Batch failed at step ${i}: ${res.error}`;
           await logAudit(action, false, err);
-          return { success: false, output: results.join("\n"), error: err };
+          return { success: false, output: results.join("\n"), error: err, images };
         }
         results.push(`Step ${i}: ${res.output}`);
+        images.push(...(res.images ?? []));
       }
       await logAudit(action, true);
-      return { success: true, output: results.join("\n") };
+      return { success: true, output: results.join("\n"), images };
     }
 
     default:
@@ -329,7 +360,7 @@ export async function runComputerCommand(args: string[]): Promise<void> {
   const res = await executeComputerAction(action);
   if (res.success) {
     if (actionName === "screenshot") {
-      console.log(res.output); // base64 output
+      console.log(res.images?.[0]?.data ?? res.output); // preserve CLI base64 output
     } else {
       console.log(res.output);
     }

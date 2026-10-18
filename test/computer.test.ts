@@ -79,7 +79,8 @@ describe("Computer Use Command & Actions", () => {
 
     const res = await executeComputerAction({ action: "screenshot" });
     expect(res.success).toBe(true);
-    expect(res.output).toBe(Buffer.from("dummy").toString("base64"));
+    expect(res.output).toBe("Screenshot captured.");
+    expect(res.images).toEqual([{ mediaType: "image/png", data: Buffer.from("dummy").toString("base64") }]);
 
     Bun.spawn = originalSpawn;
   });
@@ -176,5 +177,76 @@ describe("Computer Use Command & Actions", () => {
     expect(res.output).toContain("Step 1: Typed text: test");
 
     Bun.spawn = originalSpawn;
+  });
+
+  test("drag releases the mouse and scrolling uses real scroll events", async () => {
+    const originalSpawn = Bun.spawn;
+    const commands: string[][] = [];
+    Bun.spawn = ((cmd: string[]) => {
+      commands.push(cmd);
+      return { exited: Promise.resolve(0), exitCode: 0,
+        stdout: new ReadableStream({ start(c) { c.close(); } }),
+        stderr: new ReadableStream({ start(c) { c.close(); } }) };
+    }) as any;
+    try {
+      expect((await executeComputerAction({ action: "drag", x: 40, y: 50 })).success).toBe(true);
+      expect(commands[0]).toEqual(process.platform === "darwin"
+        ? ["cliclick", "dd:.", "dm:40,50", "du:40,50"]
+        : ["xdotool", "mousedown", "1", "mousemove", "40", "50", "mouseup", "1"]);
+      expect((await executeComputerAction({ action: "scroll", deltaY: 2, deltaX: -1 })).success).toBe(true);
+      if (process.platform === "darwin") {
+        expect(commands[1]![0]).toBe("/usr/bin/osascript");
+        expect(commands[1]!.at(-1)).toContain("CGEventCreateScrollWheelEvent(null, 1, 2, 2, -1)");
+      } else expect(commands[1]).toEqual(["xdotool", "click", "4", "click", "4", "click", "6"]);
+      if (process.platform === "darwin") {
+        await executeComputerAction({ action: "keypress", key: "Command+Return" });
+        expect(commands[2]).toEqual(["cliclick", "kd:cmd", "kp:return", "ku:cmd"]);
+      }
+    } finally { Bun.spawn = originalSpawn; }
+  });
+
+  test("rejects invalid numeric inputs and skips zero scrolling without spawning", async () => {
+    for (const action of [
+      { action: "click", x: NaN, y: 0 },
+      { action: "wait", duration: -1 },
+      { action: "wait", duration: Infinity },
+      { action: "wait", duration: 61 },
+      { action: "scroll", deltaY: 0.5 },
+      { action: "scroll", deltaX: 1001 },
+    ] as const) expect((await executeComputerAction(action)).success).toBe(false);
+    expect((await executeComputerAction({ action: "scroll" })).output).toContain("skipped");
+  });
+
+  test("batch screenshots keep image attachments rather than embedding base64 in text", async () => {
+    const originalSpawn = Bun.spawn;
+    Bun.spawn = ((cmd: string[]) => {
+      writeFileSync(cmd.at(-1)!, "image");
+      return { exited: Promise.resolve(0), exitCode: 0,
+        stdout: new ReadableStream({ start(c) { c.close(); } }),
+        stderr: new ReadableStream({ start(c) { c.close(); } }) };
+    }) as any;
+    try {
+      const result = await executeComputerAction({ action: "batch", actions: [{ action: "screenshot" }, { action: "wait", duration: 0 }] });
+      expect(result.success).toBe(true);
+      expect(result.images).toEqual([{ mediaType: "image/png", data: Buffer.from("image").toString("base64") }]);
+      expect(result.output).toContain("Step 0: Screenshot captured.");
+      expect(result.output).not.toContain(Buffer.from("image").toString("base64"));
+    } finally { Bun.spawn = originalSpawn; }
+  });
+
+  test("drains child pipes before waiting for exit (avoids full-pipe deadlock)", async () => {
+    const originalSpawn = Bun.spawn;
+    let drained = false;
+    let finish!: () => void;
+    const exited = new Promise<void>(resolve => { finish = resolve; });
+    Bun.spawn = (() => ({ exited, exitCode: 0,
+      stdout: new ReadableStream({ pull(c) { drained = true; c.close(); finish(); } }, { highWaterMark: 0 }),
+      stderr: new ReadableStream({ start(c) { c.close(); } }),
+    })) as any;
+    try {
+      const result = await executeComputerAction({ action: "click", x: 1, y: 1 });
+      expect(drained).toBe(true);
+      expect(result.success).toBe(true);
+    } finally { Bun.spawn = originalSpawn; }
   });
 });

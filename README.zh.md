@@ -414,10 +414,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.7]** (2026-10-18) — Repair desktop screenshot vision feedback, macOS scrolling, complete drag gestures, and keyboard normalization.
 - **[0.12.6]** (2026-10-17) — Preserve OpenAI subscription authentication behind configured proxies, isolate account catalogs, and give provider-specific recovery instructions while retaining Antigravity OAuth calls.
 - **[0.12.5]** (2026-10-17) — Antigravity and Kimi provider support in interactive setup, Kimi live model cache rehydration, immediate discovery caching on provider probing.
 - **[0.12.4]** (2026-10-17) — Refresh Antigravity provider (`antigravity/*`) account catalogs with `antigravity/hub/2.23.1` so entitled Gemini 4 Argon and Gemini 3.8 Flash tiers appear directly in `/model provider antigravity`.
-- **[0.12.3]** (2026-10-17) — Anthropic static model catalog trimmed to claude-5.x with live API discovery, and `/route off` strictly fixes the active model with no failover.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -22,6 +22,7 @@ async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
 }
 
 export interface ToolResult {
+  images?: import("../ai/types").ImageAttachment[];
   success: boolean;
   output: string;
   error?: string;

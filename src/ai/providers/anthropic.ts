@@ -240,6 +240,7 @@ export function buildAnthropicMessages(messages: Message[], model: string, think
       const blocks: AnthropicContentBlock[] = m.toolResults.map(tr => ({
         type: "tool_result", tool_use_id: tr.id, content: tr.output, is_error: tr.isError,
       }));
+      for (const img of m.images ?? []) blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
       if (m.toolResultExtra) blocks.push({ type: "text", text: m.toolResultExtra });
       return { role: "user", content: blocks };
     }

@@ -75,7 +75,8 @@ test("DEFAULT_TOOLS.computer still respects the read-only bypass (screenshot wor
   Bun.spawn = originalSpawn;
 
   expect(res.success).toBe(true);
-  expect(res.output).toBe(Buffer.from("dummy").toString("base64"));
+  expect(res.output).toBe("Screenshot captured.");
+  expect(res.images).toEqual([{ mediaType: "image/png", data: Buffer.from("dummy").toString("base64") }]);
 });
 
 test("DEFAULT_TOOLS.computer still fails closed when computer.enabled is false in config", async () => {

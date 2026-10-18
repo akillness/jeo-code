@@ -1215,6 +1215,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       const { tool, arguments: args } = call;
       let success: boolean;
       let output: string;
+      let images: import("../ai/types").ImageAttachment[] | undefined;
 
       if (tool === "done") {
         success = false;
@@ -1242,6 +1243,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               const onProgress = ev.onToolProgress ? (partial: string) => ev.onToolProgress!(tool, partial) : undefined;
               const res = await handler(args ?? {}, cwd, onProgress);
               success = res.success;
+              images = res.images;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
             } catch (err: any) {
               success = false;
@@ -1250,7 +1252,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
         }
       }
-      return { success, output };
+      return { success, output, images };
     };
 
     const WRITE_TOOLS = new Set(["write", "edit"]);
@@ -1293,7 +1295,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       }
     }
 
-    const results: { success: boolean; output: string; executed: boolean }[] = Array.from(
+    const results: { success: boolean; output: string; executed: boolean; images?: import("../ai/types").ImageAttachment[] }[] = Array.from(
       { length: toolCalls.length },
       () => ({ success: false, output: "", executed: false })
     );
@@ -1385,6 +1387,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       }));
       pushAssistantTurn(history, responseText, reasonBuf, artifactBuf, toolUse);
       const resultMsg: Message = { role: "user", content: resultBlocks.join("\n\n"), toolResults };
+      const images = indices.flatMap(idx => results[idx].images ?? []);
+      if (images.length) resultMsg.images = images;
       if (hookExtra) resultMsg.toolResultExtra = hookExtra;
       history.push(resultMsg);
     };

@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-10-18
+_Repair desktop screenshot vision feedback, macOS scrolling, complete drag gestures, and keyboard normalization._
+
+### Fixed
+- **Screenshot vision feedback** — carry PNG attachments through tool execution, batches, and native Anthropic/OpenAI Responses replay instead of spilling base64 as text. Preserve CLI screenshot base64 stdout.
+- **Desktop input** — use Quartz scroll events on macOS (cliclick `w:` waits rather than scrolling), release the mouse after dragging on macOS/Linux, normalize macOS key aliases/modifier combinations, and terminate Linux text options before user text.
+- **Execution reliability** — drain subprocess pipes concurrently with exit, use collision-resistant screenshot paths, reject non-finite numeric inputs and out-of-range waits/scrolls, and explicitly reject unsupported platforms. Existing enablement/supervisor gates remain unchanged.
+
+### Documentation
+- Added [desktop setup and troubleshooting](docs/computer-use.md), including platform requirements, OS permissions, coordinate caveats, and supported action semantics.
+
 ## [0.12.6] - 2026-10-17
 _Preserve OpenAI subscription authentication behind configured proxies, isolate account catalogs, and give provider-specific recovery instructions while retaining Antigravity OAuth calls._
 

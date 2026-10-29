@@ -2,13 +2,16 @@ import { test, expect } from "bun:test";
 import { DiscordDaemon, type DiscordDaemonDependencies } from "../src/agent/notify/discord-daemon";
 import { DiscordApi } from "../src/agent/notify/discord-api";
 import { SessionNotifyEndpoint, type RemoteUserMessage } from "../src/agent/notify/session-endpoint";
+import { resolveDiscordArtifactStage } from "../src/agent/notify/discord-artifacts";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 
 const CHANNEL = "111111111111111111";
 const USER = "222222222222222222";
 const BOT = "333333333333333333";
 const CONFIG = { botToken: "offline-test-token", channelId: CHANNEL, allowedUserIds: [USER, BOT] };
 
-type Frame = { op?: number; d?: unknown; type?: string; text?: string; message?: string; reqId?: string; id?: string; ids?: string[] };
+type Frame = { op?: number; d?: unknown; type?: string; text?: string; message?: string; reqId?: string; id?: string; ids?: string[]; sessionId?: string; generation?: number };
 
 class Clock {
   now = 0;
@@ -34,18 +37,38 @@ class Clock {
   }
 }
 
-function sockets() {
+function sockets(autoRemote = false) {
   const instances: Socket[] = [];
   class Socket {
     readyState = 1;
     sent: Frame[] = [];
+    autoRemote = autoRemote;
+    private sendWaiters: { predicate: (frame: Frame) => boolean; resolve: (frame: Frame) => void }[] = [];
     closed: number[] = [];
     deferClose = false;
     onmessage: ((event: { data: string }) => void | Promise<void>) | null = null;
     onclose: ((event: { code: number }) => void) | null = null;
     onerror: (() => void) | null = null;
     constructor(readonly url: string) { instances.push(this); }
-    send(raw: string): void { this.sent.push(JSON.parse(raw)); }
+    send(raw: string): void {
+      const frame = JSON.parse(raw) as Frame;
+      this.sent.push(frame);
+      if (this.autoRemote && frame.type === "remote_request") queueMicrotask(async () => {
+        await this.receive({ type: "ack", reqId: frame.reqId, ok: true });
+        await this.receive({ type: "remote_final", sessionId: frame.sessionId, reqId: frame.reqId, ok: true, controlGeneration: 1, text: `answer: ${frame.text}` });
+      });
+      for (const waiter of [...this.sendWaiters]) if (waiter.predicate(frame)) {
+        this.sendWaiters.splice(this.sendWaiters.indexOf(waiter), 1);
+        waiter.resolve(frame);
+      }
+    }
+    waitForSend(predicate: (frame: Frame) => boolean): Promise<Frame> {
+      const frame = this.sent.find(predicate);
+      if (frame) return Promise.resolve(frame);
+      const { promise, resolve } = Promise.withResolvers<Frame>();
+      this.sendWaiters.push({ predicate, resolve });
+      return promise;
+    }
     close(code = 1000): void { this.readyState = 3; this.closed.push(code); if (!this.deferClose) this.onclose?.({ code }); }
     async receive(payload: unknown): Promise<void> { await this.onmessage?.({ data: JSON.stringify(payload) }); }
     async raw(data: string): Promise<void> { await this.onmessage?.({ data }); }
@@ -58,12 +81,15 @@ function sockets() {
 class DiscordService {
   sent: { id: string; channel: string; text: string }[] = [];
   stopped = false;
-  channelType = 0;
+  channelType = 1;
   remaining = 10;
   private waiters: { predicate: (message: { id: string; channel: string; text: string }) => boolean; resolve: (message: { id: string; channel: string; text: string }) => void }[] = [];
   async getMe() { return { id: BOT, username: "test-bot", bot: true }; }
   async getChannel(id: string) { return { id, type: this.channelType }; }
   async getGatewayBot() { return { url: "wss://gateway.discord.gg", session_start_limit: { remaining: this.remaining, reset_after: 60000, total: 10, max_concurrency: 1 } }; }
+  async createThread(_channel: string, message: string, _name: string) { return { id: `9${message}` }; }
+  async addReaction(_channel: string, _message: string, _emoji: string) {}
+  async removeReaction(_channel: string, _message: string, _emoji: string) {}
   async sendMessage(channel: string, text: string) {
     const message = { id: String(1000 + this.sent.length), channel, text };
     this.sent.push(message);
@@ -81,13 +107,13 @@ class DiscordService {
   stop() { this.stopped = true; }
 }
 
-function fixture(ids: string[] = [], overrides: DiscordDaemonDependencies = {}) {
+function fixture(ids: string[] = [], overrides: DiscordDaemonDependencies = {}, config = CONFIG) {
   const api = new DiscordService();
   const gateway = sockets();
-  const local = sockets();
+  const local = sockets(true);
   const clock = new Clock();
   const errors: string[] = [];
-  const daemon = new DiscordDaemon(CONFIG, {
+  const daemon = new DiscordDaemon(config, {
     api, GatewayWebSocketImpl: gateway.Impl, WebSocketImpl: local.Impl,
     readdir: async () => ids.map(id => `${id}.json`),
     readFile: async () => JSON.stringify({ url: "ws://127.0.0.1:9001", token: "local-test-token", cwd: "/test", pid: 123 }),
@@ -101,11 +127,14 @@ function fixture(ids: string[] = [], overrides: DiscordDaemonDependencies = {}) 
     id: String(++messageId), channel_id: CHANNEL, type: 0, author: { id: USER, bot: false }, content, ...extra,
   });
   const dispatch = (payload: unknown) => gateway.instances.at(-1)!.receive({ op: 0, t: "MESSAGE_CREATE", s: ++sequence, d: payload });
-  const ready = async () => {
+  const ready = async (heartbeatInterval = 1000) => {
     await daemon.start();
-    await gateway.instances[0]!.receive({ op: 10, d: { heartbeat_interval: 1000 } });
+    await gateway.instances[0]!.receive({ op: 10, d: { heartbeat_interval: heartbeatInterval } });
     await gateway.instances[0]!.receive({ op: 0, t: "READY", s: ++sequence, d: { session_id: "gateway-session", resume_gateway_url: "wss://gateway.discord.gg" } });
-    for (const [index, id] of ids.entries()) await local.instances[index]!.receive({ type: "snapshot", sessionId: id, pid: 123, subagents: [] });
+    for (const [index, id] of ids.entries()) {
+      await local.instances[index]!.receive({ type: "snapshot", sessionId: id, pid: 123, subagents: [] });
+      await local.instances[index]!.receive({ type: "discord_control", sessionId: id, enabled: true, generation: 1 });
+    }
   };
   return { daemon, api, gateway, local, clock, errors, ready, dispatch, message };
 }
@@ -129,7 +158,7 @@ test("only an allowlisted human in the configured channel can dispatch; malforme
     expect(f.api.sent).toEqual([]);
     expect(f.local.instances[0]!.sent).toEqual([]);
     await f.dispatch(f.message("/send alpha authorized prompt"));
-    expect(f.local.instances[0]!.sent).toEqual([{ type: "user_message", text: "authorized prompt" }]);
+    expect(f.local.instances[0]!.sent.map(frame => [frame.type, frame.text])).toEqual([["remote_request", "authorized prompt"]]);
   } finally { f.daemon.stop(); }
 });
 
@@ -142,8 +171,8 @@ test("ambiguous prefixes never choose a session, while exact IDs win over longer
     expect(f.api.sent.at(-1)!.text).toMatch(/ambiguous/i);
     await f.dispatch(f.message("/send alpha exact target"));
     await f.dispatch(f.message("/send alpha-l unique target"));
-    expect(f.local.instances.map(socket => socket.sent)).toEqual([
-      [{ type: "user_message", text: "exact target" }], [{ type: "user_message", text: "unique target" }],
+    expect(f.local.instances.map(socket => socket.sent.map(frame => [frame.type, frame.text]))).toEqual([
+      [["remote_request", "exact target"]], [["remote_request", "unique target"]],
     ]);
   } finally { f.daemon.stop(); }
 });
@@ -153,8 +182,8 @@ test("steer acknowledgements must match both request and originating session", a
   try {
     await f.ready();
     const command = f.dispatch(f.message("/steer alpha worker-1 focus on correctness"));
-    const frame = f.local.instances[0]!.sent[0]!;
-    expect({ type: frame.type, id: frame.id, message: frame.message }).toEqual({ type: "steer", id: "worker-1", message: "focus on correctness" });
+    const frame = await f.local.instances[0]!.waitForSend(frame => frame.type === "discord_steer");
+    expect({ type: frame.type, id: frame.id, message: frame.message }).toEqual({ type: "discord_steer", id: "worker-1", message: "focus on correctness" });
     await f.local.instances[1]!.receive({ type: "ack", reqId: frame.reqId, ok: true });
     await f.local.instances[0]!.receive({ type: "ack", reqId: "unrelated", ok: true });
     expect(f.api.sent).toEqual([]);
@@ -162,7 +191,7 @@ test("steer acknowledgements must match both request and originating session", a
     await command;
     expect(f.api.sent.at(-1)!.text).toMatch(/not acknowledged/i);
     const cancelled = f.dispatch(f.message("/cancel beta worker-2"));
-    const cancelFrame = f.local.instances[1]!.sent[0]!;
+    const cancelFrame = await f.local.instances[1]!.waitForSend(frame => frame.type === "discord_cancel");
     expect(cancelFrame.ids).toEqual(["worker-2"]);
     await f.local.instances[1]!.receive({ type: "ack", reqId: cancelFrame.reqId, ok: true });
     await cancelled;
@@ -175,10 +204,12 @@ test("missing local ACK reports failure and shutdown resolves pending commands w
   try {
     await f.ready();
     const timedOut = f.dispatch(f.message("/cancel alpha worker-1"));
+    await f.local.instances[0]!.waitForSend(frame => frame.type === "discord_cancel" && frame.ids?.[0] === "worker-1");
     f.clock.advance(250);
     await timedOut;
     expect(f.api.sent.at(-1)!.text).toMatch(/not acknowledged/i);
     const pending = f.dispatch(f.message("/cancel alpha worker-2"));
+    await f.local.instances[0]!.waitForSend(frame => frame.type === "discord_cancel" && frame.ids?.[0] === "worker-2");
     const count = f.api.sent.length;
     f.daemon.stop();
     await pending;
@@ -268,17 +299,22 @@ test("stop cancels reconnect and prevents stale socket events from reopening or 
   } finally { f.daemon.stop(); }
 });
 
-test("real local endpoint receives Discord prompts and sends final replies with session-safe reply routing", async () => {
+test("real local endpoint routes Discord prompts and does not echo remote turn streams", async () => {
   const endpoint = new SessionNotifyEndpoint("/offline-discord-integration");
+  endpoint.setDiscordControlEnabled(true);
   const messages: RemoteUserMessage[] = [];
   let received = Promise.withResolvers<RemoteUserMessage>();
-  endpoint.onUserMessage = message => { messages.push(message); received.resolve(message); };
+  endpoint.onRemoteRequest = (text, finish) => { const message = { text }; messages.push(message); received.resolve(message); queueMicrotask(() => finish(`answer: ${text}`)); return true; };
   const snapshot = Promise.withResolvers<void>();
+  const control = Promise.withResolvers<void>();
+  const streamObserved = Promise.withResolvers<void>();
   class ObservedSocket extends WebSocket {
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
       this.addEventListener("message", event => {
         if (JSON.parse(String(event.data)).type === "snapshot") queueMicrotask(() => snapshot.resolve());
+        if (JSON.parse(String(event.data)).type === "discord_control") queueMicrotask(() => control.resolve());
+        if (JSON.parse(String(event.data)).type === "turn_stream") queueMicrotask(() => streamObserved.resolve());
       });
     }
   }
@@ -292,15 +328,15 @@ test("real local endpoint receives Discord prompts and sends final replies with 
     await endpoint.start();
     await f.ready();
     await snapshot.promise;
+    await control.promise;
     await f.dispatch(f.message(`/send ${endpoint.sessionId} inspect this project`));
     expect((await received.promise).text).toBe("inspect this project");
-    const final = f.api.waitFor(message => message.text.includes("The actual final answer"));
+    const notification = f.api.sent.at(-1)!;
+    expect(notification.text).toBe("answer: inspect this project");
     endpoint.sendTurnStream("The actual final answer");
-    const notification = await final;
-    expect(notification.channel).toBe(CHANNEL);
-    expect(notification.text).toContain(endpoint.sessionId);
-    // An awaited gateway event drains outbound correlation after the service accepts the final reply.
+    await streamObserved.promise;
     await f.dispatch(f.message("/help"));
+    expect(f.api.sent.some(message => message.text.includes("The actual final answer"))).toBe(false);
     received = Promise.withResolvers<RemoteUserMessage>();
     await f.dispatch(f.message("continue with that result", { type: 19, message_reference: { message_id: notification.id, channel_id: CHANNEL } }));
     expect((await received.promise).text).toBe("continue with that result");
@@ -340,7 +376,7 @@ test("replayed message IDs and dispatch sequence numbers cannot execute a comman
     await f.dispatch(message);
     await f.dispatch(message);
     await f.gateway.instances[0]!.receive({ op: 0, t: "MESSAGE_CREATE", s: 2, d: f.message("/send alpha stale dispatch") });
-    expect(f.local.instances[0]!.sent).toEqual([{ type: "user_message", text: "once only" }]);
+    expect(f.local.instances[0]!.sent.map(frame => [frame.type, frame.text])).toEqual([["remote_request", "once only"]]);
   } finally { f.daemon.stop(); }
 });
 
@@ -381,9 +417,11 @@ test("malformed and cross-session local frames cannot publish another session's 
     await local.receive({ type: "turn_stream", sessionId: "alpha", phase: "partial", text: "not final" });
     await local.receive({ type: "turn_stream", sessionId: "alpha", phase: "finalized", text: 123 });
     expect(f.api.sent).toEqual([]);
-    const published = f.api.waitFor(message => message.text.includes("authentic alpha answer"));
-    await local.receive({ type: "turn_stream", sessionId: "alpha", phase: "finalized", text: "authentic alpha answer" });
-    expect((await published).text).toBe("[alpha]\nauthentic alpha answer");
+    await local.receive({ type: "context_update", sessionId: "alpha", phase: "turn_start", summary: "private prompt preview" });
+    await local.receive({ type: "snapshot", sessionId: "alpha", pid: 123, subagents: [{ id: "worker", role: "reviewer", task: "private task", status: "running" }] });
+    await f.dispatch(f.message("/help"));
+    expect(f.api.sent.map(message => message.text).join("\n")).not.toContain("private prompt preview");
+    expect(f.api.sent.map(message => message.text).join("\n")).not.toContain("private task");
   } finally { f.daemon.stop(); }
 });
 
@@ -396,7 +434,8 @@ test("a delivered chunk remains reply-routable when a later chunk fails", async 
     let data: unknown;
     if (route.endsWith("/users/@me")) data = { id: BOT, username: "offline-bot", bot: true };
     else if (route.endsWith("/gateway/bot")) data = { url: "wss://gateway.discord.gg", session_start_limit: { remaining: 10, reset_after: 60000, total: 10, max_concurrency: 1 } };
-    else if (route.endsWith(`/channels/${CHANNEL}`)) data = { id: CHANNEL, type: 0 };
+    else if (route.endsWith(`/channels/${CHANNEL}`)) data = { id: CHANNEL, type: 1 };
+    else if (route.includes("/reactions/")) return new Response(null, { status: 204 });
     else if (route.endsWith(`/channels/${CHANNEL}/messages`)) {
       sends++;
       if (sends === 2) return new Response(JSON.stringify({ message: "server failure" }), { status: 500 });
@@ -411,11 +450,17 @@ test("a delivered chunk remains reply-routable when a later chunk fails", async 
   const f = fixture(["alpha"], { api, onError: () => failed.resolve() });
   try {
     await f.ready();
-    await f.local.instances[0]!.receive({ type: "turn_stream", sessionId: "alpha", phase: "finalized", text: "x".repeat(2100) });
+    const local = f.local.instances[0]!;
+    const enabled = local.waitForSend(frame => frame.type === "local_relay");
+    await local.receive({ type: "local_relay_control", sessionId: "alpha", destination: CHANNEL, generation: 1 });
+    const enableFrame = await enabled;
+    expect(enableFrame.generation).toBe(1);
+    await local.receive({ type: "ack", reqId: enableFrame.reqId, ok: true });
+    await local.receive({ type: "local_final", sessionId: "alpha", text: "x".repeat(2100) });
     await failed.promise;
     expect(delivered.map(message => message.text)).toEqual(["[alpha]\n" + "x".repeat(1992)]);
     await f.dispatch(f.message("reply to visible partial answer", { type: 19, message_reference: { message_id: delivered[0]!.id } }));
-    expect(f.local.instances[0]!.sent).toEqual([{ type: "user_message", text: "reply to visible partial answer" }]);
+    expect(f.local.instances[0]!.sent.filter(frame => frame.type === "remote_request").map(frame => frame.text)).toEqual(["reply to visible partial answer"]);
   } finally { f.daemon.stop(); }
 });
 
@@ -475,15 +520,16 @@ test("a delayed old-socket close cannot reject a replacement session's pending c
     await f.daemon.scanSessions();
     const replacement = f.local.instances[1]!;
     await replacement.receive({ type: "snapshot", sessionId: "alpha", pid: 123, subagents: [] });
+    await replacement.receive({ type: "discord_control", sessionId: "alpha", enabled: true, generation: 1 });
     const pending = f.dispatch(f.message("/cancel alpha worker-1"));
-    const request = replacement.sent[0]!;
+    const request = await replacement.waitForSend(frame => frame.type === "discord_cancel");
     expect(request.ids).toEqual(["worker-1"]);
     old.onclose?.({ code: 1006 });
     await replacement.receive({ type: "ack", reqId: request.reqId, ok: true });
     await pending;
     expect(f.api.sent.at(-1)!.text).toMatch(/^Session acknowledged/);
     await f.dispatch(f.message("/send alpha replacement remains usable"));
-    expect(replacement.sent.at(-1)).toEqual({ type: "user_message", text: "replacement remains usable" });
+    expect([replacement.sent.at(-1)?.type, replacement.sent.at(-1)?.text]).toEqual(["remote_request", "replacement remains usable"]);
   } finally { f.daemon.stop(); }
 });
 
@@ -533,4 +579,322 @@ test("a transient outbound failure reports an error without declaring the provid
     expect(api.sent.at(-1)?.text).toMatch(/No connected sessions/i);
     expect(fatal).toEqual([]);
   } finally { f.daemon.stop(); }
+});
+
+test("guild requests reply in their own thread and authorized thread follow-ups reuse it", async () => {
+  const f = fixture(["alpha"]);
+  f.api.channelType = 0;
+  try {
+    await f.ready();
+    await f.dispatch(f.message("/sessions"));
+    expect(f.api.sent.map(m => [m.channel, m.text])).toEqual([["91", "[alpha] /test"]]);
+    await f.dispatch(f.message("/sessions", { channel_id: "91" }));
+    expect(f.api.sent.map(m => m.channel)).toEqual(["91", "91"]);
+    await f.dispatch(f.message("/sessions", { channel_id: "91", author: { id: "999", bot: false } }));
+    expect(f.api.sent.map(m => m.channel)).toEqual(["91", "91"]);
+  } finally { f.daemon.stop(); }
+});
+
+test("denied thread creation never dispatches a prompt or posts it publicly", async () => {
+  class DeniedThreads extends DiscordService {
+    override async createThread(_channel: string, _message: string, _name: string): Promise<{ id: string }> { throw new Error("forbidden"); }
+  }
+  const api = new DeniedThreads();
+  api.channelType = 0;
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    await f.dispatch(f.message("/send alpha confidential"));
+    expect(f.local.instances[0]!.sent).toEqual([]);
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([[CHANNEL, "Unable to create a reply thread; check bot permissions."]]);
+    expect(f.errors).toContain("Discord thread creation failed");
+  } finally { f.daemon.stop(); }
+});
+
+test("disabling local relay drops a queued answer while an earlier send is blocked", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  class BlockingService extends DiscordService {
+    override async sendMessage(channel: string, text: string) {
+      if (text.includes("first local answer")) { entered.resolve(); await release.promise; }
+      return super.sendMessage(channel, text);
+    }
+  }
+  const api = new BlockingService();
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    const socket = f.local.instances[0]!;
+    const enabled = socket.waitForSend(frame => frame.type === "local_relay");
+    await socket.receive({ type: "local_relay_control", sessionId: "alpha", destination: CHANNEL, generation: 1 });
+    const enableFrame = await enabled;
+    expect(enableFrame.generation).toBe(1);
+    await socket.receive({ type: "ack", reqId: enableFrame.reqId, ok: true });
+    await socket.receive({ type: "local_final", sessionId: "alpha", text: "first local answer" });
+    await entered.promise;
+    await socket.receive({ type: "local_final", sessionId: "alpha", text: "revoked queued answer" });
+    await socket.receive({ type: "local_relay_control", sessionId: "alpha", destination: "off", generation: 2 });
+    release.resolve();
+    await f.dispatch(f.message("/help"));
+    expect(api.sent.some(message => message.text.includes("first local answer"))).toBe(true);
+    expect(api.sent.some(message => message.text.includes("revoked queued answer"))).toBe(false);
+  } finally { release.resolve(); f.daemon.stop(); }
+});
+
+test("concurrent remote replies return only to their originating request threads", async () => {
+  const f = fixture(["alpha", "beta"]);
+  f.api.channelType = 0;
+  try {
+    await f.ready();
+    f.local.instances[0]!.autoRemote = false;
+    f.local.instances[1]!.autoRemote = false;
+    const first = f.dispatch(f.message("/send alpha question one"));
+    const second = f.dispatch(f.message("/send beta question two"));
+    const alpha = f.local.instances[0]!;
+    const beta = f.local.instances[1]!;
+    const a = await alpha.waitForSend(frame => frame.type === "remote_request");
+    const b = await beta.waitForSend(frame => frame.type === "remote_request");
+    expect([a.text, b.text]).toEqual(["question one", "question two"]);
+    await alpha.receive({ type: "ack", reqId: a.reqId, ok: true });
+    await beta.receive({ type: "ack", reqId: b.reqId, ok: true });
+    await beta.receive({ type: "remote_final", sessionId: "beta", reqId: a.reqId, ok: true, text: "forged" });
+    expect(f.api.sent).toEqual([]);
+    await beta.receive({ type: "remote_final", sessionId: "beta", reqId: b.reqId, ok: true, controlGeneration: 1, text: "beta answer" });
+    await alpha.receive({ type: "remote_final", sessionId: "alpha", reqId: a.reqId, ok: true, controlGeneration: 1, text: "alpha answer" });
+    await Promise.all([first, second]);
+    expect(f.api.sent.map(message => [message.channel, message.text]).sort()).toEqual([
+      ["91", "alpha answer"], ["92", "beta answer"],
+    ]);
+  } finally { f.daemon.stop(); }
+});
+
+test("a pre-ACK final cannot bypass a rejected request or produce a success reaction", async () => {
+  class ReactionService extends DiscordService {
+    reactions: string[] = [];
+    override async addReaction(_channel: string, _message: string, emoji: string) { this.reactions.push(emoji); }
+  }
+  const api = new ReactionService();
+  api.channelType = 0;
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    const socket = f.local.instances[0]!;
+    socket.autoRemote = false;
+    const request = f.dispatch(f.message("/send alpha private question"));
+    const frame = await socket.waitForSend(item => item.type === "remote_request");
+    await socket.receive({ type: "remote_final", sessionId: "alpha", reqId: frame.reqId, ok: true, text: "premature answer" });
+    await socket.receive({ type: "ack", reqId: frame.reqId, ok: false });
+    await request;
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["91", "Session request failed, was rejected, interrupted, or timed out."]]);
+    expect(api.reactions).toEqual(["⏳", "❌"]);
+  } finally { f.daemon.stop(); }
+});
+
+test("a stuck reaction cannot block authenticated remote answers or spawn unbounded reaction requests", async () => {
+  const endpoint = new SessionNotifyEndpoint("/offline-discord-stuck-reaction");
+  endpoint.setDiscordControlEnabled(true);
+  endpoint.onRemoteRequest = (text, finish) => { queueMicrotask(() => finish(`answer: ${text}`)); return true; };
+  const snapshot = Promise.withResolvers<void>();
+  const control = Promise.withResolvers<void>();
+  const reactionStarted = Promise.withResolvers<void>();
+  const releaseReaction = Promise.withResolvers<void>();
+  const delivered: string[] = [];
+  let reactionRequests = 0;
+  class ObservedSocket extends WebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      this.addEventListener("message", event => {
+        if (JSON.parse(String(event.data)).type === "snapshot") queueMicrotask(() => snapshot.resolve());
+        if (JSON.parse(String(event.data)).type === "discord_control") queueMicrotask(() => control.resolve());
+      });
+    }
+  }
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    if (route.endsWith("/users/@me")) return new Response(JSON.stringify({ id: BOT, username: "offline-bot", bot: true }));
+    if (route.endsWith("/gateway/bot")) return new Response(JSON.stringify({ url: "wss://gateway.discord.gg", session_start_limit: { remaining: 10, reset_after: 60000, total: 10, max_concurrency: 1 } }));
+    if (route.endsWith(`/channels/${CHANNEL}`)) return new Response(JSON.stringify({ id: CHANNEL, type: 1 }));
+    if (route.includes("/reactions/")) { reactionRequests++; reactionStarted.resolve(); await releaseReaction.promise; return new Response(null, { status: 204 }); }
+    if (route.endsWith(`/channels/${CHANNEL}/messages`)) {
+      delivered.push(JSON.parse(String(init?.body)).content);
+      return new Response(JSON.stringify({ id: String(7000 + delivered.length) }));
+    }
+    throw new Error(`Unexpected fake Discord route: ${route}`);
+  }) as typeof fetch;
+  const api = new DiscordApi(CONFIG.botToken, { fetchImpl });
+  const f = fixture([], { api, WebSocketImpl: ObservedSocket, readdir: async () => [`${endpoint.sessionId}.json`], readFile: file => Bun.file(file).text(), isPidAlive: pid => pid === process.pid });
+  try {
+    await endpoint.start();
+    await f.ready();
+    await snapshot.promise;
+    await control.promise;
+    const first = f.dispatch(f.message(`/send ${endpoint.sessionId} first`));
+    await reactionStarted.promise;
+    await first;
+    await f.dispatch(f.message(`/send ${endpoint.sessionId} second`));
+    await f.dispatch(f.message(`/send ${endpoint.sessionId} third`));
+    expect(delivered).toEqual(["answer: first", "answer: second", "answer: third"]);
+    expect(reactionRequests).toBe(1);
+  } finally { releaseReaction.resolve(); f.daemon.stop(); await endpoint.stop(); }
+});
+
+test("remote answer timeout cancels only its owning session while another request completes", async () => {
+  const f = fixture(["alpha", "beta"]);
+  try {
+    await f.ready(300000);
+    const alpha = f.local.instances[0]!;
+    const beta = f.local.instances[1]!;
+    alpha.autoRemote = false;
+    beta.autoRemote = false;
+    const first = f.dispatch(f.message("/send alpha slow request"));
+    const a = await alpha.waitForSend(frame => frame.type === "remote_request");
+    await alpha.receive({ type: "ack", reqId: a.reqId, ok: true });
+    for (const elapsed of [150000, 300000, 300000]) {
+      f.clock.advance(elapsed);
+      await f.gateway.instances[0]!.receive({ op: 11 });
+    }
+    f.clock.advance(149999);
+    const second = f.dispatch(f.message("/send beta independent request"));
+    const b = await beta.waitForSend(frame => frame.type === "remote_request");
+    await beta.receive({ type: "ack", reqId: b.reqId, ok: true });
+    f.clock.advance(1);
+    await first;
+    expect(alpha.sent.filter(frame => frame.type === "remote_cancel").map(frame => [frame.sessionId, frame.reqId])).toEqual([["alpha", a.reqId]]);
+    expect(beta.sent.filter(frame => frame.type === "remote_cancel")).toEqual([]);
+    await beta.receive({ type: "remote_final", sessionId: "beta", reqId: b.reqId, ok: true, controlGeneration: 1, text: "independent answer" });
+    await second;
+    expect(f.api.sent.map(message => message.text)).toEqual(["Session request failed, was rejected, interrupted, or timed out.", "independent answer"]);
+  } finally { f.daemon.stop(); }
+});
+
+test("a bot-created thread accepts only its initiating allowlisted user", async () => {
+  const secondUser = "444444444444444444";
+  const f = fixture(["alpha"], {}, { ...CONFIG, allowedUserIds: [USER, secondUser] });
+  f.api.channelType = 0;
+  try {
+    await f.ready();
+    await f.dispatch(f.message("/sessions"));
+    await f.dispatch(f.message("/sessions", { channel_id: "91", author: { id: secondUser, bot: false } }));
+    await f.dispatch(f.message("/sessions", { channel_id: "91" }));
+    expect(f.api.sent.map(message => [message.channel, message.text])).toEqual([["91", "[alpha] /test"], ["91", "[alpha] /test"]]);
+  } finally { f.daemon.stop(); }
+});
+
+test("an unknown existing thread is not authorized merely by an allowed parent", async () => {
+  class ExistingThreadService extends DiscordService {
+    override async getChannel(id: string) {
+      return id === CHANNEL ? { id, type: 0 } : { id, type: 11, parent_id: CHANNEL };
+    }
+  }
+  const api = new ExistingThreadService();
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    await f.dispatch(f.message("/sessions", { channel_id: "9999" }));
+    expect(api.sent).toEqual([]);
+    expect(f.local.instances[0]!.sent).toEqual([]);
+  } finally { f.daemon.stop(); }
+});
+
+test("an existing child thread accepts only its verified allowed human owner", async () => {
+  const secondUser = "444444444444444444";
+  class OwnedThreadService extends DiscordService {
+    override async getChannel(id: string) {
+      return id === CHANNEL ? { id, type: 0 } : { id, type: 11, parent_id: CHANNEL, owner_id: USER };
+    }
+  }
+  const api = new OwnedThreadService();
+  const f = fixture(["alpha"], { api }, { ...CONFIG, allowedUserIds: [USER, secondUser] });
+  try {
+    await f.ready();
+    await f.dispatch(f.message("/sessions", { channel_id: "9999", author: { id: secondUser, bot: false } }));
+    await f.dispatch(f.message("/sessions", { channel_id: "9999" }));
+    await f.dispatch(f.message("/sessions", { channel_id: "9999", author: { id: secondUser, bot: false } }));
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["9999", "[alpha] /test"]]);
+  } finally { f.daemon.stop(); }
+});
+
+test("replayed event cannot execute twice while child thread ownership lookup is pending", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  class SlowLookupService extends DiscordService {
+    override async getChannel(id: string) {
+      if (id === CHANNEL) return { id, type: 0 };
+      entered.resolve();
+      await release.promise;
+      return { id, type: 11, parent_id: CHANNEL, owner_id: USER };
+    }
+  }
+  const api = new SlowLookupService();
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    const event = f.message("/sessions", { channel_id: "9999" });
+    const first = f.dispatch(event);
+    await entered.promise;
+    const replay = f.dispatch(event);
+    await replay;
+    release.resolve();
+    await first;
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["9999", "[alpha] /test"]]);
+  } finally { release.resolve(); f.daemon.stop(); }
+});
+
+test("revoking control after remote final drops queued answer and artifact behind an earlier send", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  class BlockingService extends DiscordService {
+    files: string[] = [];
+    override async sendMessage(channel: string, text: string) {
+      if (text.includes("first notification")) { entered.resolve(); await release.promise; }
+      return super.sendMessage(channel, text);
+    }
+    async sendFile(_channel: string, name: string) { this.files.push(name); return [{ id: "777" }]; }
+  }
+  const api = new BlockingService();
+  const f = fixture(["alpha"], { api });
+  try {
+    await f.ready();
+    const socket = f.local.instances[0]!;
+    socket.autoRemote = false;
+    await socket.receive({ type: "identity_header", sessionId: "alpha", repo: "first notification" });
+    await entered.promise;
+    const request = f.dispatch(f.message("/send alpha create report"));
+    const frame = await socket.waitForSend(item => item.type === "remote_request");
+    const stage = await resolveDiscordArtifactStage("alpha", frame.reqId!);
+    await fs.writeFile(path.join(stage.output, "report.txt"), "private report");
+    await socket.receive({ type: "ack", reqId: frame.reqId, ok: true });
+    await socket.receive({ type: "remote_final", sessionId: "alpha", reqId: frame.reqId, ok: true, controlGeneration: 1, artifactsAllowed: true, text: "private answer" });
+    await socket.receive({ type: "discord_control", sessionId: "alpha", enabled: false, generation: 2 });
+    release.resolve();
+    await request;
+    expect(api.sent.map(message => message.text)).toEqual(["[alpha] first notification"]);
+    expect(api.files).toEqual([]);
+  } finally { release.resolve(); f.daemon.stop(); }
+});
+
+test("control off then on during attachment staging cannot execute the earlier request", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let stagingSignal: AbortSignal | undefined;
+  let cleaned = false;
+  const f = fixture(["alpha"], { stageAttachments: async (_attachments, options) => {
+    stagingSignal = options.signal;
+    entered.resolve();
+    await release.promise;
+    return { files: [], cleanup: async () => { cleaned = true; } };
+  } });
+  try {
+    await f.ready();
+    const socket = f.local.instances[0]!;
+    const request = f.dispatch(f.message("/send alpha inspect file", { attachments: [{ filename: "a.txt", url: "https://cdn.discordapp.com/attachments/1/2/a.txt", size: 1 }] }));
+    await entered.promise;
+    await socket.receive({ type: "discord_control", sessionId: "alpha", enabled: false, generation: 2 });
+    await socket.receive({ type: "discord_control", sessionId: "alpha", enabled: true, generation: 3 });
+    expect(stagingSignal?.aborted).toBe(true);
+    release.resolve();
+    await request;
+    expect(socket.sent.filter(frame => frame.type === "remote_request")).toEqual([]);
+    expect(cleaned).toBe(true);
+  } finally { release.resolve(); f.daemon.stop(); }
 });

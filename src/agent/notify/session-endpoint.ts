@@ -44,6 +44,7 @@ import * as fs from "node:fs/promises";
 import type { Server, ServerWebSocket } from "bun";
 import { readGlobalConfig } from "../state";
 import { notifySessionEndpointPath, notifySessionsDir } from "./paths";
+import { resolveDiscordArtifactStage, type DiscordArtifactPaths } from "./discord-artifacts";
 import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
 
 const SNAPSHOT_POLL_MS = 1_200;
@@ -75,6 +76,13 @@ export class SessionNotifyEndpoint {
   private server: Server<undefined> | undefined;
 
   private readonly sockets = new Set<ServerWebSocket<undefined>>();
+  private readonly relaySockets = new Set<ServerWebSocket<undefined>>();
+  private readonly pendingRelay = new Map<ServerWebSocket<undefined>, number>();
+  private relayRequestGeneration = 0;
+  private readonly remoteControllers = new Map<ServerWebSocket<undefined>, { reqId: string; controller: AbortController }>();
+  private relayGeneration = 0;
+  private discordControlEnabled = false;
+  private discordControlGeneration = 0;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private lastSnapshotJson = "";
   /** `undefined` between turns — subagent requests report an empty registry. */
@@ -85,6 +93,8 @@ export class SessionNotifyEndpoint {
 
   /** Registered by launch.ts; absent or rejected handlers return a failed ACK. */
   onUserMessage: ((msg: RemoteUserMessage) => void | boolean | Promise<void | boolean>) | undefined;
+  onRemoteRequest: ((text: string, finish: (text?: string, artifactsAllowed?: boolean) => void, signal: AbortSignal, stage?: DiscordArtifactPaths) => boolean) | undefined;
+  onRegistryMutation: (() => void) | undefined;
   onConfigCommand: ((cmd: RemoteConfigCommand) => void) | undefined;
 
   constructor(
@@ -153,6 +163,61 @@ export class SessionNotifyEndpoint {
     this.broadcast(JSON.stringify({ type: "turn_stream", sessionId: this.sessionId, phase: "finalized", text }));
   }
 
+  /** Revoke current subscriptions before asking a daemon to change destination. */
+  requestLocalRelay(destination: string): number {
+    this.relaySockets.clear();
+    this.relayGeneration++;
+    this.pendingRelay.clear();
+    const generation = ++this.relayRequestGeneration;
+    const json = JSON.stringify({ type: "local_relay_control", sessionId: this.sessionId, destination, generation });
+    let sent = 0;
+    for (const ws of this.sockets) {
+      try { if (ws.send(json) > 0) { if (destination !== "off") this.pendingRelay.set(ws, generation); sent++; continue; } } catch {}
+      this.sockets.delete(ws);
+      this.remoteControllers.get(ws)?.controller.abort();
+      this.remoteControllers.delete(ws);
+      try { ws.terminate(); } catch { try { ws.close(); } catch {} }
+    }
+    return sent;
+  }
+
+  /** Snapshot eligibility before a turn; changes invalidate its relay. */
+  localRelayGeneration(): number | undefined {
+    return this.relaySockets.size ? this.relayGeneration : undefined;
+  }
+
+  sendLocalFinal(text: string, generation: number): void {
+    if (generation !== this.relayGeneration) return;
+    const json = JSON.stringify({ type: "local_final", sessionId: this.sessionId, text });
+    for (const ws of this.relaySockets) {
+      try { ws.send(json); } catch {}
+    }
+  }
+
+  private sendDiscordControl(ws: ServerWebSocket<undefined>): void {
+    try {
+      const frame = JSON.stringify({ type: "discord_control", sessionId: this.sessionId, enabled: this.discordControlEnabled, generation: this.discordControlGeneration });
+      if (ws.send(frame) > 0) return;
+    } catch {}
+    this.sockets.delete(ws);
+    this.pendingRelay.delete(ws);
+    if (this.relaySockets.delete(ws)) this.relayGeneration++;
+    this.remoteControllers.get(ws)?.controller.abort();
+    this.remoteControllers.delete(ws);
+    try { ws.terminate(); } catch { try { ws.close(); } catch {} }
+  }
+
+  setDiscordControlEnabled(enabled: boolean): void {
+    if (enabled === this.discordControlEnabled) return;
+    this.discordControlEnabled = enabled;
+    this.discordControlGeneration++;
+    for (const ws of this.sockets) this.sendDiscordControl(ws);
+    if (!enabled) {
+      for (const remote of this.remoteControllers.values()) remote.controller.abort();
+      this.remoteControllers.clear();
+    }
+  }
+
   private async handleMessage(ws: ServerWebSocket<undefined>, raw: string | Buffer): Promise<void> {
     if (Buffer.byteLength(raw) > MAX_INBOUND_BYTES) return;
     let msg: Record<string, unknown>;
@@ -162,25 +227,71 @@ export class SessionNotifyEndpoint {
       return;
     }
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
-    if (msg.sessionId !== undefined && msg.sessionId !== this.sessionId) return;
+    if (msg.type !== "remote_request" && msg.sessionId !== undefined && msg.sessionId !== this.sessionId) return;
+    if (msg.type === "remote_request") {
+      const reqId = msg.reqId;
+      let ok = false;
+      const onlyExpectedFields = Object.keys(msg).every(key => ["type", "sessionId", "reqId", "text", "staged", "controlGeneration"].includes(key));
+      if (onlyExpectedFields && this.discordControlEnabled && msg.controlGeneration === this.discordControlGeneration && msg.sessionId === this.sessionId && typeof reqId === "string" && reqId.length > 0 && reqId.length <= 256 &&
+          typeof msg.text === "string" && !!msg.text.trim() && !msg.text.includes("\u0003") && !/^[\/!$]/.test(msg.text.trimStart()) && (msg.staged === undefined || msg.staged === true) && this.onRemoteRequest && !this.remoteControllers.has(ws)) {
+        let finished = false;
+        const controlGeneration = this.discordControlGeneration;
+        const controller = new AbortController();
+        this.remoteControllers.set(ws, { reqId, controller });
+        let stage: DiscordArtifactPaths | undefined;
+        const finish = (text?: string, artifactsAllowed = false): void => {
+          if (finished) return;
+          finished = true;
+          if (this.remoteControllers.get(ws)?.controller === controller) this.remoteControllers.delete(ws);
+          if (!this.sockets.has(ws)) return;
+          if (!this.discordControlEnabled || controller.signal.aborted || controlGeneration !== this.discordControlGeneration) text = undefined;
+          if (!stage) artifactsAllowed = false;
+          try { ws.send(JSON.stringify({ type: "remote_final", sessionId: this.sessionId, reqId, controlGeneration, ok: text !== undefined, artifactsAllowed: text !== undefined && artifactsAllowed, ...(text !== undefined ? { text } : {}) })); } catch {}
+        };
+        try {
+          if (msg.staged === true) stage = await resolveDiscordArtifactStage(this.sessionId, reqId);
+          if (this.discordControlEnabled && controlGeneration === this.discordControlGeneration && !controller.signal.aborted && this.sockets.has(ws)) {
+            ok = this.onRemoteRequest(msg.text, finish, controller.signal, stage);
+          }
+        } catch {}
+        if (!ok && this.remoteControllers.get(ws)?.controller === controller) this.remoteControllers.delete(ws);
+      }
+      try { ws.send(JSON.stringify({ type: "ack", reqId, ok })); } catch {}
+      return;
+    }
+    if (msg.type === "remote_cancel" && msg.sessionId === this.sessionId && typeof msg.reqId === "string") {
+      const remote = this.remoteControllers.get(ws);
+      if (remote?.reqId === msg.reqId) remote.controller.abort();
+      return;
+    }
+    if (msg.type === "local_relay" && msg.sessionId === this.sessionId && typeof msg.enabled === "boolean") {
+      const allowed = !msg.enabled || (typeof msg.generation === "number" && this.pendingRelay.get(ws) === msg.generation && msg.generation === this.relayRequestGeneration);
+      if (allowed && msg.enabled) this.relaySockets.add(ws);
+      else if (!msg.enabled) this.relaySockets.delete(ws);
+      if (allowed) { this.pendingRelay.delete(ws); this.relayGeneration++; }
+      try { ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok: allowed })); } catch {}
+      return;
+    }
     if (msg.type === "list") {
       try {
         ws.send(JSON.stringify(this.snapshot()));
       } catch {}
       return;
     }
-    if (msg.type === "steer") {
+    if (msg.type === "steer" || msg.type === "discord_steer") {
       const id = typeof msg.id === "string" ? msg.id : "";
       const message = typeof msg.message === "string" ? msg.message : "";
-      const ok = !!(id && message && this.registry?.steer(id, message));
+      const ok = !!((msg.type === "steer" || (this.discordControlEnabled && msg.sessionId === this.sessionId && msg.controlGeneration === this.discordControlGeneration)) && id && message && this.registry?.steer(id, message));
+      if (ok) this.onRegistryMutation?.();
       try {
         ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok }));
       } catch {}
       return;
     }
-    if (msg.type === "cancel") {
+    if (msg.type === "cancel" || msg.type === "discord_cancel") {
       const ids = Array.isArray(msg.ids) ? msg.ids.filter((x): x is string => typeof x === "string") : [];
-      const cancelled = ids.length > 0 ? (this.registry?.cancel(ids) ?? []) : [];
+      const cancelled = (msg.type === "cancel" || (this.discordControlEnabled && msg.sessionId === this.sessionId && msg.controlGeneration === this.discordControlGeneration)) && ids.length > 0 ? (this.registry?.cancel(ids) ?? []) : [];
+      if (cancelled.length) this.onRegistryMutation?.();
       try {
         ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok: cancelled.length > 0 }));
         ws.send(JSON.stringify(this.snapshot()));
@@ -232,10 +343,15 @@ export class SessionNotifyEndpoint {
             ws.send(JSON.stringify(this.snapshot()));
             if (this.identityFrame) ws.send(this.identityFrame);
           } catch {}
+          this.sendDiscordControl(ws);
         },
         message: (ws, raw) => { void this.handleMessage(ws, raw); },
         close: ws => {
           this.sockets.delete(ws);
+          this.pendingRelay.delete(ws);
+          this.remoteControllers.get(ws)?.controller.abort();
+          this.remoteControllers.delete(ws);
+          if (this.relaySockets.delete(ws)) this.relayGeneration++;
         },
       },
     });
@@ -279,6 +395,12 @@ export class SessionNotifyEndpoint {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
     }
+    this.setDiscordControlEnabled(false);
+    this.relaySockets.clear();
+    this.pendingRelay.clear();
+    this.relayGeneration++;
+    for (const remote of this.remoteControllers.values()) remote.controller.abort();
+    this.remoteControllers.clear();
     for (const ws of this.sockets) {
       try {
         ws.close();

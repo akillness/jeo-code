@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Added
+- **Discord session files and control** — local opt-in enables authorized Discord prompts to use host session tools and exchange staged attachments; see the [Discord guide](docs/integrations/discord.md) for limits, public visibility, and revocation boundaries.
+
 ## [0.12.7] - 2026-10-18
 _Repair desktop screenshot vision feedback, macOS scrolling, complete drag gestures, and keyboard normalization._
 

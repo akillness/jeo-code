@@ -4,6 +4,8 @@ import { DiscordApi, DiscordApiError, type DiscordGatewayInfo } from "./discord-
 import { notifySessionsDir } from "./paths";
 import { isPidAlive } from "./daemon-control";
 import { parseSessionEndpoint } from "./session-discovery";
+import { createDiscordArtifactStage, type DiscordArtifactStage } from "./discord-artifacts";
+import { stageDiscordAttachments, type DiscordAttachmentStage } from "./discord-attachments";
 
 export interface DiscordDaemonConfig {
   botToken: string;
@@ -12,11 +14,12 @@ export interface DiscordDaemonConfig {
 }
 
 export interface DiscordDaemonDependencies {
-  api?: Pick<DiscordApi, "getMe" | "getChannel" | "getGatewayBot" | "sendMessage" | "stop">;
+  api?: Pick<DiscordApi, "getMe" | "getChannel" | "getGatewayBot" | "sendMessage" | "sendFile" | "createThread" | "addReaction" | "removeReaction" | "stop">;
   WebSocketImpl?: typeof WebSocket;
   GatewayWebSocketImpl?: typeof WebSocket;
   readdir?: (dir: string) => Promise<string[]>;
   readFile?: (file: string) => Promise<string>;
+  stageAttachments?: typeof stageDiscordAttachments;
   isPidAlive?: (pid: number) => boolean;
   now?: () => number;
   random?: () => number;
@@ -36,7 +39,10 @@ interface DiscordSession {
   ws: WebSocket;
   verified: boolean;
   records: AgentState[];
+  controlEnabled: boolean;
+  controlGeneration: number;
 }
+interface RemoteResult { ok: boolean; text?: string; artifactsAllowed?: boolean; controlGeneration?: number }
 
 function object(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -59,8 +65,14 @@ export class DiscordDaemon {
   private readonly api: NonNullable<DiscordDaemonDependencies["api"]>;
   private readonly timers = new Set<Timer>();
   private readonly pending = new Map<string, { sessionId: string; finish: (ok: boolean) => void }>();
+  private readonly remote = new Map<string, { sessionId: string; acknowledged: boolean; finish: (result: RemoteResult) => void }>();
+  private readonly staging = new Map<AbortController, string>();
   private readonly replies = new Map<string, { sessionId: string; at: number }>();
   private readonly seen = new Set<string>();
+  private readonly threads = new Map<string, string>();
+  private readonly relayDestinations = new Map<string, string>();
+  private readonly relayVersions = new Map<string, number>();
+  private channelType = -1;
   private readonly allowed: Set<string>;
   private stopped = true;
   private started = false;
@@ -121,6 +133,11 @@ export class DiscordDaemon {
       const channel = await this.api.getChannel(this.config.channelId);
       if (this.stopped) return;
       if (![0, 1, 5, 10, 11, 12].includes(channel.type)) throw new Error("Unsupported Discord channel type");
+      this.channelType = channel.type;
+      if ([10, 11, 12].includes(channel.type)) {
+        if (typeof channel.owner_id !== "string" || !this.allowed.has(channel.owner_id)) throw new Error("Configured thread must have an allowed human owner");
+        this.threads.set(channel.id, channel.owner_id);
+      }
       this.intents = channel.type === 1 ? 1 << 12 : (1 << 9) | (1 << 15);
       this.gatewayInfo = await this.api.getGatewayBot();
       if (this.stopped) return;
@@ -139,6 +156,7 @@ export class DiscordDaemon {
 
   stop(): void {
     this.stopped = true;
+    for (const controller of this.staging.keys()) controller.abort();
     for (const timer of this.timers) (this.deps.clearTimeout ?? clearTimeout)(timer);
     this.timers.clear();
     const gateway = this.gateway;
@@ -148,8 +166,13 @@ export class DiscordDaemon {
     this.sessions.clear();
     for (const request of this.pending.values()) request.finish(false);
     this.pending.clear();
+    for (const request of this.remote.values()) request.finish({ ok: false });
+    this.remote.clear();
     this.replies.clear();
     this.seen.clear();
+    this.threads.clear();
+    this.relayDestinations.clear();
+    this.relayVersions.clear();
     this.api.stop();
   }
 
@@ -293,11 +316,11 @@ export class DiscordDaemon {
         try {
           const WS = this.deps.WebSocketImpl ?? WebSocket;
           const ws = new WS(url.href);
-          const session: DiscordSession = { sessionId: id, cwd: info.cwd, pid: info.pid, ws, verified: false, records: [] };
+          const session: DiscordSession = { sessionId: id, cwd: info.cwd, pid: info.pid, ws, verified: false, records: [], controlEnabled: false, controlGeneration: -1 };
           this.sessions.set(id, session);
           const timeout = this.later(() => { if (!session.verified) { this.disconnectSession(session); try { ws.close(); } catch {} } }, 10_000);
           ws.onmessage = event => {
-            if (this.stopped || this.sessions.get(id) !== session || typeof event.data !== "string" || event.data.length > 1_048_576) return;
+            if (this.stopped || this.sessions.get(id) !== session || typeof event.data !== "string" || (!session.verified && event.data.length > 1_048_576)) return;
             let frame: unknown;
             try { frame = JSON.parse(event.data); } catch { return; }
             if (!object(frame)) return;
@@ -320,7 +343,10 @@ export class DiscordDaemon {
   private disconnectSession(session: DiscordSession): void {
     if (this.sessions.get(session.sessionId) !== session) return;
     this.sessions.delete(session.sessionId);
+    for (const [controller, id] of this.staging) if (id === session.sessionId) controller.abort();
+    this.relayDestinations.delete(session.sessionId);
     for (const request of this.pending.values()) if (request.sessionId === session.sessionId) request.finish(false);
+    for (const request of this.remote.values()) if (request.sessionId === session.sessionId) request.finish({ ok: false });
   }
 
   private onSessionFrame(session: DiscordSession, frame: Record<string, unknown>): void {
@@ -330,6 +356,19 @@ export class DiscordDaemon {
       return;
     }
     if (frame.sessionId !== session.sessionId) return;
+    if (frame.type === "discord_control" && typeof frame.enabled === "boolean" && Number.isSafeInteger(frame.generation) && (frame.generation as number) >= session.controlGeneration) {
+      if (session.controlGeneration !== frame.generation || !frame.enabled) {
+        for (const [controller, id] of this.staging) if (id === session.sessionId) controller.abort();
+      }
+      session.controlEnabled = frame.enabled;
+      session.controlGeneration = frame.generation as number;
+      return;
+    }
+    if (frame.type === "remote_final" && typeof frame.reqId === "string" && typeof frame.ok === "boolean") {
+      const request = this.remote.get(frame.reqId);
+      if (request?.sessionId === session.sessionId && request.acknowledged) request.finish({ ok: frame.ok && typeof frame.text === "string", text: typeof frame.text === "string" ? frame.text : undefined, artifactsAllowed: frame.artifactsAllowed === true, controlGeneration: typeof frame.controlGeneration === "number" && Number.isSafeInteger(frame.controlGeneration) ? frame.controlGeneration : undefined });
+      return;
+    }
     const header = `[${session.sessionId}]`;
     if (frame.type === "snapshot" && frame.pid === session.pid && Array.isArray(frame.subagents)) {
       const records = frame.subagents.filter((r): r is AgentState => object(r) && typeof r.id === "string" &&
@@ -339,33 +378,47 @@ export class DiscordDaemon {
       for (const record of records) {
         const before = previous.get(record.id);
         if ((!before && record.status === "running") || (before === "running" && record.status !== "running")) {
-          this.emit(`${header} ${record.role} '${record.id}' ${record.status}\n${record.status === "running" ? record.task : record.result ?? ""}`, session.sessionId);
+          this.emit(`${header} ${record.role} '${record.id}' ${record.status}`, session.sessionId);
         }
       }
       session.records = records;
     } else if (frame.type === "identity_header" && typeof frame.repo === "string") {
       this.emit(`${header} ${frame.repo}${typeof frame.branch === "string" ? ` (${frame.branch})` : ""}`, session.sessionId);
-    } else if (frame.type === "context_update" && ["turn_start", "turn_end"].includes(String(frame.phase)) && typeof frame.summary === "string") {
-      this.emit(`${header} ${frame.phase}\n${frame.summary}`, session.sessionId);
-    } else if (frame.type === "turn_stream" && frame.phase === "finalized" && typeof frame.text === "string" && frame.text.trim()) {
-      this.emit(`${header}\n${frame.text}`, session.sessionId);
+    } else if (frame.type === "local_relay_control" && typeof frame.destination === "string" && Number.isSafeInteger(frame.generation) && (frame.generation as number) >= 0) {
+      const destination = frame.destination;
+      this.relayDestinations.delete(session.sessionId);
+      const version = (this.relayVersions.get(session.sessionId) ?? 0) + 1;
+      this.relayVersions.set(session.sessionId, version);
+      const enabled = destination === this.config.channelId;
+      if (destination !== "off" && !enabled) this.deps.onError?.("Discord relay destination is not the configured channel");
+      void this.request(session, { type: "local_relay", sessionId: session.sessionId, enabled, generation: frame.generation }).then(ok => {
+        if (ok && enabled && this.relayVersions.get(session.sessionId) === version && this.sessions.get(session.sessionId) === session) this.relayDestinations.set(session.sessionId, destination);
+      });
+    } else if (frame.type === "local_final" && typeof frame.text === "string" && frame.text.trim()) {
+      const destination = this.relayDestinations.get(session.sessionId);
+      if (destination) this.emit(`${header}\n${frame.text}`, session.sessionId, destination, this.relayVersions.get(session.sessionId));
     }
   }
 
-  private emit(text: string, sessionId?: string): void {
-    if (this.stopped) return;
-    if (this.queued >= 128) { this.deps.onError?.("Discord outbound queue full"); return; }
+  private emit(text: string, sessionId?: string, destination = this.config.channelId, relayVersion?: number, guard?: () => boolean): Promise<boolean> {
+    if (this.stopped || this.queued >= 128) { this.deps.onError?.("Discord outbound queue full or stopped"); return Promise.resolve(false); }
     this.queued++;
-    this.outgoing = this.outgoing.then(async () => {
-      if (this.stopped) return;
-      const messages = await this.api.sendMessage(this.config.channelId, text);
+    const eligible = () => !this.stopped && (!guard || guard()) && (relayVersion === undefined || (!!sessionId && this.relayVersions.get(sessionId) === relayVersion && this.relayDestinations.get(sessionId) === destination));
+    const result = this.outgoing.then(async () => {
+      if (!eligible()) return false;
+      const messages = await this.api.sendMessage(destination, text, eligible);
       this.rememberReplies(messages, sessionId);
+      return true;
     }).catch(error => {
-      if (this.stopped) return;
-      if (error instanceof DiscordApiError) this.rememberReplies(error.sentMessages, sessionId);
-      if (error instanceof DiscordApiError && (error.status === 401 || error.status === 403)) this.fail("Discord authentication or permission denied");
-      else this.deps.onError?.("Discord notification delivery failed");
+      if (!this.stopped) {
+        if (error instanceof DiscordApiError) this.rememberReplies(error.sentMessages, sessionId);
+        if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+        else this.deps.onError?.("Discord notification delivery failed");
+      }
+      return false;
     }).finally(() => { this.queued--; });
+    this.outgoing = result.then(() => {});
+    return result;
   }
 
   private rememberReplies(messages: { id: string }[], sessionId?: string): void {
@@ -400,44 +453,154 @@ export class DiscordDaemon {
     return promise;
   }
 
+  private remoteRequest(session: DiscordSession, text: string, reqId: string, controlGeneration: number): Promise<RemoteResult> {
+    if (this.remote.size >= 128 || this.pending.size >= 128) return Promise.resolve({ ok: false });
+    const { promise, resolve } = Promise.withResolvers<RemoteResult>();
+    const cancel = () => {
+      if (!this.send(session, { type: "remote_cancel", sessionId: session.sessionId, reqId })) {
+        try { session.ws.close(); } catch {}
+        this.disconnectSession(session);
+      }
+      finish({ ok: false });
+    };
+    const timer = this.later(cancel, 15 * 60_000);
+    const ackTimer = this.later(cancel, this.deps.ackTimeoutMs ?? 5_000);
+    const finish = (result: RemoteResult) => {
+      this.clear(timer); this.clear(ackTimer); this.pending.delete(reqId); this.remote.delete(reqId); resolve(result);
+    };
+    const remote = { sessionId: session.sessionId, acknowledged: false, finish };
+    this.remote.set(reqId, remote);
+    this.pending.set(reqId, { sessionId: session.sessionId, finish: ok => { this.clear(ackTimer); this.pending.delete(reqId); if (ok) remote.acknowledged = true; else finish({ ok: false }); } });
+    if (!this.send(session, { type: "remote_request", sessionId: session.sessionId, reqId, text, staged: true, controlGeneration })) finish({ ok: false });
+    return promise;
+  }
+
   private async handleMessage(message: unknown): Promise<void> {
-    if (this.stopped || !object(message) || message.channel_id !== this.config.channelId ||
+    if (this.stopped || !object(message) || typeof message.channel_id !== "string" || !/^\d{1,20}$/.test(message.channel_id) ||
         typeof message.id !== "string" || !/^\d{1,20}$/.test(message.id) || !object(message.author) ||
         typeof message.author.id !== "string" || !this.allowed.has(message.author.id) || message.author.id === this.botId ||
         message.author.bot === true || (message.author.bot !== undefined && message.author.bot !== false) ||
         "webhook_id" in message || ![0, 19].includes(message.type as number) ||
-        typeof message.content !== "string" || !message.content.trim() || message.content.length > 4_000 || this.seen.has(message.id)) return;
+        typeof message.content !== "string" || (!message.content.trim() && !(Array.isArray(message.attachments) && message.attachments.length)) || message.content.length > 4_000 || this.seen.has(message.id)) return;
     this.seen.add(message.id);
     if (this.seen.size > 2048) this.seen.delete(this.seen.values().next().value!);
+    const channelId = message.channel_id;
+    if (channelId !== this.config.channelId && !this.threads.has(channelId)) {
+      const channel = await this.api.getChannel(channelId).catch(() => undefined);
+      if (!channel || ![10, 11, 12].includes(channel.type) || channel.parent_id !== this.config.channelId || channel.owner_id !== message.author.id) return;
+      this.threads.set(channelId, message.author.id);
+    }
+    if ((channelId !== this.config.channelId || [10, 11, 12].includes(this.channelType)) && this.threads.get(channelId) !== message.author.id) return;
     const text = message.content.trim();
-    if (text === "/sessions" || text === "/subagents") {
-      const sessions = [...this.sessions.values()].filter(s => s.verified && s.ws.readyState === 1);
-      this.emit(sessions.length ? sessions.map(s => `[${s.sessionId}] ${s.cwd}${text === "/subagents" ? s.records.map(r => `\n  ${r.id}: ${r.status} ${r.role} — ${r.task}`).join("") : ""}`).join("\n") : "No connected sessions.");
+    let destination = channelId;
+    try {
+      if (channelId === this.config.channelId && [0, 5].includes(this.channelType)) {
+        destination = (await this.api.createThread(channelId, message.id, "jeo reply")).id;
+        this.threads.set(destination, message.author.id);
+      }
+    } catch (error) {
+      if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+      else { this.deps.onError?.("Discord thread creation failed"); void this.emit("Unable to create a reply thread; check bot permissions.", undefined, channelId); }
       return;
     }
-    if (text === "/help") { this.emit(HELP); return; }
+    const reaction = async (emoji: string, remove = false) => {
+      try { await (remove ? this.api.removeReaction(channelId, message.id, emoji) : this.api.addReaction(channelId, message.id, emoji)); }
+      catch (error) {
+        if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+        else this.deps.onError?.("Discord reaction failed");
+      }
+    };
+    const progress = reaction("⏳");
+    try {
+      const ok = await this.handleCommand(message, text, destination);
+      void progress.then(() => reaction("⏳", true)).then(() => reaction(ok ? "✅" : "❌"));
+    } catch {
+      void progress.then(() => reaction("⏳", true)).then(() => reaction("❌"));
+      this.deps.onError?.("Discord command relay failed");
+    }
+  }
+
+  private async handleCommand(message: Record<string, unknown>, text: string, destination: string): Promise<boolean> {
+    const emit = (content: string, sessionId?: string) => this.emit(content, sessionId, destination);
+    const sendPrompt = async (session: DiscordSession, body: string): Promise<boolean> => {
+      if (/^[\/!$]/.test(body) || body.includes("\u0003")) {
+        await emit("Remote commands are disabled; send ordinary prompt text.");
+        return false;
+      }
+      if (!session.controlEnabled) {
+        await emit("Discord remote control is disabled in this session.", session.sessionId);
+        return false;
+      }
+      const controlGeneration = session.controlGeneration;
+      if (this.stopped || this.staging.size >= 8) {
+        await emit("Too many requests are being prepared; try again later.", session.sessionId);
+        return false;
+      }
+      const controller = new AbortController();
+      this.staging.set(controller, session.sessionId);
+      let output: DiscordArtifactStage | undefined;
+      let input: DiscordAttachmentStage | undefined;
+      try {
+        const reqId = crypto.randomUUID();
+        output = await createDiscordArtifactStage(session.sessionId, reqId);
+        if (Array.isArray(message.attachments) && message.attachments.length) input = await (this.deps.stageAttachments ?? stageDiscordAttachments)(message.attachments, { directory: path.join(output.requestDirectory, "input"), signal: controller.signal });
+        if (controller.signal.aborted || this.sessions.get(session.sessionId) !== session || !session.controlEnabled || session.controlGeneration !== controlGeneration) return false;
+        const result = await this.remoteRequest(session, body || "Please inspect the attached files.", reqId, controlGeneration);
+        if (!result.ok || result.text === undefined) {
+          await emit("Session request failed, was rejected, interrupted, or timed out.", session.sessionId);
+          return false;
+        }
+        const eligible = () => !this.stopped && this.sessions.get(session.sessionId) === session && session.controlEnabled && result.controlGeneration !== undefined && session.controlGeneration === result.controlGeneration;
+        if (!eligible()) return false;
+        const reply = result.text.split(output.requestDirectory).join("[Discord attachment directory]");
+        if (!await this.emit(reply, session.sessionId, destination, undefined, eligible)) return false;
+        if (result.artifactsAllowed !== true) {
+          if (eligible() && (await fs.readdir(output.directory)).length) await this.emit("File delivery was not authorized for this session response.", session.sessionId, destination, undefined, eligible);
+          return true;
+        }
+        const files = await output.collect();
+        for (const file of files) {
+          if (!eligible()) return false;
+          const sent = await this.api.sendFile(destination, file.name, file.data, eligible);
+          this.rememberReplies(sent, session.sessionId);
+        }
+        return true;
+      } catch (error) {
+        if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+        this.deps.onError?.("Discord attachment processing or delivery failed");
+        await emit("Attachment processing or delivery failed; check file size, type, and bot permissions.", session.sessionId);
+        return false;
+      } finally {
+        await input?.cleanup().catch(() => this.deps.onError?.("Discord input cleanup failed"));
+        await output?.cleanup().catch(() => this.deps.onError?.("Discord output cleanup failed"));
+        this.staging.delete(controller);
+      }
+    };
+    if (text === "/sessions" || text === "/subagents") {
+      const sessions = [...this.sessions.values()].filter(s => s.verified && s.ws.readyState === 1);
+      return emit(sessions.length ? sessions.map(s => `[${s.sessionId}] ${s.cwd}${text === "/subagents" ? s.records.map(r => `\n  ${r.id}: ${r.status} ${r.role} — ${r.task}`).join("") : ""}`).join("\n") : "No connected sessions.");
+    }
+    if (text === "/help") return emit(HELP);
     const command = /^\/(send|steer|cancel)\s+(\S+)\s+([\s\S]+)$/.exec(text);
     if (command) {
       const session = this.findSession(command[2]!);
-      if (!session) { this.emit("Session not found or prefix ambiguous. Use /sessions and a unique ID."); return; }
+      if (!session) { await emit("Session not found or prefix ambiguous. Use /sessions and a unique ID."); return false; }
       const body = command[3]!.trim();
-      if (command[1] === "send") {
-        if (body.startsWith("/")) { this.emit("Remote slash commands are disabled; send ordinary prompt text."); return; }
-        this.emit(this.send(session, { type: "user_message", text: body }) ? "Forwarded to session (not an execution acknowledgement)." : "Session unavailable.", session.sessionId);
-      } else {
-        const args = command[1] === "steer" ? /^(\S+)\s+([\s\S]+)$/.exec(body) : /^(\S+)$/.exec(body);
-        if (!args) { this.emit(HELP); return; }
-        const ok = await this.request(session, command[1] === "steer" ? { type: "steer", id: args[1], message: args[2] } : { type: "cancel", ids: [args[1]] });
-        this.emit(ok ? "Session acknowledged command." : "Command not acknowledged (unavailable, rejected or timed out).", session.sessionId);
-      }
-      return;
+      if (command[1] === "send") return sendPrompt(session, body);
+      const args = command[1] === "steer" ? /^(\S+)\s+([\s\S]+)$/.exec(body) : /^(\S+)$/.exec(body);
+      if (!args) { await emit(HELP); return false; }
+      if (!session.controlEnabled) { await emit("Discord remote control is disabled in this session.", session.sessionId); return false; }
+      const control = { sessionId: session.sessionId, controlGeneration: session.controlGeneration };
+      const ok = await this.request(session, command[1] === "steer" ? { ...control, type: "discord_steer", id: args[1], message: args[2] } : { ...control, type: "discord_cancel", ids: [args[1]] });
+      const delivered = await emit(ok ? "Session acknowledged command." : "Command not acknowledged (unavailable, rejected or timed out).", session.sessionId);
+      return ok && delivered;
     }
-    if (text.startsWith("/")) { this.emit(HELP); return; }
+    if (text.startsWith("/")) { await emit(HELP); return false; }
     const reference = object(message.message_reference) ? message.message_reference : undefined;
-    const reply = reference && typeof reference.message_id === "string" && (reference.channel_id === undefined || reference.channel_id === this.config.channelId)
+    const reply = reference && typeof reference.message_id === "string" && (reference.channel_id === undefined || reference.channel_id === message.channel_id)
       ? this.replies.get(reference.message_id) : undefined;
     const session = reply && (this.deps.now ?? Date.now)() - reply.at < 86_400_000 ? this.findSession(reply.sessionId) : undefined;
-    if (!session) { this.emit("Reply target is unknown or expired. Use /send <unique-session> <text> after /sessions."); return; }
-    this.emit(this.send(session, { type: "user_message", text }) ? "Forwarded to session (not an execution acknowledgement)." : "Session unavailable.", session.sessionId);
+    if (!session) { await emit("Reply target is unknown or expired. Use /send <unique-session> <text> after /sessions."); return false; }
+    return sendPrompt(session, text);
   }
 }

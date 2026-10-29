@@ -22,6 +22,7 @@ export interface SlashCommandInfo {
 
 export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/help", usage: "/help", description: "Show this help message", group: "system" },
+  { command: "/discord", usage: "/discord relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Control Discord session access or local response relay", group: "session" },
   { command: "/clear", usage: "/clear", description: "Clear conversation history (keeps system prompt)", group: "session" },
   { command: "/new", usage: "/new", description: "Start a new session (fresh history + new session id)", group: "session" },
   { command: "/drop", usage: "/drop", description: "Delete the current session and start a new one", group: "session" },

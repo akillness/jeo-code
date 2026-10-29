@@ -34,6 +34,9 @@ interface AbortHarnessOptions {
   onScrollKey?: (dir: -1 | 1, page: boolean) => void;
   /** Invoked with printable keyboard input received while the live turn owns stdin. */
   onBufferedInput?: (chunk: string) => void;
+  /** Emergency-only input while an aborted turn is still unwinding. */
+  onBufferedInputAfterAbort?: (chunk: string) => void;
+  pasteActiveAfterAbort?: () => boolean;
   /** True while the input queue is inside a bracketed paste (mid-paste chunks
    *  carry no marker and must keep routing to the queue, not the noise path). */
   pasteActive?: () => boolean;
@@ -45,6 +48,15 @@ interface AbortHarnessOptions {
  *  arrives atomically and executes one command per line, in order. */
 export const PASTE_START = "\u001b[200~";
 export const PASTE_END = "\u001b[201~";
+
+/** Conservative paste signal; one-character chunks remain indistinguishable from typing. */
+export function isPasteLikeInputChunk(chunk: string): boolean {
+  let printable = 0;
+  for (const ch of stripPasteEscapes(chunk)) {
+    if ((ch >= " " || ch === "\t") && ++printable > 1) return true;
+  }
+  return false;
+}
 
 /** True when a stdin chunk is ONLY backspace bytes (DEL 0x7f or BS 0x08) — i.e. a
  *  standalone Backspace keystroke with nothing else. A backspace on an EMPTY input
@@ -483,8 +495,13 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   };
 
   const handleData = (chunk: string | Uint8Array) => {
-    if (!captureEsc || controller.signal.aborted) return;
+    if (!captureEsc) return;
     const raw = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (controller.signal.aborted) {
+      if (!raw.includes(PASTE_START) && !opts.pasteActiveAfterAbort?.() && chunkHasCtrlC(raw)) handleSigint();
+      else opts.onBufferedInputAfterAbort?.(raw);
+      return;
+    }
     if (raw.includes(PASTE_START) || opts.pasteActive?.()) {
       opts.onBufferedInput?.(raw);
       return;

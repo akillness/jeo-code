@@ -11,6 +11,7 @@ import {
 } from "../src/agent/notify/session-endpoint";
 import { notifySessionEndpointPath } from "../src/agent/notify/paths";
 import { SubagentRegistry } from "../src/agent/subagent-registry";
+import { createDiscordArtifactStage } from "../src/agent/notify/discord-artifacts";
 
 let endpoint: SessionNotifyEndpoint | undefined;
 let sockets: WebSocket[] = [];
@@ -545,4 +546,263 @@ test("a cross-session user frame is ignored without invoking the consumer", asyn
   ws.send(JSON.stringify({ type: "user_message", sessionId: endpoint.sessionId, text: "right target", reqId: "right-target" }));
   expect(await accepted).toEqual({ type: "ack", reqId: "right-target", ok: true });
   expect(received).toEqual([{ text: "right target", imagePaths: undefined }]);
+});
+
+test("local relay only receives finals from turns started within its current opt-in generation", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const finals: string[] = [];
+  ws.addEventListener("message", event => {
+    const message = JSON.parse(String(event.data));
+    if (message.type === "local_final") finals.push(message.text);
+  });
+  const setRelay = async (enabled: boolean, reqId: string) => {
+    const control = waitForMessage(ws, message => message.type === "local_relay_control");
+    endpoint!.requestLocalRelay(enabled ? "123456789012345678" : "off");
+    const generation = (await control).generation;
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "local_relay", sessionId: endpoint!.sessionId, enabled, reqId, generation }));
+    expect(await ack).toEqual({ type: "ack", reqId, ok: true });
+  };
+  await setRelay(true, "enable");
+  const oldGeneration = endpoint.localRelayGeneration()!;
+  endpoint.sendLocalFinal("first local answer", oldGeneration);
+  await setRelay(false, "disable");
+  await setRelay(true, "re-enable");
+  endpoint.sendLocalFinal("stale answer", oldGeneration);
+  const generation = endpoint.localRelayGeneration()!;
+  endpoint.sendLocalFinal("new local answer", generation);
+  await setRelay(false, "barrier");
+  expect(finals).toEqual(["first local answer", "new local answer"]);
+});
+
+test("disconnecting the originating socket aborts its accepted remote request, but another socket does not", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.setDiscordControlEnabled(true);
+  const aborted = Promise.withResolvers<void>();
+  let remoteSignal: AbortSignal | undefined;
+  endpoint.onRemoteRequest = (_text, _finish, signal: AbortSignal) => {
+    remoteSignal = signal;
+    signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return true;
+  };
+  await endpoint.start();
+  const discovery = await readDiscovery(endpoint.sessionId);
+  const origin = connect(discovery);
+  await waitForMessage(origin, message => message.type === "snapshot");
+  const other = connect(discovery);
+  await waitForMessage(other, message => message.type === "snapshot");
+  const accepted = waitForMessage(origin, message => message.type === "ack" && message.reqId === "request");
+  origin.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "request", text: "investigate", controlGeneration: 1 }));
+  expect(await accepted).toEqual({ type: "ack", reqId: "request", ok: true });
+  other.close();
+  const barrier = waitForMessage(origin, message => message.type === "snapshot");
+  origin.send(JSON.stringify({ type: "list" }));
+  await barrier;
+  expect(remoteSignal?.aborted).toBe(false);
+  origin.close();
+  await aborted.promise;
+  expect(remoteSignal?.aborted).toBe(true);
+});
+
+test("remote cancellation requires the owning socket and matching request ID", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.setDiscordControlEnabled(true);
+  const aborted = Promise.withResolvers<void>();
+  let signal: AbortSignal | undefined;
+  endpoint.onRemoteRequest = (_text, _finish, ownerSignal) => {
+    signal = ownerSignal;
+    signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return true;
+  };
+  await endpoint.start();
+  const discovery = await readDiscovery(endpoint.sessionId);
+  const owner = connect(discovery);
+  await waitForMessage(owner, message => message.type === "snapshot");
+  const other = connect(discovery);
+  await waitForMessage(other, message => message.type === "snapshot");
+  const ack = waitForMessage(owner, message => message.type === "ack" && message.reqId === "owned");
+  owner.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "owned", text: "investigate", controlGeneration: 1 }));
+  expect(await ack).toEqual({ type: "ack", reqId: "owned", ok: true });
+  const barrier = async (ws: WebSocket) => {
+    const snapshot = waitForMessage(ws, message => message.type === "snapshot");
+    ws.send(JSON.stringify({ type: "list" }));
+    await snapshot;
+  };
+  owner.send(JSON.stringify({ type: "remote_cancel", sessionId: endpoint.sessionId, reqId: "wrong" }));
+  other.send(JSON.stringify({ type: "remote_cancel", sessionId: endpoint.sessionId, reqId: "owned" }));
+  await Promise.all([barrier(owner), barrier(other)]);
+  expect(signal?.aborted).toBe(false);
+  owner.send(JSON.stringify({ type: "remote_cancel", sessionId: endpoint.sessionId, reqId: "owned" }));
+  await aborted.promise;
+  expect(signal?.aborted).toBe(true);
+});
+
+test("remote control requires local consent and revocation aborts the active request", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  const received: string[] = [];
+  const aborted = Promise.withResolvers<void>();
+  endpoint.onRemoteRequest = (text, _finish, signal) => {
+    received.push(text);
+    signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return true;
+  };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const request = async (reqId: string, text: string) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, controlGeneration: 1 }));
+    return ack;
+  };
+  expect(await request("before", "before consent")).toEqual({ type: "ack", reqId: "before", ok: false });
+  endpoint.setDiscordControlEnabled(true);
+  expect(await request("active", "after consent")).toEqual({ type: "ack", reqId: "active", ok: true });
+  endpoint.setDiscordControlEnabled(false);
+  await aborted.promise;
+  expect(await request("after", "after revocation")).toEqual({ type: "ack", reqId: "after", ok: false });
+  expect(received).toEqual(["after consent"]);
+});
+
+test("Discord subagent cancellation cannot run before local control consent", async () => {
+  const registry = new SubagentRegistry();
+  const aborted = Promise.withResolvers<void>();
+  const record = registry.launch("executor", "work", async signal => {
+    signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    await aborted.promise;
+    return { success: false, output: "cancelled" };
+  });
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.attachRegistry(registry);
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const cancel = async (reqId: string, generation: number) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "discord_cancel", sessionId: endpoint!.sessionId, reqId, ids: [record.id], controlGeneration: generation }));
+    return ack;
+  };
+  expect(await cancel("denied", 0)).toEqual({ type: "ack", reqId: "denied", ok: false });
+  const control = waitForMessage(ws, message => message.type === "discord_control" && message.enabled === true);
+  endpoint.setDiscordControlEnabled(true);
+  const generation = (await control).generation as number;
+  expect(await cancel("stale", generation - 1)).toEqual({ type: "ack", reqId: "stale", ok: false });
+  const steer = async (reqId: string, generation: number) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "discord_steer", sessionId: endpoint!.sessionId, reqId, id: record.id, message: "focus", controlGeneration: generation }));
+    return ack;
+  };
+  expect(await steer("stale-steer", generation - 1)).toEqual({ type: "ack", reqId: "stale-steer", ok: false });
+  expect(await steer("valid-steer", generation)).toEqual({ type: "ack", reqId: "valid-steer", ok: true });
+  expect(registry.steerDrainFor(record.id)()).toEqual(["focus"]);
+  expect(await cancel("allowed", generation)).toEqual({ type: "ack", reqId: "allowed", ok: true });
+  await aborted.promise;
+});
+
+test("staged remote requests use only the private resolved directory and require explicit artifact approval", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.setDiscordControlEnabled(true);
+  const calls: { text: string; output?: string; finish: (text?: string, allowed?: boolean) => void }[] = [];
+  endpoint.onRemoteRequest = (text, finish, _signal, stage) => { calls.push({ text, output: stage?.output, finish }); return true; };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const stageId = crypto.randomUUID();
+  const stage = await createDiscordArtifactStage(endpoint.sessionId, stageId);
+  const send = async (reqId: string, extra: Record<string, unknown> = {}) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text: "  unchanged prompt 🙂  ", controlGeneration: 1, ...extra }));
+    return ack;
+  };
+  try {
+    const forged = crypto.randomUUID();
+    expect((await send(forged, { staged: true, output: stage.directory })).ok).toBe(false);
+    expect((await send(crypto.randomUUID(), { staged: true })).ok).toBe(false);
+    expect(calls).toEqual([]);
+    expect((await send(stageId, { staged: true })).ok).toBe(true);
+    expect({ text: calls[0]!.text, output: calls[0]!.output }).toEqual({ text: "  unchanged prompt 🙂  ", output: stage.directory });
+    const stagedFinal = waitForMessage(ws, message => message.type === "remote_final" && message.reqId === stageId);
+    calls[0]!.finish("redacted answer", false);
+    expect((await stagedFinal).artifactsAllowed).toBe(false);
+    const plainId = crypto.randomUUID();
+    expect((await send(plainId)).ok).toBe(true);
+    const plainFinal = waitForMessage(ws, message => message.type === "remote_final" && message.reqId === plainId);
+    calls[1]!.finish("answer", true);
+    expect((await plainFinal).artifactsAllowed).toBe(false);
+    expect((await send(stageId, { staged: true })).ok).toBe(true);
+    const allowedFinal = waitForMessage(ws, message => message.type === "remote_final" && message.reqId === stageId);
+    calls[2]!.finish("approved", true);
+    expect((await allowedFinal).artifactsAllowed).toBe(true);
+    expect((await send(stageId, { staged: true })).ok).toBe(true);
+    const revokedFinal = waitForMessage(ws, message => message.type === "remote_final" && message.reqId === stageId);
+    endpoint.setDiscordControlEnabled(false);
+    calls[3]!.finish("must not deliver", true);
+    const revoked = await revokedFinal;
+    expect(revoked.ok).toBe(false);
+    expect(revoked.artifactsAllowed).toBe(false);
+    expect(revoked.text).toBeUndefined();
+  } finally { await stage.cleanup(); }
+});
+
+test("staged requests from a revoked control generation cannot execute after re-enabling", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  const received: string[] = [];
+  let finish: ((text?: string) => void) | undefined;
+  endpoint.onRemoteRequest = (text, complete) => { received.push(text); finish = complete; return true; };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const control = waitForMessage(ws, message => message.type === "discord_control" && message.enabled === true);
+  endpoint.setDiscordControlEnabled(true);
+  const original = (await control).generation as number;
+  endpoint.setDiscordControlEnabled(true);
+  const id = crypto.randomUUID();
+  const stage = await createDiscordArtifactStage(endpoint.sessionId, id);
+  const request = async (reqId: string, generation: number, text: string) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, staged: true, controlGeneration: generation }));
+    return ack;
+  };
+  try {
+    expect((await request(id, original, "current request")).ok).toBe(true);
+    const final = waitForMessage(ws, message => message.type === "remote_final" && message.reqId === id);
+    finish!("done");
+    await final;
+    endpoint.setDiscordControlEnabled(false);
+    const enabledAgain = waitForMessage(ws, message => message.type === "discord_control" && message.enabled === true);
+    endpoint.setDiscordControlEnabled(true);
+    const fresh = (await enabledAgain).generation as number;
+    expect(fresh).not.toBe(original);
+    expect((await request(id, original, "staged before revoke")).ok).toBe(false);
+    expect((await request(id, fresh, "fresh request")).ok).toBe(true);
+    expect(received).toEqual(["current request", "fresh request"]);
+  } finally { await stage.cleanup(); }
+});
+
+test("relay subscription requires a fresh local grant for the same socket and generation", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  await endpoint.start();
+  const discovery = await readDiscovery(endpoint.sessionId);
+  const owner = connect(discovery);
+  await waitForMessage(owner, message => message.type === "snapshot");
+  const subscribe = async (ws: WebSocket, reqId: string, generation: number) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "local_relay", sessionId: endpoint!.sessionId, reqId, enabled: true, generation }));
+    return ack;
+  };
+  expect((await subscribe(owner, "unsolicited", 0)).ok).toBe(false);
+  const control = waitForMessage(owner, message => message.type === "local_relay_control");
+  expect(endpoint.requestLocalRelay("123456789012345678")).toBe(1);
+  const generation = (await control).generation as number;
+  const newcomer = connect(discovery);
+  await waitForMessage(newcomer, message => message.type === "snapshot");
+  expect((await subscribe(newcomer, "wrong-socket", generation)).ok).toBe(false);
+  expect((await subscribe(owner, "accepted", generation)).ok).toBe(true);
+  const final = waitForMessage(owner, message => message.type === "local_final");
+  endpoint.sendLocalFinal("allowed answer", endpoint.localRelayGeneration()!);
+  expect((await final).text).toBe("allowed answer");
+  endpoint.requestLocalRelay("off");
+  expect((await subscribe(owner, "stale", generation)).ok).toBe(false);
 });

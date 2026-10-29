@@ -315,7 +315,8 @@ export function extractTouchedFiles(messages: Message[], max = 20): string[] {
 
 export async function maybeCompact(
   history: Message[],
-  opts: CompactionOptions = {}
+  opts: CompactionOptions = {},
+  summarize: typeof callLlm = callLlm,
 ): Promise<CompactionResult> {
   const maxMessages = opts.maxMessages ?? (opts.force ? 1 : 40);
   
@@ -396,7 +397,7 @@ export async function maybeCompact(
       break;
     }
     try {
-      summary = await callLlm(
+      summary = await summarize(
         [
           { role: "user", content: olderFormatted }
         ],
@@ -416,6 +417,9 @@ export async function maybeCompact(
       }
     }
   }
+
+  // A provider can resolve after cancellation; never mutate the cancelled turn's history.
+  if (opts.signal?.aborted) return { compacted: false, removed: 0 };
 
   if (summary !== undefined) {
     // Rung 1 success: behave exactly as before — summary message + bounded recent.
@@ -452,11 +456,6 @@ export async function maybeCompact(
     };
   }
 
-  // Aborted (user cancelled the turn): do NOT mutate history as a side effect of a
-  // cancelled compaction — leave it untouched and report no compaction.
-  if (opts.signal?.aborted) {
-    return { compacted: false, removed: 0 };
-  }
 
   // Rung 2: KEEP-RECENT fallback. The summarizer persistently failed, so rather than inject
   // a placeholder the model could mistake for real conversation, keep the N most-recent

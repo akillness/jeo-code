@@ -59,7 +59,7 @@ for (const [name, content, lengths] of [
 }
 
 test("model-authored everyone, role and user mentions cannot ping on any chunk", async () => {
-  const content = "@everyone <@123> <@&456> ".repeat(130);
+  const content = "@everyone<@123><@&456>x".repeat(130);
   const delivered: string[] = [];
   let pinged = false;
   const api = new DiscordApi(TOKEN, { fetchImpl: transport((_url, init) => {
@@ -120,7 +120,7 @@ test("successful bucket exhaustion delays the next request until Reset-After", a
 });
 
 for (const [status, bodyKind] of [[401, "json"], [403, "json"], [401, "html"], [403, "html"]] as const) {
-  test(`HTTP ${status} with ${bodyKind} body stops future attempts and does not leak response credentials`, async () => {
+  test(`HTTP ${status} with ${bodyKind} body does not leak credentials and applies the correct failure scope`, async () => {
     let attempts = 0;
     const api = new DiscordApi(TOKEN, { fetchImpl: transport(() => {
       attempts++;
@@ -132,7 +132,7 @@ for (const [status, bodyKind] of [[401, "json"], [403, "json"], [401, "html"], [
       for (const result of errors) {
         if (result.status === "rejected") expect(String(result.reason)).not.toContain(TOKEN);
       }
-      expect(attempts).toBe(1);
+      expect(attempts).toBe(status === 401 ? 1 : 2);
     } finally { api.stop(); }
   });
 }
@@ -228,5 +228,139 @@ test("non-JSON 429 honors Retry-After seconds before retrying the original messa
     expect(await api.sendMessage(CHANNEL, "preserve this message")).toEqual([{ id: "9000" }]);
     expect(attempts).toEqual([1000, 2500]);
     expect(delivered).toEqual(["preserve this message"]);
+  } finally { api.stop(); }
+});
+
+test("whitespace-sensitive long Unicode output includes an exact UTF-8 attachment and retries it after 429", async () => {
+  const content = ` \n${JSON.stringify({ text: `가🙂\u200b${"x".repeat(2005)}\u200b` })}\t `;
+  const visible: string[] = [];
+  const attachments: Uint8Array[] = [];
+  let now = 0;
+  const api = new DiscordApi(TOKEN, {
+    now: () => now,
+    maxRetries: 1,
+    sleep: async ms => { now += ms; },
+    fetchImpl: transport(async (url, init) => {
+      if (url.pathname !== `/api/v10/channels/${CHANNEL}/messages`) return json({}, 404);
+      if (init.body instanceof FormData) {
+        const file = init.body.get("files[0]");
+        if (!(file instanceof Blob)) return json({}, 400);
+        attachments.push(new Uint8Array(await file.arrayBuffer()));
+        return attachments.length === 1 ? json({ retry_after: 1 }, 429) : json({ id: "900" });
+      }
+      const body = JSON.parse(String(init.body));
+      if (!body.content.trim()) return json({}, 400);
+      visible.push(body.content);
+      return json({ id: String(100 + visible.length) });
+    }),
+  });
+  try {
+    await api.sendMessage(CHANNEL, content);
+    expect(attachments).toEqual([new TextEncoder().encode(content), new TextEncoder().encode(content)]);
+    expect(now).toBe(1000);
+    expect(visible.length).toBeGreaterThan(0);
+  } finally { api.stop(); }
+});
+
+test("a rate-limited middle chunk is retried without losing or reordering a long Unicode answer", async () => {
+  const content = Array.from({ length: 10 }, (_, i) => `${i}:${"한".repeat(1996)}😀`).join("");
+  const attempted: string[] = [];
+  const delivered: string[] = [];
+  let now = 0;
+  const api = new DiscordApi(TOKEN, {
+    now: () => now, maxRetries: 1,
+    sleep: async ms => { now += ms; },
+    fetchImpl: transport((_url, init) => {
+      const chunk = JSON.parse(String(init.body)).content as string;
+      if (chunk.length > 2000 || !chunk.isWellFormed()) return json({}, 400);
+      attempted.push(chunk);
+      if (attempted.length === 4) return json({ retry_after: 2 }, 429);
+      delivered.push(chunk);
+      return json({ id: String(delivered.length) });
+    }),
+  });
+  try {
+    await api.sendMessage(CHANNEL, content);
+    expect(delivered.length).toBeGreaterThan(8);
+    expect(delivered.join("")).toBe(content);
+    expect(attempted).toEqual([...delivered.slice(0, 3), delivered[3], ...delivered.slice(3)]);
+    expect(now).toBe(2000);
+  } finally { api.stop(); }
+});
+
+test("progress reactions accept empty 204 responses and preserve the target message", async () => {
+  const operations: string[] = [];
+  const api = new DiscordApi(TOKEN, { fetchImpl: transport((url, init) => {
+    operations.push(`${init.method} ${decodeURIComponent(url.pathname)}`);
+    return new Response(null, { status: 204 });
+  }) });
+  try {
+    await api.addReaction(CHANNEL, "456", "👀");
+    await api.removeReaction(CHANNEL, "456", "👀");
+    await api.addReaction(CHANNEL, "456", "✅");
+    expect(operations).toEqual([
+      `PUT /api/v10/channels/${CHANNEL}/messages/456/reactions/👀/@me`,
+      `DELETE /api/v10/channels/${CHANNEL}/messages/456/reactions/👀/@me`,
+      `PUT /api/v10/channels/${CHANNEL}/messages/456/reactions/✅/@me`,
+    ]);
+  } finally { api.stop(); }
+});
+
+test("concurrent long replies remain contiguous instead of interleaving chunks", async () => {
+  const firstEntered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const delivered: { channel: string; content: string }[] = [];
+  const api = new DiscordApi(TOKEN, { fetchImpl: transport(async (url, init) => {
+    const content = JSON.parse(String(init.body)).content as string;
+    delivered.push({ channel: url.pathname.split("/")[4]!, content });
+    if (delivered.length === 1) { firstEntered.resolve(); await release.promise; }
+    return json({ id: String(delivered.length) });
+  }) });
+  try {
+    const first = api.sendMessage(CHANNEL, "a".repeat(4001));
+    await firstEntered.promise;
+    const second = api.sendMessage("222", "b".repeat(2001));
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(delivered.map(item => item.channel)).toEqual([CHANNEL, CHANNEL, CHANNEL, "222", "222"]);
+    expect(delivered.filter(item => item.channel === CHANNEL).map(item => item.content).join("")).toBe("a".repeat(4001));
+    expect(delivered.filter(item => item.channel === "222").map(item => item.content).join("")).toBe("b".repeat(2001));
+  } finally { release.resolve(); api.stop(); }
+});
+
+test("failure to deliver the exact-copy attachment is surfaced after visible chunks", async () => {
+  const delivered: string[] = [];
+  const api = new DiscordApi(TOKEN, { fetchImpl: transport((_url, init) => {
+    if (init.body instanceof FormData) return json({ message: "unavailable" }, 500);
+    delivered.push(JSON.parse(String(init.body)).content);
+    return json({ id: String(delivered.length) });
+  }) });
+  try {
+    await expect(api.sendMessage(CHANNEL, ` ${"x".repeat(2001)} `)).rejects.toThrow("Discord HTTP 500");
+    expect(delivered.join("")).toContain("x".repeat(2001));
+  } finally { api.stop(); }
+});
+
+test("a forbidden progress reaction does not block delivery of the answer", async () => {
+  const delivered: string[] = [];
+  const api = new DiscordApi(TOKEN, { fetchImpl: transport((url, init) => {
+    if (url.pathname.includes("/reactions/")) return json({ message: "missing permission" }, 403);
+    delivered.push(JSON.parse(String(init.body)).content);
+    return json({ id: "789" });
+  }) });
+  try {
+    await expect(api.addReaction(CHANNEL, "456", "👀")).rejects.toThrow("Discord HTTP 403");
+    expect(await api.sendMessage(CHANNEL, "answer after denied reaction")).toEqual([{ id: "789" }]);
+    expect(delivered).toEqual(["answer after denied reaction"]);
+  } finally { api.stop(); }
+});
+
+test("invalid bot authentication on a reaction prevents subsequent delivery", async () => {
+  let requests = 0;
+  const api = new DiscordApi(TOKEN, { fetchImpl: transport(() => { requests++; return json({}, 401); }) });
+  try {
+    await expect(api.addReaction(CHANNEL, "456", "👀")).rejects.toThrow("Discord HTTP 401");
+    await expect(api.sendMessage(CHANNEL, "must not be delivered")).rejects.toThrow();
+    expect(requests).toBe(1);
   } finally { api.stop(); }
 });

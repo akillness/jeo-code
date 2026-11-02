@@ -40,6 +40,34 @@
 
 > インライン再生されない場合は ▶ [デモ動画を再生/ダウンロード](docs/jeo-code-promo.mp4)。
 
+## Jeo Claw マルチエージェントエコシステム (Jeo Claw Swarm)
+
+jeo-code は単一エージェントの幻覚やコンテキスト逸脱を防ぎ、**5 つの専門化された Claw エージェント (Jeo Claw Family)** が協調して要件定義からデプロイまで完結する完全自律エンジニアリングスウォームです。
+
+<p align="center">
+  <img src="assets/claw/family_jeoclaw.jpg" alt="Jeo Claw Family Multi-Agent Swarm" width="100%" />
+</p>
+
+### 5 大 Claw エージェントの役割
+
+<p align="center">
+  <img src="assets/claw/pdclaw.jpg" width="18%" alt="PD Claw" />
+  <img src="assets/claw/aiclaw.jpg" width="18%" alt="AI Claw" />
+  <img src="assets/claw/engineclaw.jpg" width="18%" alt="Engine Claw" />
+  <img src="assets/claw/newsclaw.jpg" width="18%" alt="News Claw" />
+  <img src="assets/claw/zeroclaw.webp" width="18%" alt="Zero Claw" />
+</p>
+
+| エージェント | 名称 | 役割とゲート | 主なコマンド |
+| :--- | :--- | :--- | :--- |
+| 📋 **PD Claw** | **Product Director** | ソクラテス式インタビューによる曖昧性排除、PRD・仕様凍結 | `jeo deep-interview` |
+| 🧠 **AI Claw** | **Intelligence & Architect** | コスト認識モデルルーティング、Critic 合意 (`[OKAY]`) の永続化 | `jeo ralplan`, `/route`, `jeo approve` |
+| ⚙️ **Engine Claw** | **Parallel Executor** | Git Worktree 並列隔離実行、コンテンツアンカー編集 (`42ab\|`)、変更監査 | `jeo team --parallel`, `edit`, `write` |
+| 📡 **News Claw** | **Monitor & Telemetry** | リアルタイムデーモン中継 (Discord/Telegram/Slack)、エージェント監視 | `jeo daemon start`, `jeo notify` |
+| 🛡️ **Zero Claw** | **Verifier & Release** | 証拠に基づく総合検証 (`ultragoal`)、自己修復ループ、PR 自動作成 | `jeo ultragoal`, `done`, `jeo routine` |
+
+---
+
 ## ハイライト
 
 - **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio に加え、OpenAI・Anthropic 互換クラウド20以上(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai など)を均一な JSON ツールループで — **さらに自分で登録したエンドポイントも**: `jeo provider add --id my-proxy --base-url https://…`(または `--preset litellm|vllm|sglang|azure-openai|…`)で、LiteLLM プロキシ・自前ホストの vLLM・社内 Anthropic ゲートウェイが、組み込みの `openai` プロバイダを乗っ取ることなく独自のルーティング接頭辞・モデル一覧・認証情報を持てます。入力欄から OAuth ログイン(`/provider login`)、モデル選択は毎回新しいデフォルトとして永続化。プロンプトルーティングは実際に使える認証済み経路だけを自動選択します: Gemini OAuth は provider-qualified な `antigravity/*` エージェントセットへ、**アカウントが現在提供している構成のまま**向かい(ライブ検出 — 例: Gemini 3.6 Flash 各ティア、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6; チャット以外や非推奨の ID は除外され、一覧が空でも静的カタログで代用しません)、`GEMINI_API_KEY` が必要な public `google/gemini-*` 行は決して選びません。設定済みルートが未準備のプロバイダを指している場合、jeo はデフォルトへフォールバックする前に同等ティアの認証済みモデルへ切り替えます。

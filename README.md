@@ -47,8 +47,35 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
-
 > Demo not playing inline? ▶ [Play / download the demo video](docs/jeo-code-promo.mp4).
+
+## Jeo Claw Multi-Agent Swarm
+
+At the heart of `jeo-code` is the **Jeo Claw Swarm** — an ensemble of 5 specialized Claw agents engineered to eliminate single-agent hallucination and state drift by enforcing strict role boundaries from specification to release.
+
+<p align="center">
+  <img src="assets/claw/family_jeoclaw.jpg" alt="The Jeo Claw Family Multi-Agent Swarm" width="100%" />
+</p>
+
+### Specialized Claw Agent Roles
+
+<p align="center">
+  <img src="assets/claw/pdclaw.jpg" width="18%" alt="PD Claw" />
+  <img src="assets/claw/aiclaw.jpg" width="18%" alt="AI Claw" />
+  <img src="assets/claw/engineclaw.jpg" width="18%" alt="Engine Claw" />
+  <img src="assets/claw/newsclaw.jpg" width="18%" alt="News Claw" />
+  <img src="assets/claw/zeroclaw.webp" width="18%" alt="Zero Claw" />
+</p>
+
+| Agent | Role Title | Core Gate & Responsibilities | Key Commands & Tools |
+| :--- | :--- | :--- | :--- |
+| 📋 **PD Claw** | **Product Director** | Socratic ambiguity gate; freezes requirements and testable criteria before touching code | `jeo deep-interview` |
+| 🧠 **AI Claw** | **Intelligence & Architect** | Cost-aware routing; repo-grounded plan drafting with critic `[OKAY]` consensus & digest signing | `jeo ralplan`, `/route`, `jeo approve` |
+| ⚙️ **Engine Claw** | **Parallel Executor** | Git worktree concurrent execution; content-anchored edits (`42ab\|`) and parent-side mutation audits | `jeo team --parallel`, `edit`, `write` |
+| 📡 **News Claw** | **Monitor & Telemetry** | Real-time agent lifecycle broadcasting (Discord/Telegram/Slack), background supervision, external knowledge | `jeo daemon start`, `jeo notify` |
+| 🛡️ **Zero Claw** | **Verifier & Release** | Full-suite test verification (`ultragoal`); in-flight self-correction and automated PR creation | `jeo ultragoal`, `done`, `jeo routine` |
+
+---
 
 ## Key Features (Overview)
 

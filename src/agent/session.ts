@@ -76,7 +76,7 @@ export function newSessionId(): string {
 }
 
 export function sessionsDir(cwd = process.cwd()): string {
-  return path.join(getLocalJeoDir(cwd), "sessions");
+  return process.env.JEO_SESSION_DIR || path.join(getLocalJeoDir(cwd), "sessions");
 }
 
 export function sessionPath(id: string, cwd = process.cwd()): string {
@@ -86,9 +86,11 @@ export function sessionPath(id: string, cwd = process.cwd()): string {
 export async function createSession(
   cwd = process.cwd(),
   id = newSessionId(),
-  model?: string
+  model?: string,
+  directory = sessionsDir(cwd),
+  exclusive = false,
 ): Promise<{ id: string; path: string }> {
-  const dir = sessionsDir(cwd);
+  const dir = directory;
   await fs.mkdir(dir, { recursive: true });
 
   const header: SessionHeader = {
@@ -100,8 +102,8 @@ export async function createSession(
     ...(model ? { model } : {}),
   };
 
-  const file = sessionPath(id, cwd);
-  await fs.writeFile(file, JSON.stringify(header) + "\n", "utf8");
+  const file = path.join(dir, `${id}.jsonl`);
+  await fs.writeFile(file, JSON.stringify(header) + "\n", { encoding: "utf8", ...(exclusive ? { flag: "wx", mode: 0o600 } : {}) });
 
   return { id, path: file };
 }

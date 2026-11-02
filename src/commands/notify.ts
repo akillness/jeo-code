@@ -107,6 +107,7 @@ async function runSetup(flags: Flags, opts: NotifyOptions): Promise<void> {
     console.log(`Slack bot and channel verified; channelId=${channelId}. Notifications enabled. Setup did not send a message.`);
     console.log("Socket Mode URL verified; app-token ownership and socket connectivity are checked by the daemon handshake. Token rotation requires an explicit user allowlist.");
   } else if (flags.provider === "discord") {
+    console.log("Discord setup: enable Message Content Intent in the Developer Portal, invite the bot with View Channel, Send Messages, Read Message History, and Send Messages in Threads, then copy IDs with Discord Developer Mode.");
     const channelId = flags.channelId ?? existing?.discord?.channelId ?? await question("Discord channel ID: ", opts);
     const sameDestination = existing?.discord?.botToken === token && existing.discord.channelId === channelId;
     if (!allowedUserIds?.length && (!sameDestination || !existing?.discord?.allowedUserIds?.length)) allowedUserIds = (await question("Allowed Discord user IDs (comma separated; required after token/destination changes): ", opts)).split(",").map(id => id.trim());
@@ -121,6 +122,7 @@ async function runSetup(flags: Flags, opts: NotifyOptions): Promise<void> {
       const unchanged = previous?.botToken === token && previous.channelId === channelId;
       const owners = allowedUserIds ?? (unchanged ? previous.allowedUserIds : undefined);
       if (!owners?.length || !owners.every(id => /^[1-9]\d{0,19}$/.test(id))) throw new Error("Discord requires explicit allowed user IDs; repeat --allowed-user-ids after token or destination changes");
+      if ([10, 11, 12].includes(channel.type) && (!channel.owner_id || !owners.includes(channel.owner_id))) throw new Error("Discord thread owner must be an allowed user");
       return { notifications: { ...raw.notifications, enabled: true, discord: { ...(unchanged ? previous : {}), botToken: token, channelId, allowedUserIds: owners } } };
     });
     console.log(`Discord bot verified; channelId=${channelId}. Notifications enabled.`);
@@ -209,6 +211,7 @@ async function runHealth(provider: Provider, send: boolean, opts: NotifyOptions)
     const me = await api.getMe();
     const channel = await api.getChannel(cfg.channelId);
     if (!me.bot || channel.id !== cfg.channelId || ![0, 1, 5, 10, 11, 12].includes(channel.type)) throw new Error("Discord identity/channel validation failed");
+    if ([10, 11, 12].includes(channel.type) && (!channel.owner_id || !cfg.allowedUserIds.includes(channel.owner_id))) throw new Error("Discord thread owner must be an allowed user");
     if (send) await api.sendMessage(cfg.channelId, "jeo notification test");
   } else {
     const cfg = n?.telegram;

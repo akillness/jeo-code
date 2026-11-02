@@ -7,7 +7,11 @@ export interface MessengerMessage {
 	senderId: string;
 	messageId: string;
 	text: string;
+	/** Discord guild snowflake. Absent for DMs. */
+	guildId?: string;
 	threadId?: string;
+	/** Platform-level conversation identifier when the conversation is not a Discord thread. */
+	conversationId?: string;
 	parentChannelId?: string;
 	direct: boolean;
 	mentioned: boolean;

@@ -129,6 +129,7 @@ function normalizeMessage(value: unknown, accountId: string): MessengerMessage |
 		!value.id ||
 		typeof value.channel_id !== "string" ||
 		!value.channel_id ||
+		(value.guild_id !== undefined && (typeof value.guild_id !== "string" || !value.guild_id)) ||
 		typeof value.author.id !== "string" ||
 		!value.author.id ||
 		typeof value.content !== "string" ||
@@ -157,6 +158,7 @@ function normalizeMessage(value: unknown, accountId: string): MessengerMessage |
 		senderId: value.author.id,
 		messageId: value.id,
 		text,
+		...(typeof value.guild_id === "string" && value.guild_id ? { guildId: value.guild_id } : {}),
 		direct: value.guild_id === undefined,
 		attachments,
 		mentioned,
@@ -393,10 +395,9 @@ export function createDiscordAdapter(
 							});
 						} else if (
 							!message.direct &&
-							message.mentioned &&
 							config.allowedUserIds.includes(message.senderId) &&
 							config.allowedChannelIds &&
-							!config.allowedChannelIds.includes(message.channelId)
+							(!message.mentioned || !config.allowedChannelIds.includes(message.channelId))
 						) {
 							try {
 								const channel = await messengerFetchJson(
@@ -407,11 +408,24 @@ export function createDiscordAdapter(
 								);
 								if (
 									isRecord(channel) &&
+									channel.id === message.channelId &&
 									typeof channel.type === "number" &&
 									[10, 11, 12].includes(channel.type) &&
 									typeof channel.parent_id === "string" &&
 									channel.parent_id
 								) {
+									if (!message.mentioned) {
+										const originalId = typeof channel.name === "string" ? /^Request (\d{1,20})$/.exec(channel.name)?.[1] : undefined;
+										if (channel.owner_id !== accountId || !originalId ||
+											(!config.allowedChannelIds.includes(channel.parent_id) && !config.allowedChannelIds.includes(message.channelId))) return;
+										const original = await messengerFetchJson(
+											`${DISCORD_API}/channels/${encodeURIComponent(channel.parent_id)}/messages/${originalId}`,
+											{ headers: headers() }, signal, deps.fetch,
+										);
+										if (!isRecord(original) || original.id !== originalId || original.channel_id !== channel.parent_id ||
+											!isRecord(original.author) || original.author.id !== message.senderId || original.author.bot === true || original.webhook_id) return;
+										rememberThread(message.channelId, channel.parent_id, message.senderId);
+									}
 									await onMessage({
 										...message,
 										threadId: message.channelId,

@@ -294,6 +294,10 @@ export async function selectDiscordChannels(
 			if (!isRecord(channel) || !str(channel.guild_id) || !guildIds.has(str(channel.guild_id))) {
 				throw new Error(`Channel ${id} is not in a server the bot has joined; invite it: ${inviteUrl}`);
 			}
+			if (typeof channel.type !== "number" || (!Object.hasOwn(REQUEST_CHANNEL_TYPES, channel.type) && !Object.hasOwn(THREAD_TYPES, channel.type))) {
+				throw new Error(`Channel ${id} must be a text channel or thread`);
+			}
+			if (Object.hasOwn(THREAD_TYPES, channel.type) && !str(channel.parent_id)) throw new Error(`Thread ${id} has no parent channel`);
 			const guildId = channel.guild_id as string;
 			const { guild, roles, channels } = await loadGuild(guildId);
 			const targetId =

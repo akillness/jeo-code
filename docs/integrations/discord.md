@@ -4,6 +4,24 @@ Connect `jeo` and AI coding agents to **Discord** channels for real-time build n
 
 ---
 
+## Bidirectional messenger gateway
+
+For a separate Discord conversation gateway, use the guided setup:
+
+```sh
+jeo messenger setup --config ~/.jeo/discord/messenger.json --service
+```
+
+The setup validates the bot, discovers or checks request channels, writes a private token file and run script, and probes the Gateway. `--service` optionally installs a user service; omit it to run the generated script manually. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` to select settings. `jeo messenger check --config <file>` checks configuration and credentials locally without network calls; `jeo messenger run --config <file>` starts the gateway. The generated run script supplies the saved token for manual use.
+
+Messenger conversations use separate persisted sessions scoped to workspace, bot account, channel or thread, and sender. Server requests mention the bot and receive replies in threads visible to channel readers. Local tools default to none; an explicit tool allowlist grants authorized remote users corresponding host authority, not a sandbox. Attachments require opt-in. See the [messenger guide](messenger.md) for permissions and file limits. This gateway is separate from the notification daemon and its session-control commands below.
+
+### Discord session identity contract
+
+The canonical remote identity is the ordered tuple `(schema version, platform, bot account, guild, channel, thread, conversation, user)`. The workspace path is hashed together with the serialized tuple to produce the persisted session route. For a Discord thread, `channel` is its parent channel and `thread` is the thread snowflake; otherwise `channel` is the message channel. `guild` is absent for DMs. `conversation` is reserved for adapters whose platform has a non-thread conversation primitive. `thread` and `conversation` are mutually exclusive alternatives: setting both is invalid.
+
+Identifiers are opaque, case-sensitive strings and are preserved byte-for-byte; they are not trimmed, case-folded, or Unicode-normalized. Empty identifiers and identifiers with leading or trailing whitespace are invalid. Every optional tuple position is serialized as either `["absent"]` or `["present", value]`, so absence cannot collide with an empty, omitted, or literal identifier. The fixed schema tag and JSON tuple serialization also prevent delimiter collisions. Message IDs and message contents are deliberately excluded: an unchanged normalized tuple reuses its session, while a change to any included component creates an isolated session.
+
 ## Built-in jeo Discord daemon
 
 The built-in daemon is separate from the generic webhook and bot examples below. Set a bot token locally in `JEO_DISCORD_BOT_TOKEN`, enable the Discord **Message Content** intent, and configure the destination and trusted human user IDs:

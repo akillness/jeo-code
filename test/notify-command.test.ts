@@ -157,6 +157,24 @@ test("Discord-only setup creates usable configuration without sending or editing
   expect(logs.join("\n")).not.toContain("DISCORD-SECRET");
 });
 
+test.each([true, false])("Discord thread setup checks its owner against the allowed users: allowed=%s", async allowed => {
+  const owner = "234567890123456789";
+  const fake = apiFake(request => {
+    if (request.url.pathname.endsWith("/users/@me")) return { id: "345678901234567890", bot: true, username: "jeo" };
+    if (request.url.pathname.endsWith("/channels/123456789012345678")) return { id: "123456789012345678", type: 11, owner_id: owner };
+    throw new Error("Unexpected Discord API operation");
+  });
+  await runNotifyCommand(["setup", "--provider", "discord", "--token", "DISCORD-SECRET", "--channel-id", "123456789012345678", "--allowed-user-ids", allowed ? owner : "444444444444444444"], fake);
+  if (allowed) {
+    expect(process.exitCode).toBe(0);
+    expect((await readGlobalConfig()).notifications?.discord?.allowedUserIds).toEqual([owner]);
+  } else {
+    expect(process.exitCode).toBe(1);
+    expect((await readGlobalConfig()).notifications?.discord).toBeUndefined();
+  }
+  expect([...logs, ...errors].join("\n")).not.toContain("DISCORD-SECRET");
+});
+
 test("Telegram group setup refuses remote control unless authorized actors are explicit", async () => {
   const fake = apiFake(request => telegramReply(request, "supergroup"));
   await runNotifyCommand(["setup", "--token", "group-token", "--chat-id", "-999"], fake);

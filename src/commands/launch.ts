@@ -904,9 +904,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (resolved.kind === "ok") {
           id = resolved.id;
         } else if (resolved.kind === "ambiguous") {
+          if (flags.literalPrompt) throw new Error("Messenger session unavailable");
           console.log(`Ambiguous session id '${flags.resumeId}' — matches: ${resolved.matches.slice(0, 5).join(", ")}${resolved.matches.length > 5 ? " …" : ""}. Use more characters or run with --resume (no value) to pick interactively.`);
           skipResume = true;
         } else {
+          if (flags.literalPrompt) throw new Error("Messenger session unavailable");
           console.log(`Session '${flags.resumeId}' not found. Starting a new one.`);
           skipResume = true;
         }
@@ -931,12 +933,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // queuedPromptInput.partial directly yet.
           if (header.draft) startupDraft = header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
-          console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+          if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
           // Reproduce the prior screen exactly (gjc/gajae-code parity): same
           // scrollback-ledger replay `/session resume` uses mid-session, so
           // `--resume`/`-c`/`--resume <id>` restores the prior work onto the
           // screen instead of just a bare message count.
-          if (messages.length > 0) {
+          if (!flags.literalPrompt && messages.length > 0) {
             resumedWithHistory = true;
             const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
             console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
@@ -944,6 +946,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
 
         } catch (err) {
+          if (flags.literalPrompt) throw err;
           console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
           sessionId = (await createSession(cwd, undefined, sessionModel)).id;
         }
@@ -959,7 +962,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // lifetime (not per-turn) so a Telegram forum topic, once created, persists
   // across turns AND across `--resume` (keyed by jeo's real `sessionId`, not a
   // random one — see `SessionNotifyEndpoint`'s header doc).
-  const sessionNotifyEndpoint = await startSessionNotifyEndpoint(cwd, sessionId);
+  const sessionNotifyEndpoint = flags.literalPrompt ? undefined : await startSessionNotifyEndpoint(cwd, sessionId);
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
   }
@@ -1021,7 +1024,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // rolling base — the engine's onBudget event keeps the denominator honest as it grows.
   const initialStepLimit = flags.maxSteps > 0 ? flags.maxSteps : initialDynamicStepLimit();
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
-  const streamEvents = createStreamEvents(initialStepLimit);
+  const streamEvents = flags.literalPrompt
+    ? { onStep: () => { process.stderr.write("JEO_MESSENGER_STEP\n"); } }
+    : createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;
   let queueBusyTakePaste: (() => boolean) | undefined;
@@ -2122,7 +2127,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // cycled / consecutively failed without recovering) is a dead end the rest of
     // THIS session should avoid. Record it into OKF now (deterministic, no LLM) so
     // the next turn's memory refresh resurfaces it. Best-effort; never blocks the turn.
-    if (result.stopClass) {
+    if (!flags.literalPrompt && result.stopClass) {
       const task = userInput.replace(/\s+/g, " ").trim();
       const excerpt = task.length > 70 ? task.slice(0, 70) + "…" : task;
       const why = result.stopClass === "consecutive_failure"
@@ -2148,7 +2153,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";
 
-    if (turnConfig.gitAutoCommit) {
+    if (!flags.literalPrompt && turnConfig.gitAutoCommit) {
       try {
         const statusRes = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
         if (statusRes.exitCode === 0 && statusRes.stdout.toString().trim().length > 0) {
@@ -2192,7 +2197,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // > 0) and stays silent (no stdout noise) since one-shot output may be
   // piped/parsed by a script.
   const maybeDistillOneShot = async (): Promise<void> => {
-    if (sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
+    if (!flags.literalPrompt && sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
       await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
     }
   };
@@ -2206,6 +2211,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // process, but a one-shot run would still leave a stale discovery file behind for
     // the daemon to keep dialling. One `finally` covers every exit point.
     try {
+      if (flags.literalWorker) {
+        const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+        try {
+          for await (const line of input) {
+            try {
+              const message = JSON.parse(line);
+              if (typeof message !== "string" || !message.trim()) throw new Error("Invalid messenger request");
+              const { done, reply } = await runTurn(message, false);
+              if (!done) throw new Error("Messenger agent turn did not complete");
+              console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+            } catch {
+              console.log("JEO_MESSENGER_ERROR");
+              break;
+            }
+          }
+        } finally { input.close(); }
+        return;
+      }
       let messageContent = joinedArgs;
       if (!process.stdin.isTTY && joinedArgs.length === 0) {
         messageContent = (await Bun.stdin.text()).trim();
@@ -2219,7 +2242,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // a piped command) previously sent the literal "/clear" to the LLM as a prompt:
       // a slow, flaky, and semantically wrong round-trip. These no-arg session/system
       // commands have a meaningful one-shot effect (or are simple no-ops) and exit.
-      {
+      if (!flags.literalPrompt) {
         const cmd = messageContent.trim();
         if (cmd === "/exit" || cmd === "/quit") {
           return;
@@ -2409,7 +2432,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       };
 
       // `$a $b … [intent]` — run every resolved skill in order; a lone `$skill` is a chain of 1.
-      const skillChain = parseSkillChain(messageContent, resolvedSkills);
+      const skillChain = flags.literalPrompt ? undefined : parseSkillChain(messageContent, resolvedSkills);
       if (skillChain && skillChain.invocations.length) {
         if (skillChain.unresolved.length) {
           console.log(`(skipping unknown skill${skillChain.unresolved.length > 1 ? "s" : ""}: ${skillChain.unresolved.map(u => `$${u}`).join(", ")})`);
@@ -2424,17 +2447,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       }
       // A `$skill` invocation resolves to a single skill (by name, declared alias, or unique prefix).
-      const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
+      const skillInvocation = flags.literalPrompt ? undefined : parseSkillInvocation(messageContent, resolvedSkills);
       if (skillInvocation) {
         await runOneSkillShot(skillInvocation);
         await maybeDistillOneShot();
         return;
       }
       try {
-        const { reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
-        if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
+        const { done, reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
+        if (flags.literalPrompt) {
+          if (!done) throw new Error("Messenger agent turn did not complete");
+          console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+        } else if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
         else if (usage) console.log(usage.trim());
       } catch (err) {
+        if (flags.literalPrompt) throw err;
         console.log(`! ${friendlyProviderError(err)}`);
       }
       await maybeDistillOneShot();

@@ -346,6 +346,52 @@ test("real local endpoint routes Discord prompts and does not echo remote turn s
   } finally { f.daemon.stop(); await endpoint.stop(); }
 });
 
+test("failed remote turns report a failure reaction while legitimate provider-error text remains a successful answer", async () => {
+  class ReactionService extends DiscordService {
+    reactions: string[] = [];
+    override async addReaction(_channel: string, _message: string, emoji: string) { this.reactions.push(emoji); }
+  }
+  const api = new ReactionService();
+  api.channelType = 0;
+  const endpoint = new SessionNotifyEndpoint("/offline-discord-status");
+  endpoint.setDiscordControlEnabled(true);
+  const providerMessage = "Gemini 3.5 Flash is no longer available. Please select a different model.";
+  endpoint.onRemoteRequest = (text, finish) => {
+    queueMicrotask(() => text === "failed request" ? finish() : finish(`The provider reported: ${providerMessage}`));
+    return true;
+  };
+  const snapshot = Promise.withResolvers<void>();
+  const control = Promise.withResolvers<void>();
+  class ObservedSocket extends WebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      this.addEventListener("message", event => {
+        const frame = JSON.parse(String(event.data));
+        if (frame.type === "snapshot") queueMicrotask(() => snapshot.resolve());
+        if (frame.type === "discord_control") queueMicrotask(() => control.resolve());
+      });
+    }
+  }
+  const f = fixture([], {
+    api, WebSocketImpl: ObservedSocket,
+    readdir: async () => [`${endpoint.sessionId}.json`],
+    readFile: file => Bun.file(file).text(),
+    isPidAlive: pid => pid === process.pid,
+  });
+  try {
+    await endpoint.start();
+    await f.ready();
+    await snapshot.promise;
+    await control.promise;
+    await f.dispatch(f.message(`/send ${endpoint.sessionId} failed request`));
+    expect(api.reactions).toEqual(["⏳", "❌"]);
+    expect(api.sent.at(-1)?.text).toMatch(/request failed/i);
+    await f.dispatch(f.message(`/send ${endpoint.sessionId} explain error`));
+    expect(api.reactions).toEqual(["⏳", "❌", "⏳", "✅"]);
+    expect(api.sent.at(-1)?.text).toBe(`The provider reported: ${providerMessage}`);
+  } finally { f.daemon.stop(); await endpoint.stop(); }
+});
+
 test("reply IDs route to their original session, never quoted text or the most recent session", async () => {
   const f = fixture(["alpha", "beta"]);
   try {
@@ -764,6 +810,18 @@ test("remote answer timeout cancels only its owning session while another reques
     await beta.receive({ type: "remote_final", sessionId: "beta", reqId: b.reqId, ok: true, controlGeneration: 1, text: "independent answer" });
     await second;
     expect(f.api.sent.map(message => message.text)).toEqual(["Session request failed, was rejected, interrupted, or timed out.", "independent answer"]);
+  } finally { f.daemon.stop(); }
+});
+
+test("bot mentions before commands preserve user and channel authorization", async () => {
+  const f = fixture(["alpha"]);
+  try {
+    await f.ready();
+    await f.dispatch(f.message(`<@${BOT}> /sessions`));
+    await f.dispatch(f.message(`<@!${BOT}> /sessions`));
+    await f.dispatch(f.message(`<@${BOT}> /sessions`, { author: { id: "untrusted", bot: false } }));
+    await f.dispatch(f.message(`<@${BOT}> /sessions`, { channel_id: "untrusted" }));
+    expect(f.api.sent.map(item => item.text)).toEqual(["[alpha] /test", "[alpha] /test"]);
   } finally { f.daemon.stop(); }
 });
 

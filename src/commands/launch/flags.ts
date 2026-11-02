@@ -23,6 +23,8 @@ export interface LaunchFlags {
   thinking?: ThinkLevel;
   errors: string[];
   print?: boolean;
+  literalPrompt?: boolean;
+  literalWorker?: boolean;
   appendSystemPromptRaw?: string;
   appendSystemPrompt?: string;
   noSkills: boolean;
@@ -160,6 +162,11 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       if (value) flags.skills = value;
       else flags.errors.push("--skills requires a value");
       i = nextIndex;
+    } else if (a === "--literal-prompt") {
+      flags.literalPrompt = true;
+    } else if (a === "--literal-worker") {
+      flags.literalWorker = true;
+      flags.literalPrompt = true;
     } else if (a === "--no-tools") {
       flags.noTools = true;
     } else if (a === "--tools" || a.startsWith("--tools=")) {

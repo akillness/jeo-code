@@ -495,7 +495,14 @@ export class DiscordDaemon {
       this.threads.set(channelId, authorId);
     }
     if ((channelId !== this.config.channelId || [10, 11, 12].includes(this.channelType)) && this.threads.get(channelId) !== authorId) return;
-    const text = message.content.trim();
+    let text = message.content.trim();
+    for (const mention of [`<@${this.botId}>`, `<@!${this.botId}>`]) {
+      if (text === mention || text.startsWith(`${mention} `) || text.startsWith(`${mention}\n`)) {
+        text = text.slice(mention.length).trimStart();
+        break;
+      }
+    }
+    if (!text && !(Array.isArray(message.attachments) && message.attachments.length)) return;
     let destination = channelId;
     try {
       if (channelId === this.config.channelId && [0, 5].includes(this.channelType)) {

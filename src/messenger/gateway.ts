@@ -158,15 +158,56 @@ export function createActivityReporter(
 	};
 }
 
-/** Include the sender even in shared threads: remote histories must not cross users. */
-export function messengerConversationKey(message: MessengerMessage): string {
-	return JSON.stringify([
+type OptionalIdentity = readonly ["absent"] | readonly ["present", string];
+
+/**
+ * Canonical, ordered remote-session identity. `thread` and `conversation` are mutually exclusive
+ * alternatives; Discord supplies `thread`, while adapters with another conversation primitive may
+ * supply `conversation`. IDs are opaque and therefore are never trimmed or case-folded.
+ */
+export type MessengerSessionIdentity = readonly [
+	version: "messenger-session-v1",
+	platform: MessengerMessage["platform"],
+	account: string,
+	guild: OptionalIdentity,
+	channel: string,
+	thread: OptionalIdentity,
+	conversation: OptionalIdentity,
+	user: string,
+];
+
+function optionalIdentity(name: string, value: string | undefined): OptionalIdentity {
+	if (value === undefined) return ["absent"];
+	if (!value || value.trim() !== value) throw new Error(`Messenger ${name} identifier is invalid`);
+	return ["present", value];
+}
+
+export function messengerSessionIdentity(message: MessengerMessage): MessengerSessionIdentity {
+	if (message.threadId !== undefined && message.conversationId !== undefined) {
+		throw new Error("Messenger thread and conversation identifiers are mutually exclusive");
+	}
+	for (const [name, value] of [
+		["account", message.accountId],
+		["channel", message.parentChannelId ?? message.channelId],
+		["user", message.senderId],
+	] as const) {
+		if (!value || value.trim() !== value) throw new Error(`Messenger ${name} identifier is invalid`);
+	}
+	return [
+		"messenger-session-v1",
 		message.platform,
 		message.accountId,
+		optionalIdentity("guild", message.guildId),
 		message.parentChannelId ?? message.channelId,
-		message.threadId ?? "",
+		optionalIdentity("thread", message.threadId),
+		optionalIdentity("conversation", message.conversationId),
 		message.senderId,
-	]);
+	];
+}
+
+/** Collision-safe JSON serialization of the canonical identity tuple. */
+export function messengerConversationKey(message: MessengerMessage): string {
+	return JSON.stringify(messengerSessionIdentity(message));
 }
 
 /** Stable per-conversation route shared by the persisted session file and its session process. */

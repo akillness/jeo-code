@@ -34,6 +34,8 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
+**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Local tools are off by default; explicitly enabling `computer` grants access to the shared host desktop, and enabling `bash` grants shell authority. Neither is sandboxed. See the [messenger guide](docs/integrations/messenger.md).
+
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
@@ -76,7 +78,6 @@ bun install -g jeo-code
 jeo --version
 ```
 
-> Upgrading from a pre-rename install? A stale `joc` binary (this project's old CLI name) is now auto-removed by `scripts/install.sh` / `scripts/uninstall.sh`; to remove it manually: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`.
 
 ## Quick start
 
@@ -170,36 +171,12 @@ jeo team
 jeo ultragoal
 ```
 
-```
-  ┌──────────────────────┐
-  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
-  └──────────┬───────────┘
-             │ .jeo/state/<seed>.json
-             ▼
-  ┌──────────────────────┐
-  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
-  └──────────┬───────────┘
-             │ requires [OKAY] verdict
-             ▼
-  ┌──────────────────────┐
-  │       approve        │  Schema + roles + [OKAY] — unlocks execution
-  └──────────┬───────────┘
-             │
-             ▼
-  ┌──────────────────────┐
-  │        team          │  Serial executor · run lock · mutation audit
-  └──────────┬───────────┘
-             │ all tasks done
-             ▼
-  ┌──────────────────────┐
-  │      ultragoal       │  Honest verification — suite once, no fabrication
-  └──────────────────────┘
-```
+![Interview → reviewed plan → approval → execution → verification](assets/workflow.svg)
 
 - **deep-interview** — Socratic loop with ambiguity scoring; freezes a seed only when criteria are concrete (vague-only criteria are refused) and the seed round-trips its own parser. A new idea never silently reuses a completed interview.
 - **ralplan** — drafting passes plus a **repo-grounded critic subagent gate**: the critic reads the actual repository, must return `[OKAY]`/`[ITERATE]`/`[REJECT]`, and the verdict is persisted. Invalid plans (schema, unknown roles) are never marked complete.
 - **approve** — validates the exact contract `team` executes (schema + roles) *and* requires the persisted `[OKAY]` consensus verdict.
-- **team** — serial plan executor with a cross-process run lock, stale-plan reset, per-task subagent contracts, a parent-side mutation audit (a "completed" task with zero observed writes is flagged), and failed-task markers that warn about partial edits on resume.
+- **team** — executes reviewed steps under a cross-process run lock; contiguous steps sharing a `parallel_group` run in separate git worktrees and are merged in order. Per-task contracts, mutation audits, and failure markers expose incomplete work.
 - **ultragoal** — honest verification: the suite runs once as a global signal; criteria are recorded, never fabricated as individually passed.
 
 ## Verification hooks (self-correction)

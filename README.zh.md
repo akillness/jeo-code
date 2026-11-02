@@ -32,6 +32,8 @@
 
 - [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
 
+**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。本地工具默认关闭；明确启用 `computer` 可访问共享主机桌面，启用 `bash` 可访问 shell，两者均非沙箱。详见[消息网关指南](docs/integrations/messenger.md)。
+
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
@@ -70,7 +72,6 @@ bun install -g jeo-code
 jeo --version
 ```
 
-> 从重命名前的版本升级？旧 CLI 名称 `joc` 的二进制文件现在会被 `scripts/install.sh` / `scripts/uninstall.sh` 自动移除；手动移除: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`。
 
 ## 快速开始
 
@@ -164,36 +165,12 @@ jeo approve <计划路径>
 jeo team
 jeo ultragoal
 ```
-```
-  ┌──────────────────────┐
-  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
-  └──────────┬───────────┘
-             │ .jeo/state/<seed>.json
-             ▼
-  ┌──────────────────────┐
-  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
-  └──────────┬───────────┘
-             │ requires [OKAY] verdict
-             ▼
-  ┌──────────────────────┐
-  │       approve        │  Schema + roles + [OKAY] — unlocks execution
-  └──────────┬───────────┘
-             │
-             ▼
-  ┌──────────────────────┐
-  │        team          │  Serial executor · run lock · mutation audit
-  └──────────┬───────────┘
-             │ all tasks done
-             ▼
-  ┌──────────────────────┐
-  │      ultragoal       │  Honest verification — suite once, no fabrication
-  └──────────────────────┘
-```
+![Interview → reviewed plan → approval → execution → verification](assets/workflow.svg)
 
 - **deep-interview** — 基于歧义度评分的苏格拉底循环；只有标准足够具体才冻结种子(纯含糊标准会被拒绝)，且种子必须通过自身解析器的往返校验。新想法绝不会静默复用已完成的访谈。
 - **ralplan** — 起草阶段 + **真正读取仓库的 critic 子代理门禁**: 强制并持久化 `[OKAY]`/`[ITERATE]`/`[REJECT]` 裁决。无效计划(schema、未知角色)不会被标记为 complete。
 - **approve** — 校验 `team` 执行的确切契约(schema+角色)，并要求持久化的 `[OKAY]` 共识裁决。
-- **team** — 串行计划执行器: 跨进程运行锁、过期计划重置、按任务的子代理契约、父侧变更审计(零写入的"完成"会被标记)、失败标记 + 恢复时的部分编辑警告。
+- **team** — 在跨进程运行锁下执行已审阅的步骤。具有相同 `parallel_group` 的连续步骤在独立 Git worktree 中并行执行并按顺序合并；任务契约、变更审计和失败标记会暴露未完成的工作。
 - **ultragoal** — 诚实验证: 套件作为全局信号只运行一次，标准只被记录，绝不伪造为逐条通过。
 
 ## 验证钩子(自我修正)

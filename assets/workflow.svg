@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="180" viewBox="0 0 1120 180" role="img" aria-labelledby="title desc">
+  <title id="title">jeo spec-first workflow</title>
+  <desc id="desc">Interview, reviewed plan, approval, execution, and verification proceed in order.</desc>
+  <rect width="1120" height="180" rx="20" fill="#0b1224"/>
+  <g fill="none" stroke="#57759d" stroke-width="2">
+    <path d="M208 90h16m208 0h16m208 0h16m208 0h16"/>
+    <path d="m218 85 6 5-6 5m218-10 6 5-6 5m218-10 6 5-6 5m218-10 6 5-6 5"/>
+  </g>
+  <g stroke-width="1.5">
+    <rect x="16" y="42" width="192" height="96" rx="14" fill="#14233b" stroke="#47d7e8"/>
+    <rect x="240" y="42" width="192" height="96" rx="14" fill="#18223e" stroke="#7a9df5"/>
+    <rect x="464" y="42" width="192" height="96" rx="14" fill="#211e3c" stroke="#aa86ee"/>
+    <rect x="688" y="42" width="192" height="96" rx="14" fill="#291e3a" stroke="#dc78be"/>
+    <rect x="912" y="42" width="192" height="96" rx="14" fill="#172e39" stroke="#69d4ba"/>
+  </g>
+  <g text-anchor="middle" font-family="system-ui, sans-serif">
+    <g fill="#edf5ff" font-size="17" font-weight="700">
+      <text x="112" y="82">Interview</text><text x="336" y="82">Reviewed plan</text><text x="560" y="82">Approve</text><text x="784" y="82">Execute</text><text x="1008" y="82">Verify</text>
+    </g>
+    <g fill="#aebfd6" font-size="13">
+      <text x="112" y="107">deep-interview</text><text x="336" y="107">ralplan</text><text x="560" y="107">approve</text><text x="784" y="107">team</text><text x="1008" y="107">ultragoal</text>
+    </g>
+  </g>
+</svg>

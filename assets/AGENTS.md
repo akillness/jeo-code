@@ -4,7 +4,12 @@
 # assets
 
 ## Purpose
-Static binary assets (images) used for project branding, documentation, and TUI/ASCII presentation. These files are referenced by README documentation and supporting Python helper scripts; they contain no executable logic.
+Static images and vector diagrams used for project branding, documentation, and TUI/ASCII presentation. These files are referenced by README documentation and supporting Python helper scripts; they contain no executable logic.
+≔14d0..14d0
+| `hero.png` | README banner generated with the Codex image backend using `character.png` and the previous hero as identity references; depicts the mascot with terminal, desktop, and messenger panels |
+| `workflow.svg` | Accessible spec-first workflow diagram shared by the four READMEs |
+≔29yw..29yw
+- Treat raster images as binary assets; SVG diagrams are editable text.
 
 ## Key Files
 | File | Description |

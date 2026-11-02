@@ -32,6 +32,8 @@
 
 - [양방향 메신저 게이트웨이 (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
+**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. 로컬 도구는 기본적으로 꺼져 있으며, `computer`를 명시적으로 허용하면 공유 호스트 데스크톱에, `bash`를 허용하면 셸에 접근합니다. 샌드박스가 아닙니다. [메신저 가이드](docs/integrations/messenger.md)를 참고하세요.
+
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
@@ -71,7 +73,6 @@ bun install -g jeo-code
 jeo --version
 ```
 
-> 이름 변경 이전 버전에서 업그레이드하시나요? 이전 CLI 이름이었던 `joc` 바이너리는 이제 `scripts/install.sh` / `scripts/uninstall.sh`가 자동으로 제거합니다. 수동 제거: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`.
 
 ## 빠른 시작
 
@@ -164,36 +165,12 @@ jeo approve <플랜경로>
 jeo team
 jeo ultragoal
 ```
-```
-  ┌──────────────────────┐
-  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
-  └──────────┬───────────┘
-             │ .jeo/state/<seed>.json
-             ▼
-  ┌──────────────────────┐
-  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
-  └──────────┬───────────┘
-             │ requires [OKAY] verdict
-             ▼
-  ┌──────────────────────┐
-  │       approve        │  Schema + roles + [OKAY] — unlocks execution
-  └──────────┬───────────┘
-             │
-             ▼
-  ┌──────────────────────┐
-  │        team          │  Serial executor · run lock · mutation audit
-  └──────────┬───────────┘
-             │ all tasks done
-             ▼
-  ┌──────────────────────┐
-  │      ultragoal       │  Honest verification — suite once, no fabrication
-  └──────────────────────┘
-```
+![Interview → reviewed plan → approval → execution → verification](assets/workflow.svg)
 
 - **deep-interview** — 모호성 스코어링 기반 소크라테스 루프. 기준이 구체적일 때만 시드 동결(vague-only 기준은 거부), 시드는 자체 파서 라운드트립을 통과해야 합니다. 새 아이디어가 완료된 인터뷰를 조용히 재사용하지 않습니다.
 - **ralplan** — 드래프팅 패스 + **저장소를 직접 읽는 critic 서브에이전트 게이트**: `[OKAY]`/`[ITERATE]`/`[REJECT]` 평결이 강제·영속됩니다. 무효 플랜(스키마·미지 역할)은 complete로 마킹되지 않습니다.
 - **approve** — `team`이 실행하는 계약(스키마+역할)을 검증하고 영속된 `[OKAY]` 평결까지 요구합니다.
-- **team** — 직렬 플랜 실행기: 크로스 프로세스 런 락, stale 플랜 리셋, 태스크별 서브에이전트 계약, 부모측 변이 감사(쓰기 0건의 "완료"는 플래그), 실패 마커 + 재개 시 부분 편집 경고.
+- **team** — 검토된 단계를 프로세스 간 실행 잠금 아래 실행합니다. 같은 `parallel_group`의 연속된 단계는 별도 Git 워크트리에서 병렬 실행하고 순서대로 병합합니다. 태스크별 계약·변경 감사·실패 마커로 미완료 작업을 드러냅니다.
 - **ultragoal** — 정직한 검증: 스위트는 전역 신호로 1회 실행, 기준은 기록될 뿐 개별 통과로 조작되지 않습니다.
 
 ## 검증 훅 (자기수정)

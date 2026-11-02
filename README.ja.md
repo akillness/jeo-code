@@ -32,6 +32,8 @@
 
 - [双方向メッセンジャーゲートウェイ (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
+**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。ローカルツールは既定で無効です。`computer` を明示的に許可すると共有ホストのデスクトップに、`bash` を許可するとシェルにアクセスでき、サンドボックスではありません。[ガイド](docs/integrations/messenger.md)を参照してください。
+
 📖 **[使い方ガイド](docs/usage-guide.md)** — インストール、TUI操作（↑履歴、Ctrl+O、`!`シェル）、スラッシュコマンド、`/resume`、スペックファーストワークフローをデモ動画付きで解説。
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
@@ -70,7 +72,6 @@ bun install -g jeo-code
 jeo --version
 ```
 
-> リネーム前のバージョンからアップグレードしますか? 旧 CLI 名だった `joc` バイナリは `scripts/install.sh` / `scripts/uninstall.sh` が自動的に削除します。手動で削除する場合: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`。
 
 ## クイックスタート
 
@@ -164,36 +165,12 @@ jeo approve <プランパス>
 jeo team
 jeo ultragoal
 ```
-```
-  ┌──────────────────────┐
-  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
-  └──────────┬───────────┘
-             │ .jeo/state/<seed>.json
-             ▼
-  ┌──────────────────────┐
-  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
-  └──────────┬───────────┘
-             │ requires [OKAY] verdict
-             ▼
-  ┌──────────────────────┐
-  │       approve        │  Schema + roles + [OKAY] — unlocks execution
-  └──────────┬───────────┘
-             │
-             ▼
-  ┌──────────────────────┐
-  │        team          │  Serial executor · run lock · mutation audit
-  └──────────┬───────────┘
-             │ all tasks done
-             ▼
-  ┌──────────────────────┐
-  │      ultragoal       │  Honest verification — suite once, no fabrication
-  └──────────────────────┘
-```
+![Interview → reviewed plan → approval → execution → verification](assets/workflow.svg)
 
 - **deep-interview** — 曖昧度スコアリングのソクラテス式ループ。基準が具体的な場合のみシードを凍結(曖昧のみの基準は拒否)、シードは自身のパーサをラウンドトリップで通過する必要があります。新しいアイデアが完了済みインタビューを黙って再利用することはありません。
 - **ralplan** — ドラフトパス + **リポジトリを実際に読む critic サブエージェントゲート**: `[OKAY]`/`[ITERATE]`/`[REJECT]` 評決が強制・永続化されます。無効なプラン(スキーマ・未知ロール)は complete になりません。
 - **approve** — `team` が実行する契約(スキーマ+ロール)を検証し、永続化された `[OKAY]` 評決まで要求します。
-- **team** — 直列プラン実行器: プロセス間ロック、stale プランのリセット、タスク別サブエージェント契約、親側の変更監査(書き込み0件の「完了」はフラグ)、失敗マーカー + 再開時の部分編集警告。
+- **team** — レビュー済みのステップをプロセス間ロックの下で実行します。同じ `parallel_group` を持つ連続ステップは別々の Git worktree で並列実行し、順にマージします。タスク契約、変更監査、失敗マーカーで未完了の作業を明示します。
 - **ultragoal** — 誠実な検証: スイートはグローバル信号として1回実行され、基準は記録されるのみで個別合格には捏造されません。
 
 ## 検証フック(自己修正)

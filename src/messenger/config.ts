@@ -12,6 +12,7 @@ const TOOLS: Record<string, true> = {
 	bash: true,
 	edit: true,
 	write: true,
+	computer: true,
 };
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -103,7 +104,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 		toolNames.some(name => typeof name !== "string" || !Object.hasOwn(TOOLS, name)) ||
 		new Set(toolNames).size !== toolNames.length
 	) {
-		throw new Error("toolNames must be a unique list drawn from read, grep, glob, bash, edit, write");
+		throw new Error("toolNames must be a unique list drawn from read, grep, glob, find, search, bash, edit, write, computer");
 	}
 	return {
 		cwd: path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd")),

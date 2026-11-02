@@ -739,7 +739,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // never persisted to config.
   const routeHistory = new RouteHistory();
   // Computer-use session override: undefined = follow config.computer.enabled, true/false = /computer on|off wins this session.
-  let sessionComputerOverride: boolean | undefined;
+  let sessionComputerOverride: boolean | undefined = flags.literalWorker && process.env.JEO_MESSENGER_COMPUTER_ENABLED === "1" ? true : undefined;
 
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
   // Every successful discovery is also persisted (`writeModelCache`), so the NEXT launch

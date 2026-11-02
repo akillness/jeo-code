@@ -252,12 +252,13 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   find: "find   {globPattern}               — find files by name",
   search: "search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
   ls: "ls     {dirPath}                   — list a directory's entries (dirs first)",
+  computer: "computer {action, x?, y?, text?, key?, deltaX?, deltaY?, duration?, actions?} — desktop automation (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch)",
 };
 
 export function buildToolProtocol(allowedTools: Set<string>): string {
   const lines: string[] = ["You have these tools (call exactly ONE per step):"];
   let num = 1;
-  for (const name of ["read", "write", "edit", "bash", "find", "search", "ls"]) {
+  for (const name of ["read", "write", "edit", "bash", "find", "search", "ls", "computer"]) {
     if (allowedTools.has(name)) {
       lines.push(`${num}. ${TOOL_DESCRIPTIONS[name]}`);
       num++;

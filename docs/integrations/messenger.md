@@ -25,6 +25,8 @@ jeo messenger run --config /absolute/private/path/messenger.json
 
 Local tools default to none. Enabling them grants allowlisted remote users the corresponding host authority; it is not an OS sandbox.
 
+For example, `"toolNames": ["read", "find", "search", "write", "edit", "computer"]` enables file operations and desktop automation in every messenger conversation using that configuration. `computer` is an explicit per-worker opt-in and does not change the global desktop setting; its supervisor and OS accessibility/screen-recording permissions still apply. All allowlisted users and platforms in the same configuration receive these tools, and they share the host desktop and filesystem, not isolated desktops. Restart the messenger service to apply changes.
+
 Discord's platform object may specify `"model": "antigravity/gemini-3.8-flash-medium"` and `"usageFallbackModel": "gpt-6.1-terra"`. This pins that Discord worker independently of global routing; other platforms are unchanged. The fallback requires its own usable credentials and is attempted only for a persistent usage/quota failure on the first step, before any tool could have run. Transient rate limits, authentication failures and later failures do not trigger it. Restart the messenger service after editing the configuration.
 
 ## Discord attachments

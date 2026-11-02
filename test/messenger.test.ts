@@ -26,6 +26,7 @@ describe("messenger security and configuration", () => {
 		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"], surprise: true } } }, "/tmp")).toThrow();
 		expect(() => parseMessengerConfig({ toolNames: ["delete"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow();
 		const parsed = parseMessengerConfig({ cwd: "work", sessionDir: "private", toolNames: ["read"], platforms: { discord: { allowedUserIds: ["1"], allowedChannelIds: ["2"] } } }, "/profile");
+		expect(parseMessengerConfig({ toolNames: ["read", "find", "search", "edit", "write", "computer"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual(["read", "find", "search", "edit", "write", "computer"]);
 		expect(parsed.cwd).toBe("/profile/work");
 		expect(parsed.sessionDir).toBe("/profile/private");
 		expect(() => validateMessengerEnvironment(parsed, {})).toThrow();

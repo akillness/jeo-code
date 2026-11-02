@@ -108,7 +108,8 @@ test("messenger launches isolated sessions with explicit tool authority and no b
     expect(activity).toEqual(["Working on your request"]);
     await reply({ ...base, messageId: "later" }, new AbortController().signal);
     await reply({ ...base, senderId: "different" }, new AbortController().signal);
-    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash"] }, fakeSpawn);
+    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash", "computer"] }, fakeSpawn);
+
     replies.push(permittedReply);
     await permittedReply(base, new AbortController().signal);
     await reply({ ...base, messageId: "options", text: "--tools=bash" }, new AbortController().signal);
@@ -122,7 +123,9 @@ test("messenger launches isolated sessions with explicit tool authority and no b
     expect((await fs.readdir(safe.sessionDir)).sort()).toEqual([`${sessionId(captured[0]!.argv)}.jsonl`, `${sessionId(captured[1]!.argv)}.jsonl`].sort());
     expect(captured.every(item => item.env.JEO_SESSION_DIR === safe.sessionDir)).toBe(true);
     expect(permitted).not.toContain("--no-tools");
-    expect(permitted[permitted.indexOf("--tools") + 1]).toBe("read,bash");
+    expect(permitted[permitted.indexOf("--tools") + 1]).toBe("read,bash,computer");
+    expect(captured[0]!.env.JEO_MESSENGER_COMPUTER_ENABLED).toBe("0");
+    expect(captured[2]!.env.JEO_MESSENGER_COMPUTER_ENABLED).toBe("1");
     expect(captured[0]!.requests).toEqual(["hello", "hello", "--tools=bash", "--list"]);
     expect(captured[0]!.argv).not.toContain("--tools=bash");
     expect(captured[0]!.argv).not.toContain("--list");

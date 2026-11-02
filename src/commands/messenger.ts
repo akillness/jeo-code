@@ -114,6 +114,8 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !secretNames.has(name))) as Record<string, string>;
 		for (const name of secretNames) env[name] = "";
 		env.JEO_SESSION_DIR = config.sessionDir;
+		// The explicit tool allowlist is the opt-in for this worker only.
+		env.JEO_MESSENGER_COMPUTER_ENABLED = tools.includes("computer") ? "1" : "0";
 		// Never inherit another platform's fallback policy from the gateway environment.
 		delete env.JEO_MESSENGER_USAGE_FALLBACK_MODEL;
 		if (platformConfig?.usageFallbackModel) env.JEO_MESSENGER_USAGE_FALLBACK_MODEL = platformConfig.usageFallbackModel;

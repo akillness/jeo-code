@@ -169,3 +169,39 @@ test("literal worker uses its explicit fallback only on a persistent quota failu
     expect(models).toEqual(["gpt-4o-mini"]);
   } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 30000);
+
+test("literal worker can use explicitly enabled computer and file tools", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-worker-tools-"));
+  const configDir = path.join(root, "config");
+  await fs.mkdir(configDir);
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini", computer: { enabled: false } }));
+  const requests: string[] = [];
+  const replies = [
+    JSON.stringify({ tool: "computer", arguments: { action: "wait", duration: 0 } }),
+    JSON.stringify({ tool: "write", arguments: { filePath: "result.txt", content: "worker file" } }),
+    JSON.stringify({ tool: "bash", arguments: { command: "test \"$(cat result.txt)\" = 'worker file'" } }),
+    JSON.stringify({ tool: "done", arguments: { reason: "finished" } }),
+  ];
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    if (request.method !== "POST") return Response.json({ data: [] });
+    const body = await request.text();
+    requests.push(body);
+    const content = replies[requests.length - 1] ?? replies[2];
+    if (!JSON.parse(body).stream) return Response.json({ choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }] });
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    const child = Bun.spawn([process.execPath, cli, "launch", "--print", "--no-tui", "--no-skills", "--tools", "computer,write,bash", "--literal-worker", "--model", "openai/gpt-4o-mini", "--", "worker"], {
+      cwd: root, env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, JEO_MESSENGER_COMPUTER_ENABLED: "1", OPENAI_API_KEY: "local-test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` }, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    child.stdin.write('"use tools"\n'); child.stdin.end();
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, stderr }).toMatchObject({ code: 0 });
+    expect(stdout).toContain('JEO_MESSENGER_RESULT');
+    expect(await fs.readFile(path.join(root, "result.txt"), "utf8")).toBe("worker file");
+    expect(JSON.parse((await fs.readFile(path.join(root, ".jeo", "computer-audit.jsonl"), "utf8")).trim())).toMatchObject({ action: { action: "wait" }, success: true });
+    expect(requests[0]).toContain("computer {action");
+    expect(requests[1]).toContain("Waited for 0 seconds");
+    expect(requests.length).toBeGreaterThanOrEqual(4);
+  } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
+}, 30000);

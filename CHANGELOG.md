@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.10] - 2026-11-02
+
+### Added
+- **Messenger computer use** — explicitly allow authorized messenger sessions to use the host computer tool, independently of the global computer setting. Host desktop and filesystem access are shared and not sandboxed.
+
+### Fixed
+- **Literal worker tool isolation** — prevent environment-provided tool lists from bypassing a messenger worker's explicit allowlist.
+
 ## [0.12.9] - 2026-11-02
 ≔14c4+
 - **Discord model policy** — optionally pin a Discord worker model and fall back on persistent usage or quota exhaustion before any tool execution; other platforms and global routing retain their own settings.

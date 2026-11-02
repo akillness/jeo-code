@@ -5,18 +5,14 @@
 
 ## Purpose
 Static images and vector diagrams used for project branding, documentation, and TUI/ASCII presentation. These files are referenced by README documentation and supporting Python helper scripts; they contain no executable logic.
-≔14d0..14d0
-| `hero.png` | README banner generated with the Codex image backend using `character.png` and the previous hero as identity references; depicts the mascot with terminal, desktop, and messenger panels |
-| `workflow.svg` | Accessible spec-first workflow diagram shared by the four READMEs |
-≔29yw..29yw
-- Treat raster images as binary assets; SVG diagrams are editable text.
 
 ## Key Files
 | File | Description |
 |------|-------------|
 | `character.png` | Static source render of the red crayfish coding-wizard mascot: cyan/red glasses, crimson shell shifting through magenta/violet/purple, and floating jeopi-inspired plush companions |
 | `character.gif` | Animated README mascot generated via the god-tibo-imagen skill (`gti` CLI, Codex/ChatGPT image backend): 4-frame narrative loop showing the mascot performing smart prompt routing — evaluating provider paths on a holographic dispatch panel, selecting the cheapest/most-efficient path (highlighted green), gold coins streaming in as savings, settling into a satisfied glow. Same crimson-shell/cyan-magenta-glasses/purple-DNA-robe identity as `character.png`, same dark-navy/cyan-grid backdrop |
-| `hero.png` | Primary hero/banner image for documentation (autonomous coding-agent scene) |
+| `hero.png` | README banner: the red crayfish wizard and plush companions in a cyan-magenta fantasy landscape, with visual tone inspired by jeopi's hero |
+| `workflow.svg` | Accessible spec-first workflow diagram shared by the four READMEs |
 | `icon.png` | Project icon (mascot face, 1024×1024) shown in README headers |
 | `icon-master.png` | Full-resolution source for the generated project icon |
 | `apple-touch-icon.png` | 180×180 touch icon derived from `icon.png` |
@@ -31,7 +27,7 @@ Static images and vector diagrams used for project branding, documentation, and 
 ## For AI Agents
 
 ### Working In This Directory
-- Treat contents as binary assets; do not attempt to edit images as text.
+- Treat raster images as binary assets; SVG diagrams are editable text.
 - Keep filenames stable, since `README.md` and root-level Python scripts (e.g., `analyze_image.py`, `describe_character.py`) reference them by path.
 - Optimize image size before committing new assets.
 

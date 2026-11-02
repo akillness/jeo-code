@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="jeo-code 自律コーディングエージェントのヒーローイラスト" width="100%" />
+  <img src="assets/hero.png" alt="光る幻想的な風景に佇む jeo-code の赤いザリガニ魔法使いとぬいぐるみの仲間たち" width="100%" />
 </p>
 
 <h1 align="center">jeo-code (jeo)</h1>

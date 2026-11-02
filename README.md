@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
+  <img src="assets/hero.png" alt="The jeo-code red crayfish wizard and plush companions on a glowing fantasy landscape" width="100%" />
 </p>
 
 <h1 align="center">jeo-code (jeo)</h1>

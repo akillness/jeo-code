@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="jeo-code 자율 코딩 에이전트 히어로 일러스트" width="100%" />
+  <img src="assets/hero.png" alt="빛나는 판타지 풍경 속 jeo-code 붉은 가재 마법사와 봉제 인형 친구들" width="100%" />
 </p>
 
 <h1 align="center">jeo-code (jeo)</h1>

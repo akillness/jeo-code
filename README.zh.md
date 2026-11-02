@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="jeo-code 自主编码代理主视觉插图" width="100%" />
+  <img src="assets/hero.png" alt="发光的奇幻风景中，jeo-code 红色小龙虾魔法师与毛绒伙伴" width="100%" />
 </p>
 
 <h1 align="center">jeo-code (jeo)</h1>

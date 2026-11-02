@@ -51,10 +51,10 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 ## Jeo Claw Multi-Agent Swarm
 
-At the heart of `jeo-code` is the **Jeo Claw Swarm** — an ensemble of 5 specialized Claw agents engineered to eliminate single-agent hallucination and state drift by enforcing strict role boundaries from specification to release.
+Set within the collaborative universe of `jeo-code` and `jeopi`—united by the **Red Crayfish Coding Wizard (jeo-code mascot)** and the **Hooded Plush Doll Companion (jeopi mascot)**—the **Jeo Claw Swarm** is an ensemble of 5 specialized Claw agents engineered to eliminate single-agent hallucination and state drift through strict role boundaries, anchored edits, and critic-gated verification.
 
 <p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="The Jeo Claw Family Multi-Agent Swarm" width="100%" />
+  <img src="assets/claw/family_jeoclaw.jpg" alt="The Red Crayfish Wizard and Jeopi plush companions leading the Jeo Claw Family Multi-Agent Swarm" width="100%" />
 </p>
 
 ### Specialized Claw Agent Roles

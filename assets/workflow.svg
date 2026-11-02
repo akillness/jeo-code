@@ -47,12 +47,12 @@
       JEO CLAW <tspan fill="#ff5252">SWARM</tspan> WORKFLOW
     </text>
     <text x="0" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#94a3b8">
-      Autonomous Multi-Agent Pipeline · Spec-First Engineering · Continuous Verification Gate
+      Autonomous Multi-Agent Pipeline · Spec-First Engineering · jeo-code × jeopi Swarm Universe
     </text>
     <g transform="translate(880, -12)">
       <rect width="220" height="32" rx="16" fill="#1e293b" stroke="#334155" stroke-width="1"/>
       <circle cx="18" cy="16" r="5" fill="#10b981"/>
-      <text x="32" y="20" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#cbd5e1">5 Specialized Claw Agents</text>
+      <text x="32" y="20" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#cbd5e1">jeo-code × jeopi Swarm</text>
     </g>
   </g>
 

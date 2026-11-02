@@ -42,10 +42,10 @@
 
 ## Jeo Claw 多智能体集群 (Jeo Claw Swarm)
 
-jeo-code 采用 **5 大专业化 Claw 智能体 (Jeo Claw Family)** 协同架构，避免单智能体幻觉与状态漂移，实现从需求分析到最终验证上线的全生命周期自主工程集群。
+基于 `jeo-code` 与 `jeopi` 的共同世界观——由 **红鳌虾编程巫师 (jeo-code 吉祥物)** 与 **连帽毛绒玩偶伙伴 (jeopi 吉祥物)** 共同主导，采用 **5 大专业化 Claw 智能体 (Jeo Claw Family & Jeopi Swarm)** 协同架构，避免单智能体幻觉与状态漂移，实现从需求分析、Critic 门禁评审到代码并发锻造与最终验证上线的全生命周期自主工程集群。
 
 <p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="Jeo Claw Family Multi-Agent Swarm" width="100%" />
+  <img src="assets/claw/family_jeoclaw.jpg" alt="红鳌虾巫师与 jeopi 毛绒玩偶率领的 Jeo Claw Family 多智能体集群概念插画" width="100%" />
 </p>
 
 ### 5 大 Claw 智能体职责矩阵

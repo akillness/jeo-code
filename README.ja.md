@@ -42,10 +42,10 @@
 
 ## Jeo Claw マルチエージェントエコシステム (Jeo Claw Swarm)
 
-jeo-code は単一エージェントの幻覚やコンテキスト逸脱を防ぎ、**5 つの専門化された Claw エージェント (Jeo Claw Family)** が協調して要件定義からデプロイまで完結する完全自律エンジニアリングスウォームです。
+`jeo-code` と `jeopi` の世界観—**赤いザリガニのコーディング魔法使い(jeo-code)** と **フード付きぬいぐるみ相棒(jeopi)** の共闘のもと、単一エージェントの幻覚やコンテキスト逸脱を防ぎ、**5 つの専門化された Claw エージェント (Jeo Claw Family & Jeopi Swarm)** が協調して要件定義からデプロイまで完結する完全自律エンジニアリングスウォームです。
 
 <p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="Jeo Claw Family Multi-Agent Swarm" width="100%" />
+  <img src="assets/claw/family_jeoclaw.jpg" alt="赤いザリガニ魔法使いと jeopi ぬいぐるみが率いる Jeo Claw Family マルチエージェントスウォーム" width="100%" />
 </p>
 
 ### 5 大 Claw エージェントの役割

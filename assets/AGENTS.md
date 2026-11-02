@@ -22,7 +22,7 @@ Static images and vector diagrams used for project branding, documentation, and 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `claw/` | Jeo Claw multi-agent swarm character & concept artwork (`family_jeoclaw.jpg`, `pdclaw.jpg`, `aiclaw.jpg`, `engineclaw.jpg`, `newsclaw.jpg`, `zeroclaw.webp`) |
+| `claw/` | Jeo Claw multi-agent swarm character & concept artwork rooted in the jeo-code & jeopi universe (red crayfish wizard, jeopi hooded plush companions, cyan/magenta glasses & synthwave cyber sanctum): `family_jeoclaw.jpg`, `pdclaw.jpg`, `aiclaw.jpg`, `engineclaw.jpg`, `newsclaw.jpg`, `zeroclaw.webp` |
 | `oauth/` | Source assets for the OAuth callback pages (`src/auth/callback-server.ts`); `jeo-wordmark.png` is the 480×480 source render, `jeo-wordmark.webp` is the optimized (~5KB) version whose base64 is inlined as a data URI in `callback-server.ts` (no static-asset serving) |
 
 
@@ -69,3 +69,10 @@ Static images and vector diagrams used for project branding, documentation, and 
      loop; frame durations 200/180/140/220ms. Regenerate by re-running `gti`
      with assets/character.gif's first frame as the `--image` reference to
      preserve identity, then re-run the same shared-palette assembly. -->
+<!-- MANUAL: assets/claw/* (v1.0) concept images were generated via god-tibo-imagen
+     (gti CLI with model gpt-5.6-sol) anchored against assets/character.png
+     to preserve the canonical jeo-code & jeopi world view: the red crayfish wizard mascot
+     (crimson shell, cyan/magenta 3D glasses, purple cyber robes) collaborated with
+     the jeopi hooded plush doll companions (split cyan/magenta pants, visible artisanal stitches),
+     in a synthwave cyber sanctuary of glowing terminal blueprints, neural routing glyphs,
+     anchored-edit forges, telemetry relays, and crystalline verification shields. -->

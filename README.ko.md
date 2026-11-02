@@ -49,10 +49,10 @@
 
 ## Jeo Claw 멀티 에이전트 생태계 (Jeo Claw Swarm)
 
-jeo-code의 핵심 철학은 단일 에이전트의 환각이나 단절을 막고, **5대 전문화된 Claw 에이전트(Jeo Claw Family)**가 협력하여 요구사항 도출부터 배포까지 완결하는 완전 자율 엔지니어링 스웜(Swarm)입니다.
+jeo-code와 jeopi의 독창적인 세계관—**붉은 가재 코딩 마법사(jeo-code Mascot)**와 **후드 봉제인형 동반자(jeopi Mascot)**의 공조 아래, 단일 에이전트의 환각이나 상태 단절을 방지하고 **5대 전문화된 Claw 에이전트(Jeo Claw Family & Jeopi Swarm)**가 협력하여 요구사항 도출부터 배포까지 완결하는 완전 자율 엔지니어링 스웜(Swarm)입니다. 각 Claw는 가재의 정밀한 집게발과 jeopi의 철저한 비평가(Critic) 게이트 수호 정신을 결합하여 설계되었습니다.
 
 <p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="Jeo Claw 패밀리 멀티 에이전트 팀 컨셉 이미지" width="100%" />
+  <img src="assets/claw/family_jeoclaw.jpg" alt="jeo-code 붉은 가재 마법사와 jeopi 봉제인형 마스코트가 이끄는 Jeo Claw 패밀리 멀티 에이전트 스웜 아트워크" width="100%" />
 </p>
 
 ### 5대 Jeo Claw 에이전트 역할군

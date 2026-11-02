@@ -279,7 +279,10 @@ export interface RunSubagentOptions {
   modelOverride?: string;
   /** Stable detached id (from SubagentRegistry), attached to all emitted TaskSubEvents. */
   detachedId?: string;
+  /** SubagentRegistry to report live activity into (e.g. current tool or step). */
+  registry?: SubagentRegistry;
 }
+
 
 /** `runSubagentOnce`'s result — a superset of `ToolResult` exposing the raw
  *  (unwrapped, unfenced) done reason and mutation-audit counters so a caller with
@@ -332,7 +335,18 @@ export async function runSubagentOnce(
   const { steer, slot, detachedId, projectContext: preloadedContext, signal } = opts;
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
-  const emit = (ev: TaskSubEvent) =>
+  const emit = (ev: TaskSubEvent) => {
+    if (detachedId && opts.registry) {
+      if (ev.kind === "tool") {
+        opts.registry.setActivity(detachedId, ev.detail ? `tool: ${ev.detail}` : "running tool");
+      } else if (ev.kind === "thinking") {
+        opts.registry.setActivity(detachedId, "thinking");
+      } else if (ev.kind === "step") {
+        opts.registry.setActivity(detachedId, ev.detail ? `step: ${ev.detail}` : "next step");
+      } else if (ev.kind === "done") {
+        opts.registry.setActivity(detachedId, undefined);
+      }
+    }
     opts.onEvent?.(
       detachedId
         ? { ...ev, detachedId }
@@ -340,6 +354,8 @@ export async function runSubagentOnce(
         ? { ...ev, index: slot.index, total: slot.total }
         : ev
     );
+  };
+
   const initialModel = opts.modelOverride || resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
   // gjc parity: a role may pin its own reasoning budget; absent = inherit the
@@ -621,6 +637,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       modelOverride?: string;
       /** Stable detached id from SubagentRegistry. */
       detachedId?: string;
+      /** SubagentRegistry to report live activity into. */
+      registry?: SubagentRegistry;
     } = {},
   ): Promise<SubagentRunResult> =>
     runSubagentOnce(role, taskText, context, cwd, {
@@ -633,7 +651,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       excludedCredentialScopes: extra.excludedCredentialScopes,
       modelOverride: extra.modelOverride,
       detachedId: extra.detachedId,
+      registry: extra.registry,
     });
+
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
     const roleArg = typeof args.role === "string" ? args.role.trim() : "";
@@ -768,9 +788,15 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // its own registry inbox (registry.steerDrainFor(id)) between its own steps.
     if (args.detached === true && opts.registry) {
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
-        runOne(role, taskText, ctx(args.context), cwd, { signal, steer: opts.registry!.steerDrainFor(id), detachedId: id }),
+        runOne(role, taskText, ctx(args.context), cwd, {
+          signal,
+          steer: opts.registry!.steerDrainFor(id),
+          detachedId: id,
+          registry: opts.registry,
+        }),
         { readOnly: role.readOnly },
       );
+
       // Remote subagent visibility/control over Telegram (gjc daemon parity, see
       // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.
       ensureSessionNotifyEndpoint(opts.registry, cwd, opts.sessionEndpoint);

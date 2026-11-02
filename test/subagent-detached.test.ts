@@ -411,3 +411,23 @@ test("subagent tool: supports pause, resume, verbosity, limit, and id security v
   expect(invalidIdRes.success).toBe(false);
   expect(invalidIdRes.error).toContain("Invalid subagent id");
 });
+test("registry: setActivity tracks live subagent activity in list and inspect", async () => {
+  const reg = new SubagentRegistry();
+  const tool = createSubagentTool(reg);
+  const cwd = await tmpDir();
+
+  const rec = reg.launch("executor", "long task", async () => {
+    return { success: true, output: "done" };
+  });
+
+  reg.setActivity(rec.id, "tool: bash");
+  expect(reg.get(rec.id)?.activity).toBe("tool: bash");
+
+  const inspectRes = await tool({ action: "inspect", id: rec.id }, cwd);
+  expect(inspectRes.success).toBe(true);
+  expect(inspectRes.output).toContain("(tool: bash)");
+
+  reg.setActivity(rec.id, undefined);
+  expect(reg.get(rec.id)?.activity).toBeUndefined();
+});
+

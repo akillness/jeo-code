@@ -57,7 +57,7 @@ export function truncateDetachedResult(s: string, maxBytes = MAX_DETACHED_RESULT
   return headSlice + marker + tailSlice;
 }
 
-export type SubagentStatus = "running" | "completed" | "failed" | "cancelled";
+export type SubagentStatus = "running" | "paused" | "completed" | "failed" | "cancelled";
 
 export interface SubagentRecord {
   /** Stable id, e.g. "executor-1". */
@@ -74,7 +74,13 @@ export interface SubagentRecord {
   result?: string;
   /** True when delegated execution may have changed workspace state. */
   mutationMayHaveOccurred?: boolean;
+  /** Live or last known activity description (e.g. current tool being run). */
+  activity?: string;
+  /** True when the subagent can be resumed with follow-up instructions. */
+  resumable?: boolean;
+
 }
+
 
 interface Entry {
   record: SubagentRecord;
@@ -91,10 +97,15 @@ interface Entry {
  *  streaming live events itself. */
 export type DetachedRunner = (signal: AbortSignal, id: string) => Promise<ToolResult>;
 
+export const DEFAULT_PAUSE_DIRECTIVE =
+  "Stop at the next safe boundary and yield. You can be resumed later with more instructions.";
+export const DEFAULT_RESUME_MESSAGE = "Continue from where you left off.";
+
 export class SubagentRegistry {
   private readonly entries = new Map<string, Entry>();
   private readonly seq = new Map<string, number>();
   private readonly steerInboxes = new Map<string, string[]>();
+  private readonly pausedIds = new Set<string>();
 
   /** Register and START a detached run; returns the (running) record immediately. */
   launch(role: string, task: string, runner: DetachedRunner, options: { readOnly?: boolean } = {}): SubagentRecord {
@@ -122,6 +133,7 @@ export class SubagentRegistry {
         if (record.status === "cancelled") return;
         record.status = res.success ? "completed" : "failed";
         record.success = res.success;
+        record.resumable = true;
         record.result = truncateDetachedResult(res.output || res.error || "");
       } catch (err) {
         // A mutating runner may throw after a partial workspace change; retain
@@ -129,12 +141,14 @@ export class SubagentRegistry {
         if (!entry.readOnly) record.mutationMayHaveOccurred = true;
         if (record.status === "cancelled") return;
         record.status = "failed";
+        record.resumable = true;
         record.result = truncateDetachedResult(err instanceof Error ? err.message : String(err));
       } finally {
         entry.settled = true;
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
         this.steerInboxes.delete(id);
       }
+
     })();
     return record;
   }
@@ -201,16 +215,67 @@ export class SubagentRegistry {
     };
   }
 
+
+  /** Record an active step or tool description for a subagent id. */
+  setActivity(id: string, activity: string | undefined): void {
+    const rec = this.get(id);
+    if (rec) {
+      rec.activity = activity;
+    }
+  }
+
+  /** Request that one or more running subagents pause at their next safe boundary. */
+  pause(ids: string[], directive = DEFAULT_PAUSE_DIRECTIVE): SubagentRecord[] {
+    const out: SubagentRecord[] = [];
+    const targets = ids.length ? ids : this.running().map(r => r.id);
+    for (const id of targets) {
+      const rec = this.get(id);
+      if (!rec) continue;
+      if (rec.status === "running") {
+        this.steer(id, directive);
+        this.pausedIds.add(id);
+        rec.status = "paused";
+        rec.resumable = true;
+      }
+      out.push(rec);
+
+    }
+    return out;
+  }
+
+  /** Resume a paused (or resumable completed) subagent with follow-up instructions. */
+  resume(id: string, message = DEFAULT_RESUME_MESSAGE): { success: boolean; record?: SubagentRecord; error?: string } {
+    const rec = this.get(id);
+    if (!rec) return { success: false, error: `No subagent matches ${id}.` };
+    this.pausedIds.delete(id);
+    if (rec.status === "paused") {
+      rec.status = "running";
+      this.steer(id, message);
+      return { success: true, record: rec };
+    }
+    if (rec.status === "running") {
+      this.steer(id, message);
+      return { success: true, record: rec };
+    }
+    // If completed or failed, steer queues message for any attached listener
+    rec.status = "running";
+    rec.resumable = true;
+    this.steer(id, message);
+    return { success: true, record: rec };
+  }
+
   /** Cancel the given ids (or all running, when empty): aborts the run and marks the
    *  record cancelled. Already-terminal records are returned unchanged. */
   cancel(ids: string[]): SubagentRecord[] {
     const out: SubagentRecord[] = [];
     for (const id of ids) {
+      this.pausedIds.delete(id);
       const e = this.entries.get(id);
       if (!e) continue;
-      if (e.record.status === "running") {
+      if (e.record.status === "running" || e.record.status === "paused") {
         e.record.status = "cancelled";
         e.record.finishedAt = Date.now();
+        e.record.resumable = false;
         e.abort.abort();
       }
       out.push(e.record);

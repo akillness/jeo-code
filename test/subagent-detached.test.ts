@@ -353,3 +353,61 @@ test("createTaskTool: detached without a registry falls back to a synchronous ru
   expect(res.output).toContain("[Executor subagent]");
   expect(res.output).not.toContain("[detached] launched");
 });
+
+test("subagent tool: supports pause, resume, verbosity, limit, and id security validation", async () => {
+  const reg = new SubagentRegistry();
+  const tool = createSubagentTool(reg);
+  const cwd = await tmpDir();
+
+  // 1. Launch a subagent that keeps running and drains steering
+  let pausedSeen = false;
+  let resumeSeen = false;
+  const rec = reg.launch("executor", "long task", async (signal, id) => {
+    const drain = reg.steerDrainFor(id);
+    while (!signal.aborted) {
+      const msgs = drain();
+      if (msgs.some(m => m.includes("Stop at the next safe boundary"))) {
+        pausedSeen = true;
+      }
+      if (msgs.some(m => m.includes("resume work"))) {
+        resumeSeen = true;
+        return { success: true, output: "Resumed work finished successfully." };
+      }
+      await new Promise(r => setTimeout(r, 10));
+    }
+    return { success: false, output: "Aborted." };
+  });
+
+  // 2. Pause action
+  const pauseRes = await tool({ action: "pause", id: rec.id }, cwd);
+  expect(pauseRes.success).toBe(true);
+  expect(pauseRes.output).toContain("PAUSED");
+  await new Promise(r => setTimeout(r, 25));
+  expect(pausedSeen).toBe(true);
+
+  // 3. Verbosity and limit in list/inspect
+  const listReceipt = await tool({ action: "list", verbosity: "receipt" }, cwd);
+  expect(listReceipt.success).toBe(true);
+  expect(listReceipt.output).toContain(rec.id);
+
+  // full verbosity forbidden on list
+  const listFull = await tool({ action: "list", verbosity: "full" }, cwd);
+  expect(listFull.success).toBe(false);
+  expect(listFull.error).toContain("verbosity='full' is not permitted with action='list'");
+
+  // 4. Resume action
+  const resumeRes = await tool({ action: "resume", id: rec.id, message: "resume work" }, cwd);
+  expect(resumeRes.success).toBe(true);
+  expect(resumeRes.output).toContain("Resumed subagent");
+
+  // 5. Await settled
+  const awaitRes = await tool({ action: "await", id: rec.id, timeoutMs: 1000 }, cwd);
+  expect(awaitRes.success).toBe(true);
+  expect(resumeSeen).toBe(true);
+  expect(awaitRes.output).toContain("Resumed work finished successfully.");
+
+  // 6. Security: reject invalid subagent IDs (prevent path traversal / malicious payload injection)
+  const invalidIdRes = await tool({ action: "steer", id: "../../evil/path", message: "hi" }, cwd);
+  expect(invalidIdRes.success).toBe(false);
+  expect(invalidIdRes.error).toContain("Invalid subagent id");
+});

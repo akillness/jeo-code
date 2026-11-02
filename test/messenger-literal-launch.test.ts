@@ -175,13 +175,17 @@ test("literal worker can use explicitly enabled computer and file tools", async 
   const configDir = path.join(root, "config");
   await fs.mkdir(configDir);
   await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini", computer: { enabled: false } }));
+  await fs.writeFile(path.join(root, "dummy.test.ts"), "import { test, expect } from 'bun:test'; test('ok', () => { expect(1).toBe(1); });\n");
   const requests: string[] = [];
   const replies = [
     JSON.stringify({ tool: "computer", arguments: { action: "wait", duration: 0 } }),
     JSON.stringify({ tool: "write", arguments: { filePath: "result.txt", content: "worker file" } }),
-    JSON.stringify({ tool: "bash", arguments: { command: "test \"$(cat result.txt)\" = 'worker file'" } }),
-    JSON.stringify({ tool: "done", arguments: { reason: "finished" } }),
+    JSON.stringify({ tool: "bash", arguments: { command: "bun test dummy.test.ts" } }),
+    JSON.stringify({ tool: "done", arguments: { reason: "Summary: finished\nChanged Files: result.txt\nVerification: bun test dummy.test.ts" } }),
   ];
+
+
+
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
     if (request.method !== "POST") return Response.json({ data: [] });
     const body = await request.text();
@@ -198,6 +202,8 @@ test("literal worker can use explicitly enabled computer and file tools", async 
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect({ code, stderr }).toMatchObject({ code: 0 });
     expect(stdout).toContain('JEO_MESSENGER_RESULT');
+
+
     expect(await fs.readFile(path.join(root, "result.txt"), "utf8")).toBe("worker file");
     expect(JSON.parse((await fs.readFile(path.join(root, ".jeo", "computer-audit.jsonl"), "utf8")).trim())).toMatchObject({ action: { action: "wait" }, success: true });
     expect(requests[0]).toContain("computer {action");

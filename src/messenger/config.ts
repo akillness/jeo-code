@@ -61,9 +61,11 @@ export function resolveMessengerToken(
 	return undefined;
 }
 
+export const DEFAULT_MESSENGER_TOOLS = ["read", "find", "search", "write", "edit", "bash", "computer"];
+
 export function parseMessengerConfig(value: unknown, baseDir: string): MessengerConfig {
 	const input = object(value, "Messenger config");
-	keys(input, ["cwd", "sessionDir", "toolNames", "platforms"], "Messenger config");
+	keys(input, ["cwd", "sessionDir", "toolNames", "platforms", "independentSessions"], "Messenger config");
 	const platformsInput = object(input.platforms, "platforms");
 	keys(platformsInput, PLATFORMS, "platforms");
 	if (Object.keys(platformsInput).length === 0) throw new Error("At least one messenger platform is required");
@@ -98,7 +100,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 		}
 		platforms[platform] = config;
 	}
-	const toolNames = input.toolNames === undefined ? [] : input.toolNames;
+	const toolNames = input.toolNames === undefined ? DEFAULT_MESSENGER_TOOLS : input.toolNames;
 	if (
 		!Array.isArray(toolNames) ||
 		toolNames.some(name => typeof name !== "string" || !Object.hasOwn(TOOLS, name)) ||
@@ -106,6 +108,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 	) {
 		throw new Error("toolNames must be a unique list drawn from read, grep, glob, find, search, bash, edit, write, computer");
 	}
+	const independentSessions = input.independentSessions !== undefined ? Boolean(input.independentSessions) : true;
 	return {
 		cwd: path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd")),
 		sessionDir: path.resolve(
@@ -114,6 +117,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 		),
 		toolNames: [...toolNames] as string[],
 		platforms,
+		independentSessions,
 	};
 }
 

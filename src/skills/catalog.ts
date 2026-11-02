@@ -117,9 +117,9 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
         : "Carry out this skill's workflow now. If it needs a concrete target you weren't given, make a reasonable assumption or ask the user via done."),
   ].join("\n");
 }
-export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
+export function skillsPromptSection(skills: SkillDoc[] = SKILLS, currentTask?: string): string {
   const bundleSkills: SkillDoc[] = [];
-  const configuredSkills: SkillDoc[] = [];
+  let configuredSkills: SkillDoc[] = [];
 
   const bundleNames = new Set(BUILTIN_SKILL_NAMES);
   for (const s of skills) {
@@ -128,6 +128,20 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
     } else {
       configuredSkills.push(s);
     }
+  }
+
+  // When a task is provided and skills exceed budget, sort configured skills by relevance
+  if (currentTask && currentTask.trim().length > 0 && configuredSkills.length > 5) {
+    const qTokens = new Set(
+      currentTask.toLowerCase().match(/[a-z0-9._-]{3,}/g) ?? []
+    );
+    configuredSkills = [...configuredSkills].sort((a, b) => {
+      const aScore = (a.name.toLowerCase().split(/[._-]/).some(t => qTokens.has(t)) ? 10 : 0) +
+        (qTokens.has(a.name.toLowerCase()) ? 20 : 0);
+      const bScore = (b.name.toLowerCase().split(/[._-]/).some(t => qTokens.has(t)) ? 10 : 0) +
+        (qTokens.has(b.name.toLowerCase()) ? 20 : 0);
+      return bScore - aScore;
+    });
   }
 
   const lines: string[] = [];
@@ -295,14 +309,17 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
     path.join(userHome, ".claude", "skills"),
     path.join(home, "agent", "skills"),
     path.join(userHome, ".agents", "skills"),
+    path.join(userHome, ".agent-skills"),
     userSkillsDir(),
     path.join(cwd, ".claude", "skills"),
     path.join(cwd, ".agents", "skills"),
+    path.join(cwd, ".agent-skills"),
     path.join(cwd, ".jeo", "skills"),
     path.join(cwd, ".jeo", "agent", "skills"),
     ...configured,
   ];
 }
+
 
 /** A frontmatter `name:` usable as a skill identity: one bare token, no spaces. */
 function sanitizeSkillName(raw: string | undefined): string | undefined {

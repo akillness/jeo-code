@@ -55,6 +55,8 @@ export interface MessengerConfig {
 	sessionDir: string;
 	toolNames: string[];
 	platforms: Partial<Record<MessengerPlatform, MessengerPlatformConfig>>;
+	/** Whether each message invocation runs in an isolated independent session. Defaults to true. */
+	independentSessions?: boolean;
 }
 
 export interface MessengerTransportDeps {

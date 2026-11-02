@@ -510,11 +510,13 @@ export async function setupDiscordMessenger(
 
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
 	if (options.artifacts) discord.artifactDir = "./artifacts";
+	const defaultTools = ["read", "find", "search", "write", "edit", "bash", "computer"];
 	const config = {
 		...existing,
 		cwd: str(existing?.cwd) ?? "./workspace",
 		sessionDir: str(existing?.sessionDir) ?? "./sessions",
-		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : []),
+		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : defaultTools),
+		independentSessions: existing?.independentSessions !== undefined ? Boolean(existing.independentSessions) : true,
 		platforms: { ...platforms, discord },
 	};
 	for (const relative of [config.cwd, config.sessionDir, discord.artifactDir]) {

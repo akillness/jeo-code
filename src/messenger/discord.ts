@@ -541,7 +541,11 @@ export function createDiscordAdapter(
 				try {
 					await messengerFetchJson(
 						`${messages}/${encodeURIComponent(statusId)}`,
-						{ method: "DELETE", headers: headers() },
+						{
+							method: "PATCH",
+							headers: headers(),
+							body: JSON.stringify({ content: "✅ Complete", allowed_mentions: { parse: [] } }),
+						},
 						signal,
 						deps.fetch,
 					);

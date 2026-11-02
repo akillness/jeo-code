@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [0.12.10] - 2026-11-02
+## [0.12.11] - 2026-11-02
+
+### Added
+- **Subagent lifecycle & verbosity control (jeopi parity)** — subagent control tool now supports safe pause directives (`pause`), resuming (`resume`), output verbosity scoping (`receipt` | `preview` | `full`), result limits (`limit: 1..50`), and strict ID security validation.
+- **jeo-skills workflow integration** — auto-discovery across `.agent-skills` paths, dynamic task-relevant workflow guidance ranking in prompt sections, and seamless integration with independent deterministic router harness engines.
+- **Messenger live activity streaming & isolated sessions** — Discord/messenger sessions stream fine-grained step & tool activity in real-time, preserve finished audit messages, support per-call isolated sessions (`independentSessions`), and enable sandbox & computer use by default.
+
 
 ### Added
 - **Messenger computer use** — explicitly allow authorized messenger sessions to use the host computer tool, independently of the global computer setting. Host desktop and filesystem access are shared and not sandboxed.

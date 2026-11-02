@@ -7,7 +7,7 @@ import { loadMessengerConfig, validateMessengerEnvironment } from "../messenger/
 import { createDiscordAdapter } from "../messenger/discord";
 import { setupDiscordMessenger } from "../messenger/discord-setup";
 import { messengerArtifactPrompt } from "../messenger/artifacts";
-import { createMessengerGateway, messengerSessionRoute } from "../messenger/gateway";
+import { createMessengerGateway, messengerSessionRoute, messengerConversationKey } from "../messenger/gateway";
 import { createMessengerSessionPool } from "../messenger/session-pool";
 import { createSlackAdapter } from "../messenger/slack";
 import { createTelegramAdapter } from "../messenger/telegram";
@@ -57,6 +57,10 @@ function terminalIO() {
 }
 
 function routeUuid(config: MessengerConfig, message: Parameters<MessengerReply>[0]): string {
+	if (config.independentSessions) {
+		const hex = new Bun.CryptoHasher("sha256").update(JSON.stringify([config.cwd, messengerConversationKey(message), message.messageId])).digest("hex");
+		return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+	}
 	const hex = messengerSessionRoute(config.cwd, message);
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

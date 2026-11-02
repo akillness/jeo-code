@@ -1035,8 +1035,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // rolling base — the engine's onBudget event keeps the denominator honest as it grows.
   const initialStepLimit = flags.maxSteps > 0 ? flags.maxSteps : initialDynamicStepLimit();
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
-  const streamEvents = flags.literalPrompt
-    ? { onStep: () => { process.stderr.write("JEO_MESSENGER_STEP\n"); } }
+  const streamEvents = (flags.literalPrompt || flags.literalWorker)
+    ? {
+        onStep: () => {
+          process.stderr.write("JEO_MESSENGER_STEP\n");
+        },
+        onAssistant: (_raw: string, invocation: any) => {
+          if (invocation?.tool) {
+            const summary = summarizeForgeInvocation(invocation.tool, invocation.arguments);
+            process.stderr.write(`JEO_MESSENGER_ACTIVITY ${summary.title}\n`);
+          }
+        },
+        onToolResult: (tool: string) => {
+          process.stderr.write(`JEO_MESSENGER_ACTIVITY Finished ${tool}\n`);
+        },
+        onNotice: (msg: string) => {
+          process.stderr.write(`JEO_MESSENGER_ACTIVITY ${msg}\n`);
+        },
+        onReasoningStart: () => {
+          process.stderr.write("JEO_MESSENGER_ACTIVITY Thinking...\n");
+        },
+      }
     : createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;
@@ -2316,6 +2335,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               console.log("JEO_MESSENGER_ERROR");
               break;
             }
+
+
           }
         } finally { input.close(); }
         return;

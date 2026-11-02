@@ -75,7 +75,12 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			} catch { retire(key, worker); }
 		}).catch(() => retire(key, worker));
 		void readLines(child.stderr, line => {
-			if (line === "JEO_MESSENGER_STEP") worker.pending?.report?.("Working on your request");
+			if (line.startsWith("JEO_MESSENGER_ACTIVITY ")) {
+				const activityText = line.slice("JEO_MESSENGER_ACTIVITY ".length).trim();
+				if (activityText) worker.pending?.report?.(activityText);
+			} else if (line === "JEO_MESSENGER_STEP") {
+				worker.pending?.report?.("Working on your request");
+			}
 		}).catch(() => retire(key, worker));
 		void child.exited.then(() => retire(key, worker), () => retire(key, worker));
 		return worker;

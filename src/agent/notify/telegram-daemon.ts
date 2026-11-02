@@ -92,7 +92,7 @@ export function diffSubagentTransitions(prev: SubagentRecord[], next: SubagentRe
 }
 
 /** One icon per subagent status; a "started" event renders as the running icon. */
-const STATUS_ICON: Record<SubagentRecord["status"], string> = { running: "▶", completed: "✅", failed: "❌", cancelled: "⏹" };
+const STATUS_ICON: Record<SubagentRecord["status"], string> = { running: "▶", paused: "⏸", completed: "✅", failed: "❌", cancelled: "⏹" };
 
 function projectName(cwd: string): string {
   return cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd;

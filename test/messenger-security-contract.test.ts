@@ -171,3 +171,24 @@ test("Bun dotenv autoload cannot restore messenger credentials to the child proc
   try { expect(JSON.parse(await reply(base, new AbortController().signal))).toEqual(["", ""]); }
   finally { await reply.close(); }
 });
+
+test("Discord model and fallback do not leak to a Telegram worker", async () => {
+  const cwd = await directory();
+  const captured: { argv: string[]; env: Record<string, string> }[] = [];
+  const spawn = ((argv: string[], options: { env: Record<string, string> }) => { captured.push({ argv, env: options.env }); return fakeWorker("ok"); }) as typeof Bun.spawn;
+  const safe: MessengerConfig = { ...config, cwd, sessionDir: path.join(cwd, "sessions"), platforms: {
+    discord: { ...config.platforms.discord!, model: "antigravity/gemini-3.8-flash-medium", usageFallbackModel: "gpt-6.1-terra" },
+    telegram: { tokenEnv: "JEO_TELEGRAM_BOT_TOKEN", allowedUserIds: ["owner"] },
+  } };
+  const reply = createMessengerCliReply(safe, spawn);
+  try {
+    await reply(base, new AbortController().signal);
+    await reply({ ...base, platform: "telegram", accountId: "telegram-bot" }, new AbortController().signal);
+    expect(captured[0]!.argv[captured[0]!.argv.indexOf("--model") + 1]).toBe("antigravity/gemini-3.8-flash-medium");
+    expect(captured[0]!.env.JEO_MESSENGER_USAGE_FALLBACK_MODEL).toBe("gpt-6.1-terra");
+    expect(captured[0]!.env.JEO_MESSENGER_FIXED_MODEL).toBe("1");
+    expect(captured[1]!.argv).not.toContain("--model");
+    expect(captured[1]!.env.JEO_MESSENGER_USAGE_FALLBACK_MODEL).toBeUndefined();
+    expect(captured[1]!.env.JEO_MESSENGER_FIXED_MODEL).toBeUndefined();
+  } finally { await reply.close(); }
+});

@@ -67,6 +67,7 @@ import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFrom
 import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
+import { messengerUsageFallback } from "../messenger/model-policy";
 
 
 import { listAliases } from "../ai/model-registry";
@@ -1241,7 +1242,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // global default (rememberModelPatch), so re-reading turnConfig.defaultModel here let
     // that write silently switch THIS running session's model mid-run. Per-session model
     // selection must stay session-local: running sessions never influence each other.
-    const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
+    const routingEnabled = flags.literalWorker && process.env.JEO_MESSENGER_FIXED_MODEL === "1"
+      ? false : sessionRouteOverride ?? !!turnConfig.routing?.enabled;
     let routeCredentialNotice: string | undefined;
     let routeVetoNote: string | undefined;
     // Credential SCOPES that have shown an ACCOUNT-LEVEL failure (rate limit,
@@ -1968,6 +1970,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           return null;
         };
         result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
+        const messengerFallback = flags.literalWorker && process.env.JEO_MESSENGER_FIXED_MODEL === "1"
+          ? messengerUsageFallback(process.env.JEO_MESSENGER_USAGE_FALLBACK_MODEL, activeModel, result)
+          : undefined;
+        if (messengerFallback) {
+          activeModel = messengerFallback;
+          turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
+          contextTokens = catalogMetadata(activeModel)?.contextTokens;
+          result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
+        }
         const routeFallbackMaxRaw = Number(jeoEnv("ROUTE_FALLBACK_MAX_ATTEMPTS") ?? NaN);
         const routeFallbackMax = Number.isFinite(routeFallbackMaxRaw) && routeFallbackMaxRaw >= 0
           ? Math.floor(routeFallbackMaxRaw)

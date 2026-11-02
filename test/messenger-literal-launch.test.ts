@@ -136,3 +136,36 @@ test("literal launches cannot auto-commit local changes even when globally enabl
     expect(await fs.readFile(path.join(repo, "owned.txt"), "utf8")).toBe("uncommitted user work\n");
   } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 30000);
+
+test("literal worker uses its explicit fallback only on a persistent quota failure", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-worker-fallback-"));
+  const configDir = path.join(root, "config");
+  await fs.mkdir(configDir);
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini", routing: { enabled: true } }));
+  let mode = "quota";
+  const models: string[] = [];
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    if (request.method !== "POST") return Response.json({ data: [] });
+    const body = await request.json() as { model: string; stream?: boolean };
+    models.push(body.model);
+    if (body.model === "gpt-4o-mini") return Response.json({ error: { message: mode === "quota" ? "quota exceeded" : "invalid credentials" } }, { status: mode === "quota" ? 429 : 401 });
+    if (!body.stream) return Response.json({ choices: [{ message: { role: "assistant", content: "fallback answer" }, finish_reason: "stop" }] });
+    return new Response('data: {"choices":[{"delta":{"content":"fallback answer"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    const run = async () => {
+      const child = Bun.spawn([process.execPath, cli, "launch", "--print", "--no-tui", "--no-skills", "--no-tools", "--literal-worker", "--model", "openai/gpt-4o-mini", "--", "worker"], {
+        cwd: root, env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "local-test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1`, JEO_MESSENGER_FIXED_MODEL: "1", JEO_MESSENGER_USAGE_FALLBACK_MODEL: "openai/gpt-4o" }, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+      });
+      child.stdin.write('"hello"\n'); child.stdin.end();
+      return { stdout: await new Response(child.stdout).text(), stderr: await new Response(child.stderr).text(), code: await child.exited };
+    };
+    const quota = await run();
+    expect(quota.stdout).toContain('JEO_MESSENGER_RESULT "fallback answer"');
+    expect(models).toEqual(["gpt-4o-mini", "gpt-4o"]);
+    models.length = 0; mode = "auth";
+    const auth = await run();
+    expect(auth.stdout).toContain("JEO_MESSENGER_ERROR");
+    expect(models).toEqual(["gpt-4o-mini"]);
+  } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
+}, 30000);

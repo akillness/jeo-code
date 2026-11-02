@@ -25,6 +25,8 @@ jeo messenger run --config /absolute/private/path/messenger.json
 
 Local tools default to none. Enabling them grants allowlisted remote users the corresponding host authority; it is not an OS sandbox.
 
+Discord's platform object may specify `"model": "antigravity/gemini-3.8-flash-medium"` and `"usageFallbackModel": "gpt-6.1-terra"`. This pins that Discord worker independently of global routing; other platforms are unchanged. The fallback requires its own usable credentials and is attempted only for a persistent usage/quota failure on the first step, before any tool could have run. Transient rate limits, authentication failures and later failures do not trigger it. Restart the messenger service after editing the configuration.
+
 ## Discord attachments
 
 Input accepts at most 10 files, at most 8 MiB each, only over HTTPS from `cdn.discordapp.com` or `media.discordapp.net` under `/attachments/`. Redirects, URL credentials, size mismatches, traversal, and symlinks are rejected. Output requires an operator-created `artifactDir`; only regular files beneath it are uploaded, with the same 10-file and 8 MiB limits.

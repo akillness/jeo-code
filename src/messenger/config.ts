@@ -75,7 +75,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			platform === "slack"
 				? ["tokenEnv", "appTokenEnv", "allowedUserIds", "allowedChannelIds"]
 				: platform === "discord"
-					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir"]
+					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir", "model", "usageFallbackModel"]
 					: ["tokenEnv", "allowedUserIds", "allowedChannelIds"],
 			`${platform} config`,
 		);
@@ -89,6 +89,12 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			config.allowedChannelIds = ids(item.allowedChannelIds, `${platform}.allowedChannelIds`);
 		if (platform === "discord" && item.artifactDir !== undefined)
 			config.artifactDir = path.resolve(baseDir, string(item.artifactDir, "discord.artifactDir"));
+		if (platform === "discord" && item.model !== undefined)
+			config.model = string(item.model, "discord.model");
+		if (platform === "discord" && item.usageFallbackModel !== undefined) {
+			if (!config.model) throw new Error("discord.usageFallbackModel requires discord.model");
+			config.usageFallbackModel = string(item.usageFallbackModel, "discord.usageFallbackModel");
+		}
 		platforms[platform] = config;
 	}
 	const toolNames = input.toolNames === undefined ? [] : input.toolNames;

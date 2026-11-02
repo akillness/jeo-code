@@ -98,7 +98,9 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const sourceEntry = process.argv[1]?.endsWith(".ts") ? process.argv[1] : undefined;
 		const tools = [...new Set(config.toolNames.map(name => name === "grep" ? "search" : name === "glob" ? "find" : name))];
 		const toolFlags = tools.length ? ["--tools", tools.join(",")] : ["--no-tools"];
-		const command = [executable, ...(sourceEntry ? ["--no-env-file", sourceEntry] : []), "launch", "--print", "--no-tui", "--no-skills", "--literal-worker", ...toolFlags, "--resume", id, "--", "worker"];
+		const platformConfig = config.platforms[message.platform];
+		const modelFlags = platformConfig?.model ? ["--model", platformConfig.model] : [];
+		const command = [executable, ...(sourceEntry ? ["--no-env-file", sourceEntry] : []), "launch", "--print", "--no-tui", "--no-skills", "--literal-worker", ...toolFlags, ...modelFlags, "--resume", id, "--", "worker"];
 		const secretNames = new Set<string>();
 		for (const platform of Object.values(config.platforms)) {
 			if (!platform) continue;
@@ -112,6 +114,11 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !secretNames.has(name))) as Record<string, string>;
 		for (const name of secretNames) env[name] = "";
 		env.JEO_SESSION_DIR = config.sessionDir;
+		// Never inherit another platform's fallback policy from the gateway environment.
+		delete env.JEO_MESSENGER_USAGE_FALLBACK_MODEL;
+		if (platformConfig?.usageFallbackModel) env.JEO_MESSENGER_USAGE_FALLBACK_MODEL = platformConfig.usageFallbackModel;
+		delete env.JEO_MESSENGER_FIXED_MODEL;
+		if (platformConfig?.model) env.JEO_MESSENGER_FIXED_MODEL = "1";
 		return pool.turn(id, command, config.cwd, env, [message.text, artifactPrompt].filter(Boolean).join("\n\n"), signal, onActivity);
 	};
 	return Object.assign(reply, { close: pool.close });

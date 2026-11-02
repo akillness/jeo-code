@@ -45,6 +45,9 @@ export interface MessengerPlatformConfig {
 	allowedChannelIds?: string[];
 	/** Dedicated operator-approved directory for Discord output files. */
 	artifactDir?: string;
+	/** Optional platform-specific model and persistent-usage-limit fallback. */
+	model?: string;
+	usageFallbackModel?: string;
 }
 
 export interface MessengerConfig {

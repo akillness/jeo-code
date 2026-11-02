@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
-  基于 Bun 的 AI 编码代理 CLI — 需求访谈、经评审的计划、带门禁的执行、诚实的验证。
+  基于 Bun 的 AI 编码代理 CLI — 需求访谈、经评审的计划、带门禁的执行、基于证据的检查。
 </p>
 
 <p align="center">
@@ -45,7 +45,7 @@
 - **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，每次模型选择都会持久化为新的默认值，而 prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集，**以账号当前实际提供的为准**(实时发现 — 例如 Gemini 3.6 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6；非对话模型与已弃用的 id 会被过滤掉，列表为空时也不会用静态目录顶替)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行；如果已配置的路由指向尚未就绪的提供商，jeo 会先切换到同层级的等价凭据模型，再退回默认模型。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
-- **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
+- **真实门禁，不做表演** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 将套件运行作为全局信号，不伪造逐条通过。这不能证明测试运行器真实可信或工作区正确。
 - **崩溃耐久、本地优先** — 全部状态位于 `.jeo/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
 - **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，代理运行时普通查询输入框仍保持可见并可编辑。Ctrl+O 详细信息切换、主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
@@ -54,9 +54,9 @@
 - **低价位评分模型路由** — `/goal` 验证器、`critic` 子代理角色,以及未锁定的 `task` 扇出批次,现在默认使用低价位、已配置凭证的模型,而不是悄悄搭乘与它们所评分/执行的工作相同的全价模型(`resolveVerifierModel`,针对浏览器 `verify` 动作按视觉能力过滤,确保纯文本的低价模型不会悄悄丢弃附带的截图)。
 - **`jeo routine init`** — 生成一个 GitHub Actions 工作流,在 schedule/issue/PR 触发器上以无头模式运行 jeo(`jeo "<prompt>" -p`),运行在 GitHub 自己的 runner 上 — 不需要笔记本电脑,并且不会给 jeo 自身增加任何新的攻击面(没有进程内调度器或 webhook 监听器)。`--dry-run` 可预览,`--no-pr` 则改为直接提交而非默认的每次运行一个 PR。
 - **远程监控与控制(Telegram、Discord、Slack)** — 配对一次机器人(`jeo notify setup --provider telegram|discord|slack`)后，一个共享的 `jeo daemon start` 会在所有活跃会话中、子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受来自人类 allowlist 的 `/subagents`、`/steer`、`/cancel`(Discord/Slack 上还有 `/sessions` 和 `/send`)回传。Telegram 额外提供论坛主题、内联键盘和图片附件；Discord 使用 REST + Gateway WebSocket；Slack 使用 Web API + Socket Mode。附带各平台详细配置指南及可安装的 Agent Skill(`channel-notify`)。
-- **无法绕过的门禁** — `approve` 会重新校验它正在批准的那份计划的精确摘要，`team` 会拒绝已审阅摘要发生变化的计划；`done` 调用会对照最新的验证证据重新检查(后来的失败检查会使先前的通过失效，三次纠正往返后硬性拒绝)；`autopilot` ratchet 会把失败的回滚记录为 `rollback_failed` 并以非零状态停止，而不是声称该步骤已回退。
+- **有边界的工作流门禁，不是证明** — `approve` 会重新校验其批准的确切计划摘要，`team` 会拒绝审核后摘要已变化的计划。调用 `done` 时，当前回合的变更与验证信号可以阻止或降级完成；`/goal` 另加一次基于对话/工具历史的 LLM 判断和确定性证据门禁。两者都不会独立重新读取工作区；工具/测试输出是证据，并不能证明运行器或结果可信。这些检查也不保证回合结束后后台任务不会修改文件。`autopilot` ratchet 会将回滚失败记为 `rollback_failed` 并以非零状态停止。
 - **不阻塞回合的会话级异步执行** — 通过 `task` 工具真实的 `tasks` 数组扇出独立工作，不阻塞父回合。detached 子代理、后台 job 和逐行 monitor 可在后续回合中继续使用 `subagent`/`job`/`monitor` 的 `list`、`inspect`、`await`、`cancel`、`tail` 控制。内联 TUI 为每个 worker 保留独立的实时 activity 槽位，并在会话退出或 Ctrl-C 时清理全部 registry。
-- **独立验证器，真正强制执行** — 计划再也无法跳过 architect/critic 步骤: `PlanSchema` 会拒绝任何以未验证变更结尾的计划(把验证器放在它该检查的变更之前也不算数)，在 `ralplan` 起草阶段和 `team`/`approve` 执行阶段都强制生效。每一次 architect/critic 裁决也都必须展示真实证据 — 观测到的 `read`/`search`/`find`/`ast_grep`/`lsp` 调用为零，无论文本怎么声称，裁决都会被拦下。
+- **计划 critic 门禁** — 计划不能跳过 architect/critic 步骤：`PlanSchema` 会拒绝以未验证变更结束的计划(变更之前的 verifier 不算)，并在 `ralplan` 起草阶段以及 `team`/`approve` 执行阶段生效。critic 裁决需要观察到仓库读取/搜索证据；这提高可审查性，但不等于独立验证工作区。
 - **安全边界自动模型回退** — 未分类的安全拒绝(可能是分类器误报，而非真实的内容策略命中)现在会切换到真正不同提供商的模型，而不是在同一个模型上无限退让 — 与现有的 rate-limit 快速回退是同一套模式。`Refusal (<category>)` 这种形态的确定性拒绝不受影响，仍然零回退硬失败。
 - **内存: 应得的信任** — 概念的验证日期现在只在蒸馏阶段被明确标记为已验证时才会写入，而不是每次写入都记录；`isConceptStale` 把未验证(或超过 30 天过期)的概念视为需要重新验证，而不是信任一个被动的时间戳。
 - **动态工作流(`eval` 工具)** — 围绕子代理派遣编写真正的 JS 控制流: `task(role, taskText, context?)`、`parallel(thunks)`、`pipeline(items, ...stages)`、`log(message)`，组合出 `task` 单阶段 `tasks[]` 批次无法表达的顺序/分支编排。运行在隔离的 Worker 线程中，具备真正的抢占式超时(`worker.terminate()`，而非同进程内的竞争) — 与 `bash` 同等的全进程信任级别，不假装沙箱，受同一个 interview 变更锁门控。
@@ -156,7 +156,7 @@ jeo launch --model agy/gemini-4-argon-low --plan --no-tui --no-session --no-skil
 
 ## Spec-first 工作流
 
-需求 → 计划 → 批准 → 执行 → 验证，经由 `.jeo/state/` 串联，每次交接都有**可阻断的真实门禁**:
+需求 → 计划 → 批准 → 执行 → 验证由 `.jeo/state/` 管理。各阶段门禁可以阻止相应流程，但不保证每次交接或最终完成结果都正确。
 
 ```bash
 jeo deep-interview "描述你想构建的东西"
@@ -167,11 +167,39 @@ jeo ultragoal
 ```
 ![Interview → reviewed plan → approval → execution → verification](assets/workflow.svg)
 
+```
+  ┌──────────────────────┐
+  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
+  └──────────┬───────────┘
+             │ .jeo/state/<seed>.json
+             ▼
+  ┌──────────────────────┐
+  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
+  └──────────┬───────────┘
+             │ requires [OKAY] verdict
+             ▼
+  ┌──────────────────────┐
+  │       approve        │  Schema + roles + [OKAY] — unlocks execution
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌──────────────────────┐
+  │        team          │  Serial executor · run lock · mutation audit
+  └──────────┬───────────┘
+             │ all tasks done
+             ▼
+  ┌──────────────────────┐
+  │      ultragoal       │  基于证据的报告 — 套件运行一次，不伪造逐项通过
+  └──────────────────────┘
+```
+
 - **deep-interview** — 基于歧义度评分的苏格拉底循环；只有标准足够具体才冻结种子(纯含糊标准会被拒绝)，且种子必须通过自身解析器的往返校验。新想法绝不会静默复用已完成的访谈。
 - **ralplan** — 起草阶段 + **真正读取仓库的 critic 子代理门禁**: 强制并持久化 `[OKAY]`/`[ITERATE]`/`[REJECT]` 裁决。无效计划(schema、未知角色)不会被标记为 complete。
 - **approve** — 校验 `team` 执行的确切契约(schema+角色)，并要求持久化的 `[OKAY]` 共识裁决。
 - **team** — 在跨进程运行锁下执行已审阅的步骤。具有相同 `parallel_group` 的连续步骤在独立 Git worktree 中并行执行并按顺序合并；任务契约、变更审计和失败标记会暴露未完成的工作。
-- **ultragoal** — 诚实验证: 套件作为全局信号只运行一次，标准只被记录，绝不伪造为逐条通过。
+- **ultragoal** — 基于证据的报告：套件运行一次作为全局信号，不伪造逐项通过。这不能证明测试运行器真实可信或工作区满足目标。
+
+`/goal` 会通过单独的 LLM 调用判断对话和已记录的工具历史，并对当前回合的修改与新验证信号应用确定性门禁。它不会重新读取工作区，也不会验证测试输出是否真实；launch 完成门禁也不检查仍在运行的后台任务。
 
 ## 验证钩子(自我修正)
 

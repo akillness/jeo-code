@@ -33,8 +33,8 @@ export function activityLine(text: string): string {
 
 export interface ActivityReporter {
 	report: MessengerActivityReporter;
-	/** Stop updates and remove any shown line; idempotent and never rejects. */
-	close(): Promise<void>;
+	/** Stop updates and finalize the status; idempotent and never rejects. */
+	close(outcome?: "success" | "failure" | "cancelled"): Promise<void>;
 }
 
 const NO_ACTIVITY: ActivityReporter = { report() {}, close: () => Promise.resolve() };
@@ -132,7 +132,7 @@ export function createActivityReporter(
 			pumping = true;
 			pump = run();
 		},
-		close() {
+		close(outcome = "success") {
 			closing ??= (async () => {
 				closed = true;
 				wake?.();
@@ -140,7 +140,7 @@ export function createActivityReporter(
 				if (!shown) return;
 				for (let attempt = 0; ; attempt++) {
 					try {
-						await boundedActivity(bounded => activity.call(adapter, destination, undefined, bounded));
+						await boundedActivity(bounded => activity.call(adapter, destination, undefined, bounded, outcome));
 						return;
 					} catch (error) {
 						const wait =
@@ -340,6 +340,7 @@ export function createMessengerGateway(
 			conversationTails.set(conversation, tail);
 			await previous;
 			activity = createActivityReporter(adapter, destination, signal, activityIntervalMs);
+			activity.report("Starting request");
 			let text: string;
 			try {
 				text = await reply(destination, signal, activity.report);
@@ -353,9 +354,6 @@ export function createMessengerGateway(
 				}
 				if (signal.aborted) return;
 				text = "The request could not be completed. Please try again.";
-			} finally {
-				// Retire the status line alongside reply delivery rather than delaying the reply on it.
-				void activity.close();
 			}
 			if (!signal.aborted && text.trim()) {
 				// A failed send may already have delivered a chunk: never retry the entire reply.
@@ -363,9 +361,10 @@ export function createMessengerGateway(
 			}
 			if (!signal.aborted) status(failed ? "failure" : "success");
 		} catch {
+			failed = true;
 			if (!signal.aborted) status("failure");
 		} finally {
-			await activity.close();
+			await activity.close(failed ? "failure" : signal.aborted ? "cancelled" : "success");
 			release();
 			if (tail && conversationTails.get(conversation) === tail) conversationTails.delete(conversation);
 			resolve();

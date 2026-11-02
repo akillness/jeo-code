@@ -114,7 +114,7 @@ import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
  
 import { stripMarkdown } from "../tui/components/markdown-text";
-import { summarizeForgeInvocation } from "../tui/components/forge";
+import { createMessengerActivityEvents } from "../messenger/activity";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
 import { bashTool } from "../agent/tools";
@@ -1034,28 +1034,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // `step N/M` display seed: the explicit --max-steps cap, else the dynamic budget's
   // rolling base — the engine's onBudget event keeps the denominator honest as it grows.
   const initialStepLimit = flags.maxSteps > 0 ? flags.maxSteps : initialDynamicStepLimit();
-  // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
+  // Literal workers send progress without exposing tool arguments or output.
   const streamEvents = (flags.literalPrompt || flags.literalWorker)
-    ? {
-        onStep: () => {
-          process.stderr.write("JEO_MESSENGER_STEP\n");
-        },
-        onAssistant: (_raw: string, invocation: any) => {
-          if (invocation?.tool) {
-            const summary = summarizeForgeInvocation(invocation.tool, invocation.arguments);
-            process.stderr.write(`JEO_MESSENGER_ACTIVITY ${summary.title}\n`);
-          }
-        },
-        onToolResult: (tool: string) => {
-          process.stderr.write(`JEO_MESSENGER_ACTIVITY Finished ${tool}\n`);
-        },
-        onNotice: (msg: string) => {
-          process.stderr.write(`JEO_MESSENGER_ACTIVITY ${msg}\n`);
-        },
-        onReasoningStart: () => {
-          process.stderr.write("JEO_MESSENGER_ACTIVITY Thinking...\n");
-        },
-      }
+    ? createMessengerActivityEvents(text => process.stderr.write(`JEO_MESSENGER_ACTIVITY ${text}\n`))
     : createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;

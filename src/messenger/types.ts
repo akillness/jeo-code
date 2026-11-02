@@ -31,11 +31,8 @@ export interface MessengerAdapter {
 		status: "processing" | "success" | "failure",
 		signal?: AbortSignal,
 	): Promise<void>;
-	/**
-	 * Show `text` (one sanitized line) as the request's single in-progress status, editing it in place on
-	 * later calls; `undefined` removes it. The gateway serializes and throttles calls per request.
-	 */
-	activity?(message: MessengerMessage, text: string | undefined, signal?: AbortSignal): Promise<void>;
+	/** Update the request's progress; undefined finishes it with the supplied outcome. */
+	activity?(message: MessengerMessage, text: string | undefined, signal?: AbortSignal, outcome?: "success" | "failure" | "cancelled"): Promise<void>;
 }
 
 export interface MessengerPlatformConfig {

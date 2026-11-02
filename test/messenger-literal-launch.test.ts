@@ -27,7 +27,7 @@ test("literal messenger prompts reach the model instead of executing local slash
         cwd: root, env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "local-test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` }, stdout: "pipe", stderr: "pipe",
       });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-      expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_STEP\n" });
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_ACTIVITY Step 1 · Thinking\n" });
       expect(stdout).toContain("safe response");
       expect(await fs.readFile(configPath, "utf8")).toBe(initial);
     }
@@ -95,7 +95,7 @@ test("resumed literal launches frame only the fresh Markdown reply", async () =>
         cwd: root, env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, JEO_SESSION_DIR: sessionDir, OPENAI_API_KEY: "local-test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` }, stdout: "pipe", stderr: "pipe",
       });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-      expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_STEP\n" });
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_ACTIVITY Step 1 · Thinking\n" });
       expect(stdout.trim()).toBe(`JEO_MESSENGER_RESULT ${JSON.stringify(replies[index])}`);
     }
     expect(calls).toBe(2);
@@ -129,7 +129,7 @@ test("literal launches cannot auto-commit local changes even when globally enabl
       cwd: repo, env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "local-test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_STEP\n" });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "JEO_MESSENGER_ACTIVITY Step 1 · Thinking\n" });
     expect(stdout.trim()).toBe('JEO_MESSENGER_RESULT "done"');
     expect(git(["rev-parse", "HEAD"])).toBe(baseline);
     expect(git(["status", "--porcelain", "--", "owned.txt"])).toBe("M owned.txt");

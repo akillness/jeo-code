@@ -344,6 +344,7 @@ export function createDiscordAdapter(
 		}
 	};
 	const activityMessages = new Map<string, string>();
+	const activityHistory = new Map<string, string[]>();
 	const headers = (): Record<string, string> => {
 		if (!token) throw new DiscordConfigurationError("Discord bot token is missing");
 		return { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
@@ -531,43 +532,39 @@ export function createDiscordAdapter(
 				deps.fetch,
 			);
 		},
-		async activity(message, text, signal) {
+		async activity(message, text, signal, outcome = "success") {
 			const channelId = message.threadId ?? message.channelId;
 			const key = JSON.stringify([channelId, message.messageId]);
 			const messages = `${DISCORD_API}/channels/${encodeURIComponent(channelId)}/messages`;
 			const statusId = activityMessages.get(key);
+			const previous = activityHistory.get(key) ?? [];
 			if (text === undefined) {
 				if (!statusId) return;
+				const label = outcome === "success" ? "✅ Complete" : outcome === "failure" ? "❌ Failed" : "⏹ Cancelled";
 				try {
 					await messengerFetchJson(
 						`${messages}/${encodeURIComponent(statusId)}`,
-						{
-							method: "PATCH",
-							headers: headers(),
-							body: JSON.stringify({ content: "✅ Complete", allowed_mentions: { parse: [] } }),
-						},
-						signal,
-						deps.fetch,
+						{ method: "PATCH", headers: headers(), body: JSON.stringify({ content: [label, ...previous].join("\n"), allowed_mentions: { parse: [] } }) },
+						signal, deps.fetch,
 					);
 				} catch (error) {
 					if (!(error instanceof MessengerHttpError && error.status === 404)) throw error;
 				}
 				activityMessages.delete(key);
+				activityHistory.delete(key);
 				return;
 			}
-			const content = `⏳ ${text}`;
+			// Keep only a short, bounded history of delivered updates in one editable message.
+			const history = [...previous, `• ${text}`].slice(-6);
+			const content = ["⏳ In progress", ...history].join("\n");
 			if (statusId) {
 				try {
 					await messengerFetchJson(
 						`${messages}/${encodeURIComponent(statusId)}`,
-						{
-							method: "PATCH",
-							headers: headers(),
-							body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
-						},
-						signal,
-						deps.fetch,
+						{ method: "PATCH", headers: headers(), body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) },
+						signal, deps.fetch,
 					);
+					activityHistory.set(key, history);
 					return;
 				} catch (error) {
 					if (!(error instanceof MessengerHttpError && error.status === 404)) throw error;
@@ -576,17 +573,13 @@ export function createDiscordAdapter(
 			}
 			const created = await messengerFetchJson(
 				messages,
-				{
-					method: "POST",
-					headers: headers(),
-					body: JSON.stringify({ content, allowed_mentions: { parse: [] }, flags: DISCORD_ACTIVITY_FLAGS }),
-				},
-				signal,
-				deps.fetch,
+				{ method: "POST", headers: headers(), body: JSON.stringify({ content, allowed_mentions: { parse: [] }, flags: DISCORD_ACTIVITY_FLAGS }) },
+				signal, deps.fetch,
 			);
 			if (!isRecord(created) || typeof created.id !== "string" || !created.id)
 				throw new Error("Discord activity message returned no ID");
 			activityMessages.set(key, created.id);
+			activityHistory.set(key, history);
 		},
 		async send(message, text, signal) {
 			let files: { name: string; data: Uint8Array }[] = [];

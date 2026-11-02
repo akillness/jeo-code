@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.12] - 2026-11-03
+
+### Fixed
+- **Discord messenger progress** — show safe, throttled step and tool updates in a single request status message, retaining recent activity and marking completion, failure, or cancellation without exposing tool arguments or output.
+
 ## [0.12.10] - 2026-11-02
 ## [0.12.11] - 2026-11-02
 

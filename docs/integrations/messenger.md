@@ -14,6 +14,8 @@ Setup validates the bot, enables Message Content intent when Discord permits it,
 
 The bot needs View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, and Send Messages in Threads. Server requests must mention the bot; replies are isolated in threads. DMs and thread follow-ups retain separate session history.
 
+While a request runs, Discord shows one silently updated progress message in the reply thread or DM. It retains up to six recently delivered updates (step number, tool name and outcome), then marks the request complete, failed or cancelled. Updates are throttled and coalesced, so fast intermediate steps may not appear. Tool arguments, tool output and provider error details are not included; the final answer is sent separately.
+
 ## Check and run
 
 ```sh

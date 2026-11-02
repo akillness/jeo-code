@@ -120,6 +120,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "messenger",
+    summary: "Run or configure the bidirectional Discord, Telegram, and Slack agent gateway.",
+    usage: "messenger [setup|check|run] --config <file> [--channel ID] [--user ID] [--tools LIST] [--artifacts] [--service]",
+    loader: async () => {
+      const m = await import("../commands/messenger");
+      return args => m.runMessengerCommand(args);
+    },
+  },
+  {
     name: "daemon",
     summary: "Manage the shared Telegram/Discord/Slack notification daemon.",
     usage: "daemon [status|start|stop|reload]",

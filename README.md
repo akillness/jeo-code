@@ -32,6 +32,8 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 ## Documentation
 
+- [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
+
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>

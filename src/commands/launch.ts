@@ -1082,8 +1082,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const draft = expandSentinel(queueBusySnapshot?.().text ?? "");
       if (!draft && !paste && !(queueBusyPasteActive?.() ?? false)) busyDraftHasPaste = false;
       if (submittedEnter && /^\/discord\s+control\s+off$/.test(draft.trim())) {
-        if (!busyDraftHasPaste && sessionNotifyEndpoint?.sessionId === sessionId) {
-          sessionNotifyEndpoint.setDiscordControlEnabled(false);
+        const endpoint = sessionNotifyEndpoint;
+        if (!busyDraftHasPaste && endpoint && endpoint.sessionId === sessionId) {
+          endpoint.setDiscordControlEnabled(false);
           queueBusyClear?.();
           view?.setLivePromptInput("");
           view?.setLivePromptHint([]);
@@ -1110,8 +1111,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       captureLivePromptInputChunk(emergencyInput, chunk, { multiline: true });
       if (!emergencyInput.partial && !paste && !emergencyInput.inPaste) emergencyPaste = false;
       if (!submitted) return;
-      if (!emergencyPaste && /^\/discord\s+control\s+off$/.test(emergencyInput.partial.trim()) && sessionNotifyEndpoint?.sessionId === sessionId) {
-        sessionNotifyEndpoint.setDiscordControlEnabled(false);
+      const endpoint = sessionNotifyEndpoint;
+      if (!emergencyPaste && /^\/discord\s+control\s+off$/.test(emergencyInput.partial.trim()) && endpoint && endpoint.sessionId === sessionId) {
+        endpoint.setDiscordControlEnabled(false);
         if (view) view.events().onNotice?.("Discord control revoked for this session.");
         else console.log("Discord control revoked for this session.");
       }
@@ -5485,10 +5487,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages);
         lastReply = reply;
+        const endpoint = sessionNotifyEndpoint;
         if (relayGeneration !== undefined && directLocalPrompt && !explicitPastedDraft && !promptServedFromPaste && !pasteLineFired &&
-            remoteInputPending === 0 && relayInputEpoch - relayEpoch === ambiguousPasteEpoch - ambiguousEpoch && sessionNotifyEndpoint?.sessionId === sessionId &&
+            remoteInputPending === 0 && relayInputEpoch - relayEpoch === ambiguousPasteEpoch - ambiguousEpoch && endpoint && endpoint.sessionId === sessionId &&
             done && reply !== "Cancelled." && reply.trim()) {
-          sessionNotifyEndpoint.sendLocalFinal(notifyRedact ? "[redacted]" : reply, relayGeneration);
+          endpoint.sendLocalFinal(notifyRedact ? "[redacted]" : reply, relayGeneration);
         }
         // A cancelled turn (ESC / Ctrl-C) must also cancel the pasted batch —
         // continuing to auto-run the rest of a paste after an abort is hostile.

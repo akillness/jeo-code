@@ -485,18 +485,22 @@ export class DiscordDaemon {
     this.seen.add(message.id);
     if (this.seen.size > 2048) this.seen.delete(this.seen.values().next().value!);
     const channelId = message.channel_id;
+    // Preserve the validated scalar values across the channel lookup await. TypeScript
+    // intentionally does not retain narrowing through an await on a mutable object.
+    const authorId = message.author.id;
+    const messageId = message.id;
     if (channelId !== this.config.channelId && !this.threads.has(channelId)) {
       const channel = await this.api.getChannel(channelId).catch(() => undefined);
-      if (!channel || ![10, 11, 12].includes(channel.type) || channel.parent_id !== this.config.channelId || channel.owner_id !== message.author.id) return;
-      this.threads.set(channelId, message.author.id);
+      if (!channel || ![10, 11, 12].includes(channel.type) || channel.parent_id !== this.config.channelId || channel.owner_id !== authorId) return;
+      this.threads.set(channelId, authorId);
     }
-    if ((channelId !== this.config.channelId || [10, 11, 12].includes(this.channelType)) && this.threads.get(channelId) !== message.author.id) return;
+    if ((channelId !== this.config.channelId || [10, 11, 12].includes(this.channelType)) && this.threads.get(channelId) !== authorId) return;
     const text = message.content.trim();
     let destination = channelId;
     try {
       if (channelId === this.config.channelId && [0, 5].includes(this.channelType)) {
-        destination = (await this.api.createThread(channelId, message.id, "jeo reply")).id;
-        this.threads.set(destination, message.author.id);
+        destination = (await this.api.createThread(channelId, messageId, "jeo reply")).id;
+        this.threads.set(destination, authorId);
       }
     } catch (error) {
       if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
@@ -504,7 +508,7 @@ export class DiscordDaemon {
       return;
     }
     const reaction = async (emoji: string, remove = false) => {
-      try { await (remove ? this.api.removeReaction(channelId, message.id, emoji) : this.api.addReaction(channelId, message.id, emoji)); }
+      try { await (remove ? this.api.removeReaction(channelId, messageId, emoji) : this.api.addReaction(channelId, messageId, emoji)); }
       catch (error) {
         if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
         else this.deps.onError?.("Discord reaction failed");

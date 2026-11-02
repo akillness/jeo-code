@@ -22,7 +22,6 @@ export interface SlashCommandInfo {
 
 export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/help", usage: "/help", description: "Show this help message", group: "system" },
-  { command: "/discord", usage: "/discord relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Control Discord session access or local response relay", group: "session" },
   { command: "/clear", usage: "/clear", description: "Clear conversation history (keeps system prompt)", group: "session" },
   { command: "/new", usage: "/new", description: "Start a new session (fresh history + new session id)", group: "session" },
   { command: "/drop", usage: "/drop", description: "Delete the current session and start a new one", group: "session" },
@@ -51,6 +50,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/subagent", usage: "/subagent [role]", description: "Show the current subagent composition (per-role model · thinking · steps); alias of /agents", group: "subagents" },
   { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
   { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
+  { command: "/discord", usage: "/discord relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Control Discord session access or local response relay", group: "session" },
   { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
 
@@ -333,4 +333,3 @@ export function tabCompleteSelection(line: string, matches: readonly string[], s
   const pick = matches[selected >= 0 && selected < matches.length ? selected : 0]!;
   return line.slice(0, trigger.start) + `${pick} `;
 }
-

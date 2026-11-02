@@ -44,6 +44,10 @@ const fatal = (err: unknown): never => {
 };
 process.on("uncaughtException", fatal);
 process.on("unhandledRejection", fatal);
+// Bun 1.4 may report a closed downstream pipe as a stream error event instead of
+// promoting it to uncaughtException. Keep both runtime shapes on the same quiet path.
+process.stdout.on("error", fatal);
+process.stderr.on("error", fatal);
 
 try {
   const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });

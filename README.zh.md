@@ -30,6 +30,8 @@
 
 ## 文档
 
+- [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
+
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>

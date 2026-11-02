@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
 const AGY = path.resolve(import.meta.dir, "fixtures/agy-fake-cli.ts");
+const GUARDIAN = path.resolve(import.meta.dir, "fixtures/pty-guardian.ts");
 
 for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of [[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false], [false, false, true, false, false, false], [true, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false], [false, false, false, false, true, true]] as const) test(`Discord terminal control and relay (no-tui=${noTui}, prior-paste=${priorPaste}, local-turn=${localTurn}, relay-turn=${relayTurn}, cancel-first=${cancelFirst}, paste-abort=${pasteAbort})`, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-pty-"));
@@ -24,6 +25,15 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
 
   let output = "";
   let outputWaiters: (() => void)[] = [];
+  const pending = new Set<string>();
+  let typedCharacter = "";
+  let discoveryEvents = 0;
+  let discoveryError = "";
+  const { promise: deadline, reject: rejectDeadline } = Promise.withResolvers<never>();
+  const phase = async <T>(label: string, action: () => Promise<T>): Promise<T> => {
+    pending.add(label);
+    try { return await Promise.race([action(), deadline]); } finally { pending.delete(label); }
+  };
   const terminal = new Bun.Terminal({ cols: 120, rows: 36, data(_terminal, bytes) {
     output += new TextDecoder().decode(bytes);
     const waiters = outputWaiters;
@@ -35,35 +45,52 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
     outputWaiters.push(resolve);
     return promise;
   };
-  const waitOutput = async (needle: string, from = 0) => {
+  const waitOutput = (needle: string, from = 0) => phase(`output ${JSON.stringify(needle)} from ${from}`, async () => {
     while (!output.slice(from).includes(needle)) await nextOutput();
-  };
-  const typed = async (text: string) => {
+  });
+  const typed = (text: string) => phase(`typing ${JSON.stringify(text)}`, async () => {
+    let index = 0;
     for (const character of text) {
+      typedCharacter = `${index++}:${JSON.stringify(character)}`;
       const echoed = nextOutput();
       terminal.write(character);
       await echoed;
     }
     terminal.write("\r");
-  };
+  });
   const discoveryReady = Promise.withResolvers<{ url: string; token: string; id: string }>();
   const watcher = watch(sessions, async () => {
+    discoveryEvents++;
     const names = await fs.readdir(sessions).catch(() => []);
     for (const name of names) if (name.endsWith(".json")) {
       try {
         const data = JSON.parse(await fs.readFile(path.join(sessions, name), "utf8"));
         discoveryReady.resolve({ ...data, id: name.slice(0, -5) });
-      } catch {}
+      } catch (error) { discoveryError = String(error); }
     }
   });
   const env = { HOME: root, PATH: `${bin}:${process.env.PATH ?? ""}`, JEO_CONFIG_DIR: config, JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color" };
   const command = process.env.JEO_TEST_BINARY ? [path.resolve(process.env.JEO_TEST_BINARY)] : [process.execPath, CLI];
-  const proc = Bun.spawn([...command, "launch", "--no-skills", "--model", "agy/gemini-4-argon-low", ...(noTui ? ["--no-tui"] : [])], { cwd: root, env, terminal });
+  const cliExited = Promise.withResolvers<number>();
+  let cliExitCode: number | undefined;
+  const proc = Bun.spawn([process.execPath, GUARDIAN, ...command, "launch", "--no-skills", "--model", "agy/gemini-4-argon-low", ...(noTui ? ["--no-tui"] : [])], {
+    cwd: root, env, terminal, detached: true,
+    ipc(message) {
+      if (message.type === "exit") { cliExitCode = message.exitCode; cliExited.resolve(message.exitCode); }
+    },
+  });
+  void proc.exited.then(code => rejectDeadline(new Error(`PTY guardian exited unexpectedly: ${code}`)));
   let ws: WebSocket | undefined;
   let childPid: number | undefined;
+  let testFailure: unknown;
   try {
+    // Real PTY processes cannot use fake time; fail before Bun's timeout so cleanup can run.
+    const diagnostic = setTimeout(() => {
+      rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; character: ${typedCharacter}; child exit: ${cliExitCode}; discovery events: ${discoveryEvents}; discovery error: ${discoveryError}; output tail: ${JSON.stringify(output.slice(-1000))}`));
+    }, 25_000);
+    try {
     await waitOutput("Type your message");
-    const discovery = await discoveryReady.promise;
+    const discovery = await phase("session discovery", () => discoveryReady.promise);
     ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
     const frames: Record<string, unknown>[] = [];
     const listeners: (() => void)[] = [];
@@ -71,7 +98,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
       frames.push(JSON.parse(String(event.data)));
       for (const resolve of listeners.splice(0)) resolve();
     });
-    const waitFrame = async (predicate: (frame: Record<string, unknown>) => boolean, from = 0) => {
+    const waitFrame = (predicate: (frame: Record<string, unknown>) => boolean, from = 0) => phase(`frame ${predicate.toString()} from ${from}`, async () => {
       for (;;) {
         const found = frames.slice(from).find(predicate);
         if (found) return found;
@@ -79,7 +106,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
         listeners.push(resolve);
         await promise;
       }
-    };
+    });
     await waitFrame(frame => frame.type === "snapshot");
     if (priorPaste) {
       const beforePaste = output.length;
@@ -155,7 +182,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
     });
     try {
       if (await fs.stat(path.join(root, "agy-ready")).then(() => true, () => false)) ready.resolve();
-      await ready.promise;
+      await phase("provider ready", () => ready.promise);
     } finally { readyWatch.close(); }
     if (pasteAbort) {
       const beforePaste = output.length;
@@ -170,7 +197,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
       try {
         ws.send(JSON.stringify({ type: "remote_cancel", sessionId: discovery.id, reqId }));
         if (await fs.stat(path.join(root, "agy-sigterm")).then(() => true, () => false)) terminated.resolve();
-        await terminated.promise;
+        await phase("provider SIGTERM", () => terminated.promise);
       } finally { signalWatch.close(); }
     }
     if (pasteAbort) terminal.write("\u0003\u001b[201~");
@@ -181,7 +208,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
     expect(disabled.enabled).toBe(false);
     if (pasteAbort) {
       terminal.write("\u0003");
-      expect(await proc.exited).not.toBe(0);
+      expect(await phase("terminal exit", () => cliExited.promise)).not.toBe(0);
       return;
     }
     if (cancelFirst) {
@@ -205,13 +232,33 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
       await typed("/help");
       await waitOutput("Tools: read / write / edit / bash / find / search.", beforeHelp);
     }
+    } finally { clearTimeout(diagnostic); }
+  } catch (error) {
+    testFailure = error;
+    throw error;
   } finally {
     watcher.close();
     ws?.close();
-    if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch {} }
-    proc.kill();
-    await proc.exited.catch(() => {});
-    terminal.close();
+    let cleanupFailure: unknown;
+    const { promise: cleanupDeadline, reject: rejectCleanup } = Promise.withResolvers<never>();
+    // This watchdog bounds a real subprocess; fake time cannot stop an OS process.
+    const cleanupTimer = setTimeout(() => rejectCleanup(new Error("PTY guardian did not stop within 2 seconds")), 2_000);
+    try {
+      // IPC queues the stop even if the guardian has not yet begun executing.
+      if (proc.exitCode === null) proc.send("stop");
+      await Promise.race([proc.exited, cleanupDeadline]);
+    } catch (error) {
+      cleanupFailure = error;
+      // Disconnect requests the same self-termination without signaling a PID.
+      try { proc.disconnect(); } catch {}
+    } finally {
+      clearTimeout(cleanupTimer);
+      terminal.close();
+    }
+    if (cleanupFailure) {
+      if (testFailure) throw new AggregateError([testFailure, cleanupFailure], "PTY test and cleanup failed");
+      throw cleanupFailure;
+    }
     await fs.rm(root, { recursive: true, force: true });
   }
 }, 30000);

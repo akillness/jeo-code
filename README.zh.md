@@ -40,34 +40,6 @@
 
 > 无法内联播放？▶ [播放/下载演示视频](docs/jeo-code-promo.mp4)。
 
-## Jeo Claw 多智能体集群 (Jeo Claw Swarm)
-
-基于 `jeo-code` 与 `jeopi` 的共同世界观——由 **红鳌虾编程巫师 (jeo-code 吉祥物)** 与 **连帽毛绒玩偶伙伴 (jeopi 吉祥物)** 共同主导，采用 **5 大专业化 Claw 智能体 (Jeo Claw Family & Jeopi Swarm)** 协同架构，避免单智能体幻觉与状态漂移，实现从需求分析、Critic 门禁评审到代码并发锻造与最终验证上线的全生命周期自主工程集群。
-
-<p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="红鳌虾巫师与 jeopi 毛绒玩偶率领的 Jeo Claw Family 多智能体集群概念插画" width="100%" />
-</p>
-
-### 5 大 Claw 智能体职责矩阵
-
-<p align="center">
-  <img src="assets/claw/pdclaw.jpg" width="18%" alt="PD Claw" />
-  <img src="assets/claw/aiclaw.jpg" width="18%" alt="AI Claw" />
-  <img src="assets/claw/engineclaw.jpg" width="18%" alt="Engine Claw" />
-  <img src="assets/claw/newsclaw.jpg" width="18%" alt="News Claw" />
-  <img src="assets/claw/zeroclaw.webp" width="18%" alt="Zero Claw" />
-</p>
-
-| 智能体 | 角色定位 | 核心关卡与职责 | 核心命令与工具 |
-| :--- | :--- | :--- | :--- |
-| 📋 **PD Claw** | **Product Director** | 苏格拉底式提问消除模糊性，冻结需求与 PRD/验收标准 | `jeo deep-interview` |
-| 🧠 **AI Claw** | **Intelligence & Architect** | 成本感知模型路由，仓库代码 Critic 评审 (`[OKAY]`) 签名锁定 | `jeo ralplan`, `/route`, `jeo approve` |
-| ⚙️ **Engine Claw** | **Parallel Executor** | Git Worktree 隔离并发执行，锚点文件编辑 (`42ab\|`) 与修改审计 | `jeo team --parallel`, `edit`, `write` |
-| 📡 **News Claw** | **Monitor & Telemetry** | 实时远程状态守护广播 (Discord/Telegram/Slack)，外部知识注入 | `jeo daemon start`, `jeo notify` |
-| 🛡️ **Zero Claw** | **Verifier & Release** | 全面客观验证 (`ultragoal`)，运行时自愈修复与自动化 PR 发布 | `jeo ultragoal`, `done`, `jeo routine` |
-
----
-
 ## 亮点
 
 - **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，每次模型选择都会持久化为新的默认值，而 prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集，**以账号当前实际提供的为准**(实时发现 — 例如 Gemini 3.6 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6；非对话模型与已弃用的 id 会被过滤掉，列表为空时也不会用静态目录顶替)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行；如果已配置的路由指向尚未就绪的提供商，jeo 会先切换到同层级的等价凭据模型，再退回默认模型。

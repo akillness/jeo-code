@@ -45,35 +45,8 @@
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
 
 <video src="https://raw.githubusercontent.com/akillness/jeo-code/main/docs/jeo-code-promo.mp4" controls muted playsinline width="100%"></video>
+
 > 인라인 재생이 안 되면 ▶ [데모 영상 재생/다운로드](docs/jeo-code-promo.mp4).
-
-## Jeo Claw 멀티 에이전트 생태계 (Jeo Claw Swarm)
-
-jeo-code와 jeopi의 독창적인 세계관—**붉은 가재 코딩 마법사(jeo-code Mascot)**와 **후드 봉제인형 동반자(jeopi Mascot)**의 공조 아래, 단일 에이전트의 환각이나 상태 단절을 방지하고 **5대 전문화된 Claw 에이전트(Jeo Claw Family & Jeopi Swarm)**가 협력하여 요구사항 도출부터 배포까지 완결하는 완전 자율 엔지니어링 스웜(Swarm)입니다. 각 Claw는 가재의 정밀한 집게발과 jeopi의 철저한 비평가(Critic) 게이트 수호 정신을 결합하여 설계되었습니다.
-
-<p align="center">
-  <img src="assets/claw/family_jeoclaw.jpg" alt="jeo-code 붉은 가재 마법사와 jeopi 봉제인형 마스코트가 이끄는 Jeo Claw 패밀리 멀티 에이전트 스웜 아트워크" width="100%" />
-</p>
-
-### 5대 Jeo Claw 에이전트 역할군
-
-<p align="center">
-  <img src="assets/claw/pdclaw.jpg" width="18%" alt="PD Claw" />
-  <img src="assets/claw/aiclaw.jpg" width="18%" alt="AI Claw" />
-  <img src="assets/claw/engineclaw.jpg" width="18%" alt="Engine Claw" />
-  <img src="assets/claw/newsclaw.jpg" width="18%" alt="News Claw" />
-  <img src="assets/claw/zeroclaw.webp" width="18%" alt="Zero Claw" />
-</p>
-
-| 에이전트 | 명칭 | 핵심 임무 및 게이트 | 주요 구동 도구 및 명령어 |
-| :--- | :--- | :--- | :--- |
-| 📋 **PD Claw** | **Product Director** | 소크라테스식 인터뷰로 요구사항 모호성 제거, PRD & 유저스토리 동결, Spec Seed 생성 | `jeo deep-interview` |
-| 🧠 **AI Claw** | **Intelligence & Architect** | 비용 인식 프롬프트 라우팅, 아키텍처 비평가(Critic) [OKAY] 합의 영속화, 플랜 다이제스트 서명 | `jeo ralplan`, `/route`, `jeo approve` |
-| ⚙️ **Engine Claw** | **Parallel Executor** | Git Worktree 격리 병렬 실행, 콘텐츠 앵커(`42ab\|`) 기반 무결성 편집, 부모 프로세스 변이 감사 | `jeo team --parallel`, `edit`, `write` |
-| 📡 **News Claw** | **Monitor & Telemetry** | 실시간 원격 데몬 중계 (Discord/Telegram/Slack), 하위 에이전트 수명주기 엣지 브로드캐스트, 외부 지식 주입 | `jeo daemon start`, `jeo notify` |
-| 🛡️ **Zero Claw** | **Verifier & Release** | 증거 기반 종합 검증(Ultragoal), 테스트 실패 시 자가 치유 루프, 무결성 검증 PR 자동 생성 및 릴리즈 | `jeo ultragoal`, `done`, `jeo routine` |
-
----
 
 ## 주요 기능 (Overview)
 

@@ -6,7 +6,15 @@
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
-  A Bun-based AI coding-agent CLI — interviews, reviewed plans, gated execution, honest verification.
+  A Bun-based AI coding-agent CLI — interviews, reviewed plans, gated execution, evidence-aware checks.
+</p>
+
+<p align="center">
+  <a href="#key-features-overview">Key Features</a> ·
+  <a href="#core-workflows">Core Workflows</a> ·
+  <a href="#slash-commands">Slash Commands</a> ·
+  <a href="#cli-commands">CLI Commands</a> ·
+  <a href="#quick-start">Quick Start</a>
 </p>
 
 <p align="center">
@@ -38,6 +46,33 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 > Demo not playing inline? ▶ [Play / download the demo video](docs/jeo-code-promo.mp4).
 
+## Key Features (Overview)
+
+jeo-code is a **local-first AI coding agent CLI** designed to safely drive entire software engineering lifecycles — from ambiguity-resolving interviews and reviewed plans to concurrent subagent execution and self-healing verification loops.
+
+### 1. Intelligent Multi-Provider & Cost-Aware Routing
+- **Unified Model Loop**: Seamless JSON tool-calling across Anthropic, OpenAI (+Codex), Gemini, Antigravity, Ollama, LM Studio, and 20+ OpenAI/Anthropic-compatible clouds.
+- **Custom Endpoint Proxies**: Register private vLLM boxes, SGLang, corporate LiteLLM gateways, or local setups (`jeo provider add`) without hijacking default provider configs.
+- **Turn-by-Turn Prompt Routing**: Automatically evaluates prompt complexity to route requests to the most cost-effective tier supported by active credentials (`/route`).
+- **Fast Provider Failover**: Smoothly pivots to equivalent-tier models upon rate limits (429), timeouts, or safety filter false-positives.
+
+### 2. Surgical Code Editing & Self-Correcting Verification
+- **Content-Anchored Edits**: Read outputs carry unique anchors (`42ab|`); line-anchored edits prevent drift, detect out-of-order changes, and reject stale modifications before file corruption can occur.
+- **Automated Verification Hooks**: Executes configured post-edit test commands (`tsc`, `eslint`, test suites) and feeds diagnostics directly back into the agent loop for immediate in-flight repairs.
+- **Deterministic Completion Gates**: Enforces proof of execution; `done` cannot be called while mutations remain unverified or verification hooks are failing.
+
+### 3. Multi-Agent Orchestration & Asynchronous Fan-Out
+- **Specialized Roles**: Independently configure models, reasoning budgets, and step limits for `planner`, `architect`, `executor`, and `critic` roles (`/agents`).
+- **Async Subagent Fan-Out (`task` & `eval`)**: Concurrently dispatch background tasks without blocking parent interactive turns, monitorable via `/jobs` and the inline TUI.
+- **Economical Grader Allocation**: Subagents assigned to review (`critic`), verification (`/goal`), and batch jobs default to low-cost credentialed models.
+
+### 4. Advanced Interaction, Desktop Automation & Remote Ops
+- **Headless Browser Tool**: First-class Playwright Chromium automation (`open`, `act`, `observe`) paired with vision-capable models to perform visual QA and element-level verification.
+- **Remote Bot Daemon (Telegram, Discord, Slack)**: Background daemon (`jeo daemon start`) broadcasts subagent lifecycle transitions and accepts authorized steering commands (`/steer`, `/cancel`, `/sessions`).
+- **Fail-Closed Computer Use**: Opt-in desktop GUI automation under explicit heartbeat supervisors and kill-switches (`/computer`).
+
+---
+
 ## Highlights
 
 - **Prompt routing (cost-aware, credential-aware)** — every turn can auto-route to a tier-appropriate model among only the providers your configured credentials actually serve (`/route [status|on|off|why|history]`), with a live equivalent-model fallback whenever a routed provider is rate-limited, unauthenticated, unreachable, or silently times out — see `/route why` for the last decision, `/route history` for the recent ones.
@@ -55,9 +90,8 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 - **Cheap-tier grader routing** — the `/goal` verifier, the `critic` subagent role, and unpinned `task` fan-out batches default to a cheap credentialed model instead of silently riding the same full-price model as the work they're grading/executing (`resolveVerifierModel`, vision-capability-filtered for the browser `verify` action so a text-only cheap model never silently drops an attached screenshot).
 - **`jeo routine init`** — generates a GitHub Actions workflow that runs jeo headlessly (`jeo "<prompt>" -p`) on a schedule/issue/PR trigger, on GitHub's own runners — no laptop required, and zero new attack surface inside jeo itself (no in-process scheduler or webhook listener). `--dry-run` to preview, `--no-pr` for a direct commit instead of the default PR-per-run.
 - **Remote monitoring & control (Telegram, Discord, Slack)** — pair a bot once (`jeo notify setup --provider telegram|discord|slack`), then one shared `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) across every live session and accepts `/subagents`, `/steer`, `/cancel` (plus `/sessions` and `/send` on Discord/Slack) back from a human allowlist. Telegram adds forum topics, inline keyboards, and image attachments; Discord uses REST + Gateway WebSocket; Slack uses Web API + Socket Mode. Every remote control is acknowledged by the local session, never assumed executed.
-- **Gates that cannot be talked around** — `approve` re-validates the exact plan digest it is approving and `team` refuses a plan whose reviewed digest changed; a `done` call is re-checked against the latest verification evidence (a later failed check invalidates an earlier pass, three correction bounces then a hard rejection); the `autopilot` ratchet records a failed rollback as `rollback_failed` and halts non-zero instead of claiming a reverted step.
-- **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions (`list`, `inspect`, `await`, `cancel`, `tail`). The inline TUI keeps each worker's live activity in its own slot and tears down every registry on session exit or Ctrl-C.
-- **Independent verifier, actually enforced** — a plan can no longer skip its architect/critic step: `PlanSchema` rejects any plan that ends with an unverified mutation (a verifier placed BEFORE the mutation it should check doesn't count either), at both `ralplan` draft time and `team`/`approve` execution time. Every architect/critic verdict must also show real evidence — zero observed `read`/`search`/`find`/`ast_grep`/`lsp` calls blocks the verdict regardless of what the text claims.
+- **Bounded workflow gates, not proof** — `approve` re-validates the exact plan digest it approves and `team` rejects a plan whose reviewed digest changed. At `done`, current-turn mutation and verification signals can block or downgrade completion; `/goal` adds a separate LLM judgment over conversation/tool history plus deterministic evidence gates. Neither mechanism independently re-reads the workspace, and tool/test output is evidence, not proof that the runner or result is trustworthy. These checks do not establish that background work cannot mutate files after the turn; the autopilot ratchet records a failed rollback as `rollback_failed` and halts non-zero.
+- **Plan critic gate** — a plan cannot skip its architect/critic step: `PlanSchema` rejects plans ending with an unverified mutation (a verifier before the mutation does not count), at `ralplan` draft time and `team`/`approve` execution time. Critic verdicts require observed repository-read/search evidence; that supports reviewability, not independent validation of the workspace.
 - **Safety-boundary automatic model fallback** — an uncategorized safety refusal (a possible classifier false positive, not a genuine content-policy hit) now switches to a genuinely different-provider model instead of backing off forever on the same one — mirrors the existing rate-limit fast-fallback. A `Refusal (<category>)`-shaped deterministic hit is untouched and still hard-fails with zero fallback.
 - **Memory: earned confidence** — a concept's verification date is now written only when a distillation pass is explicitly marked verified, not on every write; `isConceptStale` treats an unverified (or >30-day-stale) concept as needing re-verification instead of trusting a passive timestamp.
 - **Dynamic Workflows (`eval` tool)** — write real JS control flow around subagent dispatch: `task(role, taskText, context?)`, `parallel(thunks)`, `pipeline(items, ...stages)`, and `log(message)`, composing sequential/branching orchestration that `task`'s single-stage `tasks[]` batch can't express. Runs in an isolated Worker thread with a genuinely preemptive timeout (`worker.terminate()`, not a same-process race) — same full-process trust as `bash`, no sandbox pretense, gated by the same interview mutation lock.
@@ -131,17 +165,35 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux session management · transcript export · tool-less streaming chat |
 | `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | Self-update from npm · bundled release notes · legacy `MEMORY.md` → OKF bundle |
 
-## Spec-first workflow
+## Core Workflows
 
-Requirements → plan → approval → execution → verification, carried through `.jeo/state/` with **real, blocking gates** at every handoff:
+jeo-code offers three operational paradigms tailored to project scope and desired autonomy:
+
+### Workflow 1: Interactive & One-Shot Rapid Loop
+Ideal for everyday feature additions, single-file bugfixes, and code reviews.
+```bash
+jeo                                        # Launch interactive full TUI session
+jeo "Add rate-limiting middleware to auth" # One-shot headless run with live streaming
+```
+- **Lifecycle**: Prompt input → Discovery (`search`, `find`, `read`) → Anchor-protected updates (`edit`, `write`) → Automated validation (`post-turn` hooks) → Verification-gated completion (`done`).
+
+### Workflow 2: Spec-First Multi-Phase Engineering Pipeline (Recommended)
+Built for complex, multi-file features or architecture revamps requiring verified specifications and human sign-off before code is touched.
+
+Requirements → Plan → Review & Approval → Orchestrated Execution → Final Verification, chained deterministically through `.jeo/state/`.
 
 ```bash
-jeo deep-interview "Describe what you want to build"
-jeo ralplan
-jeo approve <plan-path>
-jeo team
-jeo ultragoal
+jeo deep-interview "Build payment webhook handling"  # 1. Ambiguity-resolving Socratic interview
+jeo ralplan                                          # 2. Repo-grounded Critic plan generation
+jeo approve .jeo/state/plan-*.json                   # 3. Digest validation & execution unlock
+jeo team                                             # 4. Serial/parallel subagent execution
+jeo ultragoal                                        # 5. Full test suite verification & reporting
 ```
+
+### Workflow 3: Autonomous Autopilot & Headless CI/CD Routines
+Designed for unassisted optimization runs and serverless repo event handling.
+- **`jeo autopilot`**: Autonomous code-evolution loop driven by a ratchet mechanism — retains commits on test score improvements (`keep`) and cleanly rolls back on regressions (`revert`).
+- **`jeo routine init`**: Generates GitHub Actions workflows (`.github/workflows/`) to trigger headless jeo runs on cron schedules or GitHub issues, opening ready-to-merge PRs.
 
 ```
   ┌──────────────────────┐
@@ -165,15 +217,15 @@ jeo ultragoal
              │ all tasks done
              ▼
   ┌──────────────────────┐
-  │      ultragoal       │  Honest verification — suite once, no fabrication
+  │      ultragoal       │  Evidence-aware reporting — suite once, no fabricated criteria
   └──────────────────────┘
 ```
-
-- **deep-interview** — Socratic loop with ambiguity scoring; freezes a seed only when criteria are concrete (vague-only criteria are refused) and the seed round-trips its own parser. A new idea never silently reuses a completed interview.
-- **ralplan** — drafting passes plus a **repo-grounded critic subagent gate**: the critic reads the actual repository, must return `[OKAY]`/`[ITERATE]`/`[REJECT]`, and the verdict is persisted. Invalid plans (schema, unknown roles) are never marked complete.
-- **approve** — validates the exact contract `team` executes (schema + roles) *and* requires the persisted `[OKAY]` consensus verdict.
-- **team** — serial plan executor with a cross-process run lock, stale-plan reset, per-task subagent contracts, a parent-side mutation audit (a "completed" task with zero observed writes is flagged), and failed-task markers that warn about partial edits on resume.
-- **ultragoal** — honest verification: the suite runs once as a global signal; criteria are recorded, never fabricated as individually passed.
+#### Spec-First Pipeline Breakdown & Verification Gates
+- **`deep-interview`**: Socratic loop with ambiguity scoring; freezes a seed only when criteria are concrete (vague-only criteria are refused) and the seed round-trips its own parser.
+- **`ralplan`**: Drafting passes paired with a **repo-grounded critic subagent gate**: the critic inspects repository code directly, must emit `[OKAY]`/`[ITERATE]`/`[REJECT]`, and persists the verdict.
+- **`approve`**: Strictly validates the plan schema, assigned roles, digest hash integrity, and requires the persisted `[OKAY]` verdict before unlocking execution.
+- **`team`**: Serial/parallel plan executor with cross-process run locks, stale-plan reset, per-task subagent contracts, parent-side mutation auditing, and partial-edit warnings on resume.
+- **`ultragoal`**: Evidence-aware completion reporting: the test suite runs once as a global verification signal, producing honest per-criterion verification records.
 
 ## Verification hooks (self-correction)
 

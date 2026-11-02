@@ -53,6 +53,7 @@
     "changelog:sync": "bun scripts/sync-changelog.ts",
     "test": "bun test",
     "verify:browser": "bun scripts/verify-browser.ts",
+    "verify:discord": "bun scripts/verify-discord-integration.ts",
     "verify:tmux": "bash scripts/tmux-verify.sh",
     "dev:link": "bun scripts/dev-link.ts link",
     "dev:doctor": "bun scripts/dev-link.ts doctor"

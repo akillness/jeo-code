@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "reference": {
+    "repository": "https://github.com/akillness/jeopi",
+    "localCheckout": "/Users/jangyoung/.superset/projects/jeopi",
+    "commit": "62b7ecedeb092d17ccdd2e93f4c5133ac8425e8c",
+    "scope": "packages/coding-agent/src/messenger"
+  },
+  "invariants": [
+    {
+      "id": "configuration-fail-closed",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/config.ts", "anchor": "L41-L89#parseMessengerConfig" },
+      "observableBehavior": "Unknown settings, empty or wildcard user allowlists, unknown tools, and unsafe relative configuration are rejected; configured paths resolve against the configuration directory.",
+      "permittedDifference": "jeo owns .jeo paths and JEO-prefixed defaults; these branding differences do not weaken validation.",
+      "jeoBoundary": { "path": "src/messenger/config.ts", "symbol": "parseMessengerConfig" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "requires exact explicit allowlists and rejects unknown or unsafe configuration" }
+    },
+    {
+      "id": "credential-validation-and-secrecy",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/config.ts", "anchor": "L108-L123#validateMessengerEnvironment" },
+      "observableBehavior": "A configured platform requires a nonempty, trimmed credential and reports only the environment-variable name rather than the credential value.",
+      "permittedDifference": "jeo accepts both JEO and legacy JEOPI default names during migration while keeping the same fail-closed and non-disclosure behavior.",
+      "jeoBoundary": { "path": "src/messenger/config.ts", "symbol": "validateMessengerEnvironment" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "supports JEO and JEOPI default credential aliases without exposing values" }
+    },
+    {
+      "id": "authorization-and-request-shape",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/gateway.ts", "anchor": "L198-L215#isMessengerMessageAllowed" },
+      "observableBehavior": "Only explicitly allowed users and channels dispatch; guild top-level messages require a bot mention, while direct messages and authorized Discord thread follow-ups do not.",
+      "permittedDifference": "None; jeo additionally binds thread ownership in its managed daemon without broadening this gateway rule.",
+      "jeoBoundary": { "path": "src/messenger/gateway.ts", "symbol": "isMessengerMessageAllowed" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "authorizes only the configured user, channel and mention shape" }
+    },
+    {
+      "id": "discord-event-normalization",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/discord.ts", "anchor": "L114-L154#normalizeMessage" },
+      "observableBehavior": "Bot, webhook, self, malformed, empty, and unsupported events are ignored; bot mentions are stripped and attachment fields remain untrusted message data.",
+      "permittedDifference": "The jeo boundary is named normalizeDiscordMessage; its externally visible filtering and normalized fields are equivalent.",
+      "jeoBoundary": { "path": "src/messenger/discord.ts", "symbol": "normalizeMessage" },
+      "focusedProof": { "path": "test/notify-discord-daemon.test.ts", "assertion": "only an allowlisted human in the configured channel can dispatch; malformed events are inert" }
+    },
+    {
+      "id": "conversation-identity-and-persistence",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/gateway.ts", "anchor": "L169-L183#messengerConversationKey" },
+      "observableBehavior": "Conversation identity includes platform, account, effective parent channel, thread, and sender, excludes message ID, and feeds the stable persisted-session route.",
+      "permittedDifference": "jeo uses tagged optional components to prevent absent and literal identifiers from colliding; that is an intentional collision-safety strengthening.",
+      "jeoBoundary": { "path": "src/messenger/gateway.ts", "symbol": "messengerConversationKey" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "routes DMs by sender and server work by thread, deterministically" }
+    },
+    {
+      "id": "deduplication-order-and-observable-status",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/gateway.ts", "anchor": "L241-L266#createMessengerGateway" },
+      "observableBehavior": "A message ID executes at most once, requests in one conversation stay ordered, and observable processing then success or failure status surrounds the outbound reply.",
+      "permittedDifference": "Status wording may use the jeo product name; ordering, deduplication, and success/failure observability must remain equivalent.",
+      "jeoBoundary": { "path": "src/messenger/gateway.ts", "symbol": "createMessengerGateway" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "deduplicates, serializes a conversation, sends status and reply" }
+    },
+    {
+      "id": "discord-thread-routing",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/discord.ts", "anchor": "L323#createDiscordAdapter" },
+      "observableBehavior": "A top-level guild request receives its own reply thread, follow-ups remain in that conversation, and direct messages receive direct replies.",
+      "permittedDifference": "None at the observable routing boundary.",
+      "jeoBoundary": { "path": "src/messenger/discord.ts", "symbol": "createDiscordAdapter" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "routes DMs by sender and server work by thread, deterministically" }
+    },
+    {
+      "id": "gateway-origin-and-recovery",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/discord.ts", "anchor": "L85-L106#discordGatewayUrl" },
+      "observableBehavior": "Gateway discovery accepts only a parsed canonical wss Discord hostname without user-info, a non-default port, fragment, or alternate path before connecting.",
+      "permittedDifference": "jeo may expose additional bounded reconnect diagnostics, but cannot relax origin validation.",
+      "jeoBoundary": { "path": "src/messenger/discord.ts", "symbol": "discordGatewayUrl" },
+      "focusedProof": { "path": "test/discord-jeopi-parity-spec.test.ts", "assertion": "canonical Discord Gateway origin validation matches the pinned contract" }
+    },
+    {
+      "id": "discord-attachment-input",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/artifacts.ts", "anchor": "L39-L94#downloadMessengerAttachments" },
+      "observableBehavior": "Incoming Discord files are materialized privately only after bounded transport and declared-size checks, with failures rejecting the inbound attachment operation.",
+      "permittedDifference": "The Seed requires MAX_ARTIFACTS=10 and stricter HTTPS trusted-CDN validation at every redirect hop; jeo intentionally strengthens the pinned reference.",
+      "jeoBoundary": { "path": "src/agent/notify/discord-attachments.ts", "symbol": "stageDiscordAttachments" },
+      "focusedProof": { "path": "test/notify-discord-attachments.test.ts", "assertion": "trusted redirects are followed manually and every redirect destination is validated" }
+    },
+    {
+      "id": "artifact-output-confinement",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/artifacts.ts", "anchor": "L110#readMessengerArtifacts" },
+      "observableBehavior": "Output markers retain only bounded regular files beneath the per-conversation artifact directory, while traversal and symbolic links fail closed.",
+      "permittedDifference": "jeo may stage daemon output in a request-scoped directory; byte identity and confinement remain observable requirements.",
+      "jeoBoundary": { "path": "src/messenger/artifacts.ts", "symbol": "readMessengerArtifacts" },
+      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "uploads at most ten regular in-root files and blocks traversal and symlinks" }
+    },
+    {
+      "id": "discord-setup-contract",
+      "referenceSource": { "path": "packages/coding-agent/src/messenger/discord-setup.ts", "anchor": "L462#setupDiscordMessenger" },
+      "observableBehavior": "Setup verifies bot and application identity, Message Content intent, explicit owners and channels, required permissions, private credential storage, a runnable script, and Gateway reachability before completion.",
+      "permittedDifference": "Generated command and token names are branded for jeo; setup safety and completion gates remain equivalent.",
+      "jeoBoundary": { "path": "src/messenger/discord-setup.ts", "symbol": "setupDiscordMessenger" },
+      "focusedProof": { "path": "test/messenger-security-contract.test.ts", "assertion": "Discord setup recognizes accepted team members and rejects non-bot tokens" }
+    }
+  ]
+}

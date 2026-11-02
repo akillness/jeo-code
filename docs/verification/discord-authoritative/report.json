@@ -1,0 +1,178 @@
+{
+  "$schema": "https://github.com/akillness/jeo-code/blob/main/docs/verification/discord-authoritative/release-report.schema.json",
+  "schemaVersion": 1,
+  "kind": "jeo-code-discord-authoritative-verification",
+  "authoritativeRepository": "/Users/jangyoung/.superset/projects/jeo-code",
+  "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
+  "workingTree": {
+    "dirty": true,
+    "status": [
+      " M CHANGELOG.md",
+      " M docs/integrations/discord.md",
+      " M package.json",
+      " M src/agent/notify/discord-attachments.ts",
+      " M src/agent/notify/discord-daemon.ts",
+      " M src/agent/session.ts",
+      " M src/commands/launch.ts",
+      " M src/commands/launch/flags.ts",
+      " M src/commands/messenger.ts",
+      " M src/commands/notify.ts",
+      " M src/messenger/discord-setup.ts",
+      " M src/messenger/discord.ts",
+      " M src/messenger/gateway.ts",
+      "AM src/messenger/session-pool.ts",
+      " M src/messenger/types.ts",
+      " M test/notify-command.test.ts",
+      " M test/notify-discord-attachments.test.ts",
+      " M test/notify-discord-daemon.test.ts",
+      "?? docs/integrations/discord-attachment-policy.md",
+      "?? scripts/validate-discord-release-report.ts",
+      "?? scripts/verify-discord-integration.ts",
+      "?? test/discord-jeopi-parity-spec.test.ts",
+      "?? test/fixtures/discord-jeopi-parity.json",
+      "?? test/messenger-discord-recovery.test.ts",
+      "?? test/messenger-literal-launch.test.ts",
+      "?? test/messenger-security-contract.test.ts",
+      "?? test/messenger-session-identity.test.ts",
+      "?? test/messenger-worker-pool.test.ts"
+    ],
+    "contentDigestAlgorithm": "sha256(git-diff-binary-HEAD plus sorted untracked path-and-content; evidence directory excluded)",
+    "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef"
+  },
+  "environment": {
+    "bun": "1.4.4",
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "startedAt": "2026-11-02T01:41:57.997Z",
+  "completedAt": "2026-11-02T01:41:58.261Z",
+  "commands": [
+    {
+      "argv": [
+        "bun",
+        "test",
+        "test/discord-jeopi-parity-spec.test.ts",
+        "test/messenger.test.ts",
+        "test/messenger-security-contract.test.ts",
+        "test/messenger-session-identity.test.ts",
+        "test/messenger-discord-recovery.test.ts",
+        "test/notify-discord-daemon.test.ts",
+        "test/notify-discord-attachments.test.ts"
+      ],
+      "cwd": "/Users/jangyoung/.superset/projects/jeo-code",
+      "exitCode": 0,
+      "startedAt": "2026-11-02T01:41:57.997Z",
+      "completedAt": "2026-11-02T01:41:58.261Z",
+      "evidencePath": "docs/verification/discord-authoritative/focused-tests.log"
+    },
+    {
+      "argv": [
+        "bun",
+        "run",
+        "build"
+      ],
+      "cwd": "/Users/jangyoung/.superset/projects/jeo-code",
+      "exitCode": 0,
+      "startedAt": "2026-11-02T01:41:58.261Z",
+      "completedAt": "2026-11-02T01:41:58.840Z",
+      "evidencePath": "docs/verification/discord-authoritative/build.log"
+    }
+  ],
+  "testTotals": {
+    "passed": 82,
+    "failed": 0,
+    "assertions": 521,
+    "tests": 82,
+    "files": 7
+  },
+  "parityContractPath": "test/fixtures/discord-jeopi-parity.json",
+  "reportSchemaPath": "docs/verification/discord-authoritative/release-report.schema.json",
+  "package": {
+    "name": "jeo-code",
+    "version": "0.12.7"
+  },
+  "buildContract": {
+    "packageDirectory": "/Users/jangyoung/.superset/projects/jeo-code",
+    "packageMetadataPath": "package.json",
+    "packageMetadataSha256": "a927db0c93ee2adbf2a156c1ba6b244956bee74bc731e996819d63ee36874abb",
+    "configuredPackageManager": "pnpm@10.33.4+sha512.1c67b3b359b2d408119ba1ed289f34b8fc3c6873412bec6fd264fbdc82489e510fcbecb9ce9d22dae7f3b76269d8441046014bdca53b9979cd7a561ad631b800",
+    "executionRuntime": "bun@1.4.4",
+    "scriptName": "build",
+    "configuredScript": "bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
+    "exactCommand": [
+      "bun",
+      "run",
+      "build"
+    ],
+    "packageName": "jeo-code",
+    "packageVersion": "0.12.7",
+    "versionSource": "package.json#/version",
+    "expectedOutputPaths": [
+      "dist/jeo"
+    ],
+    "identityBinding": {
+      "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
+      "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef",
+      "rule": "Artifacts are produced by the recorded package.json build script in the authoritative package directory, then hashed and tagged with the pre-build commit and dirty-tree content digest."
+    },
+    "artifacts": [
+      {
+        "path": "dist/jeo",
+        "type": "compiled executable",
+        "sizeBytes": 113465570,
+        "sha256": "d192b5dc97e41fb173547274f066c14dbc80902327b8635cfb019cf8e7d04967",
+        "executable": true,
+        "packageName": "jeo-code",
+        "packageVersion": "0.12.7",
+        "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
+        "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef"
+      }
+    ],
+    "status": "succeeded"
+  },
+  "releaseState": {
+    "credentialCheck": {
+      "status": "failed",
+      "startedAt": "2026-11-02T01:41:58.909Z",
+      "completedAt": "2026-11-02T01:42:00.117Z",
+      "reason": "One or more direct git/npm credential probes failed; no release action was attempted.",
+      "evidence": {
+        "gitRemoteConfigured": true,
+        "gitRemoteReachable": true,
+        "npmAuthenticated": false,
+        "remoteUrl": "https://github.com/akillness/jeo-code.git",
+        "registry": "https://registry.npmjs.org/"
+      }
+    },
+    "gitPush": {
+      "status": "skipped",
+      "startedAt": "2026-11-02T01:42:00.118Z",
+      "completedAt": "2026-11-02T01:42:00.118Z",
+      "reason": "The authoritative worktree is dirty, so no commit exactly represents the verified content digest.",
+      "evidence": {
+        "remoteUrl": "https://github.com/akillness/jeo-code.git",
+        "ref": "main",
+        "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88"
+      }
+    },
+    "npmPublication": {
+      "status": "skipped",
+      "startedAt": "2026-11-02T01:42:00.136Z",
+      "completedAt": "2026-11-02T01:42:00.136Z",
+      "reason": "The authoritative worktree is dirty, so the package cannot be bound to a releasable commit.",
+      "evidence": {
+        "registry": "https://registry.npmjs.org/",
+        "packageName": "jeo-code",
+        "version": "0.12.7"
+      }
+    },
+    "correspondenceRule": "A successful push must remotely resolve the recorded ref to commitSha. A successful publication must be found by registry lookup and record a correspondence value derived from the verified artifact SHA-256, commit SHA, and dirty-tree content digest."
+  },
+  "evidencePaths": [
+    "docs/verification/discord-authoritative/report.json",
+    "docs/verification/discord-authoritative/release-report.schema.json",
+    "docs/verification/discord-authoritative/focused-tests.log",
+    "docs/verification/discord-authoritative/build.log"
+  ],
+  "status": "succeeded"
+}

@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
-## [Unreleased]
+## [0.12.9] - 2026-11-02
+≔14c4+
+- **Discord model policy** — optionally pin a Discord worker model and fall back on persistent usage or quota exhaustion before any tool execution; other platforms and global routing retain their own settings.
 
 ### Added
 - **Discord session files and control** — local opt-in enables authorized Discord prompts to use host session tools and exchange staged attachments; see the [Discord guide](docs/integrations/discord.md) for limits, public visibility, and revocation boundaries.

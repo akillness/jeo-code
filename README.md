@@ -410,7 +410,7 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[0.12.9]** (2026-11-02)
 - **[0.12.7]** (2026-10-18) — Repair desktop screenshot vision feedback, macOS scrolling, complete drag gestures, and keyboard normalization.
 - **[0.12.6]** (2026-10-17) — Preserve OpenAI subscription authentication behind configured proxies, isolate account catalogs, and give provider-specific recovery instructions while retaining Antigravity OAuth calls.
 - **[0.12.5]** (2026-10-17) — Antigravity and Kimi provider support in interactive setup, Kimi live model cache rehydration, immediate discovery caching on provider probing.

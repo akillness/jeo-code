@@ -43,8 +43,27 @@ export interface SkillRouteSelection {
   /** Advisory only — never an install or model instruction. */
   routing: string;
 }
-
 const TOKEN_RE = /[a-z0-9][a-z0-9._-]*/gi;
+
+interface CachedSkillTokens {
+  textTokens: Set<string>;
+  nameTokens: Set<string>;
+}
+
+const skillTokenCache = new WeakMap<SkillDoc, CachedSkillTokens>();
+
+function getSkillTokens(skill: SkillDoc): CachedSkillTokens {
+  let cached = skillTokenCache.get(skill);
+  if (!cached) {
+    const text = skillText(skill);
+    cached = {
+      textTokens: tokens(text),
+      nameTokens: tokens(skill.name.replace(/[:/]/g, " ")),
+    };
+    skillTokenCache.set(skill, cached);
+  }
+  return cached;
+}
 
 /** Closed-class / low-signal words excluded from routing overlap — without
  *  this, chit-chat ("how are you") spuriously matches every long skill doc. */
@@ -78,8 +97,11 @@ function skillText(s: SkillDoc): string {
 export function scoreSkillForTask(task: string, skill: SkillDoc): { score: number; reasons: string[] } {
   const taskTokens = tokens(task);
   if (taskTokens.size === 0) return { score: 0, reasons: [] };
-  const text = skillText(skill);
-  const textTokens = tokens(text);
+  return scoreSkillWithTaskTokens(taskTokens, skill);
+}
+
+function scoreSkillWithTaskTokens(taskTokens: Set<string>, skill: SkillDoc): { score: number; reasons: string[] } {
+  const { textTokens, nameTokens } = getSkillTokens(skill);
   let overlap = 0;
   const reasons: string[] = [];
   for (const t of taskTokens) {
@@ -88,7 +110,6 @@ export function scoreSkillForTask(task: string, skill: SkillDoc): { score: numbe
       if (reasons.length < 5) reasons.push(t);
     }
   }
-  const nameTokens = tokens(skill.name.replace(/[:/]/g, " "));
   let nameHits = 0;
   for (const t of taskTokens) if (nameTokens.has(t)) nameHits++;
   // Overlap ratio over task vocabulary + a decisive name bonus: an explicit
@@ -97,6 +118,7 @@ export function scoreSkillForTask(task: string, skill: SkillDoc): { score: numbe
   const score = overlap / taskTokens.size + Math.min(nameHits * 1.0, 1.5);
   return { score, reasons };
 }
+
 
 /**
  * Jev-style `route-skills`: heuristic top-k skill selection for one task.
@@ -109,8 +131,12 @@ export function routeSkillsForTask(task: string, skills: SkillDoc[], topK = SKIL
   if (!trimmed) {
     return { topK: [], reason: "gate", strategy, routing: "No task text — no skill suggested. Answer directly." };
   }
+  const taskTokens = tokens(trimmed);
+  if (taskTokens.size === 0) {
+    return { topK: [], reason: "gate", strategy, routing: "No skill cleared the gate — answer directly without a workflow skill." };
+  }
   const scored = skills.map(s => {
-    const { score, reasons } = scoreSkillForTask(trimmed, s);
+    const { score, reasons } = scoreSkillWithTaskTokens(taskTokens, s);
     return { name: s.name, score, reasons };
   });
   scored.sort((a, b) => b.score - a.score || (a.name < b.name ? -1 : 1));

@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs, bundledSkillFileContent, userSkillsDir } from "../skills/catalog";
+import { inventorySkillConflicts } from "../agent/skill-router";
 import { getLocalJeoDir } from "../agent/state";
 import { appendSkillLesson, evalSkillLessons, type SkillLesson } from "../agent/skill-lessons";
 
@@ -221,6 +222,14 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
       console.log("Install/inspect bundled defaults: 'jeo skills sync' (preserve local) · '--check' (drift report) · '--force' (overwrite local)");
       console.log("Discovery dirs (later wins on name clash; JEO_SKILLS_DIR adds more):");
       for (const d of skillDirs(cwd)) console.log(`  ${d}`);
+      const conflicts = inventorySkillConflicts(skills);
+      if (conflicts.length > 0) {
+        console.log("\nECC Single-Harness duplicate identity warnings:");
+        for (const c of conflicts) {
+          console.log(`  ! Duplicate skill '${c.normalized}' installed across multiple distinct paths:`);
+          for (const p of c.paths) console.log(`      ${p}`);
+        }
+      }
       console.log("");
     }
     return;

@@ -69,19 +69,20 @@ export const GUARD_LIMITS = Object.freeze({
 });
 
 /**
- * Commands (or their output) that count as a verification signal: a test, build,
- * typecheck, or lint invocation. The done-verification guard treats a turn that mutated
- * files without any such signal as "unverified".
+ * Recognized standalone verification commands. Matching the full command prevents
+ * filenames, prose, and shell output from impersonating verification evidence.
  */
-export const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
+export const VERIFY_SIGNAL_RE = /^(?:(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?(?:test|tests|typecheck|lint|build|check|spec|tsc|eslint|vitest|jest)(?::[\w-]+)?|(?:npx|bunx)\s+(?:tsc|eslint|vitest|jest|pytest)|(?:tsc|eslint|vitest|jest|pytest)|(?:python(?:3(?:\.\d+)?)?|uv)\s+(?:-m\s+)?pytest|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|(?:make|just)\s+(?:test|check|lint|build|typecheck))(?:\s+[A-Za-z0-9_./:@+*?,=-]+)*$/i;
+const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--show-?config|--init|--dry-run|--no-run|--passWithNoTests)(?=$|\s|=)/i;
+const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
 
 /**
- * True when a bash command (or the head of its output) proves the work was verified.
- * Output is examined only up to the first 2000 chars — enough to catch a tool runner's
- * banner without rescanning a megabyte of logs.
+ * True only when the command itself is a recognized verifier invocation. Output
+ * is never evidence: arbitrary commands can print words such as "tests passed".
  */
-export function isVerificationSignal(cmd: string, output = ""): boolean {
-  return VERIFY_SIGNAL_RE.test(cmd) || VERIFY_SIGNAL_RE.test(output.slice(0, 2000));
+export function isVerificationSignal(cmd: string): boolean {
+  const command = cmd.trim();
+  return !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command);
 }
 
 /**

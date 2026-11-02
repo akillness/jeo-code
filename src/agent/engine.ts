@@ -121,6 +121,40 @@ const READONLY_TOOL_NAMES: Record<string, true> = {
   web_search: true,
   calc: true,
 };
+/** Invoked tools that can change the workspace and therefore invalidate old verification. */
+const MUTATING_TOOL_NAMES: Record<string, true> = {
+  write: true,
+  edit: true,
+  mkdir: true,
+  delete: true,
+  ast_edit: true,
+  lsp_rename: true,
+  eval: true,
+};
+/** Debug actions that execute or alter the target process rather than inspect it. */
+const MUTATING_DEBUG_ACTIONS: Record<string, true> = {
+  launch: true,
+  continue: true,
+  step_over: true,
+  step_in: true,
+  step_out: true,
+  pause: true,
+  evaluate: true,
+  terminate: true,
+  write_memory: true,
+  custom_request: true,
+};
+/** Computer actions affect external UI state; only observation and waiting are read-only. */
+function computerActionMayAffectState(action: unknown): boolean {
+  if (!action || typeof action !== "object") return true;
+  const value = action as { action?: unknown; actions?: unknown };
+  if (value.action === "screenshot" || value.action === "wait") return false;
+  if (value.action === "batch") {
+    return !Array.isArray(value.actions) || value.actions.some(computerActionMayAffectState);
+  }
+  return true;
+}
+
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
@@ -301,6 +335,8 @@ export interface AgentLoopEvents {
     reason: string,
     evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }
   ): Promise<string | null> | string | null;
+  /** Updated after each executed tool batch so callers can persist mutation evidence across turns. */
+  onEvidence?(evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }): Promise<void> | void;
 
   /** Fired when a mid-turn steering message (an additional user query typed while
    *  the turn is running) is injected into the live history. `text` is the raw
@@ -1216,7 +1252,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       let success: boolean;
       let output: string;
       let images: import("../ai/types").ImageAttachment[] | undefined;
-
+      let mutationMayHaveOccurred: boolean | undefined;
       if (tool === "done") {
         success = false;
         output = "Error: 'done' can only be called as the single tool invocation, not in a batch. Please send 'done' alone.";
@@ -1245,14 +1281,23 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               success = res.success;
               images = res.images;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
-            } catch (err: any) {
+              mutationMayHaveOccurred = res.mutationMayHaveOccurred;
+            } catch (err: unknown) {
               success = false;
-              output = err?.message || String(err);
+              output = err instanceof Error ? err.message : String(err);
+              const explicitSignal = err && typeof err === "object" && "mutationMayHaveOccurred" in err && err.mutationMayHaveOccurred === true;
+              const knownMutatingCall =
+                (MUTATING_TOOL_NAMES[tool] === true && (tool !== "lsp_rename" || args?.apply !== false)) ||
+                tool === "bash" ||
+                (tool === "debug" && MUTATING_DEBUG_ACTIONS[String(args?.action ?? "")] === true) ||
+                (tool === "computer" && computerActionMayAffectState(args)) ||
+                ((tool === "monitor" || tool === "job") && String(args?.action ?? "").trim().toLowerCase() === "start");
+              if (explicitSignal || knownMutatingCall) mutationMayHaveOccurred = true;
             }
           }
         }
       }
-      return { success, output, images };
+      return { success, output, images, mutationMayHaveOccurred };
     };
 
     const WRITE_TOOLS = new Set(["write", "edit"]);
@@ -1295,7 +1340,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       }
     }
 
-    const results: { success: boolean; output: string; executed: boolean; images?: import("../ai/types").ImageAttachment[] }[] = Array.from(
+    const results: { success: boolean; output: string; executed: boolean; images?: import("../ai/types").ImageAttachment[]; mutationMayHaveOccurred?: boolean }[] = Array.from(
       { length: toolCalls.length },
       () => ({ success: false, output: "", executed: false })
     );
@@ -1398,11 +1443,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (executedIndices.length > 0) {
         await processAndPushResults(executedIndices);
       }
-      return finish({ done: false, steps: step, doneReason: "Cancelled." });
+    } else {
+      const allIndices = toolCalls.map((_, i) => i);
+      await processAndPushResults(allIndices);
     }
 
-    const allIndices = toolCalls.map((_, i) => i);
-    await processAndPushResults(allIndices);
 
     // Score the budget window per CALL, not per batch: a batch of five failing
     // edits plus one trivial successful read must not look like a progressing
@@ -1411,22 +1456,75 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (results[i].executed) budget.record(callSigs[i], results[i].success, callTargets[i]);
 
     }
-    // Only the latest recognized verification result is evidence; a later failure
-    // invalidates earlier success. Sequence numbers also reject tests before edits.
+    // Process calls in execution order: a successful verification supersedes
+    // mutation evidence before it, but anything after that verification remains
+    // stale. Verification commands are shell calls, so do not let a wrapper's
+    // mutationMayHaveOccurred flag turn the verifier itself into a later mutation.
     for (let i = 0; i < toolCalls.length; i++) {
       if (!results[i].executed) continue;
       const t = toolCalls[i].tool;
-      if ((t === "write" || t === "edit") && results[i].success) {
+      const verificationCall = t === "bash" && isVerificationSignal(String(toolCalls[i].arguments?.command ?? toolCalls[i].arguments?.cmd ?? ""));
+      if (verificationCall) {
+        if (results[i].success) {
+          sawVerification = true;
+          lastVerificationSeq = ++mutVerSeq;
+        } else {
+          sawVerification = false;
+          if (results[i].mutationMayHaveOccurred === true) {
+            sawMutation = true;
+            lastMutationSeq = ++mutVerSeq;
+          }
+        }
+        continue;
+      }
+
+      const output = String(results[i].output ?? "").trim();
+      const noOpMutation = results[i].success && (
+        (t === "ast_edit" && (output.startsWith("0 matches for pattern") || output.startsWith("No TypeScript/JavaScript files matched"))) ||
+        (t === "lsp_rename" && output === "No rename locations found.")
+      );
+      const structuredMutation = results[i].mutationMayHaveOccurred === true && !noOpMutation;
+      const builtInMutation = MUTATING_TOOL_NAMES[t] === true &&
+        (t !== "lsp_rename" || toolCalls[i].arguments?.apply !== false) &&
+        !noOpMutation;
+      if (structuredMutation || builtInMutation) {
+        // Structured mutation evidence from a delegated/control tool is itself
+        // sufficient to invalidate prior verification, even when the wrapper
+        // tool name is not one of the engine's built-in mutators. Successful
+        // built-in mutators remain covered by the same branch.
+        if (results[i].success || results[i].mutationMayHaveOccurred === true) {
+          sawMutation = true;
+          lastMutationSeq = ++mutVerSeq;
+        }
+      } else if (t === "debug" && MUTATING_DEBUG_ACTIONS[String(toolCalls[i].arguments?.action ?? "")] === true) {
+        sawMutation = true;
+        lastMutationSeq = ++mutVerSeq;
+      } else if (t === "computer" && computerActionMayAffectState(toolCalls[i].arguments)) {
+        // Failed UI actions may have partially changed external state.
+        sawMutation = true;
+        lastMutationSeq = ++mutVerSeq;
+      } else if (t === "monitor" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
+        // Starting a background monitor can mutate the workspace asynchronously;
+        // read-only monitor controls (list/tail/await/cancel) do not invalidate verification.
+        sawMutation = true;
+        lastMutationSeq = ++mutVerSeq;
+      } else if (t === "job" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
+        // Starting a background shell may mutate the workspace asynchronously;
+        // read-only job controls (list/tail/await/cancel) do not invalidate verification.
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
       } else if (t === "bash") {
-        const cmd = String(toolCalls[i].arguments?.command ?? "");
-        if (isVerificationSignal(cmd, results[i].output)) {
-          sawVerification = results[i].success;
-          lastVerificationSeq = ++mutVerSeq;
-        }
+        // Non-verification shell commands may mutate files even when they exit unsuccessfully.
+        sawMutation = true;
+        lastMutationSeq = ++mutVerSeq;
       }
     }
+    await ev.onEvidence?.({
+      sawMutation,
+      sawVerification,
+      verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
+    });
+    if (aborted) return finish({ done: false, steps: step, doneReason: "Cancelled." });
     // F6 (round 4 architect, Low): judge the step by its NON-TRIVIAL calls — a
     // batch of read(ok)+edit(fail) repeated with varying targets previously
     // never tripped MAX_FAILURES because the trivial read reset the streak.

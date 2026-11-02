@@ -278,8 +278,8 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
 // other subagent — instead of a second, team-only LLM-summarization compaction
 // pass. This is an intentional unification, not a regression to guard against.
 
-test("runTeamCommand --strict-mutations fails a mutating role that made no write/edit/bash", async () => {
-  // Executor claims changed files but never actually writes/edits/bashes.
+test("runTeamCommand --strict-mutations fails a mutating role that made no successful workspace mutation or bash call", async () => {
+  // Executor claims changed files but makes no successful workspace mutation or bash call.
   spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
@@ -289,7 +289,7 @@ test("runTeamCommand --strict-mutations fails a mutating role that made no write
   console.log = origLog;
 
   const out = logs.join("\n");
-  expect(out).toContain("WITHOUT any successful write/edit/bash");
+  expect(out).toContain("Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
   expect(out).toContain("[ERR] Failed on task:");
   expect(out).not.toContain("[DONE] All tasks in the plan executed successfully!");
   expect(process.exitCode).toBe(1);
@@ -297,6 +297,75 @@ test("runTeamCommand --strict-mutations fails a mutating role that made no write
   const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
   expect(teamState.current_phase).toBe("failed");
   expect(teamState.failed_task).toBe("implement it");
+});
+
+test("runTeamCommand --strict-mutations counts a successful ast_edit as a file mutation", async () => {
+  let turn = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => {
+    turn++;
+    if (turn === 1) return JSON.stringify({ tool: "ast_edit", arguments: { pattern: "$A && $A()", replacement: "$A?.()", paths: ["sample.ts"] } });
+    if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: "bun test verification.test.ts" } });
+    if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: edited\nChanged Files: sample.ts\nVerification: bun test verification.test.ts\nOpen Risks: none" } });
+    if (turn === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
+    return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
+  });
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "apply codemod", role: "executor" }, { name: "verify", role: "critic" }]);
+  await fs.writeFile(path.join(tmp, "sample.ts"), "cb && cb();\n");
+  await fs.writeFile(path.join(tmp, "verification.test.ts"), [
+    'import { expect, test } from "bun:test";',
+    'import * as fs from "node:fs";',
+    'test("ast_edit result is present", () => {',
+    '  expect(fs.readFileSync("sample.ts", "utf8")).toContain("cb?.();");',
+    '});',
+  ].join("\n") + "\n");
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(["--strict-mutations"]);
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
+  expect(out).not.toContain("Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
+  expect(out).not.toContain("Executor completed without a successful workspace mutation (only bash ran) — verify its changed-files claim independently.");
+  expect(process.exitCode).toBe(0);
+  expect(await fs.readFile(path.join(tmp, "sample.ts"), "utf8")).toContain("cb?.();");
+});
+
+test("runTeamCommand --strict-mutations counts a successful lsp_rename as a file mutation", async () => {
+  let turn = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => {
+    turn++;
+    if (turn === 1) return JSON.stringify({ tool: "lsp_rename", arguments: { file: "a.ts", line: 1, symbol: "greet", new_name: "salute" } });
+    if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: "bun test verification.test.ts" } });
+    if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: renamed\nChanged Files: a.ts, b.ts\nVerification: bun test verification.test.ts\nOpen Risks: none" } });
+    if (turn === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
+    return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
+  });
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "rename symbol", role: "executor" }, { name: "verify", role: "critic" }]);
+  await fs.writeFile(path.join(tmp, "a.ts"), 'export function greet(name: string): string {\n  return "hi " + name;\n}\n');
+  await fs.writeFile(path.join(tmp, "b.ts"), 'import { greet } from "./a";\nconsole.log(greet("world"));\n');
+  await fs.writeFile(path.join(tmp, "verification.test.ts"), [
+    'import { expect, test } from "bun:test";',
+    'import * as fs from "node:fs";',
+    'test("lsp_rename result is present", () => {',
+    '  expect(fs.readFileSync("a.ts", "utf8")).toContain("function salute");',
+    '  expect(fs.readFileSync("b.ts", "utf8")).toContain("salute(\\"world\\")");',
+    '});',
+  ].join("\n") + "\n");
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(["--strict-mutations"]);
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
+  expect(out).not.toContain("Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
+  expect(out).not.toContain("Executor completed without a successful workspace mutation (only bash ran) — verify its changed-files claim independently.");
+  expect(process.exitCode).toBe(0);
+  expect(await fs.readFile(path.join(tmp, "a.ts"), "utf8")).toContain("function salute");
+  expect(await fs.readFile(path.join(tmp, "b.ts"), "utf8")).toContain('salute("world")');
 });
 
 test("runTeamCommand without --strict-mutations only warns on a no-op mutating role (default)", async () => {
@@ -315,8 +384,8 @@ test("runTeamCommand without --strict-mutations only warns on a no-op mutating r
   console.log = origLog;
 
   const out = logs.join("\n");
-  // Advisory warning still printed, but the task completes (back-compat).
-  expect(out).toContain("WITHOUT any successful write/edit/bash");
+  // Workspace-mutation warning still printed, but the task completes (back-compat).
+  expect(out).toContain("Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
   expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
   expect(process.exitCode).toBe(0);
 
@@ -329,22 +398,29 @@ test("runTeamCommand --strict-mutations stays advisory when the role ran bash (b
   let turn = 0;
   spyOn(loop, "callLlm").mockImplementation(async () => {
       turn++;
-      // First call runs a bash command; second call signals done.
       if (turn === 1) return JSON.stringify({ tool: "bash", arguments: { command: "echo hi" } });
-      if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
-      if (turn === 3) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
+      if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: "bun test verification.test.ts" } });
+      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: bun test verification.test.ts\nOpen Risks: none" } });
+      if (turn === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "plan.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
   });
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it", role: "executor" }, { name: "verify", role: "critic" }]);
+  await fs.writeFile(path.join(tmp, "verification.test.ts"), [
+    'import { expect, test } from "bun:test";',
+    'import * as fs from "node:fs";',
+    'test("the executor plan fixture remains readable", () => {',
+    '  expect(fs.readFileSync("plan.yaml", "utf8")).toContain("implement it");',
+    '});',
+  ].join("\n") + "\n");
 
   console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
   await runTeamCommand(["--strict-mutations"]);
   console.log = origLog;
 
   const out = logs.join("\n");
-  // bash ran but no write/edit → advisory only, not a hard failure.
-  expect(out).toContain("only bash (no write/edit)");
+  // Bash ran without a workspace mutation, so this remains a warning rather than a hard failure.
+  expect(out).toContain("Executor completed without a successful workspace mutation (only bash ran) — verify its changed-files claim independently.");
   expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
   expect(process.exitCode).toBe(0);
 });
@@ -376,8 +452,8 @@ test("runTeamCommand default no-op advisory uses stream:warn, strict hard-fail u
   console.log = origLog;
 
   const out = logs.join("\n");
-  // The no-op advisory is a warn (the task still completes), not a red error.
-  expect(out).toContain("stream:warn Executor completed WITHOUT any successful write/edit/bash");
+  // The workspace-mutation warning is a warn (the task still completes), not a red error.
+  expect(out).toContain("stream:warn Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
   expect(out).not.toContain("stream:error Executor completed WITHOUT");
   expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
 });
@@ -393,7 +469,7 @@ test("runTeamCommand --strict-mutations hard-fail advisory is a stream:error (re
 
   const out = logs.join("\n");
   // The hard-fail message is tagged stream:error (red), since the task fails.
-  expect(out).toContain("stream:error Executor completed WITHOUT any successful write/edit/bash");
+  expect(out).toContain("stream:error Executor completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.");
   expect(out).not.toContain("stream:warn Executor completed WITHOUT");
   expect(process.exitCode).toBe(1);
 });

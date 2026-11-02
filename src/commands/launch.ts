@@ -62,7 +62,7 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
-import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
+import { GoalStateCorruptError, readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate, applyPendingEvidence, type GoalState } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
 import { RouteHistory } from "../agent/route-history";
 
@@ -122,6 +122,7 @@ import { bashTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/compaction";
 import * as path from "node:path";
+import { tmpdir } from "node:os";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
 import {
@@ -971,6 +972,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Session-scoped registries for DETACHED subagents, background jobs, and monitors (gjc parity).
   // Created ONCE for the whole launch session lifetime (not per-turn) so detached
   // runs persist across turns and remain controllable/inspectable.
+  let pendingMutationVerification = false;
+  try {
+    pendingMutationVerification = (await readGoalState(cwd))?.pendingMutationVerification === true;
+  } catch (error) {
+    if (!(error instanceof GoalStateCorruptError)) throw error;
+    pendingMutationVerification = true;
+    console.error(`${error.message}. Run /goal clear to remove it; fresh verification is still required.`);
+  }
+
   const subagentRegistry = new SubagentRegistry();
   const jobRegistry = new JobRegistry();
   let activeTui: LaunchTui | null = null;
@@ -1716,10 +1726,61 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
         // because nothing ever forced the model to update item statuses).
         let turnTodos: { title: string; status: string }[] = [];
+        const onEvidence = async (
+          evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean },
+        ): Promise<void> => {
+          if (evidence.sawVerification && !evidence.verificationStale) {
+            pendingMutationVerification = false;
+          } else if (evidence.sawMutation) {
+            pendingMutationVerification = true;
+          }
+
+          let goalState: GoalState | null;
+          try {
+            goalState = await readGoalState(cwd);
+          } catch (error) {
+            if (error instanceof GoalStateCorruptError) return;
+            throw error;
+          }
+          if (!goalState) return;
+          const updatedState = applyPendingEvidence(
+            { ...goalState, pendingMutationVerification },
+            evidence,
+          );
+          pendingMutationVerification = updatedState.pendingMutationVerification === true;
+          await writeGoalState(updatedState, cwd);
+        };
+
         const onBeforeDone = async (
           reason: string,
           evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean },
         ): Promise<string | null> => {
+          const runningJobs = jobRegistry.running();
+          if (runningJobs.length > 0) {
+            const jobs = runningJobs.map(record => `${record.id} (${record.command})`).join(", ");
+            return (
+              `Cannot finish while background job(s) are still running: ${jobs}. ` +
+              `Wait for them to exit or cancel them, then call done again.`
+            );
+          }
+          const runningMonitors = monitorRegistry.running();
+          if (runningMonitors.length > 0) {
+            const monitors = runningMonitors.map(record => `${record.id} (${record.command})`).join(", ");
+            return (
+              `Cannot finish while background monitor(s) are still running: ${monitors}. ` +
+              `Wait for them to exit or cancel them, then call done again.`
+            );
+          }
+
+          const inFlightMutators = subagentRegistry.inFlightMutators();
+          if (inFlightMutators.length > 0) {
+            const agents = inFlightMutators.map(record => `${record.id} (${record.role})`).join(", ");
+            return (
+              `Cannot finish while mutating subagent(s) are still in flight: ${agents}. ` +
+              `Wait for them to settle after completion or cancellation, then call done again.`
+            );
+          }
+
           const unfinished = turnTodos.filter(t => t.status !== "done");
           if (turnTodos.length > 0 && unfinished.length > 0) {
             return (
@@ -1728,8 +1789,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               `(drop items that no longer apply), then call done again.`
             );
           }
+          let goalState: GoalState | null;
+          try {
+            goalState = await readGoalState(cwd);
+          } catch (error) {
+            if (error instanceof GoalStateCorruptError) {
+              return `Cannot finish: persisted goal state is corrupt. Run /goal clear, then verify any workspace mutations before calling done again.`;
+            }
+            throw error;
+          }
+          if ((pendingMutationVerification || evidence.sawMutation) && !(evidence.sawVerification && !evidence.verificationStale)) {
+            return (
+              `Cannot finish: a workspace mutation from this session still lacks a successful, non-stale verification. ` +
+              `Run a relevant test/build/typecheck/lint after the last change, then call done again.`
+            );
+          }
 
-          const goalState = await readGoalState(cwd);
           if (goalState && goalState.condition) {
             if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
             const llmVerdict = await verifyGoal(goalState.condition, history, resolveVerifierModel(turnConfig));
@@ -1737,7 +1812,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             // judge still needs mutation/verification evidence to back it up —
             // see applyEvidenceGate's own docs (goal-verifier.ts). NOT_MET/
             // IMPOSSIBLE pass through unchanged; this only ever tightens MET.
-            const verdict = applyEvidenceGate(llmVerdict, evidence);
+            const effectiveEvidence = {
+              ...evidence,
+              pendingMutation: goalState.pendingMutationVerification === true,
+            };
+            const verdict = applyEvidenceGate(llmVerdict, effectiveEvidence);
 
             goalState.verdicts.push({
               at: Date.now(),
@@ -1895,7 +1974,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // with the reroute loop below, which `routingEnabled` also gates.
           ...(routingEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
 
-          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
+          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone, onEvidence }, persistTurnTail), opik),
+
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
           const message = String(doneReason ?? "");
@@ -3152,6 +3232,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let typedLine = ""; // the user-typed line (restored after readline's history nav)
   let pendingSelection: string | undefined; // command chosen via arrows, applied on Enter
   let pendingImages: ImageAttachment[] = []; // clipboard images attached to the next message (ctrl+v)
+  // Remote image paths are already ingested before prompt injection. Count the
+  // associated text so the general typed-path scanner does not read it again.
+  const remoteAttachmentTextCounts = new Map<string, number>();
   let pasteInFlight = false; // guard concurrent ctrl+v clipboard reads
   let imagePasteInFlight = false;
   let idleDirtyCount: number | undefined; // git dirty count refreshed once per prompt
@@ -4508,13 +4591,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // ingestion mechanism, not a parallel one. Bare paths never contain
       // whitespace here (daemon-generated temp names), so simple whitespace
       // joining is a safe token boundary for the path-token scanner.
-      const withPaths = msg.imagePaths?.length ? `${msg.text} ${msg.imagePaths.join(" ")}`.trim() : msg.text;
-      const attached = await attachImagePaths(withPaths, pendingImages.length + 1);
-      const cleanedText = attached.images.length ? attached.text : msg.text;
+      const remoteImagePaths = msg.imagePaths ?? [];
+      // Never scan remote text for local paths: a Telegram user must not be
+      // able to make the REPL read arbitrary files by mentioning one. Only
+      // daemon-owned temp attachments are eligible for image ingestion.
+      const tempRoot = path.resolve(tmpdir());
+      const validImagePaths = remoteImagePaths.filter((filePath) => {
+        if (!path.isAbsolute(filePath)) return false;
+        const relative = path.relative(tempRoot, path.resolve(filePath));
+        const parts = relative.split(path.sep);
+        return parts.length === 2 && parts[0]!.startsWith("jeo-telegram-") && parts[1] !== "" && parts[1] !== "." && parts[1] !== "..";
+      });
+      if (validImagePaths.length !== remoteImagePaths.length) return false;
+      const attached = validImagePaths.length
+        ? await attachImagePaths(validImagePaths.join(" "), pendingImages.length + 1)
+        : { text: msg.text, images: [] };
+      // Attachment parsing receives paths only; preserve the remote message
+      // text verbatim so an image never replaces the user's prompt.
+      const cleanedText = msg.text;
       // Attachment normalization must not expose a remote slash command that
       // bypasses the local approval prompt or changes local execution policy.
-      if (cleanedText.trimStart().startsWith("/")) return false;
-      if (attached.images.length) pendingImages.push(...attached.images);
+      if (cleanedText.trimStart().startsWith("/") || cleanedText.trimStart().startsWith("!")) return false;
+      if (attached.images.length) {
+        pendingImages.push(...attached.images);
+        remoteAttachmentTextCounts.set(cleanedText, (remoteAttachmentTextCounts.get(cleanedText) ?? 0) + 1);
+      }
 
       if (interactiveTurnActive && currentTurnSteer) {
         // Busy: steer the running turn exactly like a local mid-turn Enter.
@@ -4537,7 +4638,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     };
     sessionNotifyEndpoint.onConfigCommand = (cmd): void => {
       if (cmd.verbosity !== undefined) notifyVerbosity = cmd.verbosity;
-      if (cmd.redact !== undefined) notifyRedact = cmd.redact;
+      if (cmd.redact !== undefined) {
+        notifyRedact = cmd.redact;
+        sessionNotifyEndpoint.setRedact(cmd.redact);
+      }
     };
   }
 
@@ -4660,7 +4764,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // /login→/provider login, /settings→/config, /subagent(s)→/agents.
       input = normalizeSlashAlias(input);
       pendingSelection = undefined;
-      navMatches = [];
+navMatches = [];
       navIdx = -1;
       if (input === "/discord" || input.startsWith("/discord ")) {
         const parts = input.split(/\s+/);
@@ -4711,11 +4815,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
+
+      const remoteAttachmentCount = remoteAttachmentTextCounts.get(input) ?? 0;
+      if (remoteAttachmentCount > 0) {
+        if (remoteAttachmentCount === 1) remoteAttachmentTextCounts.delete(input);
+        else remoteAttachmentTextCounts.set(input, remoteAttachmentCount - 1);
+      }
+      if (remoteAttachmentCount === 0 && input && !input.startsWith("/") && !input.startsWith("!")) {
       // File attachment: a dragged-and-dropped image file arrives as its path in
       // the typed text. Read any image path(s), attach them, and swap the path for
       // an [image #N] tag (continuing the clipboard-image numbering) — the same
       // scheme Ctrl+V uses. Skipped for slash commands and `!` shell escapes.
-      if (input && !input.startsWith("/") && !input.startsWith("!")) {
         const dropped = await attachImagePaths(input, pendingImages.length + 1);
         if (dropped.images.length > 0) {
           pendingImages.push(...dropped.images);
@@ -4956,7 +5066,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/goal" || input.startsWith("/goal ")) {
         const arg = input.substring(5).trim();
         if (!arg) {
-          const current = await readGoalState(cwd);
+          let current: GoalState | null;
+          try {
+            current = await readGoalState(cwd);
+          } catch (error) {
+            if (!(error instanceof GoalStateCorruptError)) throw error;
+            console.error(`${error.message}. Run /goal clear to remove it.`);
+            continue;
+          }
           if (current) {
             console.log(`Current goal: "${current.condition}" (set at ${new Date(current.setAt).toLocaleTimeString()})`);
           } else {
@@ -4970,10 +5087,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Goal cleared.");
           continue;
         }
+        let previous: GoalState | null;
+        try {
+          previous = await readGoalState(cwd);
+        } catch (error) {
+          if (!(error instanceof GoalStateCorruptError)) throw error;
+          console.error(`${error.message}. Run /goal clear before setting a new goal.`);
+          continue;
+        }
         const state = {
           condition: arg,
           setAt: Date.now(),
           verdicts: [],
+          ...(previous?.pendingMutationVerification ? { pendingMutationVerification: true } : {}),
         };
         await writeGoalState(state, cwd);
         console.log(`Goal set to: "${arg}"`);

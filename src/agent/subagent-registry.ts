@@ -72,12 +72,16 @@ export interface SubagentRecord {
   success?: boolean;
   /** Final subagent report/output, set once the run settles. */
   result?: string;
+  /** True when delegated execution may have changed workspace state. */
+  mutationMayHaveOccurred?: boolean;
 }
 
 interface Entry {
   record: SubagentRecord;
   promise: Promise<void>;
   abort: AbortController;
+  readOnly: boolean;
+  settled: boolean;
 }
 
 /** A detached run: receives its own AbortSignal and its own registry id, and
@@ -93,7 +97,7 @@ export class SubagentRegistry {
   private readonly steerInboxes = new Map<string, string[]>();
 
   /** Register and START a detached run; returns the (running) record immediately. */
-  launch(role: string, task: string, runner: DetachedRunner): SubagentRecord {
+  launch(role: string, task: string, runner: DetachedRunner, options: { readOnly?: boolean } = {}): SubagentRecord {
     const n = (this.seq.get(role) ?? 0) + 1;
     this.seq.set(role, n);
     const id = `${role}-${n}`;
@@ -106,24 +110,32 @@ export class SubagentRegistry {
       startedAt: Date.now(),
     };
     this.steerInboxes.set(id, []);
-    const promise = (async () => {
+    const entry: Entry = { record, promise: Promise.resolve(), abort, readOnly: options.readOnly ?? false, settled: false };
+    this.entries.set(id, entry);
+    entry.promise = (async () => {
       try {
         const res = await runner(abort.signal, id);
+        // Preserve structured mutation evidence even when cancellation already fired;
+        // the runner may have completed work before its promise settled.
+        record.mutationMayHaveOccurred = res.mutationMayHaveOccurred;
         // A cancel that already fired wins — don't overwrite the terminal state.
         if (record.status === "cancelled") return;
         record.status = res.success ? "completed" : "failed";
         record.success = res.success;
         record.result = truncateDetachedResult(res.output || res.error || "");
       } catch (err) {
+        // A mutating runner may throw after a partial workspace change; retain
+        // conservative evidence before cancellation can hide the late failure.
+        if (!entry.readOnly) record.mutationMayHaveOccurred = true;
         if (record.status === "cancelled") return;
         record.status = "failed";
         record.result = truncateDetachedResult(err instanceof Error ? err.message : String(err));
       } finally {
+        entry.settled = true;
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
         this.steerInboxes.delete(id);
       }
     })();
-    this.entries.set(id, { record, promise, abort });
     return record;
   }
 
@@ -137,6 +149,11 @@ export class SubagentRegistry {
 
   running(): SubagentRecord[] {
     return this.list().filter(r => r.status === "running");
+  }
+
+  /** Return mutating runs whose runner has not settled, including cancelled runs. */
+  inFlightMutators(): SubagentRecord[] {
+    return [...this.entries.values()].filter(entry => !entry.settled && !entry.readOnly).map(entry => entry.record);
   }
 
   /** Wait for the given ids (or all running, when empty). With `timeoutMs` the wait

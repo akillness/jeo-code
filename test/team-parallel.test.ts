@@ -48,6 +48,18 @@ async function initRepo(dir: string): Promise<void> {
   await fs.writeFile(path.join(dir, "README.md"), "root\n");
   await fs.mkdir(path.join(dir, ".jeo"));
   await fs.writeFile(path.join(dir, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+  await fs.mkdir(path.join(dir, "test"), { recursive: true });
+  await fs.writeFile(path.join(dir, "test", "verification.test.ts"), [
+    'import { expect, test } from "bun:test";',
+    'import * as fs from "node:fs";',
+    'test("a task artifact contains the expected output", () => {',
+    '  const expected = new Set(["solo\\n", "a content\\n", "b content\\n", "AAAA\\n", "BBBB\\n"]);',
+    '  const actual = ["solo.txt", "a.txt", "b.txt", "shared.txt"]',
+    '    .filter(file => fs.existsSync(file))',
+    '    .map(file => fs.readFileSync(file, "utf8"));',
+    '  expect(actual.some(content => expected.has(content))).toBe(true);',
+    '});',
+  ].join("\n") + "\n");
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", "init"]);
 }
@@ -103,10 +115,8 @@ const doneOk = { tool: "done", arguments: { reason: "Summary: done\nChanged File
 function writeAction(filePath: string, content: string) {
   return { tool: "write", arguments: { path: filePath, content } };
 }
-/** A bash command containing "test" satisfies the agent loop's verification gate
- *  (`VERIFY_SIGNAL_RE` in `src/agent/loop-guards.ts`) so a mutating step's `done`
- *  is accepted instead of being nudged back for "no verification ran". */
-const verifyAction = { tool: "bash", arguments: { command: "echo test ok" } };
+/** Run a real Bun test that checks the task's artifact, providing successful runtime evidence. */
+const verifyAction = { tool: "bash", arguments: { command: "bun test test/verification.test.ts" } };
 /** Evidence-gate satisfying read call — every seeded plan writes plan.yaml to
  *  its temp dir, so this always resolves against a real file. */
 const readAction = { tool: "read", arguments: { filePath: "plan.yaml" } };

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { callLlm, type Message } from "./loop";
 
 export interface GoalVerdict {
@@ -90,26 +92,25 @@ export interface TurnEvidence {
   sawMutation: boolean;
   sawVerification: boolean;
   verificationStale: boolean;
+  /** Mutation evidence persisted from an earlier user turn. */
+  pendingMutation?: boolean;
 }
 
 /**
  * Deterministic downgrade gate: an LLM-judged MET verdict is trustworthy only when
- * the turn either made no file changes, or made changes AND a fresh (non-stale)
- * verification signal (test/build/typecheck/lint) was observed. A turn that mutated
- * files with no verification at all, or whose only verification predates the last
- * mutation, cannot self-report MET on the transcript alone — that is exactly the
- * "gate theater" failure mode (an LLM asserting success without re-checked evidence).
- * NOT_MET/IMPOSSIBLE verdicts pass through unchanged: this only ever tightens MET,
- * never loosens a verdict the LLM itself already found lacking.
+ * no workspace mutation is pending, or a fresh verification signal follows the
+ * most relevant mutation. NOT_MET/IMPOSSIBLE pass through unchanged; this only
+ * ever tightens MET, never loosens a verdict the LLM itself already found lacking.
  */
 export function applyEvidenceGate(verdict: GoalVerdict, evidence: TurnEvidence): GoalVerdict {
   if (verdict.verdict !== "MET") return verdict;
-  if (!evidence.sawMutation) return verdict; // nothing changed — the transcript judgment stands
-  if (evidence.sawVerification && !evidence.verificationStale) return verdict; // fresh verification backs the claim
+  const sawMutation = evidence.sawMutation || evidence.pendingMutation === true;
+  if (!sawMutation) return verdict;
+  if (evidence.sawVerification && !evidence.verificationStale) return verdict;
 
   const gap = !evidence.sawVerification
-    ? "the turn modified files but no test/build/typecheck/lint run was observed"
-    : "the turn's only verification run predates its last file modification (stale evidence)";
+    ? "workspace changes are pending but no test/build/typecheck/lint run was observed"
+    : "the only verification run predates the last workspace modification (stale evidence)";
   return {
     verdict: "NOT_MET",
     reason:
@@ -129,7 +130,77 @@ export interface GoalState {
     verdict: "MET" | "NOT_MET" | "IMPOSSIBLE";
     gap?: string;
   }>;
+  /** Backward-compatible persisted evidence that a mutation still needs verification. */
+  pendingMutationVerification?: boolean;
 }
+
+export class GoalStateCorruptError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GoalStateCorruptError";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isGoalVerdict(value: unknown): value is GoalState["verdicts"][number] {
+  return (
+    isRecord(value) &&
+    typeof value.at === "number" &&
+    Number.isFinite(value.at) &&
+    (value.verdict === "MET" || value.verdict === "NOT_MET" || value.verdict === "IMPOSSIBLE") &&
+    (value.gap === undefined || typeof value.gap === "string")
+  );
+}
+
+
+function parseGoalState(data: string, filePath: string): GoalState {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    throw new GoalStateCorruptError(`Persisted goal state is malformed JSON: ${filePath}`);
+  }
+
+  if (
+    !isRecord(value) ||
+    typeof value.condition !== "string" ||
+    value.condition.trim().length === 0 ||
+    typeof value.setAt !== "number" ||
+    !Number.isFinite(value.setAt) ||
+    !Array.isArray(value.verdicts) ||
+    (value.pendingMutationVerification !== undefined && typeof value.pendingMutationVerification !== "boolean")
+  ) {
+    throw new GoalStateCorruptError(`Persisted goal state has invalid required fields: ${filePath}`);
+  }
+
+  const verdicts: GoalState["verdicts"] = [];
+  for (const verdict of value.verdicts) {
+    if (!isGoalVerdict(verdict)) {
+      throw new GoalStateCorruptError(`Persisted goal state has an invalid verdict entry: ${filePath}`);
+    }
+    verdicts.push(verdict);
+  }
+
+  return {
+    condition: value.condition,
+    setAt: value.setAt,
+    verdicts,
+    ...(value.pendingMutationVerification === undefined
+      ? {}
+      : { pendingMutationVerification: value.pendingMutationVerification }),
+  };
+}
+
+/** Apply this turn's evidence to the persisted pending-mutation flag. */
+export function applyPendingEvidence(state: GoalState, evidence: TurnEvidence): GoalState {
+  const pendingMutationVerification = evidence.sawVerification && !evidence.verificationStale
+    ? false
+    : state.pendingMutationVerification === true || evidence.sawMutation;
+  return { ...state, pendingMutationVerification };
+}
+
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -141,18 +212,26 @@ export function getGoalPath(cwd: string = process.cwd()): string {
 
 export async function readGoalState(cwd: string = process.cwd()): Promise<GoalState | null> {
   const p = getGoalPath(cwd);
+  let data: string;
   try {
-    const data = await fs.readFile(p, "utf-8");
-    return JSON.parse(data) as GoalState;
-  } catch {
-    return null;
+    data = await fs.readFile(p, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
+  return parseGoalState(data, p);
 }
 
 export async function writeGoalState(state: GoalState, cwd: string = process.cwd()): Promise<void> {
   const p = getGoalPath(cwd);
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify(state, null, 2), "utf-8");
+  const tempPath = `${p}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tempPath, JSON.stringify(state, null, 2), { encoding: "utf-8", flag: "wx" });
+    await fs.rename(tempPath, p);
+  } finally {
+    await fs.unlink(tempPath).catch(() => {});
+  }
 }
 
 export async function clearGoalState(cwd: string = process.cwd()): Promise<void> {

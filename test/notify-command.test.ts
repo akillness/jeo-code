@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runNotifyCommand } from "../src/commands/notify";
+import { runNotifyCommand as runNotifyCommandUnderTest } from "../src/commands/notify";
 import { readGlobalConfig, saveConfigPatch } from "../src/agent/state";
 import { acquireDaemonLock, readDaemonLock, isNotifyConfigured } from "../src/agent/notify/daemon-control";
 
@@ -45,6 +45,27 @@ function apiFake(respond: (request: RequestRecord) => unknown) {
   // The injected HTTP boundary does not use Bun's fetch.preconnect extension.
   const fetchImpl = implementation as typeof fetch;
   return { requests, fetchImpl };
+}
+
+const FIXTURE_TOKEN_ENV = "JEO_TEST_NOTIFY_BOT_TOKEN";
+
+async function runNotifyCommand(
+  args: string[],
+  opts?: Parameters<typeof runNotifyCommandUnderTest>[1],
+): Promise<void> {
+  const tokenIndex = args.indexOf("--token");
+  if (tokenIndex < 0 || !args[tokenIndex + 1]) return runNotifyCommandUnderTest(args, opts);
+
+  const previous = process.env[FIXTURE_TOKEN_ENV];
+  process.env[FIXTURE_TOKEN_ENV] = args[tokenIndex + 1]!;
+  const envArgs = args.slice();
+  envArgs.splice(tokenIndex, 2, "--token-env", FIXTURE_TOKEN_ENV);
+  try {
+    await runNotifyCommandUnderTest(envArgs, opts);
+  } finally {
+    if (previous === undefined) delete process.env[FIXTURE_TOKEN_ENV];
+    else process.env[FIXTURE_TOKEN_ENV] = previous;
+  }
 }
 
 function telegramReply(request: RequestRecord, chatType = "private") {
@@ -324,6 +345,38 @@ test("malformed inline token flags never echo credential bytes in diagnostics", 
   expect(fake.requests).toEqual([]);
   expect([...logs, ...errors].join("\n")).not.toContain("SECRET-IN-ARGUMENT");
   expect((await readGlobalConfig()).notifications?.telegram).toBeUndefined();
+});
+
+test("Telegram setup rejects raw --token without API access, configuration persistence, or daemon startup", async () => {
+  const fake = apiFake(() => { throw new Error("Raw-token rejection must happen before API access"); });
+  await runNotifyCommandUnderTest(["setup", "--token", "raw-test-token", "--chat-id", "999"], fake);
+
+  expect(process.exitCode).toBe(1);
+  expect(fake.requests).toEqual([]);
+  expect((await readGlobalConfig()).notifications?.telegram).toBeUndefined();
+  expect(await readDaemonLock()).toBeUndefined();
+  expect(errors.join("\n")).not.toContain("raw-test-token");
+});
+
+test("Telegram setup accepts a token supplied only through the named environment variable", async () => {
+  const key = "JEO_TEST_TELEGRAM_SETUP_TOKEN";
+  const previous = process.env[key];
+  process.env[key] = "1:environment-only-test-token";
+  try {
+    const fake = apiFake(telegramReply);
+    await runNotifyCommand(["setup", "--token-env", key, "--chat-id", "999"], fake);
+
+    expect(process.exitCode).toBe(0);
+    expect(errors).toEqual([]);
+    expect((await readGlobalConfig()).notifications?.telegram).toEqual({
+      botToken: "1:environment-only-test-token", chatId: "999",
+    });
+    expect(fake.requests.map(request => request.url.pathname.split("/").at(-1))).toEqual(["getMe", "getChat"]);
+    expect(await readDaemonLock()).toBeUndefined();
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
 });
 
 const slackConfig = { botToken: "xoxb-BOT-SECRET", appToken: "xapp-APP-SECRET", channelId: "CTARGET", allowedUserIds: ["UOWNER"] };

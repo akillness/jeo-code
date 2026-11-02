@@ -46,20 +46,27 @@ local-first by design.
   and no `history` lookup tool. `formatTranscript` is a read-only viewer, not a
   searchable store.
 
-## Completion / "goal" gating — `src/agent/engine.ts`
-- `onBeforeDone(reason): string | null` — a **caller-owned, single** done gate (used
-  for stale-todo reconciliation). Fires at most **once per turn**.
-- **Mutation-without-verification pushback**: a turn that edited files but shows no
-  verification signal gets one pushback before `done`.
-- **Cycle / no-progress guards**: exact-repeat (`MAX_REPEAT`) and A↔B alternation
-  (`CYCLE_WINDOW`) detection — one corrective nudge (surfaced via `onNotice`), then a
-  hard stop; a **dynamic step budget** (`JEO_STEP_BASE`/`JEO_STEP_HARD_CAP`) extends
-  on novel progress and consolidates when stalled.
-- **Verification hooks** (`.jeo/hooks.json`): a post-edit tsc/eslint/test hook whose
-  red output is fed back and blocks `done` until resolved.
-- **Analog to MiMo's _Goal_ — but jeo's is self-judged and in-loop.** There is no
-  *user-defined natural-language stop condition* and no *independent verifier model
-  call* that re-reads the full transcript with the same context as the agent.
+## Completion / "goal" gating — `src/agent/engine.ts`, `src/commands/launch.ts`
+- The engine tracks whether the current turn observed mutations, verification, and whether
+  that verification predates the latest tracked mutation. Its deterministic done gate can
+  reject a mutation with no fresh verification signal; it does not inspect the workspace.
+- `launch.ts` supplies `onBeforeDone`: it blocks completion while mutating subagents are
+  in flight, reconciles unfinished todos, and, when a `/goal` condition exists, calls
+  `verifyGoal` with the condition and conversation history. That is a separate LLM
+  judgment over recorded tool calls/results and conversation, not a second tool-using
+  process that re-reads files or independently runs tests.
+- `applyEvidenceGate` downgrades an LLM `MET` after a tracked mutation unless the current
+  turn observed fresh test/build/typecheck/lint evidence after its last tracked mutation.
+  These signals are evidence from tool output, not proof that a test runner is authentic
+  or that the workspace is correct. The gate does not check outstanding `JobRegistry`
+  work; asynchronous jobs may continue changing files after `done`.
+- Cycle / no-progress guards detect exact repeats (`MAX_REPEAT`) and A↔B alternation
+  (`CYCLE_WINDOW`) — a corrective nudge, then a hard stop; the dynamic step budget
+  (`JEO_STEP_BASE`/`JEO_STEP_HARD_CAP`) extends on novel progress and consolidates when
+  stalled. Post-edit hooks feed diagnostics back; a red hook can block `done`.
+- **Limit:** `/goal` is a transcript judge plus deterministic, current-turn evidence
+  gates. It is not independent workspace verification and does not guarantee continued
+  immutability after the turn ends.
 
 ## Heavier gated workflows — `src/commands/{deep-interview,ralplan,team,ultragoal}.ts`
 - **deep-interview** — Socratic ambiguity-scored interview → immutable seed under
@@ -68,8 +75,8 @@ local-first by design.
   `[OKAY]`/`[ITERATE]`/`[REJECT]`, persisted and required by `jeo approve`.
 - **team** — serial plan executor with run locks, per-task subagent contracts, a
   parent-side mutation audit, failed-task markers.
-- **ultragoal** — durable multi-goal ledger; honest verification (suite runs once as
-  a global signal).
+- **ultragoal** — durable multi-goal ledger; evidence-aware reporting (suite runs once as
+  a global signal; this does not prove test-runner authenticity or workspace correctness).
 - **These already embody MiMo's "compose / goal" spirit at the *workflow* layer**,
   but they are explicit, opt-in commands — not an always-on per-turn memory/goal loop.
 
@@ -80,10 +87,11 @@ local-first by design.
 
 ## What jeo already has vs. what's missing (preview of `03`)
 - **Has**: project `MEMORY.md` (session-end distill), JSONL sessions + incremental
-  persist + `/resume`, in-window compaction, a single in-loop done gate + cycle/step
-  guards + verification hooks, subagent infra, gated spec-first workflows.
+  persist + `/resume`, in-window compaction, current-turn completion evidence gates,
+  `/goal` transcript judgment, cycle/step guards, hooks, subagent infra, and gated
+  spec-first workflows.
 - **Missing (the MiMo deltas)**: mid-session **early checkpoints**, an **independent
   writer subagent** + single-writer invariant, **session/scratch/global memory
-  layers** + upward **promotion**, **rebuild** into a fresh window, an **independent
-  Goal verifier** with a user-set stop condition, a **searchable history** fallback,
-  and periodic **Dream/Distill** maintenance.
+  layers** + upward **promotion**, **rebuild** into a fresh window, a verifier that
+  independently inspects workspace state or runs checks, a **searchable history**
+  fallback, and periodic **Dream/Distill** maintenance.

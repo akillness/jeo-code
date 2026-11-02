@@ -258,14 +258,16 @@ export function subagentSystemPrompt(role: SubagentRole): string {
 
 /**
  * True when EVERY shell segment of `command` starts with one of `prefixes`
- * (after stripping leading env-assignments and a leading `sudo`). Splitting on
- * `; && || |` means a chained `… && rm -rf` cannot smuggle an un-vetted command
- * past a single allowed head. Command substitution (`$(…)`, backticks) can't be
- * statically vetted, so it is rejected outright. Empty allowlist = unconstrained.
+ * (after stripping leading env-assignments and a leading `sudo`). Only `&&`,
+ * `||`, `;`, and `|` chaining is understood; other shell operators, newlines,
+ * and substitutions are rejected rather than approximated. Empty allowlist =
+ * unconstrained.
  */
 export function bashCommandAllowed(command: string, prefixes: string[]): boolean {
   if (prefixes.length === 0) return true;
-  if (/[`]|\$\(/.test(command)) return false; // un-vettable command substitution
+  if (/[$`]/.test(command)) return false; // un-vettable expansion/substitution
+  const unsupportedSyntax = command.replace(/&&|\|\||[;|]/g, "");
+  if (/[&<>(){}\\\r\n]/.test(unsupportedSyntax)) return false;
   const matches = (seg: string, p: string) =>
     seg === p || seg.startsWith(p + " ") || seg.startsWith(p + "\t");
   for (const raw of command.split(/(?:&&|\|\||[;|])/)) {

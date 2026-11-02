@@ -339,7 +339,7 @@ export class SlackDaemon {
       const body = command[3]!.trim();
       let local: Record<string, unknown>;
       if (command[1] === "send") {
-        if (body.startsWith("/")) { this.emit("Remote slash commands are disabled; send ordinary prompt text.", undefined, threadTs); return; }
+        if (body.startsWith("/") || body.startsWith("!")) { this.emit("Remote slash and shell commands are disabled; send ordinary prompt text.", undefined, threadTs); return; }
         local = { type: "user_message", text: body };
       } else {
         const args = command[1] === "steer" ? /^(\S+)\s+([\s\S]+)$/.exec(body) : /^(\S+)$/.exec(body);
@@ -350,7 +350,7 @@ export class SlackDaemon {
       this.emit(ok ? "Session acknowledged command (accepted, not completed)." : "Command not acknowledged (unavailable, rejected or timed out).", session.sessionId, threadTs);
       return;
     }
-    if (text.startsWith("/")) { this.emit(HELP, undefined, threadTs); return; }
+    if (text.startsWith("/") || text.startsWith("!")) { this.emit(HELP, undefined, threadTs); return; }
     const reply = threadTs ? this.replies.get(threadTs) : undefined;
     if (!addressed && !reply) return;
     const session = reply && (this.deps.now ?? Date.now)() - reply.at < 86_400_000 ? this.findSession(reply.sessionId) : undefined;

@@ -16,6 +16,7 @@ const fatal = (err: unknown): never => {
 process.on("uncaughtException", fatal);
 process.stdout.on("error", fatal);
 
+
 const chunk = "x".repeat(65536);
 for (let i = 0; i < 50; i++) {
   process.stdout.write(chunk);

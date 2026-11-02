@@ -1,8 +1,8 @@
-import { test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { verifyGoal, readGoalState, writeGoalState, clearGoalState, applyEvidenceGate, type GoalState } from "../src/agent/goal-verifier";
+import { GoalStateCorruptError, verifyGoal, readGoalState, writeGoalState, clearGoalState, getGoalPath, applyEvidenceGate, applyPendingEvidence, type GoalState } from "../src/agent/goal-verifier";
 
 import type { Message } from "../src/agent/loop";
 
@@ -92,28 +92,119 @@ test("goal state persistence read/write/clear works", async () => {
   expect(cleared).toBeNull();
 });
 
-test("re-block cap logic auto-allows done after MAX_RE_BLOCKS", async () => {
-  const state: GoalState = {
-    condition: "test condition",
-    setAt: Date.now(),
-    verdicts: [
-      { at: Date.now() - 2000, verdict: "NOT_MET", gap: "first gap" },
-      { at: Date.now() - 1000, verdict: "NOT_MET", gap: "second gap" }
-    ]
+test("readGoalState rejects malformed JSON and invalid persisted shapes", async () => {
+  const corruptStates: Array<{ name: string; contents: string }> = [
+    { name: "malformed JSON", contents: "{\"condition\":" },
+    { name: "missing required fields", contents: JSON.stringify({ condition: "finish the task" }) },
+    {
+      name: "invalid verdict entry",
+      contents: JSON.stringify({ condition: "finish the task", setAt: 1, verdicts: [{ at: 2, verdict: "MAYBE" }] }),
+    },
+  ];
+
+  for (const state of corruptStates) {
+    await fs.mkdir(path.dirname(getGoalPath(tempCwd)), { recursive: true });
+    await fs.writeFile(getGoalPath(tempCwd), state.contents, "utf8");
+
+    await expect(readGoalState(tempCwd), state.name).rejects.toBeInstanceOf(GoalStateCorruptError);
+    await clearGoalState(tempCwd);
+  }
+});
+
+test("replacing goal state keeps the existing JSON readable until the replacement is committed", async () => {
+  const existing: GoalState = {
+    condition: "finish the original goal",
+    setAt: 1_700_000_000_000,
+    verdicts: [{ at: 1_700_000_001_000, verdict: "NOT_MET", gap: "still working" }],
+    pendingMutationVerification: true,
+  };
+  const replacement: GoalState = {
+    condition: "finish the replacement goal",
+    setAt: 1_700_000_002_000,
+    verdicts: [{ at: 1_700_000_003_000, verdict: "MET", gap: "verified" }],
+    pendingMutationVerification: false,
   };
 
+  await writeGoalState(existing, tempCwd);
+
+  const realRename = fs.rename;
+  let stateBeforeRename: GoalState | null | undefined;
+  const renameSpy = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+    stateBeforeRename = await readGoalState(tempCwd);
+    return realRename(source, destination);
+  });
+
+  try {
+    await writeGoalState(replacement, tempCwd);
+  } finally {
+    renameSpy.mockRestore();
+  }
+
+  expect(stateBeforeRename).toEqual(existing);
+  expect(await readGoalState(tempCwd)).toEqual(replacement);
+});
+
+test("pending mutation evidence persists across turns until fresh verification succeeds", async () => {
+  let state: GoalState = {
+    condition: "complete and verify the change",
+    setAt: Date.now(),
+    verdicts: [],
+  };
+
+  // A successful mutation must leave a durable verification obligation.
+  state = applyPendingEvidence(state, {
+    sawMutation: true,
+    sawVerification: false,
+    verificationStale: false,
+  });
   await writeGoalState(state, tempCwd);
 
-  // Simulate the onBeforeDone logic
-  const goalState = await readGoalState(tempCwd);
-  expect(goalState).not.toBeNull();
+  // A later turn with no changes or verification cannot forget the earlier edit.
+  state = (await readGoalState(tempCwd))!;
+  state = applyPendingEvidence(state, {
+    sawMutation: false,
+    sawVerification: false,
+    verificationStale: false,
+  });
+  expect(state.pendingMutationVerification).toBe(true);
+  expect(applyEvidenceGate(
+    { verdict: "MET", reason: "looks complete" },
+    { sawMutation: false, sawVerification: false, verificationStale: false, pendingMutation: true },
+  ).verdict).toBe("NOT_MET");
 
-  const reBlockCount = goalState!.verdicts.filter(v => v.verdict === "NOT_MET" || v.verdict === "IMPOSSIBLE").length;
-  const MAX_RE_BLOCKS = 2;
+  // Neither a stale passing run nor a failed/no-verification attempt clears it.
+  state = applyPendingEvidence(state, {
+    sawMutation: false,
+    sawVerification: true,
+    verificationStale: true,
+  });
+  expect(state.pendingMutationVerification).toBe(true);
+  state = applyPendingEvidence(state, {
+    sawMutation: false,
+    sawVerification: false,
+    verificationStale: false,
+  });
+  expect(state.pendingMutationVerification).toBe(true);
+  expect(applyEvidenceGate(
+    { verdict: "MET", reason: "stale or failed verification" },
+    { sawMutation: false, sawVerification: true, verificationStale: true, pendingMutation: true },
+  ).verdict).toBe("NOT_MET");
 
-  expect(reBlockCount).toBe(2);
-  expect(reBlockCount >= MAX_RE_BLOCKS).toBe(true);
+  // Only a fresh successful verification clears persisted pending evidence.
+  state = applyPendingEvidence(state, {
+    sawMutation: false,
+    sawVerification: true,
+    verificationStale: false,
+  });
+  await writeGoalState(state, tempCwd);
+  const persisted = (await readGoalState(tempCwd))!;
+  expect(persisted.pendingMutationVerification).toBe(false);
+  expect(applyEvidenceGate(
+    { verdict: "MET", reason: "verified" },
+    { sawMutation: false, sawVerification: true, verificationStale: false, pendingMutation: false },
+  ).verdict).toBe("MET");
 });
+
 test("applyEvidenceGate leaves NOT_MET/IMPOSSIBLE untouched regardless of evidence", () => {
   const notMet = { verdict: "NOT_MET" as const, reason: "missing tests" };
   const impossible = { verdict: "IMPOSSIBLE" as const, reason: "no credentials" };

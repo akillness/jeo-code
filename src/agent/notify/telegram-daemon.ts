@@ -33,14 +33,16 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { readGlobalConfig } from "../state";
-import { notifySessionsDir, notifyTopicsPath } from "./paths";
+import { notifySessionsDir, notifyTelegramUpdateOffsetPath, notifyTopicsPath } from "./paths";
 import { acquireDaemonLock, isPidAlive } from "./daemon-control";
 import { TelegramApi, type TelegramUpdate, type TelegramCallbackQuery, type InlineKeyboardMarkup, type InlineKeyboardButton } from "./telegram-api";
 import { TopicRegistry, type TopicRegistryState } from "./topic-registry";
 import { RateLimitPool } from "./rate-limit-pool";
 import { parseInThreadConfigCommand } from "./config-commands";
 import { markdownToTelegramHtml, splitTelegramHtml } from "./telegram-html";
+import { attachmentFromImageBytes } from "../../util/file-attachment";
 import type { SubagentRecord } from "../subagent-registry";
 import { parseSessionEndpoint } from "./session-discovery";
 
@@ -55,6 +57,10 @@ const POLL_ERROR_BACKOFF_MIN_MS = 1_000;
  *  `getUpdates` long-poll owner) or transient network errors must never
  *  wait longer than this between retries. */
 const POLL_ERROR_BACKOFF_MAX_MS = 10_000;
+/** Retry failed outbound Bot API requests at most three times after the first
+ *  attempt; the daemon's shared pool timer drives retries without blocking an
+ *  accepted inbound action or replaying its side effects. */
+const MAX_OUTBOUND_RETRIES = 3;
 
 
 // ── Pure helpers (unit-testable without network/ws) ────────────────────────────
@@ -200,7 +206,7 @@ interface SessionConnection {
 
 export interface TelegramDaemonOptions {
   chatId: string;
-  /** Verified non-secret Telegram bot ID; required for default disk topic persistence. */
+  /** Verified non-secret Telegram bot ID; required for default disk persistence. */
   botId?: string;
   allowedUserIds?: string[];
   telegram: TelegramApi;
@@ -222,6 +228,9 @@ export interface TelegramDaemonOptions {
   /** Injectable destination-scoped persistence for the per-session topic map —
    *  default disk persistence checks both `botId` and `chatId`. */
   loadTopicState?: () => Promise<TopicRegistryState>;
+  /** Durable Telegram update cursor hooks, primarily for deterministic tests. */
+  loadUpdateOffset?: () => Promise<number | undefined>;
+  saveUpdateOffset?: (nextOffset: number) => Promise<void>;
   saveTopicState?: (state: TopicRegistryState) => Promise<void>;
   /** Injectable clock for `RateLimitPool` determinism in tests. */
   now?: () => number;
@@ -241,14 +250,16 @@ export interface TelegramDaemonOptions {
 /** Outbound payload the shared `RateLimitPool` schedules; `flushPool` maps each
  *  variant onto the matching Bot API call. */
 type OutboundPayload =
-  | { kind: "text"; chatId: string; text: string; topicId?: number; replyMarkup?: InlineKeyboardMarkup; html?: boolean }
-  | { kind: "photo"; chatId: string; photo: string; topicId?: number; caption?: string; replyMarkup?: InlineKeyboardMarkup };
+  | { kind: "text"; chatId: string; text: string; topicId?: number; replyMarkup?: InlineKeyboardMarkup; html?: boolean; retryChunks?: string[]; retryCount?: number; onDelivered?: (delivered: boolean) => void }
+  | { kind: "photo"; chatId: string; photo: string; topicId?: number; caption?: string; replyMarkup?: InlineKeyboardMarkup; retryCount?: number; onDelivered?: (delivered: boolean) => void };
 
 export class TelegramDaemon {
   private readonly WS: typeof WebSocket;
   readonly sessions = new Map<string, SessionConnection>();
   private readonly pendingAcks = new Map<string, { conn: SessionConnection; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
+  private readonly pendingOutbound = new Set<(delivered: boolean) => void>();
   private updateOffset: number | undefined;
+  private daemonStartEpochSeconds = 0;
   /** Current error-poll retry delay; starts at `POLL_ERROR_BACKOFF_MIN_MS`,
    *  doubles (capped at `POLL_ERROR_BACKOFF_MAX_MS`) on each consecutive
    *  non-ok/failed `getUpdates`, and resets on the next success. */
@@ -261,6 +272,8 @@ export class TelegramDaemon {
    *  path never touches this. */
   private readonly topics: TopicRegistry | undefined;
   private readonly pool: RateLimitPool<OutboundPayload>;
+  /** Paths written by this daemon for inbound media; only these are eligible for cleanup. */
+  private readonly ownedAttachments = new Set<string>();
 
   constructor(private readonly opts: TelegramDaemonOptions) {
     this.WS = opts.WebSocketImpl ?? WebSocket;
@@ -271,14 +284,33 @@ export class TelegramDaemon {
   private async notify(
     text: string,
     replyMarkup?: InlineKeyboardMarkup,
-    opts?: { topicId?: number; sessionId?: string; html?: boolean },
-  ): Promise<void> {
+    opts?: { topicId?: number; sessionId?: string; html?: boolean; awaitDelivery?: boolean },
+  ): Promise<boolean> {
+    let delivery: Promise<boolean> | undefined;
+    let onDelivered: ((delivered: boolean) => void) | undefined;
+    if (opts?.awaitDelivery) {
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      let settled = false;
+      onDelivered = delivered => {
+        if (settled) return;
+        settled = true;
+        this.pendingOutbound.delete(onDelivered!);
+        resolve(delivered);
+      };
+      this.pendingOutbound.add(onDelivered);
+      delivery = promise;
+    }
     this.pool.submit({
       sessionId: opts?.sessionId ?? "__global__",
       lane: "finalized",
-      payload: { kind: "text", chatId: this.opts.chatId, text, topicId: opts?.topicId ?? this.opts.topicId, replyMarkup, html: opts?.html },
+      payload: { kind: "text", chatId: this.opts.chatId, text, topicId: opts?.topicId ?? this.opts.topicId, replyMarkup, html: opts?.html, onDelivered },
     });
     await this.flushPool();
+    return delivery ? await delivery : true;
+  }
+
+  private async notifyReply(text: string, replyMarkup?: InlineKeyboardMarkup): Promise<boolean> {
+    return await this.notify(text, replyMarkup, { awaitDelivery: true });
   }
 
   private async notifyPhoto(
@@ -295,11 +327,12 @@ export class TelegramDaemon {
     await this.flushPool();
   }
 
-  private async answerCallback(id: string, text?: string): Promise<void> {
+  private async answerCallback(id: string, text?: string): Promise<boolean> {
     try {
       await this.opts.telegram.answerCallbackQuery(id, text !== undefined ? { text } : {});
+      return true;
     } catch {
-      // best-effort — acknowledging the tap is nice-to-have, not load-bearing.
+      return false;
     }
   }
 
@@ -316,26 +349,43 @@ export class TelegramDaemon {
     const granted = this.pool.drain();
     for (const item of granted) {
       const p = item.payload;
-      try {
-        if (p.kind === "text") {
-          const chunks = splitTelegramHtml(p.text);
-          for (let i = 0; i < chunks.length; i++) {
-            await this.opts.telegram.sendMessage(p.chatId, chunks[i]!, {
+      let delivered = true;
+      let retryChunks: string[] | undefined;
+      if (p.kind === "text") {
+        const chunks = p.retryChunks ?? splitTelegramHtml(p.text);
+        for (let i = 0; i < chunks.length; i++) {
+          try {
+            const result = await this.opts.telegram.sendMessage(p.chatId, chunks[i]!, {
               messageThreadId: p.topicId,
               // A reply keyboard belongs on the LAST fragment a split reply ends on.
               replyMarkup: i === chunks.length - 1 ? p.replyMarkup : undefined,
               parseMode: p.html ? "HTML" : undefined,
             });
+            if (!result || result.ok !== true) throw new Error("Telegram sendMessage returned ok:false");
+          } catch {
+            delivered = false;
+            retryChunks = chunks.slice(i);
+            break;
           }
-        } else {
-          await this.opts.telegram.sendPhoto(p.chatId, p.photo, { messageThreadId: p.topicId, caption: p.caption, replyMarkup: p.replyMarkup });
         }
-      } catch {
-        // best-effort — a failed push must never crash the daemon loop.
+      } else {
+        try {
+          const result = await this.opts.telegram.sendPhoto(p.chatId, p.photo, { messageThreadId: p.topicId, caption: p.caption, replyMarkup: p.replyMarkup });
+          if (!result || result.ok !== true) throw new Error("Telegram sendPhoto returned ok:false");
+        } catch {
+          delivered = false;
+        }
       }
+      if (!delivered && !this.stopped && (p.retryCount ?? 0) < MAX_OUTBOUND_RETRIES) {
+        this.pool.submit({
+          ...item,
+          payload: { ...p, retryCount: (p.retryCount ?? 0) + 1, ...(retryChunks ? { retryChunks } : {}) },
+        });
+        continue;
+      }
+      p.onDelivered?.(delivered);
     }
   }
-
   async scanSessions(): Promise<void> {
     if (this.stopped) return;
     const readdir = this.opts.readdir ?? (d => fs.readdir(d));
@@ -461,10 +511,20 @@ export class TelegramDaemon {
       if (!filePath) return undefined;
       const bytes = await this.opts.telegram.downloadFile(filePath, this.opts.maxAttachmentBytes);
       if (!bytes) return undefined;
+      if (!attachmentFromImageBytes(bytes)) return undefined;
       const write = this.opts.writeTempFile ?? defaultWriteTempFile;
-      return await write(bytes, suggestedName);
+      const writtenPath = await write(bytes, suggestedName);
+      this.ownedAttachments.add(writtenPath);
+      return writtenPath;
     } catch {
       return undefined;
+    }
+  }
+  private async cleanupAttachments(paths: readonly string[]): Promise<void> {
+    const unlink = this.opts.unlink ?? (p => fs.unlink(p));
+    for (const filePath of paths) {
+      if (!this.ownedAttachments.delete(filePath)) continue;
+      await unlink(filePath).catch(() => {});
     }
   }
 
@@ -621,40 +681,35 @@ export class TelegramDaemon {
     return promise;
   }
 
-  async handleInboundText(text: string): Promise<void> {
+  private async handleInboundText(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (trimmed === "/subagents") {
       const sessions = [...this.sessions.values()].map(c => ({ sessionId: c.sessionId, cwd: c.cwd, records: c.lastRecords }));
-      await this.notify(formatSubagentsList(sessions), buildSubagentsKeyboard(sessions));
-      return;
+      return await this.notify(formatSubagentsList(sessions), buildSubagentsKeyboard(sessions), { awaitDelivery: true });
     }
-    if (trimmed === "/help" || trimmed === "/start") {
-      await this.notify(HELP_TEXT);
-      return;
-    }
+    if (trimmed === "/help" || trimmed === "/start") return await this.notifyReply(HELP_TEXT);
     const steer = parseSteerCommand(trimmed);
     if (steer) {
       const conn = this.findSession(steer.shortId);
       if (!conn) {
-        await this.notify(`No connected session matches '${steer.shortId}'. Send /subagents to see live sessions.`);
-        return;
+        return await this.notifyReply(`No connected session matches '${steer.shortId}'. Send /subagents to see live sessions.`);
       }
       const ok = await this.sendRequest(conn, { type: "steer", id: steer.subagentId, message: steer.message });
-      await this.notify(ok ? `Steered '${steer.subagentId}'.` : `Steer failed — '${steer.subagentId}' is unknown or not running.`);
-      return;
+      const delivered = await this.notifyReply(ok ? `Steered '${steer.subagentId}'.` : `Steer failed — '${steer.subagentId}' is unknown or not running.`);
+      return ok || delivered;
     }
     const cancel = parseCancelCommand(trimmed);
     if (cancel) {
       const conn = this.findSession(cancel.shortId);
       if (!conn) {
-        await this.notify(`No connected session matches '${cancel.shortId}'. Send /subagents to see live sessions.`);
-        return;
+        return await this.notifyReply(`No connected session matches '${cancel.shortId}'. Send /subagents to see live sessions.`);
       }
       const ok = await this.sendRequest(conn, { type: "cancel", ids: [cancel.subagentId] });
-      await this.notify(ok ? `Cancelled '${cancel.subagentId}'.` : `Cancel failed — '${cancel.subagentId}' is unknown or already finished.`);
-      return;
+      const delivered = await this.notifyReply(ok ? `Cancelled '${cancel.subagentId}'.` : `Cancel failed — '${cancel.subagentId}' is unknown or already finished.`);
+      return ok || delivered;
     }
-    if (trimmed.startsWith("/")) await this.notify(`Unrecognized command. ${HELP_TEXT}`);
+    if (trimmed.startsWith("/") || trimmed.startsWith("!")) return await this.notifyReply(`Unrecognized command. ${HELP_TEXT}`);
+    return true;
   }
 
   /** Inbound routed to a KNOWN session's OWN forum topic (per-session-topics
@@ -665,17 +720,23 @@ export class TelegramDaemon {
    *  caption) is forwarded as free-text steering, with any attached photo/
    *  image-document downloaded first. A reaction confirms endpoint acceptance;
    *  remote slash commands other than the presentation settings are rejected. */
-  private async handleSessionTopicInbound(sessionId: string, msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
+  private async handleSessionTopicInbound(sessionId: string, msg: NonNullable<TelegramUpdate["message"]>): Promise<boolean> {
     const conn = this.sessions.get(sessionId);
-    if (!conn?.verified) return; // disconnected or not yet authenticated by its snapshot
+    if (!conn?.verified) return true; // disconnected or not yet authenticated by its snapshot
     const text = msg.text ?? msg.caption ?? "";
     const hasMedia = !!(msg.photo?.length || msg.document);
     const cfg = !hasMedia ? parseInThreadConfigCommand(text) : undefined;
     if (cfg) {
-      conn.ws.send(JSON.stringify({ type: "config_command", sessionId, ...cfg }));
-      return;
+      try {
+        const readyState = (conn.ws as WebSocket & { readyState?: number }).readyState;
+        if (typeof readyState === "number" && readyState !== 1) return true;
+        conn.ws.send(JSON.stringify({ type: "config_command", sessionId, ...cfg }));
+      } catch {
+        // The session may disconnect between the readiness check and send; checkpoint this update and continue polling.
+      }
+      return true;
     }
-    if (typeof text !== "string" || text.trimStart().startsWith("/")) return;
+    if (typeof text !== "string" || text.trimStart().startsWith("/") || text.trimStart().startsWith("!")) return true;
     const imagePaths: string[] = [];
     if (msg.photo?.length) {
       const largest = msg.photo[msg.photo.length - 1]!;
@@ -685,9 +746,15 @@ export class TelegramDaemon {
       const p = await this.downloadAttachment(msg.document.file_id, msg.document.file_name ?? `document-${msg.document.file_id}`);
       if (p) imagePaths.push(p);
     }
-    if (!text && imagePaths.length === 0) return; // a non-image document with no caption — nothing usable to forward
-    const ok = await this.sendRequest(conn, { type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined });
+    if (!text && imagePaths.length === 0) return true; // a non-image document with no caption — nothing usable to forward
+    let ok = false;
+    try {
+      ok = await this.sendRequest(conn, { type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined });
+    } finally {
+      await this.cleanupAttachments(imagePaths);
+    }
     if (ok) await this.reactToMessage(msg.message_id, "👀");
+    return ok;
   }
 
   private authorized(chat: NonNullable<TelegramUpdate["message"]>["chat"], from: TelegramCallbackQuery["from"] | undefined): boolean {
@@ -699,34 +766,25 @@ export class TelegramDaemon {
   /** Only an authorized human in the paired chat can control sessions. Groups
    *  require an explicit allowlist; legacy private chats require owner identity.
    *  Session topics route solely to their owner; all other input must match the
-   *  configured flat topic, including when the inbound topic is absent. */
-  async handleUpdate(update: TelegramUpdate): Promise<void> {
-    if (!update || typeof update !== "object") return;
-    if (update.callback_query) {
-      await this.handleCallbackQuery(update.callback_query);
-      return;
-    }
+   *  configured flat topic, including when inbound topic is absent. */
+  async handleUpdate(update: TelegramUpdate): Promise<boolean> {
+    if (!update || typeof update !== "object") return true;
+    if (update.callback_query) return await this.handleCallbackQuery(update.callback_query);
     const msg = update.message;
-    if (!msg) return;
-    if (!this.authorized(msg.chat, msg.from)) return;
+    if (!msg) return true;
+    if (!this.authorized(msg.chat, msg.from)) return true;
 
     const ownerSessionId = this.topics && msg.message_thread_id !== undefined
       ? this.topics.sessionForTopic(msg.message_thread_id)
       : undefined;
     if (ownerSessionId && await this.pairedChatIsPrivate()) {
-      await this.handleSessionTopicInbound(ownerSessionId, msg);
-      return;
+      return await this.handleSessionTopicInbound(ownerSessionId, msg);
     }
 
-    if (typeof msg.text !== "string" || !msg.text) return;
-    if (this.topics && msg.message_thread_id !== undefined && msg.message_thread_id !== this.opts.topicId) return;
-    if (
-      this.opts.topicId !== undefined &&
-      msg.message_thread_id !== this.opts.topicId
-    ) {
-      return;
-    }
-    await this.handleInboundText(msg.text);
+    if (typeof msg.text !== "string" || !msg.text) return true;
+    if (this.topics && msg.message_thread_id !== undefined && msg.message_thread_id !== this.opts.topicId) return true;
+    if (this.opts.topicId !== undefined && msg.message_thread_id !== this.opts.topicId) return true;
+    return await this.handleInboundText(msg.text);
   }
 
   /** Handle an inline-button tap. Same chat trust boundary as text; the topic
@@ -735,10 +793,10 @@ export class TelegramDaemon {
    *  regardless of the flat `topicId`), not just the configured flat topic.
    *  The tap is always acknowledged (Telegram shows a spinner until
    *  `answerCallbackQuery`). */
-  async handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
+  async handleCallbackQuery(cb: TelegramCallbackQuery): Promise<boolean> {
     if (!cb.message || !Number.isSafeInteger(cb.message.message_id) || !this.authorized(cb.message.chat, cb.from)) {
       await this.answerCallback(cb.id);
-      return;
+      return true;
     }
     const threadId = cb.message.message_thread_id;
     const ownerSessionId = this.topics && threadId !== undefined && await this.pairedChatIsPrivate()
@@ -746,29 +804,29 @@ export class TelegramDaemon {
     if (!ownerSessionId && ((this.opts.topicId !== undefined && threadId !== this.opts.topicId) ||
         (this.topics && threadId !== undefined && threadId !== this.opts.topicId))) {
       await this.answerCallback(cb.id);
-      return;
+      return true;
     }
     const parsed = typeof cb.data === "string" ? parseCallbackData(cb.data) : undefined;
     if (!parsed) {
       await this.answerCallback(cb.id);
-      return;
+      return true;
     }
     const conn = this.findSession(parsed.shortId);
     if (!conn) {
       await this.answerCallback(cb.id, `No connected session matches '${parsed.shortId}'.`);
-      return;
+      return true;
     }
     if (ownerSessionId && ownerSessionId !== conn.sessionId) {
       await this.answerCallback(cb.id);
-      return;
+      return true;
     }
     const ok = await this.sendRequest(conn, { type: "cancel", ids: [parsed.subagentId] });
     await this.answerCallback(cb.id, ok ? `Cancelled '${parsed.subagentId}'.` : "Cancel failed.");
-    await this.notify(
-      ok
-        ? `⏹ Cancelled '${parsed.subagentId}' via button.`
-        : `Cancel failed — '${parsed.subagentId}' is unknown or already finished.`,
-    );
+    const notificationDelivered = await this.notify(ok
+      ? `⏹ Cancelled '${parsed.subagentId}' via button.`
+      : `Cancel failed — '${parsed.subagentId}' is unknown or already finished.`, undefined, { awaitDelivery: true });
+    // Do not replay a cancel that already took effect; otherwise persist it only after terminal feedback.
+    return ok || notificationDelivered;
   }
 
   /** Sleeps for the current backoff delay, then grows it (capped) for the
@@ -793,6 +851,7 @@ export class TelegramDaemon {
     }
   }
 
+  private wasCursorLoadedWithoutOffset = false;
   private async pollTelegramLoop(): Promise<void> {
     while (!this.stopped) {
       let res;
@@ -804,30 +863,56 @@ export class TelegramDaemon {
       }
       if (this.stopped) break;
       if (!res.ok) {
-        // e.g. 409 Conflict (another getUpdates owner) or 401 (revoked token) —
-        // without a pause this would hot-loop against the API.
         await this.pollErrorBackoff();
         continue;
       }
-      // A successful round-trip clears any accumulated backoff — the next
-      // failure (if any) starts fresh from POLL_ERROR_BACKOFF_MIN_MS rather
-      // than staying parked at whatever ceiling a prior outage reached.
       this.pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
+      // Keep filtering pre-start ordinary messages across poll batches: an earlier dispatch failure can leave old queued updates behind.
+      // Callback queries are exempt because their attached message date is not the callback tap time.
+      const checkFreshness = this.wasCursorLoadedWithoutOffset;
+      let dispatchFailed = false;
       for (const update of res.result) {
         if (this.stopped) break;
-        this.updateOffset = update.update_id + 1;
-        await this.handleUpdate(update);
+        if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0 || update.update_id >= Number.MAX_SAFE_INTEGER) {
+          throw new Error("Telegram update has an invalid update_id");
+        }
+        if (this.updateOffset !== undefined && update.update_id < this.updateOffset) continue;
+
+        const nextOffset = update.update_id + 1;
+        // A callback is a user action; its attached message date is not the tap time.
+        if (checkFreshness && update.message &&
+            (!Number.isSafeInteger(update.message.date) || update.message.date < this.daemonStartEpochSeconds)) {
+          const save = this.opts.saveUpdateOffset ?? (() => defaultSaveUpdateOffset(nextOffset, this.opts.botId, this.opts.chatId));
+          await save(nextOffset);
+          this.updateOffset = nextOffset;
+          continue;
+        }
+        if (!await this.handleUpdate(update)) {
+          dispatchFailed = true;
+          break;
+        }
+        const save = this.opts.saveUpdateOffset ?? (() => defaultSaveUpdateOffset(nextOffset, this.opts.botId, this.opts.chatId));
+        await save(nextOffset);
+        this.updateOffset = nextOffset;
       }
+      if (dispatchFailed) await this.pollErrorBackoff();
     }
   }
 
   /** Blocks (long-poll loop) until `stop()` is called. */
   async start(): Promise<void> {
     if (this.stopped) return;
+    this.daemonStartEpochSeconds = Math.floor(Date.now() / 1000);
+    const load = this.opts.loadUpdateOffset ?? (() => defaultLoadUpdateOffset(this.opts.botId, this.opts.chatId));
+    this.updateOffset = await load();
+    if (this.updateOffset !== undefined && (!Number.isSafeInteger(this.updateOffset) || this.updateOffset < 0)) {
+      throw new Error("Stored Telegram update offset is invalid");
+    }
+    this.wasCursorLoadedWithoutOffset = this.updateOffset === undefined;
     if (this.topics) {
-      const load = this.opts.loadTopicState ?? (() => defaultLoadTopicState(this.opts.botId, this.opts.chatId));
+      const loadTopics = this.opts.loadTopicState ?? (() => defaultLoadTopicState(this.opts.botId, this.opts.chatId));
       try {
-        this.topics.load(await load());
+        this.topics.load(await loadTopics());
       } catch {
         // best-effort — a missing/corrupt topic-state file just starts empty
         // (every session's first frame re-creates its topic from scratch).
@@ -837,30 +922,79 @@ export class TelegramDaemon {
     await this.scanSessions();
     if (this.stopped) return;
     this.scanTimer = setInterval(() => void this.scanSessions(), this.opts.scanIntervalMs ?? 3_000);
-    // Catches anything left queued after a submit-time drain because the
-    // burst capacity was briefly exhausted (rare at jeo's realistic message
-    // volume, but a large simultaneous fan-out can hit it) — without this,
-    // a queued-but-never-retried item would silently never send.
     this.poolTimer = setInterval(() => void this.flushPool(), 250);
-    await this.pollTelegramLoop();
+    try {
+      await this.pollTelegramLoop();
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
   }
 
   stop(): void {
     this.stopped = true;
     this.cancelBackoff?.();
     clearInterval(this.scanTimer);
+    for (const resolve of this.pendingOutbound) resolve(false);
+    this.pendingOutbound.clear();
     clearInterval(this.poolTimer);
     for (const pending of this.pendingAcks.values()) {
       clearTimeout(pending.timer);
       pending.resolve(false);
     }
     this.pendingAcks.clear();
+    void this.cleanupAttachments([...this.ownedAttachments]);
     for (const conn of this.sessions.values()) {
       try {
         conn.ws.close();
       } catch {}
     }
     this.sessions.clear();
+  }
+}
+
+async function defaultLoadUpdateOffset(botId: string | undefined, chatId: string): Promise<number | undefined> {
+  if (!botId) return undefined;
+  if (!/^[1-9]\d*$/.test(botId) || !chatId) return undefined;
+  const target = notifyTelegramUpdateOffsetPath(botId, chatId);
+  try {
+    const raw = await fs.readFile(target, "utf-8");
+    const state = JSON.parse(raw) as { botId?: unknown; chatId?: unknown; nextOffset?: unknown };
+    if (state.botId !== botId || state.chatId !== chatId || !Number.isSafeInteger(state.nextOffset) ||
+        (state.nextOffset as number) < 0) throw new Error("Stored Telegram update cursor is corrupt or has the wrong destination");
+    return state.nextOffset as number;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function defaultSaveUpdateOffset(nextOffset: number, botId: string | undefined, chatId: string): Promise<void> {
+  if (!botId) return;
+  if (!/^[1-9]\d*$/.test(botId) || !chatId) return;
+  if (!Number.isSafeInteger(nextOffset) || nextOffset < 0) throw new Error("Telegram update offset is invalid");
+  const target = notifyTelegramUpdateOffsetPath(botId, chatId);
+  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  await fs.chmod(path.dirname(target), 0o700);
+  const tmp = `${target}.${crypto.randomUUID()}.tmp`;
+  let file: fs.FileHandle | undefined;
+  try {
+    file = await fs.open(tmp, "wx", 0o600);
+    await file.writeFile(JSON.stringify({ botId, chatId, nextOffset }), "utf-8");
+    await file.sync();
+    await file.close();
+    file = undefined;
+    await fs.rename(tmp, target);
+    const directory = await fs.open(path.dirname(target), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } catch (error) {
+    await file?.close().catch(() => {});
+    await fs.unlink(tmp).catch(() => {});
+    throw error;
   }
 }
 

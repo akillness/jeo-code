@@ -49,6 +49,7 @@ process.on("unhandledRejection", fatal);
 process.stdout.on("error", fatal);
 process.stderr.on("error", fatal);
 
+
 try {
   const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
   if (code !== 0) process.exit(code);

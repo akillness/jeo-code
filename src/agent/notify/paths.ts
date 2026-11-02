@@ -7,6 +7,7 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import { jeoEnv } from "../../util/env";
+import { createHash } from "node:crypto";
 
 /** Root directory for all local jeo state, resolved at call time (not import
  *  time) so a `JEO_CONFIG_DIR` override or runtime `HOME` change is honored. */
@@ -45,4 +46,11 @@ export function notifyDaemonLockPath(): string {
 
 export function notifyDaemonLogPath(): string {
   return path.join(notifyDir(), "daemon.log");
+}
+
+/** Per-bot/per-chat Telegram update cursor. Hashing the tuple keeps chat IDs
+ *  (including negative group IDs) out of path syntax and prevents collisions. */
+export function notifyTelegramUpdateOffsetPath(botId: string, chatId: string): string {
+  const key = createHash("sha256").update(JSON.stringify([botId, chatId])).digest("hex");
+  return path.join(notifyDir(), `telegram-offset-${key}.json`);
 }

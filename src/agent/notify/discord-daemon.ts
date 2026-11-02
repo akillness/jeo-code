@@ -598,6 +598,7 @@ export class DiscordDaemon {
       if (!session) { await emit("Session not found or prefix ambiguous. Use /sessions and a unique ID."); return false; }
       const body = command[3]!.trim();
       if (command[1] === "send") return sendPrompt(session, body);
+
       const args = command[1] === "steer" ? /^(\S+)\s+([\s\S]+)$/.exec(body) : /^(\S+)$/.exec(body);
       if (!args) { await emit(HELP); return false; }
       if (!session.controlEnabled) { await emit("Discord remote control is disabled in this session.", session.sessionId); return false; }
@@ -606,7 +607,8 @@ export class DiscordDaemon {
       const delivered = await emit(ok ? "Session acknowledged command." : "Command not acknowledged (unavailable, rejected or timed out).", session.sessionId);
       return ok && delivered;
     }
-    if (text.startsWith("/")) { await emit(HELP); return false; }
+    if (text.startsWith("/") || text.startsWith("!")) { await emit(HELP); return false; }
+
     const reference = object(message.message_reference) ? message.message_reference : undefined;
     const reply = reference && typeof reference.message_id === "string" && (reference.channel_id === undefined || reference.channel_id === message.channel_id)
       ? this.replies.get(reference.message_id) : undefined;

@@ -75,6 +75,7 @@ export function createLspRenameTool(): ToolHandler {
 
     const preview: string[] = [];
     let totalEdits = 0;
+    let mutationMayHaveOccurred = false;
     for (const [fName, spans] of byFile) {
       const rel = path.relative(cwd, fName) || fName;
       let content: string;
@@ -96,7 +97,8 @@ export function createLspRenameTool(): ToolHandler {
           newText = newText.slice(0, span.start) + newName + newText.slice(span.start + span.length);
         }
         const res = await writeTool(rel, newText, cwd);
-        if (!res.success) return err(`${rel}: ${res.error ?? "write failed"}`);
+        if (!res.success) return { ...err(`${rel}: ${res.error ?? "write failed"}`), mutationMayHaveOccurred: res.mutationMayHaveOccurred === true || mutationMayHaveOccurred };
+        mutationMayHaveOccurred = true;
       }
     }
 

@@ -9,7 +9,7 @@
  * repo). Subagents are spawned with `subagentToolset(role)`, which never includes
  * `task` itself, so delegation cannot recurse infinitely.
  */
-import { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag, type ToolHandler } from "./engine";
+import { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopResult, type ToolHandler } from "./engine";
 import { toolTarget } from "./step-budget";
 
 import type { ToolResult } from "./tools";
@@ -288,6 +288,8 @@ export interface RunSubagentOptions {
  *  report text. `task`/`subagent` tool callers only ever need `success`/`output`/
  *  `error`, which stay structurally identical to plain `ToolResult`. */
 export interface SubagentRunResult extends ToolResult {
+  /** True when delegated execution observed a successful or potentially partial mutation. */
+  mutationMayHaveOccurred?: boolean;
   /** Raw subagent done reason, before contract validation or fencing. */
   doneReason: string;
   /** True when the subagent actually called `done` (vs. exhausting its step
@@ -297,7 +299,8 @@ export interface SubagentRunResult extends ToolResult {
   contractOk: boolean;
   /** Required markers missing from the done reason, when `contractOk` is false. */
   missingMarkers?: string[];
-  /** Successful write/edit/mkdir/delete calls observed (mutation audit evidence). */
+  /** Successful workspace mutation calls observed (write/edit/mkdir/delete,
+   *  ast_edit, or lsp_rename). */
   fileMutations: number;
   /** Successful bash calls observed (tracked apart — bash CAN mutate but isn't proof). */
   bashRuns: number;
@@ -365,6 +368,9 @@ export async function runSubagentOnce(
   let fileMutations = 0;
   let bashRuns = 0;
   let readOnlyEvidenceCalls = 0;
+  // The engine's evidence signal is cumulative across tool batches and includes
+  // failed mutators whose handlers report that state may have changed.
+  let mutationMayHaveOccurred = false;
   // Per-run prompt-cache key: the subagent replays its own growing history each
   // step, so a stable key (even across a model switch below — a stale cache key
   // on a NEW provider is simply unused, never wrong) gets provider cache hits
@@ -454,6 +460,9 @@ export async function runSubagentOnce(
       tools: subagentToolset(role),
       ...(failoverEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
       events: {
+        onEvidence: evidence => {
+          if (evidence.sawMutation) mutationMayHaveOccurred = true;
+        },
         onStep: n => { currentStep = n; },
         // Live reasoning preview (native extended-thinking models only — the JSON-protocol
         // "reasoning" field the main turn also extracts from onModelStream is intentionally
@@ -475,7 +484,7 @@ export async function runSubagentOnce(
         },
         onToolResult: (tool, success, output) => {
           if (success) {
-            if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+            if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete" || tool === "ast_edit" || tool === "lsp_rename") fileMutations++;
             else if (tool === "bash") bashRuns++;
             else if (tool === "read" || tool === "search" || tool === "find" || tool === "ast_grep" || tool === "lsp") readOnlyEvidenceCalls++;
           }
@@ -496,12 +505,36 @@ export async function runSubagentOnce(
     });
   };
 
-  let result = await runOnce();
+  const failureResult = (error: unknown): SubagentRunResult => {
+    const explicitSignal = typeof error === "object" && error !== null && "mutationMayHaveOccurred" in error && error.mutationMayHaveOccurred === true;
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      output: "",
+      error: message,
+      doneReason: message,
+      done: false,
+      contractOk: false,
+      fileMutations,
+      bashRuns,
+      readOnlyEvidenceCalls,
+      mutationMayHaveOccurred: mutationMayHaveOccurred || explicitSignal || (!role.readOnly ? true : undefined),
+    };
+  };
+  const runSafely = async (): Promise<{ ok: true; result: AgentLoopResult } | { ok: false; error: unknown }> => {
+    try {
+      return { ok: true, result: await runOnce() };
+    } catch (error: unknown) {
+      return { ok: false, error };
+    }
+  };
+  let outcome = await runSafely();
+  if (!outcome.ok) return failureResult(outcome.error);
+  let result = outcome.result;
   // `routing.enabled` off = the model is FIXED: no failover reroute at all (the
   // engine bail predicates above are withheld too, so a 429 rides its normal
   // backoff ladder instead of bailing early with nowhere to go).
-  for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {
-    const rateLimited = !result.done && isRateLimitError(new Error(result.doneReason ?? ""));
+  for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {    const rateLimited = !result.done && isRateLimitError(new Error(result.doneReason ?? ""));
     const safetyBail = !result.done && !rateLimited && isSafetyFallbackBail(result.doneReason);
     if (!rateLimited && !safetyBail) break;
     const previousModel = activeModel;
@@ -526,7 +559,9 @@ export async function runSubagentOnce(
       emit({ role: role.id, kind: "step", detail: `↳ refused on '${previousModel}' — switching to '${activeModel}' in case of a classifier false positive`, step: currentStep, maxSteps, model: activeModel });
     }
     attemptedModels.add(activeModel);
-    result = await runOnce();
+    outcome = await runSafely();
+    if (!outcome.ok) return failureResult(outcome.error);
+    result = outcome.result;
   }
 
   const reason = stripSafetyFallbackTag(result.doneReason?.trim() || "") || `(subagent reached the ${result.steps}-step limit without signaling done)`;
@@ -543,8 +578,8 @@ export async function runSubagentOnce(
   // "verify independently" instead of the stronger UNVERIFIED.
   const audit = complete && !role.readOnly && fileMutations === 0
     ? bashRuns === 0
-      ? `\n[parent audit] No successful write/edit/bash was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
-      : `\n[parent audit] No successful write/edit was observed (only bash ran); bash may or may not have mutated files — verify any "Changed Files:" claims above independently.`
+      ? `\n[parent audit] No successful workspace mutation or bash call was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
+      : `\n[parent audit] No successful workspace mutation was observed (only bash ran); bash may or may not have mutated files — verify any "Changed Files:" claims above independently.`
     : "";
   return {
     success: complete,
@@ -556,6 +591,7 @@ export async function runSubagentOnce(
     fileMutations,
     bashRuns,
     readOnlyEvidenceCalls,
+    mutationMayHaveOccurred,
   };
 }
 
@@ -586,7 +622,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       /** Stable detached id from SubagentRegistry. */
       detachedId?: string;
     } = {},
-  ): Promise<ToolResult> =>
+  ): Promise<SubagentRunResult> =>
     runSubagentOnce(role, taskText, context, cwd, {
       config: opts.config,
       signal: extra.signal ?? opts.signal,
@@ -689,7 +725,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // `executor`'s single resolved model), so the first worker to exclude a
       // scope saves every sibling worker the same wasted round.
       const batchExcludedScopes = new Set<string>();
-      const results: ToolResult[] = new Array(items.length);
+      const results: SubagentRunResult[] = new Array(items.length);
       let next = 0;
       // #7: broadcast steering hub — each concurrent worker sees every parent
       // steer message exactly once (safe even for parallel read-only fan-out).
@@ -714,7 +750,11 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       const ok = results.filter(r => r.success).length;
       const head = `[${role.title} fan-out] ${ok}/${items.length} completed (concurrency ${limit}).`;
       const combined = results.map((r, i) => `### Task ${i + 1}/${items.length}\n${r.output}`).join("\n\n");
-      return { success: ok === items.length, output: `${head}\n\n${combined}` };
+      return {
+        success: ok === items.length,
+        output: `${head}\n\n${combined}`,
+        mutationMayHaveOccurred: results.some(r => r.mutationMayHaveOccurred === true),
+      };
     }
 
     // Single-task form.
@@ -729,6 +769,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     if (args.detached === true && opts.registry) {
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
         runOne(role, taskText, ctx(args.context), cwd, { signal, steer: opts.registry!.steerDrainFor(id), detachedId: id }),
+        { readOnly: role.readOnly },
       );
       // Remote subagent visibility/control over Telegram (gjc daemon parity, see
       // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.
@@ -739,6 +780,10 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         output:
           `[detached] launched ${role.title} subagent '${rec.id}'. It runs in the background — ` +
           `keep working, then use the 'subagent' tool ({action:"await"|"list"|"inspect"|"cancel", ids?}) to collect its result.`,
+        // A mutating detached run may change the workspace after this tool returns;
+        // surface that possibility immediately so the parent cannot claim a clean
+        // workspace before collecting and verifying the settled result.
+        mutationMayHaveOccurred: role.readOnly ? undefined : true,
       };
     }
     return runOne(role, taskText, ctx(args.context), cwd, { steer: opts.steer });

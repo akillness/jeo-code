@@ -168,8 +168,14 @@ export interface TeamEngineOptions {
    *  write/edit/bash fails the task instead of merely warning (round-11). */
   strictMutations?: boolean;
 }
+export interface TeamEngineResult {
+  ok: boolean;
+  reason?: string;
+  /** True when a delegated child may have changed workspace state before settling. */
+  mutationMayHaveOccurred?: boolean;
+}
 
-export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamEngineResult> {
   const cwd = opts.cwd ?? process.cwd();
 
   const log = (msg?: any) => {
@@ -339,6 +345,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
 
     await writeWorkflowState("team", teamState, cwd);
     const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
+    let mutationMayHaveOccurred = false;
     for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) log(line);
 
     while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
@@ -384,20 +391,22 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         });
 
         if (opts.signal?.aborted) {
-          return { ok: false, reason: "aborted" };
+          return { ok: false, reason: "aborted", ...(mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
         }
 
         if (groupResult.ok) {
+          mutationMayHaveOccurred ||= groupResult.mutationMayHaveOccurred === true;
           teamState.completed_tasks = [...(teamState.completed_tasks ?? []), ...groupSteps.map(s => s.name)];
           teamState.pending_tasks = teamState.pending_tasks.slice(groupSteps.length);
           await writeWorkflowState("team", teamState, cwd);
           log(`${categoryBadge("done")} Completed parallel group: ${groupSteps.map(s => `"${s.name}"`).join(", ")}`);
         } else {
+          mutationMayHaveOccurred ||= groupResult.mutationMayHaveOccurred === true;
           teamState.current_phase = "failed";
           teamState.failed_task = groupResult.failedTaskName;
           await writeWorkflowState("team", teamState, cwd);
           log(`${categoryBadge("error")} Failed on parallel group step: "${groupResult.failedTaskName}". Halting execution.`);
-          return { ok: false, reason: `Failed on task: "${groupResult.failedTaskName}"` };
+          return { ok: false, reason: `Failed on task: "${groupResult.failedTaskName}"`, ...(mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
         }
         continue;
       }
@@ -409,7 +418,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });
       }
 
-      const success = await executeTaskWithAgent({
+      const taskResult = await executeTaskWithAgent({
         task: currentTask,
         tasks,
         activeIndex,
@@ -419,12 +428,13 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         strictMutations: opts.strictMutations ?? false,
         log,
       });
+      mutationMayHaveOccurred ||= taskResult.mutationMayHaveOccurred === true;
 
       if (opts.signal?.aborted) {
-        return { ok: false, reason: "aborted" };
+        return { ok: false, reason: "aborted", ...(mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
       }
 
-      if (success) {
+      if (taskResult.ok) {
         teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
         teamState.pending_tasks = teamState.pending_tasks.slice(1);
         await writeWorkflowState("team", teamState, cwd);
@@ -436,7 +446,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         teamState.failed_task = currentTask;
         await writeWorkflowState("team", teamState, cwd);
         log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
-        return { ok: false, reason: `Failed on task: "${currentTask}"` };
+        return { ok: false, reason: `Failed on task: "${currentTask}"`, ...(mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
       }
     }
 
@@ -450,7 +460,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         opts.onProgress({ skill: "team", phase: "complete" });
       }
     }
-    return { ok: true };
+    return { ok: true, ...(mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
   } finally {
     await releaseLock();
   }
@@ -464,7 +474,11 @@ export async function runTeamCommand(args: string[] = []): Promise<void> {
   }
 }
 
-async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string; strictMutations?: boolean; log: (line: string) => void }): Promise<boolean> {
+interface TeamTaskResult {
+  ok: boolean;
+  mutationMayHaveOccurred?: boolean;
+}
+async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string; strictMutations?: boolean; log: (line: string) => void }): Promise<TeamTaskResult> {
   const log = ctx.log;
   const config = await readGlobalConfig();
   const role = getSubagentRole(ctx.roleId, config) ?? defaultSubagentRole();
@@ -476,25 +490,33 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
   const projectContext = await loadProjectContext(ctx.cwd);
 
   // `jeo team` now runs every step through the SAME execution core as the `task`/
-  // `subagent` tools (`runSubagentOnce`) — one way a jeo-code subagent runs,
-  // whether launched interactively, in a fan-out batch, detached, or as a team
-  // plan step. This gets team plan steps the same fenced-report protection
-  // (prompt-injection-safe) and done-reason contract validation the interactive
-  // tools already had, instead of a second hand-rolled copy of that logic.
-  const result = await runSubagentOnce(role, buildRalphSubagentPrompt(ctx), "", ctx.cwd, {
-    config,
-    projectContext,
-    onEvent: ev => {
-      if (ev.kind === "step") {
-        log(formatRalphStreamEvent("step", ev.detail ?? `${role.title} thinking ${ev.step ?? "?"}/${ev.maxSteps ?? maxSteps}`, renderOpts));
-      } else if (ev.kind === "tool") {
-        const suffix = ev.summary ? ` — ${ev.summary}` : "";
-        log(formatRalphStreamEvent(ev.success ? "complete" : "error", `tool ${ev.detail}${suffix}`, renderOpts));
-      }
-    },
-  });
+  // `subagent` tools — one way a jeo-code subagent runs, whether launched
+  // interactively, in a fan-out batch, detached, or as a team plan step.
+  let result: SubagentRunResult;
+  try {
+    result = await runSubagentOnce(role, buildRalphSubagentPrompt(ctx), "", ctx.cwd, {
+      config,
+      projectContext,
+      onEvent: ev => {
+        if (ev.kind === "step") {
+          log(formatRalphStreamEvent("step", ev.detail ?? `${role.title} thinking ${ev.step ?? "?"}/${ev.maxSteps ?? maxSteps}`, renderOpts));
+        } else if (ev.kind === "tool") {
+          const suffix = ev.summary ? ` — ${ev.summary}` : "";
+          log(formatRalphStreamEvent(ev.success ? "complete" : "error", `tool ${ev.detail}${suffix}`, renderOpts));
+        }
+      },
+    });
+  } catch (error: unknown) {
+    const explicitSignal = typeof error === "object" && error !== null && "mutationMayHaveOccurred" in error && error.mutationMayHaveOccurred === true;
+    const message = error instanceof Error ? error.message : String(error);
+    log(formatRalphStreamEvent("error", message, renderOpts));
+    return { ok: false, ...(explicitSignal || !role.readOnly ? { mutationMayHaveOccurred: true } : {}) };
+  }
 
-  return evaluateSubagentResult(result, role, ctx.strictMutations ?? false, log, renderOpts);
+  return {
+    ok: evaluateSubagentResult(result, role, ctx.strictMutations ?? false, log, renderOpts),
+    ...(result.mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}),
+  };
 }
 
 /**
@@ -543,23 +565,14 @@ function evaluateSubagentResult(
     return false;
   }
 
-  // Round-8: a mutating role finished without a successful file mutation — the
-  // task may be legitimately read-only, but its "Changed Files:" claim is
-  // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.
+  // A mutating role's changed-files claim needs an observed workspace mutation.
+  // Bash is separate because it may or may not have changed files.
   if (!role.readOnly && result.fileMutations === 0) {
     const msg = result.bashRuns === 0
-      ? `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`
-      : `${role.title} completed with only bash (no write/edit) — verify its changed-files claim independently.`;
-    // Round-11: under --strict-mutations, a mutating role that took NO action at
-    // all (no write/edit/bash) is a hard failure — an empty run must not pass as
-    // a completed task. bash-only stays advisory to avoid penalizing shell edits.
-    const hardFail = strictMutations && result.bashRuns === 0;
-    // Round-12: separate the tones so a passing advisory run doesn't masquerade
-    // as a stream:error — only a real hard-fail is red; an advisory note is warn.
-    log(formatRalphStreamEvent(hardFail ? "error" : "warn", msg, renderOpts));
-    if (hardFail) {
-      return false;
-    }
+      ? `${role.title} completed WITHOUT any successful workspace mutation or bash call — treat its changed-files claim as unverified.`
+      : `${role.title} completed without a successful workspace mutation (only bash ran) — verify its changed-files claim independently.`;
+    log(formatRalphStreamEvent(strictMutations ? "error" : "warn", msg, renderOpts));
+    if (strictMutations && result.bashRuns === 0) return false;
   }
 
   // Surface the subagent's full report (header + step trace + fenced reason +
@@ -610,7 +623,7 @@ async function runParallelGroup(
     log: (line: string) => void;
     slug: string;
   },
-): Promise<{ ok: true } | { ok: false; failedTaskName: string }> {
+): Promise<{ ok: true; mutationMayHaveOccurred?: boolean } | { ok: false; failedTaskName: string; mutationMayHaveOccurred?: boolean }> {
   const { cwd, teamCfg, tasks, completed, strictMutations, log, slug } = ctx;
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
 
@@ -654,16 +667,22 @@ async function runParallelGroup(
           }
         },
       });
-      // Capture the FULL SubagentRunResult (doneReason/fileMutations/etc.) before
-      // collapsing it to the plain ToolResult shape SubagentRegistry stores.
+      // Capture the FULL SubagentRunResult before collapsing it to the plain
+      // ToolResult shape SubagentRegistry stores, including mutation evidence.
       resultsByIndex.set(step.index, result);
-      return { success: result.success, output: result.output, error: result.error };
-    });
+      return {
+        success: result.success,
+        output: result.output,
+        error: result.error,
+        mutationMayHaveOccurred: result.mutationMayHaveOccurred,
+      };
+    }, { readOnly: role.readOnly });
     idByIndex.set(step.index, record.id);
   }
 
   // No timeout — team runs can take as long as needed.
   await registry.awaitIds([...idByIndex.values()]);
+  const registryMutation = registry.list().some(record => record.mutationMayHaveOccurred === true);
 
   // Evaluate + commit each successful worktree, IN ARRAY ORDER (not completion
   // order). Any failure stops the whole group immediately: no merges happen,
@@ -674,12 +693,12 @@ async function runParallelGroup(
     const wt = worktreeByIndex.get(step.index)!;
     if (!result) {
       log(formatRalphStreamEvent("error", `[${step.name}] subagent produced no result`, renderOpts));
-      return { ok: false, failedTaskName: step.name };
+      return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
     }
     const success = evaluateSubagentResult(result, role, strictMutations, log, renderOpts);
     if (!success) {
       log(`${categoryBadge("error")} Parallel group step "${step.name}" failed — its worktree (${wt.path}) and the OTHER group worktrees are left in place for inspection; nothing was merged.`);
-      return { ok: false, failedTaskName: step.name };
+      return { ok: false, failedTaskName: step.name, ...(registryMutation || result.mutationMayHaveOccurred ? { mutationMayHaveOccurred: true } : {}) };
     }
     // An empty diff (read-only role, or a no-op) needs no commit — skip it for
     // the merge step below without treating it as an error.
@@ -687,12 +706,12 @@ async function runParallelGroup(
       const add = runGitSync(wt.path, ["add", "-A"]);
       if (!add.ok) {
         log(`${categoryBadge("error")} Failed to stage changes in worktree ${wt.path} for step "${step.name}": ${add.stderr.trim()}`);
-        return { ok: false, failedTaskName: step.name };
+        return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
       }
       const commit = runGitSync(wt.path, ["commit", "-m", step.name]);
       if (!commit.ok) {
         log(`${categoryBadge("error")} Failed to commit changes in worktree ${wt.path} for step "${step.name}": ${commit.stderr.trim()}`);
-        return { ok: false, failedTaskName: step.name };
+        return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
       }
     }
   }
@@ -710,7 +729,7 @@ async function runParallelGroup(
         `the merge was aborted automatically (no changes were auto-resolved). Resolve manually: ` +
         `cd ${wt.path} to inspect the change, then run 'git merge ${wt.branch}' yourself from ${cwd}.\n${(merge.stderr + merge.stdout).trim()}`,
       );
-      return { ok: false, failedTaskName: step.name };
+      return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
     }
     log(`${categoryBadge("done")} Merged step "${step.name}" (branch ${wt.branch}) into the current branch.`);
   }
@@ -725,5 +744,5 @@ async function runParallelGroup(
     }
   }
 
-  return { ok: true };
+  return { ok: true, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
 }

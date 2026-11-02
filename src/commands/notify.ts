@@ -15,7 +15,6 @@ interface NotifyOptions {
 }
 interface Flags {
   provider: Provider;
-  token?: string;
   tokenEnv?: string;
   appTokenEnv?: string;
   chatId?: string;
@@ -27,13 +26,13 @@ function parseFlags(args: string[]): Flags {
   const out: Flags = { provider: "telegram" };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
+    if (flag === "--token") throw new Error("Raw --token credentials are not supported; use --token-env NAME");
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error("Missing value for notify option (use --token-env NAME for credentials)");
     if (flag === "--provider" || flag === "--platform") {
       if (value !== "telegram" && value !== "discord" && value !== "slack") throw new Error("Provider must be telegram, discord or slack");
       out.provider = value;
-    } else if (flag === "--token") out.token = value;
-    else if (flag === "--token-env") out.tokenEnv = value;
+    } else if (flag === "--token-env") out.tokenEnv = value;
     else if (flag === "--app-token-env") out.appTokenEnv = value;
     else if (flag === "--chat-id") out.chatId = value;
     else if (flag === "--channel-id") out.channelId = value;
@@ -73,12 +72,12 @@ async function verifySlack(api: SlackApi, channelId: string): Promise<void> {
 
 async function runSetup(flags: Flags, opts: NotifyOptions): Promise<void> {
   const envName = flags.tokenEnv ?? `JEO_${flags.provider.toUpperCase()}_BOT_TOKEN`;
-  let token = flags.token ?? process.env[envName]?.trim();
+  let token = process.env[envName]?.trim();
   if (!token) {
     const name = await question(`Set the bot token in an environment variable, then enter its NAME (default ${envName}): `, opts);
     token = process.env[name || envName]?.trim();
   }
-  if (!token) throw new Error(`Bot token environment variable is empty; use --token-env NAME (preferred over --token)`);
+  if (!token) throw new Error("Bot token environment variable is empty; use --token-env NAME");
   const existing = (await readGlobalConfig()).notifications;
   let allowedUserIds = flags.allowedUserIds;
   if (flags.provider === "slack") {
@@ -234,7 +233,7 @@ export async function runNotifyCommand(args: string[], opts: NotifyOptions = {})
   } catch (error) {
     // Only emit our known configuration/API errors, never fetch URLs or token-bearing bodies.
     const message = error instanceof Error ? error.message : "request failed";
-    const safe = /^(Missing |Unknown notify|Provider |Allowed user|Telegram |Discord |Slack |Bot token|Missing setup|A daemon|Notification lock recovery|Usage:)/.test(message) && !message.includes("https:") && !message.includes("http:");
+    const safe = /^(Missing |Unknown notify|Raw --token|Provider |Allowed user|Telegram |Discord |Slack |Bot token|Missing setup|A daemon|Notification lock recovery|Usage:)/.test(message) && !message.includes("https:") && !message.includes("http:");
     console.error(`Notification ${sub} failed: ${safe ? message : "API or storage request failed; check credentials, connectivity and permissions"}${(error instanceof DiscordApiError || error instanceof SlackApiError) && error.status ? ` (HTTP ${error.status})` : ""}`);
     process.exitCode = 1;
   }

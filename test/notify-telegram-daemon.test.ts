@@ -20,7 +20,7 @@ import {
   type NotifyEvent,
 } from "../src/agent/notify/telegram-daemon";
 import type { SubagentRecord } from "../src/agent/subagent-registry";
-import type { TelegramApi, TelegramGetUpdatesResult } from "../src/agent/notify/telegram-api";
+import type { TelegramApi, TelegramGetUpdatesResult, TelegramUpdate } from "../src/agent/notify/telegram-api";
 
 function rec(over: Partial<SubagentRecord>): SubagentRecord {
   return { id: "executor-1", role: "executor", task: "do a thing", status: "running", startedAt: 0, ...over };
@@ -110,6 +110,18 @@ test("shortSessionId strips dashes and takes the first 8 chars", () => {
 
 // ── TelegramDaemon (fakes for network + ws) ──────────────────────────────────────
 
+const VALID_PNG_BYTES = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+  0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+  0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+  0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+  0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+]);
+
 class FakeTelegramApi {
   sent: { chatId: string | number; text: string; options?: any }[] = [];
   photos: { chatId: string | number; photo: string; options?: any }[] = [];
@@ -161,7 +173,7 @@ class FakeTelegramApi {
    *  `TelegramApi.downloadFile` returning `undefined` when the response exceeds
    *  its byte cap) without needing real network bytes here. */
   downloadFileImpl: (filePath: string, maxBytes?: number) => Promise<Uint8Array | undefined> =
-    async () => new Uint8Array([1, 2, 3]);
+    async () => VALID_PNG_BYTES.slice();
   async downloadFile(filePath: string, maxBytes?: number): Promise<Uint8Array | undefined> {
     this.filesDownloaded.push(filePath);
     return this.downloadFileImpl(filePath, maxBytes);
@@ -312,6 +324,92 @@ test("handleInboundText: /steer to a real session round-trips over the ws and re
   expect(telegram.sent.at(-1)!.text).toContain("Steered 'executor-1'");
 });
 
+
+test("handleInboundText: a failed steer confirmation is retried from the pool without re-sending the steer frame", async () => {
+  const telegram = new FakeTelegramApi();
+  const firstSendStarted = Promise.withResolvers<void>();
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    if (telegram.sent.length === 1) {
+      firstSendStarted.resolve();
+      throw new Error("temporary Telegram send failure");
+    }
+    return { ok: true };
+  };
+  const daemon = makeDaemon(telegram);
+  const fakeWs = new FakeWebSocket("ws://x");
+  const sessionId = "abcd1234-0000-0000-0000-000000000000";
+  daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
+
+  const promise = daemon.handleInboundText("/steer abcd1234 executor-1 please hurry");
+  const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
+  const conn = daemon.sessions.get(sessionId)!;
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: sentFrame.reqId, ok: true }));
+
+  await firstSendStarted.promise;
+  await nextEventLoopTurn();
+  await daemon["flushPool"]();
+  expect(await promise).toBe(true);
+
+  expect(fakeWs.sent.map(raw => JSON.parse(raw).type)).toEqual(["steer"]);
+  expect(telegram.sent.map(message => message.text)).toEqual([
+    "Steered 'executor-1'.",
+    "Steered 'executor-1'.",
+  ]);
+});
+
+test("handleInboundText: failed outbound replies stop after three retries", async () => {
+  const telegram = new FakeTelegramApi();
+  const firstSendStarted = Promise.withResolvers<void>();
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    if (telegram.sent.length === 1) {
+      firstSendStarted.resolve();
+      throw new Error("Telegram send failed");
+    }
+    throw new Error("Telegram send failed");
+  };
+  const daemon = makeDaemon(telegram);
+  const fakeWs = new FakeWebSocket("ws://x");
+  const sessionId = "abcd1234-0000-0000-0000-000000000000";
+  daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
+
+  const promise = daemon.handleInboundText("/steer abcd1234 executor-1 please hurry");
+  const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
+  const conn = daemon.sessions.get(sessionId)!;
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: sentFrame.reqId, ok: true }));
+  await firstSendStarted.promise;
+  await nextEventLoopTurn();
+  for (let retry = 0; retry < 3; retry++) await daemon["flushPool"]();
+  expect(await promise).toBe(true);
+  await daemon["flushPool"]();
+
+  expect(telegram.sent).toHaveLength(4);
+  expect(telegram.sent.map(message => message.text)).toEqual(Array(4).fill("Steered 'executor-1'."));
+  expect(fakeWs.sent.map(raw => JSON.parse(raw).type)).toEqual(["steer"]);
+});
+
+
+test("handleInboundText reports Telegram ok:false as failed delivery after bounded retries", async () => {
+  const telegram = new FakeTelegramApi();
+  const firstSendStarted = Promise.withResolvers<void>();
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    firstSendStarted.resolve();
+    return { ok: false };
+  };
+  const daemon = makeDaemon(telegram);
+  const delivery = daemon.handleInboundText("/help");
+  await firstSendStarted.promise;
+  await nextEventLoopTurn();
+  for (let retry = 0; retry < 3; retry++) await daemon["flushPool"]();
+  expect(await delivery).toBe(false);
+  expect(telegram.sent).toHaveLength(4);
+  expect(telegram.sent.map(message => message.text)).toEqual(Array(4).fill(HELP_TEXT));
+});
+
 test("handleInboundText: /steer times out (no ack) and reports failure", async () => {
   const telegram = new FakeTelegramApi();
   const daemon = makeDaemon(telegram);
@@ -339,6 +437,23 @@ test("handleInboundText: /cancel round-trips and reports success", async () => {
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: sentFrame.reqId, ok: true }));
   await promise;
   expect(telegram.sent.at(-1)!.text).toContain("Cancelled 'executor-1'");
+});
+
+test("handleInboundText: a bang shell prefix returns help without steering a session", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const fakeWs = new FakeWebSocket("ws://x");
+  const sessionId = "abcd1234-0000-0000-0000-000000000000";
+  daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await authenticate(daemon, daemon.sessions.get(sessionId)!);
+
+  const delivered = await daemon.handleInboundText("!echo remote-shell");
+
+  expect(delivered).toBe(true);
+  expect(telegram.sent).toHaveLength(1);
+  expect(telegram.sent[0]!.text).toContain("Unrecognized command");
+  expect(telegram.sent[0]!.text).toContain(HELP_TEXT);
+  expect(fakeWs.sent).toEqual([]);
 });
 
 test("handleInboundText: an unrecognized slash command gets the help text appended", async () => {
@@ -746,6 +861,96 @@ test("a photo attachment in a session's topic is downloaded (getFile+downloadFil
   expect(frame.imagePaths).toEqual(["/tmp/fake/photo-big-1.jpg"]);
 });
 
+test("a successfully acknowledged inbound image unlinks its temporary path after forwarding", async () => {
+  const telegram = new FakeTelegramApi();
+  const unlinked: string[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    writeTempFile: async () => "/tmp/fake/forwarded-success.png",
+    unlink: async filePath => { unlinked.push(filePath); },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+  await updateWithAck(daemon, {
+    update_id: 2,
+    message: {
+      message_id: 12,
+      date: 0,
+      from: { id: 999, is_bot: false },
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      photo: [{ file_id: "success-image", width: 800, height: 800 }],
+    },
+  });
+  expect(unlinked).toEqual(["/tmp/fake/forwarded-success.png"]);
+});
+
+test("an inbound image whose session ACK is false still unlinks its temporary path", async () => {
+  const telegram = new FakeTelegramApi();
+  const unlinked: string[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    writeTempFile: async () => "/tmp/fake/forwarded-failure.png",
+    unlink: async filePath => { unlinked.push(filePath); },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+  const ws = conn.ws as unknown as FakeWebSocket;
+  ws.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "user_message") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: false }));
+    }
+  };
+  const accepted = await daemon.handleUpdate({
+    update_id: 3,
+    message: {
+      message_id: 13,
+      date: 0,
+      from: { id: 999, is_bot: false },
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      caption: "not accepted",
+      document: { file_id: "failure-image", file_name: "failure.png", mime_type: "image/png" },
+    },
+  });
+  expect(accepted).toBe(false);
+  expect(unlinked).toEqual(["/tmp/fake/forwarded-failure.png"]);
+});
+
+test("stopping while an inbound image ACK is pending still unlinks its temporary path", async () => {
+  const telegram = new FakeTelegramApi();
+  const unlinked: string[] = [];
+  const requestSent = Promise.withResolvers<void>();
+  const daemon = makePerSessionDaemon(telegram, {
+    ackTimeoutMs: 30_000,
+    writeTempFile: async () => "/tmp/fake/forwarded-stop.png",
+    unlink: async filePath => { unlinked.push(filePath); },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+  const ws = conn.ws as unknown as FakeWebSocket;
+  ws.onSend = raw => {
+    if (JSON.parse(raw).type === "user_message") requestSent.resolve();
+  };
+  const pending = daemon.handleUpdate({
+    update_id: 4,
+    message: {
+      message_id: 14,
+      date: 0,
+      from: { id: 999, is_bot: false },
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      photo: [{ file_id: "stop-image", width: 800, height: 800 }],
+    },
+  });
+  await requestSent.promise;
+  daemon.stop();
+  expect(await pending).toBe(false);
+  expect(unlinked).toEqual(["/tmp/fake/forwarded-stop.png"]);
+});
+
 test("an image document attachment (sent 'as file') in a session's topic is also downloaded and relayed as user_message with imagePaths", async () => {
   const telegram = new FakeTelegramApi();
   const written: { bytes: Uint8Array; suggestedName: string }[] = [];
@@ -780,6 +985,41 @@ test("an image document attachment (sent 'as file') in a session's topic is also
   expect(frame.type).toBe("user_message");
   expect(frame.text).toBe("a diagram");
   expect(frame.imagePaths).toEqual(["/tmp/fake/diagram.png"]);
+});
+
+test("malformed image bytes are relayed as text-only without writing a temp attachment", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.downloadFileImpl = async () => new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+  const written: string[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    writeTempFile: async (_bytes, suggestedName) => {
+      written.push(suggestedName);
+      return `/tmp/fake/${suggestedName}`;
+    },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+
+  await updateWithAck(daemon, {
+    update_id: 5,
+    message: {
+      message_id: 15,
+      date: 0,
+      from: { id: 999, is_bot: false },
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      caption: "not actually an image",
+      document: { file_id: "malformed-image", file_name: "claimed.png", mime_type: "image/png" },
+    },
+  });
+
+  expect(written).toEqual([]);
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame.type).toBe("user_message");
+  expect(frame.text).toBe("not actually an image");
+  expect(frame.imagePaths).toBeUndefined();
 });
 
 // ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
@@ -891,6 +1131,7 @@ test("fail-closed privacy gate: a non-private paired chat (group) blocks per-ses
 function makePollDaemon(
   telegram: FakeTelegramApi,
   sleep: (ms: number) => Promise<void>,
+  overrides: Partial<TelegramDaemonOptions> = {},
 ): TelegramDaemon {
   return new TelegramDaemon({
     chatId: "999",
@@ -898,6 +1139,7 @@ function makePollDaemon(
     WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
     readdir: async () => [],
     sleep,
+    ...overrides,
   });
 }
 
@@ -1065,7 +1307,7 @@ test("session topic cannot cancel another session through text or callback", asy
   daemon.stop();
 });
 
-test.each(["/shell rm -rf workspace", "  /unknown do something"])("session topic never forwards unsupported slash instruction %s", async text => {
+test.each(["/shell rm -rf workspace", "  /unknown do something", "!echo remote-shell", "  !echo remote-shell"])("session topic never forwards unsupported shell instruction %s", async text => {
   const telegram = new FakeTelegramApi();
   const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
@@ -1349,4 +1591,725 @@ test.each([
     else process.env.JEO_CONFIG_DIR = savedConfigDir;
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+async function withNotifyConfigDir<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.JEO_CONFIG_DIR;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-cursor-"));
+  process.env.JEO_CONFIG_DIR = directory;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = previous;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function pollOneUpdate(
+  telegram: FakeTelegramApi,
+  updates: TelegramUpdate[],
+  overrides: Partial<TelegramDaemonOptions> = {},
+): Promise<(number | undefined)[]> {
+  let daemon!: TelegramDaemon;
+  let calls = 0;
+  const offsets: (number | undefined)[] = [];
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (calls++ === 0) return { ok: true, result: updates };
+    daemon.stop();
+    return { ok: true, result: [] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, overrides);
+  await daemon.start();
+  return offsets;
+}
+
+test("Telegram polling checkpoints an update only after its command dispatch succeeds", async () => {
+  const telegram = new FakeTelegramApi();
+  const update: TelegramUpdate = {
+    update_id: 77,
+    message: { message_id: 8, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const savedOffsets: number[] = [];
+  const offsets = await pollOneUpdate(telegram, [update], {
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => {
+      expect(telegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+      savedOffsets.push(next);
+    },
+  });
+
+  expect(savedOffsets).toEqual([78]);
+  expect(offsets).toEqual([77, 78]);
+  expect(telegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+});
+
+test("Telegram daemon restart resumes after the persisted cursor and never dispatches a replay", async () => {
+  const savedOffsets: number[] = [];
+  const update: TelegramUpdate = {
+    update_id: 40,
+    message: { message_id: 10, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const firstTelegram = new FakeTelegramApi();
+  const firstOffsets = await pollOneUpdate(firstTelegram, [update], {
+    loadUpdateOffset: async () => 40,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+
+  const replayTelegram = new FakeTelegramApi();
+  const replayOffsets = await pollOneUpdate(replayTelegram, [update], {
+    loadUpdateOffset: async () => savedOffsets.at(-1),
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+
+  expect(savedOffsets).toEqual([41]);
+  expect(firstOffsets).toEqual([40, 41]);
+  expect(replayOffsets).toEqual([41, 41]);
+  expect(firstTelegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+  expect(replayTelegram.sent).toEqual([]);
+});
+
+for (const scenario of [
+  {
+    name: "old message date",
+    update: (): TelegramUpdate => ({ update_id: 101, message: { message_id: 11, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } }),
+  },
+  {
+    name: "missing message date",
+    update: (): TelegramUpdate => {
+      const untrusted: unknown = { update_id: 101, message: { message_id: 11, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } };
+      return untrusted as TelegramUpdate;
+    },
+  },
+]) {
+  test(`Telegram first-start cursor conservatively checkpoints and drops ${scenario.name}`, async () => {
+    const telegram = new FakeTelegramApi();
+    const savedOffsets: number[] = [];
+    const offsets = await pollOneUpdate(telegram, [scenario.update()], {
+      loadUpdateOffset: async () => undefined,
+      saveUpdateOffset: async next => { savedOffsets.push(next); },
+    });
+
+    expect(savedOffsets).toEqual([102]);
+    expect(offsets).toEqual([undefined, 102]);
+    expect(telegram.sent).toEqual([]);
+    expect(telegram.answered).toEqual([]);
+  });
+}
+
+test.each([
+  { name: "bot id", botId: "2", chatId: "999" },
+  { name: "chat id", botId: "1", chatId: "888" },
+])("Telegram cursor state is not reused after a $name scope change", async ({ botId, chatId }) => {
+  await withNotifyConfigDir(async () => {
+    const firstTelegram = new FakeTelegramApi();
+    const firstOffsets = await pollOneUpdate(firstTelegram, [{ update_id: 50 }], { botId: "1", chatId: "999" });
+    const secondTelegram = new FakeTelegramApi();
+    const secondOffsets = await pollOneUpdate(secondTelegram, [{ update_id: 4 }], { botId, chatId });
+
+    expect(firstOffsets).toEqual([undefined, 51]);
+    expect(secondOffsets).toEqual([undefined, 5]);
+    expect(firstTelegram.sent).toEqual([]);
+    expect(secondTelegram.sent).toEqual([]);
+  });
+});
+
+test("Telegram cursorless startup drops stale ordinary messages in the initial queued batch", async () => {
+  const telegram = new FakeTelegramApi();
+  const staleCommand: TelegramUpdate = {
+    update_id: 201,
+    message: { message_id: 21, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const savedOffsets: number[] = [];
+  const offsets = await pollOneUpdate(telegram, [staleCommand], {
+    loadUpdateOffset: async () => undefined,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+
+  expect(savedOffsets).toEqual([202]);
+  expect(offsets).toEqual([undefined, 202]);
+  expect(telegram.sent).toEqual([]);
+  expect(telegram.answered).toEqual([]);
+});
+
+test("Telegram cursorless startup processes callbacks with old or missing attached-message dates", async () => {
+  const telegram = new FakeTelegramApi();
+  const oldCallback: unknown = {
+    update_id: 401,
+    callback_query: {
+      id: "cb-old-date", from: { id: 999, is_bot: false }, data: "invalid",
+      message: { message_id: 41, date: 0, chat: { id: 999, type: "private" } },
+    },
+  };
+  const undatedCallback: unknown = {
+    update_id: 402,
+    callback_query: {
+      id: "cb-missing-date", from: { id: 999, is_bot: false }, data: "invalid",
+      message: { message_id: 42, chat: { id: 999, type: "private" } },
+    },
+  };
+  const savedOffsets: number[] = [];
+  const offsets = await pollOneUpdate(telegram, [oldCallback as TelegramUpdate, undatedCallback as TelegramUpdate], {
+    loadUpdateOffset: async () => undefined,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+
+  expect(telegram.answered.map(item => item.id)).toEqual(["cb-old-date", "cb-missing-date"]);
+  expect(savedOffsets).toEqual([402, 403]);
+  expect(offsets).toEqual([undefined, 403]);
+});
+
+test("Telegram cursorless freshness filtering ends after the initial getUpdates batch", async () => {
+  const telegram = new FakeTelegramApi();
+  const staleMessage: TelegramUpdate = {
+    update_id: 301,
+    message: { message_id: 31, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const oldCallback = {
+    update_id: 302,
+    callback_query: {
+      id: "cb-later-old", from: { id: 999, is_bot: false }, data: "invalid",
+      message: { message_id: 32, date: 0, chat: { id: 999, type: "private" } },
+    },
+  } as unknown as TelegramUpdate;
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  let calls = 0;
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (calls++ === 0) return { ok: true, result: [staleMessage] };
+    if (calls === 2) return { ok: true, result: [oldCallback] };
+    daemon.stop();
+    return { ok: true, result: [] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    loadUpdateOffset: async () => undefined,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  await daemon.start();
+
+  expect(offsets).toEqual([undefined, 302, 303]);
+  expect(savedOffsets).toEqual([302, 303]);
+  expect(telegram.answered.map(item => item.id)).toEqual(["cb-later-old"]);
+});
+
+test("Telegram cursorless startup keeps filtering stale ordinary messages across getUpdates batches", async () => {
+  const telegram = new FakeTelegramApi();
+  const staleCommand: TelegramUpdate = {
+    update_id: 502,
+    message: { message_id: 52, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  let calls = 0;
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (calls++ === 0) return {
+      ok: true,
+      result: [{
+        update_id: 501,
+        message: { message_id: 51, date: Math.floor(Date.now() / 1000), chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+      }],
+    };
+    if (calls === 2) return { ok: true, result: [staleCommand] };
+    daemon.stop();
+    return { ok: true, result: [] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    loadUpdateOffset: async () => undefined,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  await daemon.start();
+
+  expect(offsets).toEqual([undefined, 502, 503]);
+  expect(savedOffsets).toEqual([502, 503]);
+  expect(telegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+});
+
+test("Telegram polling checkpoints an ACKed steer only after its queued confirmation retry succeeds", async () => {
+  const telegram = new FakeTelegramApi();
+  const update: TelegramUpdate = {
+    update_id: 77,
+    message: { message_id: 8, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/steer abcd1234 executor-1 retry me" },
+  };
+  const firstSendStarted = Promise.withResolvers<void>();
+  const retrySendStarted = Promise.withResolvers<void>();
+  const completeRetrySend = Promise.withResolvers<void>();
+  const savedOffsets: number[] = [];
+  const offsets: (number | undefined)[] = [];
+  const sendOutcomes: string[] = [];
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  let sends = 0;
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    if (sends++ === 0) {
+      firstSendStarted.resolve();
+      sendOutcomes.push("failed");
+      throw new Error("Telegram confirmation send failed");
+    }
+    retrySendStarted.resolve();
+    await completeRetrySend.promise;
+    sendOutcomes.push("sent");
+    return { ok: true };
+  };
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [update] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  (conn.ws as unknown as FakeWebSocket).onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "steer") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+    }
+  };
+
+  const running = daemon.start();
+  await firstSendStarted.promise;
+  await nextEventLoopTurn();
+  expect(savedOffsets).toEqual([]);
+  expect(offsets).toEqual([77]);
+
+  const retryFlush = daemon["flushPool"]();
+  await retrySendStarted.promise;
+  expect(savedOffsets).toEqual([]);
+  expect(offsets).toEqual([77]);
+  completeRetrySend.resolve();
+  await retryFlush;
+  await running;
+
+  expect(sendOutcomes).toEqual(["failed", "sent"]);
+  expect(offsets).toEqual([77, 78]);
+  expect(savedOffsets).toEqual([78]);
+  expect(telegram.sent.map(message => message.text)).toEqual(["Steered 'executor-1'.", "Steered 'executor-1'."]);
+  expect((conn.ws as unknown as FakeWebSocket).sent.map(raw => JSON.parse(raw).type)).toEqual(["steer"]);
+});
+
+test("Telegram polling checkpoints a timed-out steer after delivering its failure reply", async () => {
+  const telegram = new FakeTelegramApi();
+  const update: TelegramUpdate = {
+    update_id: 77,
+    message: { message_id: 8, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/steer abcd1234 executor-1 retry me" },
+  };
+  const savedOffsets: number[] = [];
+  const offsets: (number | undefined)[] = [];
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [update] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 1,
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  let dispatches = 0;
+  (conn.ws as unknown as FakeWebSocket).onSend = () => { dispatches++; };
+  await daemon.start();
+
+  expect(dispatches).toBe(1);
+  expect(savedOffsets).toEqual([78]);
+  expect(offsets).toEqual([77, 78]);
+  expect(telegram.sent.map(message => message.text)).toEqual([
+    "Steer failed — 'executor-1' is unknown or not running.",
+  ]);
+});
+test("Telegram polling checkpoints a reply-only update once its queued retry succeeds", async () => {
+  const telegram = new FakeTelegramApi();
+  const update: TelegramUpdate = {
+    update_id: 77,
+    message: { message_id: 8, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const firstSendStarted = Promise.withResolvers<void>();
+  const failFirstSend = Promise.withResolvers<void>();
+  const retrySendStarted = Promise.withResolvers<void>();
+  const completeRetrySend = Promise.withResolvers<void>();
+  const finishPolling = Promise.withResolvers<void>();
+  const savedOffsets: number[] = [];
+  const offsets: (number | undefined)[] = [];
+  const sendOutcomes: string[] = [];
+  let daemon!: TelegramDaemon;
+  let sends = 0;
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    if (sends++ === 0) {
+      firstSendStarted.resolve();
+      sendOutcomes.push("failed");
+      await failFirstSend.promise;
+      throw new Error("Telegram send failed");
+    }
+    retrySendStarted.resolve();
+    await completeRetrySend.promise;
+    sendOutcomes.push("sent");
+    return { ok: true };
+  };
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78) {
+      daemon.stop();
+      finishPolling.resolve();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [update] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  const running = daemon.start();
+
+  await firstSendStarted.promise;
+  expect(savedOffsets).toEqual([]);
+  failFirstSend.resolve();
+  const next = await Promise.race([
+    retrySendStarted.promise.then(() => "retry" as const),
+    finishPolling.promise.then(() => "finished" as const),
+  ]);
+  expect(next).toBe("retry");
+  expect(savedOffsets).toEqual([]);
+  expect(offsets).toEqual([77]);
+  completeRetrySend.resolve();
+
+  await finishPolling.promise;
+  await running;
+  expect(sendOutcomes).toEqual(["failed", "sent"]);
+  expect(offsets).toEqual([77, 78]);
+  expect(savedOffsets).toEqual([78]);
+  expect(telegram.sent.map(message => message.text)).toEqual([HELP_TEXT, HELP_TEXT]);
+});
+
+
+test("Telegram cursor save failure stops polling and replays the handled update after restart", async () => {
+  const update: TelegramUpdate = {
+    update_id: 77,
+    message: { message_id: 8, date: 0, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  let durableOffset: number | undefined = 77;
+  const firstTelegram = new FakeTelegramApi();
+  const firstOffsets: (number | undefined)[] = [];
+  let firstPolls = 0;
+  let firstDaemon!: TelegramDaemon;
+  firstTelegram.getUpdates = async (offset?: number) => {
+    firstOffsets.push(offset);
+    if (firstPolls++ === 0) return { ok: true, result: [update] };
+    firstDaemon.stop();
+    return { ok: true, result: [] };
+  };
+  const persistenceError = new Error("cursor storage unavailable");
+  firstDaemon = makePollDaemon(firstTelegram, async () => {}, {
+    loadUpdateOffset: async () => durableOffset,
+    saveUpdateOffset: async () => { throw persistenceError; },
+  });
+
+  await expect(firstDaemon.start()).rejects.toBe(persistenceError);
+  expect(firstOffsets).toEqual([77]);
+  expect(firstTelegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+  expect(durableOffset).toBe(77);
+
+  const replayTelegram = new FakeTelegramApi();
+  const replayOffsets: (number | undefined)[] = [];
+  let replayDaemon!: TelegramDaemon;
+  let replayPolls = 0;
+  replayTelegram.getUpdates = async (offset?: number) => {
+    replayOffsets.push(offset);
+    if (replayPolls++ === 0) return { ok: true, result: [update] };
+    replayDaemon.stop();
+    return { ok: true, result: [] };
+  };
+  replayDaemon = makePollDaemon(replayTelegram, async () => {}, {
+    loadUpdateOffset: async () => durableOffset,
+    saveUpdateOffset: async nextOffset => { durableOffset = nextOffset; },
+  });
+
+  await replayDaemon.start();
+
+  expect(replayTelegram.sent.map(message => message.text)).toEqual([HELP_TEXT]);
+  expect(replayOffsets).toEqual([77, 78]);
+  expect(durableOffset).toBe(78);
+});
+
+test("Telegram polling checkpoints a failed callback cancel after terminal failure feedback and advances without replay", async () => {
+  const telegram = new FakeTelegramApi();
+  const callbackUpdate: TelegramUpdate = {
+    update_id: 77,
+    callback_query: {
+      id: "cbq-cancel-failed",
+      from: { id: 999, is_bot: false },
+      data: "cancel:abcd1234:executor-1",
+      message: { message_id: 2, chat: { id: 999, type: "private" } },
+    },
+  };
+  const laterUpdate: TelegramUpdate = {
+    update_id: 78,
+    message: { message_id: 9, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedAfter: { offset: number; answers: number; messages: string[] }[] = [];
+  const savedOffsets: number[] = [];
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 79 || offsets.length === 4) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [callbackUpdate, laterUpdate] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => {
+      savedOffsets.push(next);
+      savedAfter.push({ offset: next, answers: telegram.answered.length, messages: telegram.sent.map(message => message.text) });
+    },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const socket = conn.ws as unknown as FakeWebSocket;
+  socket.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "cancel") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: false }));
+    }
+  };
+
+  await daemon.start();
+
+  expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel"]);
+  expect(telegram.answered.map(item => [item.id, item.options?.text])).toEqual([["cbq-cancel-failed", "Cancel failed."]]);
+  expect(telegram.sent.map(message => message.text)).toEqual([
+    "Cancel failed — 'executor-1' is unknown or already finished.",
+    HELP_TEXT,
+  ]);
+  expect(savedOffsets).toEqual([78, 79]);
+  expect(offsets).toEqual([77, 79]);
+  expect(savedAfter).toEqual([
+    { offset: 78, answers: 1, messages: ["Cancel failed — 'executor-1' is unknown or already finished."] },
+    { offset: 79, answers: 1, messages: ["Cancel failed — 'executor-1' is unknown or already finished.", HELP_TEXT] },
+  ]);
+});
+
+test("Telegram polling retries a failed callback cancel when both callback acknowledgment and failure notification fail", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.answerCallbackQuery = async () => ({ ok: false });
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    return { ok: false };
+  };
+  const callbackUpdate: TelegramUpdate = {
+    update_id: 77,
+    callback_query: {
+      id: "cbq-undelivered",
+      from: { id: 999, is_bot: false },
+      data: "cancel:abcd1234:executor-1",
+      message: { message_id: 2, chat: { id: 999, type: "private" } },
+    },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offsets.length === 3) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [callbackUpdate] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => 77,
+    saveUpdateOffset: async next => { savedOffsets.push(next); },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const socket = conn.ws as unknown as FakeWebSocket;
+  socket.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "cancel") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: false }));
+    }
+  };
+
+  await daemon.start();
+
+  expect(offsets).toEqual([77, 77, 77]);
+  expect(savedOffsets).toEqual([]);
+  expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel", "cancel"]);
+  expect(telegram.sent.length).toBeGreaterThan(0);
+  expect(telegram.sent.every(message => message.text === "Cancel failed — 'executor-1' is unknown or already finished.")).toBe(true);
+});
+test("Telegram polling checkpoints a failed callback cancel when acknowledgment fails but terminal feedback succeeds", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.answerCallbackQuery = async () => { throw new Error("callback acknowledgment failed"); };
+  const callbackUpdate: TelegramUpdate = {
+    update_id: 77,
+    callback_query: {
+      id: "cbq-feedback-delivered",
+      from: { id: 999, is_bot: false },
+      data: "cancel:abcd1234:executor-1",
+      message: { message_id: 2, chat: { id: 999, type: "private" } },
+    },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  let durableOffset = 77;
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78 || offsets.length === 3) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [callbackUpdate] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => durableOffset,
+    saveUpdateOffset: async next => { savedOffsets.push(next); durableOffset = next; },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const socket = conn.ws as unknown as FakeWebSocket;
+  socket.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "cancel") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: false }));
+    }
+  };
+
+  await daemon.start();
+
+  expect(offsets).toEqual([77, 78]);
+  expect(savedOffsets).toEqual([78]);
+  expect(durableOffset).toBe(78);
+  expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel"]);
+  expect(telegram.sent.map(message => message.text)).toEqual([
+    "Cancel failed — 'executor-1' is unknown or already finished.",
+  ]);
+});
+
+test("Telegram polling checkpoints an ACKed callback cancel when callback acknowledgment fails but terminal feedback succeeds", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.answerCallbackQuery = async () => { throw new Error("callback acknowledgment failed"); };
+  const callbackUpdate: TelegramUpdate = {
+    update_id: 77,
+    callback_query: {
+      id: "cbq-cancel-acked",
+      from: { id: 999, is_bot: false },
+      data: "cancel:abcd1234:executor-1",
+      message: { message_id: 2, chat: { id: 999, type: "private" } },
+    },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  let durableOffset = 77;
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78 || offsets.length === 3) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [callbackUpdate] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => durableOffset,
+    saveUpdateOffset: async next => { savedOffsets.push(next); durableOffset = next; },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const socket = conn.ws as unknown as FakeWebSocket;
+  socket.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "cancel") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+    }
+  };
+
+  await daemon.start();
+
+  expect(offsets).toEqual([77, 78]);
+  expect(savedOffsets).toEqual([78]);
+  expect(durableOffset).toBe(78);
+  expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel"]);
+  expect(telegram.sent.map(message => message.text)).toEqual(["⏹ Cancelled 'executor-1' via button."]);
+});
+test("Telegram polling checkpoints a successful callback cancel when acknowledgment and terminal feedback fail", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.answerCallbackQuery = async () => { throw new Error("callback acknowledgment failed"); };
+  telegram.sendMessage = async (chatId, text, options) => {
+    telegram.sent.push({ chatId, text, options });
+    throw new Error("terminal notification failed");
+  };
+  const callbackUpdate: TelegramUpdate = {
+    update_id: 77,
+    callback_query: {
+      id: "cbq-cancel-terminal-undelivered",
+      from: { id: 999, is_bot: false },
+      data: "cancel:abcd1234:executor-1",
+      message: { message_id: 2, chat: { id: 999, type: "private" } },
+    },
+  };
+  const offsets: (number | undefined)[] = [];
+  const savedOffsets: number[] = [];
+  let durableOffset = 77;
+  const conn = sessionConn();
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    if (offset === 78 || offsets.length === 3) {
+      daemon.stop();
+      return { ok: true, result: [] };
+    }
+    return { ok: true, result: [callbackUpdate] };
+  };
+  daemon = makePollDaemon(telegram, async () => {}, {
+    ackTimeoutMs: 50,
+    loadUpdateOffset: async () => durableOffset,
+    saveUpdateOffset: async next => { savedOffsets.push(next); durableOffset = next; },
+  });
+  daemon.sessions.set(conn.sessionId, conn);
+  await authenticate(daemon, conn);
+  const socket = conn.ws as unknown as FakeWebSocket;
+  socket.onSend = raw => {
+    const frame = JSON.parse(raw);
+    if (frame.type === "cancel") {
+      void daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: frame.reqId, ok: true }));
+    }
+  };
+
+  await daemon.start();
+
+  expect(offsets).toEqual([77, 78]);
+  expect(savedOffsets).toEqual([78]);
+  expect(durableOffset).toBe(78);
+  expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel"]);
+  expect(telegram.sent.map(message => message.text)).toContain("⏹ Cancelled 'executor-1' via button.");
 });

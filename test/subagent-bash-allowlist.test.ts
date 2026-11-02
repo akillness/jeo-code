@@ -37,6 +37,22 @@ test("bashCommandAllowed: vets EVERY chained segment, strips env/sudo", () => {
   expect(bashCommandAllowed("echo `whoami`", ok)).toBe(false); // backtick rejected
 });
 
+test("bashCommandAllowed: rejects shell syntax beyond supported chain operators", () => {
+  const prefixes = ["echo"];
+  const escapes = [
+    { name: "single background operator", command: "echo hi & rm -rf /tmp/should-not-run" },
+    { name: "newline command separator", command: "echo hi\nrm -rf /tmp/should-not-run" },
+    { name: "carriage-return command separator", command: "echo hi\rrm -rf /tmp/should-not-run" },
+    { name: "output redirection", command: "echo hi > /tmp/should-not-write" },
+    { name: "input redirection", command: "echo hi < /tmp/should-not-read" },
+    { name: "process substitution", command: "echo <(rm -rf /tmp/should-not-run)" },
+  ];
+
+  for (const { name, command } of escapes) {
+    expect(bashCommandAllowed(command, prefixes), name).toBe(false);
+  }
+});
+
 test("subagentToolset: a role's bash allowlist actually gates the bash tool", async () => {
   const sandboxed: SubagentRole = {
     id: "sandboxed",

@@ -6,48 +6,32 @@ jeo's local-first, reviewable-files character.
 
 ---
 
-## P1 — Independent Goal verifier (`/goal`)
+## P1 — `/goal` transcript verifier (shipped; bounded assurance)
 
-**Idea (MiMo §2.2):** a user-defined natural-language **stop condition**, checked by
-an **independent** model call whenever the agent tries to `done`. Distinct from the
-self-judged `onBeforeDone`.
+**Status:** The `/goal` flow exists in `src/agent/goal-verifier.ts` and is wired from
+`src/commands/launch.ts`. This section records the shipped contract and its limits;
+it is not a proposal to independently inspect the workspace.
 
-**Design**
-- New command **`/goal <condition>`** (and `/goal` to show/clear) — stores the
-  condition for the session under `.jeo/state/goal.json` (or in the session header)
-  so it survives `/resume`.
-- Hook into the existing **`onBeforeDone(reason)`** gate in `src/agent/engine.ts`
-  (it already fires once per turn and can return a non-null nudge string).
-- When a goal is set and the model calls `done`, run **one independent LLM call**
-  (`callLlm`) with: the user's condition + the **same transcript context** the agent
-  saw (reuse `formatTranscript`/history) + the actual recent tool outputs. Ask for a
-  strict verdict: `MET` / `NOT_MET: <specific gap>` / `IMPOSSIBLE: <why>`.
-  - `MET` → allow `done`.
-  - `NOT_MET` → return the gap as the `onBeforeDone` nudge so the agent continues.
-  - `IMPOSSIBLE` → allow stop but mark the goal impossible in the verdict log.
-- **Bias control:** the verifier is a fresh call (no "I already did this" framing) and
-  uses a low temperature. Cap the number of verifier re-blocks per turn/session
-  (MiMo reports infinite-loop < 0.5%; jeo adds a hard cap → auto-allow after N to
-  avoid the false-blocking trap, logging that it bailed).
-- Compose with existing guards: verification hooks (`.jeo/hooks.json`) and the
-  mutation-without-verification pushback still apply; the Goal verifier is an
-  additional, user-opted gate.
+- When a goal is set and the engine calls `done`, `verifyGoal` makes a separate LLM
+  call over the goal and conversation history, including recorded tool calls/results.
+- A deterministic evidence gate downgrades `MET` after current-turn mutations unless
+  the turn observed a fresh test/build/typecheck/lint signal after the last tracked
+  mutation. The engine's ordinary done gate also tracks stale verification and pending
+  hook failures; launch blocks while mutating subagents are in flight.
+- The verifier does **not** read files, invoke tools, or independently rerun tests. A
+  test command's output is evidence, not proof that the command invoked a genuine test
+  runner or that the workspace satisfies the goal.
+- The launch done gate does not check outstanding `JobRegistry` work; background jobs
+  may continue mutating files after the turn is done. This remains an explicit limit.
+- `/goal` stores its condition and verdict history in `.jeo/state/goal.json`; both
+  `NOT_MET` and `IMPOSSIBLE` are persisted and returned as a completion correction.
+  The implementation does not follow the original proposal to allow stopping on
+  `IMPOSSIBLE`.
 
-**Integration points**
-- `src/commands/launch.ts`: `/goal` command parsing; thread the condition into the
-  `runTurn` → `onBeforeDone` wiring (where `withStepPersistence`/events are built).
-- `src/agent/engine.ts`: nothing structural — the existing `onBeforeDone` contract
-  already supports "return a nudge to keep going."
-- New `src/agent/goal-verifier.ts`: pure-ish `verifyGoal(condition, transcript,
-  toolOutputs, llm) → { verdict, gap? }` (LLM injected → unit-testable with a stub).
-
-**Data format** — `.jeo/state/goal.json`: `{ condition: string, setAt, verdicts: [{ at, verdict, gap? }] }`.
-
-**Effort:** S–M. **Risk:** low (additive; gated behind a set condition). **Acceptance:**
-- `verifyGoal` unit tests: MET allows, NOT_MET returns the gap, IMPOSSIBLE allows+marks,
-  re-block cap auto-allows after N.
-- Live: set `/goal "tests pass"`, agent `done` before tests pass → continues with the
-  gap; after passing → stops.
+Any future stronger verifier should be treated as a separate design: define its workspace
+snapshot, trusted execution boundary, and handling of asynchronous writers before claiming
+independent verification. The current transcript judge plus evidence gate is not that
+design.
 
 ---
 

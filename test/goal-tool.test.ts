@@ -27,6 +27,26 @@ test("goal tool: set with a condition persists GoalState and returns confirmatio
   expect(state!.verdicts).toEqual([]);
 });
 
+test("goal tool: replacing a goal retains pending mutation verification and resets verdict history", async () => {
+  await writeGoalState({
+    condition: "old goal",
+    setAt: 1,
+    verdicts: [{ at: 2, verdict: "NOT_MET", gap: "old gap" }],
+    pendingMutationVerification: true,
+  }, tempCwd);
+
+  const tool = createGoalTool();
+  const res = await tool({ action: "set", condition: "new goal" }, tempCwd);
+  expect(res.success).toBe(true);
+
+  const state = await readGoalState(tempCwd);
+  expect(state).toMatchObject({
+    condition: "new goal",
+    verdicts: [],
+    pendingMutationVerification: true,
+  });
+});
+
 test("goal tool: set with an empty/missing condition errors", async () => {
   const tool = createGoalTool();
 

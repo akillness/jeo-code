@@ -35,7 +35,13 @@ export function createGoalTool(): ToolHandler {
       if (!condition) {
         return { success: false, output: "", error: `goal {action:"set"} requires a non-empty 'condition'.` };
       }
-      await writeGoalState({ condition, setAt: Date.now(), verdicts: [] }, cwd);
+      const previous = await readGoalState(cwd);
+      await writeGoalState({
+        condition,
+        setAt: Date.now(),
+        verdicts: [],
+        ...(previous?.pendingMutationVerification ? { pendingMutationVerification: true } : {}),
+      }, cwd);
       return {
         success: true,
         output: `Goal set: "${condition}". It will be auto-verified against the conversation each time you call done.`,

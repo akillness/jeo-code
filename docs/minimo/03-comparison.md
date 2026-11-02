@@ -5,7 +5,7 @@ Verdict legend: **PORT** (adopt, high value) · **ADAPT** (adopt a jeo-sized ver
 
 | MiMo mechanism | jeo today | Gap | Verdict |
 |---|---|---|---|
-| **Goal verifier** (`/goal`, independent judge at stop) | `onBeforeDone` self-judge + cycle/step guards + hooks | No user stop-condition; no independent verifier re-reading full transcript | **PORT** (P1) |
+| **Goal verifier** (`/goal`, separate LLM judge at stop) | LLM judgment over conversation/tool history + deterministic current-turn evidence gate | No workspace re-read or independent test execution; tool output is evidence, not proof of runner authenticity; background jobs are not covered by launch's done gate | **PARTIAL** (transcript judge shipped; stronger independent verification remains a proposal) |
 | **Checkpoint-writer subagent** (independent extractor, mid-session) | none — distill only at session end | No mid-session structured extraction; main agent would have to self-note | **PORT** (P2) |
 | **Cycle + rebuild** (fresh window reseeded from files) | in-window token compaction (`maybeCompact`) | Lossy "simple compression"; no rebuild; long single sessions degrade | **PORT** (P2, pairs with writer) |
 | **Early checkpoints** (≈20/45/70% budget, incremental) | compaction only when near budget | Extraction happens when the model is *least* able | **PORT** (part of P2) |
@@ -25,20 +25,10 @@ Verdict legend: **PORT** (adopt, high value) · **ADAPT** (adopt a jeo-sized ver
 
 ## Why this ordering
 
-1. **Goal verifier first (P1)** — smallest change, biggest correctness win, and it
-   slots into jeo's existing `onBeforeDone` hook + ultragoal philosophy. Independent
-   verification of a *user-stated* stop condition is exactly the kind of "real,
-   blocking gate" jeo already advertises.
-2. **Writer + cycle/rebuild (P2)** — the structural fix for long sessions. It
-   replaces jeo's lossy in-window compaction with MiMo's "extract early, rebuild
-   later" loop, and reuses the existing subagent infra + the just-added incremental
-   persistence. Highest engineering cost, highest long-horizon payoff (MiMo's A/B
-   shows the win appears past ~200 steps).
-3. **Layered memory (P3)** — once the writer exists, adding session/scratch/global
-   layers + promotion is incremental and makes the writer's output durable and
-   reviewable.
-4. **History + Dream/Distill (P4)** — quality-of-life and long-term signal hygiene;
-   valuable but not blocking.
+1. **Goal verification limits (P1 already shipped)** — jeo now has `/goal`, a separate LLM call judging the conversation/tool history and a deterministic current-turn evidence gate. It does not independently re-read workspace state or execute checks, so evidence can still be misleading; background jobs are outside the gate. Further independent verification would be a distinct proposal, not current behavior.
+2. **Writer + cycle/rebuild (P2)** — the proposed structural fix for long sessions. It would replace jeo's lossy in-window compaction with early extraction and rebuild, reusing existing subagent infrastructure. This remains planned work, not shipped behavior.
+3. **Layered memory (P3)** — once the writer exists, adding session/scratch/global layers + promotion is incremental and makes the writer's output durable and reviewable.
+4. **History + Dream/Distill (P4)** — quality-of-life and long-term signal hygiene; valuable but not blocking.
 
 ## jeo-specific constraints that shape the adaptation
 

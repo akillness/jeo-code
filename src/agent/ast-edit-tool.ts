@@ -71,6 +71,7 @@ export function createAstEditTool(): ToolHandler {
 
     const perFile: { file: string; replaced: number }[] = [];
     let totalReplaced = 0;
+    let mutationMayHaveOccurred = false;
 
     for (const abs of files) {
       let original: string;
@@ -107,8 +108,9 @@ export function createAstEditTool(): ToolHandler {
 
       const rel = path.relative(cwd, abs) || abs;
       const res = await writeTool(rel, newText, cwd);
+      if (res.success) mutationMayHaveOccurred = true;
       if (!res.success) {
-        return { success: false, output: "", error: `${rel}: ${res.error ?? "write failed"}` };
+        return { success: false, output: "", error: `${rel}: ${res.error ?? "write failed"}`, mutationMayHaveOccurred: res.mutationMayHaveOccurred === true || mutationMayHaveOccurred };
       }
       perFile.push({ file: rel, replaced: selected.length });
       totalReplaced += selected.length;

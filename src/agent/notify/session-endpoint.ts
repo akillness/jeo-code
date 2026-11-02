@@ -79,6 +79,7 @@ export class SessionNotifyEndpoint {
   private lastSnapshotJson = "";
   /** `undefined` between turns — subagent requests report an empty registry. */
   private registry: SubagentRegistry | undefined;
+  private redact = false;
   readonly sessionId: string;
   private readonly token: string;
   private identityFrame: string | undefined;
@@ -93,10 +94,20 @@ export class SessionNotifyEndpoint {
      *  session reconnects to the SAME discovery file / Telegram topic);
      *  falls back to a random id for session-less contexts. */
     sessionId: string = crypto.randomUUID(),
+    redact = false,
   ) {
     if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("Invalid notification session ID");
     this.sessionId = sessionId;
     this.token = crypto.randomUUID();
+    this.redact = redact;
+  }
+
+  /** Toggle redaction for outbound subagent snapshots in this session. */
+  setRedact(enabled: boolean): void {
+    if (this.redact === enabled) return;
+    this.redact = enabled;
+    this.lastSnapshotJson = "";
+    this.broadcastIfChanged();
   }
 
   /** Attach the registry backing THIS turn's subagents; `list`/`snapshot`
@@ -116,7 +127,15 @@ export class SessionNotifyEndpoint {
   }
 
   private snapshot(): { type: "snapshot"; sessionId: string; cwd: string; pid: number; subagents: SubagentRecord[] } {
-    return { type: "snapshot", sessionId: this.sessionId, cwd: this.cwd, pid: process.pid, subagents: this.registry?.list() ?? [] };
+    const records = this.registry?.list() ?? [];
+    const subagents: SubagentRecord[] = this.redact
+      ? records.map(record => ({
+        ...record,
+        task: "[redacted]",
+        ...(record.result === undefined ? {} : { result: "[redacted]" }),
+      }))
+      : records;
+    return { type: "snapshot", sessionId: this.sessionId, cwd: this.cwd, pid: process.pid, subagents };
   }
 
   private broadcastIfChanged(): void {
@@ -190,7 +209,7 @@ export class SessionNotifyEndpoint {
     if (msg.type === "user_message") {
       let ok = false;
       const validPaths = msg.imagePaths === undefined || (Array.isArray(msg.imagePaths) && msg.imagePaths.every(x => typeof x === "string"));
-      if (typeof msg.text === "string" && !msg.text.trimStart().startsWith("/") && validPaths &&
+      if (typeof msg.text === "string" && !msg.text.trimStart().startsWith("/") && !msg.text.trimStart().startsWith("!") && validPaths &&
           (msg.text.trim() || (msg.imagePaths as string[] | undefined)?.length) && this.onUserMessage) {
         try {
           ok = (await this.onUserMessage({ text: msg.text, imagePaths: msg.imagePaths as string[] | undefined })) !== false;
@@ -304,7 +323,7 @@ export async function startSessionNotifyEndpoint(cwd: string, sessionId: string 
   try {
     const config = await readGlobalConfig();
     if (!config.notifications?.enabled) return undefined;
-    const endpoint = new SessionNotifyEndpoint(cwd, sessionId);
+    const endpoint = new SessionNotifyEndpoint(cwd, sessionId, config.notifications?.redact ?? false);
     await endpoint.start();
     return endpoint;
   } catch {
@@ -334,7 +353,7 @@ export function ensureSessionNotifyEndpoint(registry: SubagentRegistry, cwd: str
     try {
       const config = await readGlobalConfig();
       if (!config.notifications?.enabled) return;
-      const endpoint = new SessionNotifyEndpoint(cwd);
+      const endpoint = new SessionNotifyEndpoint(cwd, undefined, config.notifications?.redact ?? false);
       await endpoint.start();
       endpoint.attachRegistry(registry);
       endpointsByRegistry.set(registry, endpoint);

@@ -57,6 +57,54 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
   expect(events.some(e => e === "executor:tool:find *")).toBe(true); // detail carries the glob target
   expect(events.some(e => e.startsWith("executor:done"))).toBe(true);
 });
+test("createTaskTool: a mutating delegate that writes then throws blocks done until fresh verification", async () => {
+  const done = {
+    tool: "done",
+    arguments: { reason: "Summary: changed\nChanged Files: partial-delegated.txt\nVerification: bun test passed\nOpen Risks: none" },
+  };
+  const steps = [
+    { tool: "bash", arguments: { command: "bun test" } },
+    { tool: "write", arguments: { filePath: "partial-delegated.txt", content: "changed before failure" } },
+    done,
+    { tool: "bash", arguments: { command: "bun test" } },
+    done,
+  ];
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify(steps[turn++] ?? done),
+  }));
+
+  const { DEFAULT_TOOLS } = await import("../src/agent/engine");
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const originalBash = DEFAULT_TOOLS.bash;
+  const originalWrite = DEFAULT_TOOLS.write;
+  let verifierRuns = 0;
+  let writeRuns = 0;
+  DEFAULT_TOOLS.bash = async () => {
+    verifierRuns++;
+    return { success: true, output: "1 pass\\n0 fail" };
+  };
+  DEFAULT_TOOLS.write = async (args, cwd) => {
+    writeRuns++;
+    await fs.writeFile(path.join(cwd, String(args.filePath)), String(args.content ?? ""), "utf8");
+    throw new Error("write failed after partial change");
+  };
+
+  try {
+    const tool = createTaskTool({ config: { defaultModel: "ollama/fast", subagents: {} } });
+    const cwd = await tmpDir();
+    const res = await tool({ role: "executor", task: "make and verify the change" }, cwd);
+
+    expect(res.success).toBe(true);
+    expect(res.mutationMayHaveOccurred).toBe(true);
+    expect(verifierRuns).toBe(2);
+    expect(writeRuns).toBe(1);
+    expect(await fs.readFile(path.join(cwd, "partial-delegated.txt"), "utf8")).toBe("changed before failure");
+  } finally {
+    DEFAULT_TOOLS.bash = originalBash;
+    DEFAULT_TOOLS.write = originalWrite;
+  }
+});
 
 test("createTaskTool: echoed subagent report is fenced as DATA and cannot break the fence from inside", async () => {
   await mock.module("../src/agent/loop", () => ({

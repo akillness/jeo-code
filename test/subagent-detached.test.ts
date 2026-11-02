@@ -30,6 +30,41 @@ test("registry: launch → await reflects terminal completed state", async () =>
   expect(settled!.result).toBe("done report");
   expect(reg.running().length).toBe(0);
 });
+test("registry and control tool preserve mutation evidence from a settled delegated run", async () => {
+  const reg = new SubagentRegistry();
+  const control = createSubagentTool(reg);
+  const rec = reg.launch("executor", "mutate workspace", async () => ({
+    success: true,
+    output: "changed files",
+    mutationMayHaveOccurred: true,
+  }));
+
+  const [settled] = await reg.awaitIds([rec.id]);
+  const awaited = await control({ action: "await", ids: [rec.id] }, await tmpDir());
+  const inspected = await control({ action: "inspect", id: rec.id }, await tmpDir());
+
+  expect(settled!.mutationMayHaveOccurred).toBe(true);
+  expect(awaited.success).toBe(true);
+  expect(awaited.mutationMayHaveOccurred).toBe(true);
+  expect(inspected.success).toBe(true);
+  expect(inspected.mutationMayHaveOccurred).toBe(true);
+});
+
+test("cancelled detached runs retain mutation evidence when their runner settles later", async () => {
+  const reg = new SubagentRegistry();
+  const control = createSubagentTool(reg);
+  const runner = Promise.withResolvers<ToolResult>();
+  const rec = reg.launch("executor", "possibly mutate workspace", () => runner.promise);
+
+  reg.cancel([rec.id]);
+  runner.resolve({ success: true, output: "late mutation", mutationMayHaveOccurred: true });
+  const [settled] = await reg.awaitIds([rec.id]);
+  const inspected = await control({ action: "inspect", id: rec.id }, await tmpDir());
+
+  expect(settled!.status).toBe("cancelled");
+  expect(settled!.mutationMayHaveOccurred).toBe(true);
+  expect(inspected.mutationMayHaveOccurred).toBe(true);
+});
 
 test("registry: a failing run settles as failed and a throw becomes failed", async () => {
   const { SubagentRegistry } = await import("../src/agent/subagent-registry");
@@ -69,6 +104,39 @@ test("registry: cancel aborts a running run and the result does not overwrite th
   expect(reg.get(rec.id)!.status).toBe("cancelled");
   expect(reg.get(rec.id)!.result).toBeUndefined();
 });
+
+test("registry: cancelled mutating runs remain in flight until their runner settles", async () => {
+  const reg = new SubagentRegistry();
+  const runner = Promise.withResolvers<ToolResult>();
+  const rec = reg.launch("executor", "long mutation", () => runner.promise);
+
+  reg.cancel([rec.id]);
+
+  expect(reg.get(rec.id)!.status).toBe("cancelled");
+  expect(reg.inFlightMutators().map(({ id }) => id)).toEqual([rec.id]);
+
+  runner.resolve({ success: true, output: "late completion" });
+  await reg.awaitIds([rec.id]);
+
+  expect(reg.get(rec.id)!.status).toBe("cancelled");
+  expect(reg.inFlightMutators()).toEqual([]);
+});
+
+test("registry: completed and read-only runners are not in-flight mutators", async () => {
+  const reg = new SubagentRegistry();
+  const completed = reg.launch("executor", "already done", async () => ({ success: true, output: "done" }));
+  await reg.awaitIds([completed.id]);
+  expect(reg.inFlightMutators()).toEqual([]);
+
+  const readOnlyRun = Promise.withResolvers<ToolResult>();
+  const readOnly = reg.launch("planner", "inspect only", () => readOnlyRun.promise, { readOnly: true });
+  expect(reg.inFlightMutators()).toEqual([]);
+
+  readOnlyRun.resolve({ success: true, output: "reviewed" });
+  await reg.awaitIds([readOnly.id]);
+  expect(reg.inFlightMutators()).toEqual([]);
+});
+
 
 test("registry: awaitIds honours a timeout while the run is still going", async () => {
   const { SubagentRegistry } = await import("../src/agent/subagent-registry");
@@ -193,25 +261,85 @@ test("subagent tool: explicit cancel persists across tool instances", async () =
   }
 });
 
-// ── task tool: detached launch ────────────────────────────────────────────────
-
-test("createTaskTool: detached launch returns immediately and the registry collects the report", async () => {
+test("createTaskTool: single delegated task returns mutation evidence to its parent", async () => {
+  let turn = 0;
+  const verificationCommand = `bun test ${path.join(process.cwd(), "test/engine.test.ts")} --test-name-pattern extractJsonObject`;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: a.ts\nVerification: ran" } }),
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "write", arguments: { filePath: "single.txt", content: "changed" } });
+      if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: verificationCommand } });
+      return JSON.stringify({ tool: "done", arguments: { reason: `Summary: ok\nChanged Files: single.txt\nVerification: ran ${verificationCommand}` } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+  const result = await createTaskTool({ config: { defaultModel: "m", subagents: {} } })({ role: "executor", task: "mutate the workspace" }, cwd);
+
+  expect(result.success).toBe(true);
+  expect(result.mutationMayHaveOccurred).toBe(true);
+  expect(await fs.readFile(path.join(cwd, "single.txt"), "utf8")).toBe("changed");
+});
+
+test("createTaskTool: fan-out mutation evidence is OR-aggregated across workers", async () => {
+  const verificationCommand = `bun test ${path.join(process.cwd(), "test/engine.test.ts")} --test-name-pattern extractJsonObject`;
+  type MessageLike = { role: string; content: string };
+  const turns = new Map<string, number>();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: MessageLike[]) => {
+      const task = messages.find(message => message.role === "user")?.content ?? "";
+      const key = task.includes("mutate") ? "mutate" : "read";
+      const turn = (turns.get(key) ?? 0) + 1;
+      turns.set(key, turn);
+      if (key === "read") return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nChanged Files: none\nVerification: ran" } });
+      if (turn === 1) return JSON.stringify({ tool: "write", arguments: { filePath: "fanout.txt", content: "changed" } });
+      if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: verificationCommand } });
+      return JSON.stringify({ tool: "done", arguments: { reason: `Summary: ok\nChanged Files: fanout.txt\nVerification: ran ${verificationCommand}` } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+  const result = await createTaskTool({ config: { defaultModel: "m", subagents: {} } })({
+    role: "executor",
+    tasks: ["read the workspace", "mutate the workspace"],
+  }, cwd);
+
+  expect(result.success).toBe(true);
+  expect(result.mutationMayHaveOccurred).toBe(true);
+  expect(await fs.readFile(path.join(cwd, "fanout.txt"), "utf8")).toBe("changed");
+});
+
+test("createTaskTool: detached launch returns mutation evidence with the collected report", async () => {
+  let turn = 0;
+  const verificationCommand = `bun test ${path.join(process.cwd(), "test/engine.test.ts")} --test-name-pattern extractJsonObject`;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) {
+        return JSON.stringify({ tool: "write", arguments: { filePath: "delegated.txt", content: "changed" } });
+      }
+      if (turn === 2) {
+        return JSON.stringify({ tool: "bash", arguments: { command: verificationCommand } });
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: `Summary: ok\nChanged Files: delegated.txt\nVerification: ran ${verificationCommand}` } });
+    },
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const { SubagentRegistry } = await import("../src/agent/subagent-registry");
   const reg = new SubagentRegistry();
+  const cwd = await tmpDir();
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg });
 
-  const res = await tool({ role: "executor", task: "do a thing", detached: true }, await tmpDir());
+  const res = await tool({ role: "executor", task: "mutate the workspace", detached: true }, cwd);
   expect(res.success).toBe(true);
-  expect(res.output).toContain("[detached] launched Executor subagent 'executor-1'");
+  expect(res.mutationMayHaveOccurred).toBe(true);
   expect(reg.list().length).toBe(1);
 
   const [settled] = await reg.awaitIds(["executor-1"]);
   expect(settled!.status).toBe("completed");
   expect(settled!.result).toContain("[Executor subagent] completed");
+  expect(settled!.mutationMayHaveOccurred).toBe(true);
+  expect(await fs.readFile(path.join(cwd, "delegated.txt"), "utf8")).toBe("changed");
 });
 
 test("createTaskTool: detached without a registry falls back to a synchronous run", async () => {

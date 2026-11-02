@@ -422,7 +422,7 @@ export class DiscordDaemon {
       if (!session) { this.emit("Session not found or prefix ambiguous. Use /sessions and a unique ID."); return; }
       const body = command[3]!.trim();
       if (command[1] === "send") {
-        if (body.startsWith("/")) { this.emit("Remote slash commands are disabled; send ordinary prompt text."); return; }
+        if (body.startsWith("/") || body.startsWith("!")) { this.emit("Remote slash and shell commands are disabled; send ordinary prompt text."); return; }
         this.emit(this.send(session, { type: "user_message", text: body }) ? "Forwarded to session (not an execution acknowledgement)." : "Session unavailable.", session.sessionId);
       } else {
         const args = command[1] === "steer" ? /^(\S+)\s+([\s\S]+)$/.exec(body) : /^(\S+)$/.exec(body);
@@ -432,7 +432,7 @@ export class DiscordDaemon {
       }
       return;
     }
-    if (text.startsWith("/")) { this.emit(HELP); return; }
+    if (text.startsWith("/") || text.startsWith("!")) { this.emit(HELP); return; }
     const reference = object(message.message_reference) ? message.message_reference : undefined;
     const reply = reference && typeof reference.message_id === "string" && (reference.channel_id === undefined || reference.channel_id === this.config.channelId)
       ? this.replies.get(reference.message_id) : undefined;

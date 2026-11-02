@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as updateModule from "../src/util/update-check";
+import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
 
@@ -313,6 +314,21 @@ test("without notifications.enabled, no discovery file appears for the session (
 // =============================================================================
 
 const realReadline = { ...(await import("node:readline/promises")) };
+// The remote attachment assertions need to observe the next `runTurn` without
+// reaching a provider. The real process tests above intentionally keep engine
+// behavior, but the in-process seam below uses this established module-mock
+// boundary to capture turn history and gate the first active turn.
+const realEngine = { ...(await import("../src/agent/engine")) };
+let runAgentLoopDelegate: (history: unknown[], options: AgentLoopOptions) => Promise<AgentLoopResult> =
+  async () => ({ done: true, steps: 1, doneReason: "test" });
+const capturedTurnHistories: unknown[][] = [];
+mock.module("../src/agent/engine", () => ({
+  ...realEngine,
+  runAgentLoop: mock(async (history: unknown[], options: AgentLoopOptions) => {
+    capturedTurnHistories.push(history);
+    return await runAgentLoopDelegate(history, options);
+  }),
+}));
 
 /** Each `rl.question()` call gets its OWN resolver (pushed here in call
  *  order); the test resolves whichever ones it needs by index. An unresolved
@@ -340,6 +356,7 @@ mock.module("node:readline/promises", () => ({
 
 afterAll(() => {
   mock.module("node:readline/promises", () => realReadline);
+  mock.module("../src/agent/engine", () => realEngine);
 });
 
 let originalIsTTY: boolean | undefined;
@@ -351,6 +368,8 @@ beforeEach(() => {
   originalIsTTY = process.stdin.isTTY;
   process.stdin.isTTY = true;
   questionCalls = [];
+  capturedTurnHistories.length = 0;
+  runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "test" });
   logs = [];
   logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(" "));
@@ -523,6 +542,187 @@ test("a user_message while idle at the prompt is injected as the next turn's inp
   questionCalls[1]!.resolve("/exit");
   await done;
 }, 45_000);
+
+test("an inbound image received during an active turn is delivered exactly once with the next prompt", async () => {
+  const imageDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-busy-image-"));
+  const imagePath = path.join(imageDir, "remote.png");
+  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const firstTurnStarted = Promise.withResolvers<void>();
+  const releaseFirstTurn = Promise.withResolvers<void>();
+  let turnCalls = 0;
+  runAgentLoopDelegate = async () => {
+    if (turnCalls++ === 0) {
+      firstTurnStarted.resolve();
+      await releaseFirstTurn.promise;
+    }
+    return { done: true, steps: 1, doneReason: "test" };
+  };
+  try {
+    const { done, configDir } = await runInteractiveWithNotify();
+    const discovery = await findDiscoveryInProcess(configDir);
+    const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+    sockets.push(ws);
+    const waitMsg = (predicate: (m: Record<string, unknown>) => boolean, timeoutMs = 8_000): Promise<Record<string, unknown>> => {
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+      const timer = setTimeout(() => reject(new Error("timed out waiting for message")), timeoutMs);
+      const onMessage = (ev: MessageEvent) => {
+        const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+        if (predicate(msg)) { clearTimeout(timer); ws.removeEventListener("message", onMessage); resolve(msg); }
+      };
+      ws.addEventListener("message", onMessage);
+      return promise;
+    };
+    await waitMsg(m => m.type === "snapshot");
+    await waitForCondition(() => questionCalls.length >= 1, 10_000);
+
+    questionCalls[0]!.resolve("initial request");
+    await firstTurnStarted.promise;
+    const ack = waitMsg(m => m.type === "ack" && m.reqId === "busy-image");
+    ws.send(JSON.stringify({ type: "user_message", text: "follow-up with image", imagePaths: [imagePath], reqId: "busy-image" }));
+    expect(await ack).toEqual({ type: "ack", reqId: "busy-image", ok: true });
+
+    releaseFirstTurn.resolve();
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[1]!.resolve("follow-up with image");
+    await waitForCondition(() => capturedTurnHistories.length >= 2, 10_000);
+
+    const secondHistory = capturedTurnHistories[1]!;
+    const userMessages = (secondHistory as { role?: unknown; content?: unknown; images?: unknown }[]).filter(entry => entry.role === "user");
+    const imageMessages = userMessages.filter(entry => Array.isArray(entry.images));
+    expect(imageMessages).toHaveLength(1);
+    expect(imageMessages[0]!.content).toBe("follow-up with image");
+    expect((imageMessages[0]!.images as unknown[])).toHaveLength(1);
+
+    await waitForCondition(() => questionCalls.length >= 3, 10_000);
+    questionCalls[2]!.resolve("after attachment");
+    await waitForCondition(() => capturedTurnHistories.length >= 3, 10_000);
+    const thirdHistory = capturedTurnHistories[2]!;
+    const thirdImageMessages = (thirdHistory as { role?: unknown; images?: unknown }[])
+      .filter(entry => entry.role === "user" && Array.isArray(entry.images));
+    expect(thirdImageMessages).toHaveLength(1);
+
+    await waitForCondition(() => questionCalls.length >= 4, 10_000);
+    questionCalls[3]!.resolve("/exit");
+    await done;
+  } finally {
+    await fs.rm(imageDir, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("remote text paths are never read, while only daemon-owned images attach and arbitrary paths reject", async () => {
+  const ownedDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-"));
+  const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-remote-user-"));
+  const ownedPath = path.join(ownedDir, "telegram.png");
+  const outsidePath = path.join(outsideDir, "user.png");
+  const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  await fs.writeFile(ownedPath, pngBytes);
+  await fs.writeFile(outsidePath, pngBytes);
+  try {
+    const { done, configDir } = await runInteractiveWithNotify();
+    const discovery = await findDiscoveryInProcess(configDir);
+    const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+    sockets.push(ws);
+    const waitMsg = (predicate: (m: Record<string, unknown>) => boolean, timeoutMs = 8_000): Promise<Record<string, unknown>> => {
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+      const timer = setTimeout(() => reject(new Error("timed out waiting for message")), timeoutMs);
+      const onMessage = (ev: MessageEvent) => {
+        const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+        if (predicate(msg)) { clearTimeout(timer); ws.removeEventListener("message", onMessage); resolve(msg); }
+      };
+      ws.addEventListener("message", onMessage);
+      return promise;
+    };
+    await waitMsg(m => m.type === "snapshot");
+    await waitForCondition(() => questionCalls.length >= 1, 10_000);
+
+    const ownedAck = waitMsg(m => m.type === "ack" && m.reqId === "owned-image");
+    const remoteText = `remote text ~/secret.png file://${outsidePath}`;
+    ws.send(JSON.stringify({ type: "user_message", text: remoteText, imagePaths: [ownedPath], reqId: "owned-image" }));
+    expect(await ownedAck).toEqual({ type: "ack", reqId: "owned-image", ok: true });
+    await waitForCondition(() => capturedTurnHistories.length >= 1, 10_000);
+    const firstUserMessages = (capturedTurnHistories[0] as { role?: unknown; content?: unknown; images?: unknown }[])
+      .filter(entry => entry.role === "user");
+    const firstImageMessages = firstUserMessages.filter(entry => Array.isArray(entry.images));
+    expect(firstImageMessages).toHaveLength(1);
+    expect((firstImageMessages[0]!.images as unknown[])).toHaveLength(1);
+    expect(firstImageMessages[0]!.content).toBe(remoteText);
+
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    const rejectedAck = waitMsg(m => m.type === "ack" && m.reqId === "arbitrary-image");
+    ws.send(JSON.stringify({ type: "user_message", text: "arbitrary image path", imagePaths: [outsidePath], reqId: "arbitrary-image" }));
+    expect(await rejectedAck).toEqual({ type: "ack", reqId: "arbitrary-image", ok: false });
+    expect(capturedTurnHistories).toHaveLength(1);
+
+    questionCalls[1]!.resolve("/exit");
+    await done;
+  } finally {
+    await fs.rm(ownedDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("a remote shell escape prefix is rejected before it can start a local turn", async () => {
+  const { done, configDir } = await runInteractiveWithNotify();
+  const discovery = await findDiscoveryInProcess(configDir);
+  const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+  sockets.push(ws);
+  const waitMsg = (predicate: (m: Record<string, unknown>) => boolean, timeoutMs = 8_000): Promise<Record<string, unknown>> => {
+    const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+    const timer = setTimeout(() => reject(new Error("timed out waiting for message")), timeoutMs);
+    const onMessage = (ev: MessageEvent) => {
+      const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+      if (predicate(msg)) { clearTimeout(timer); ws.removeEventListener("message", onMessage); resolve(msg); }
+    };
+    ws.addEventListener("message", onMessage);
+    return promise;
+  };
+  await waitMsg(m => m.type === "snapshot");
+  await waitForCondition(() => questionCalls.length >= 1, 10_000);
+  const ack = waitMsg(m => m.type === "ack" && m.reqId === "remote-shell");
+  ws.send(JSON.stringify({ type: "user_message", text: "  !echo should-not-run", reqId: "remote-shell" }));
+  expect(await ack).toEqual({ type: "ack", reqId: "remote-shell", ok: false });
+  expect(capturedTurnHistories).toHaveLength(0);
+  questionCalls[0]!.resolve("/exit");
+  await done;
+});
+
+test("a rejected remote slash command does not retain its downloaded image for the next prompt", async () => {
+  const imageDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-slash-image-"));
+  const imagePath = path.join(imageDir, "remote.png");
+  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  try {
+    const { done, configDir } = await runInteractiveWithNotify();
+    const discovery = await findDiscoveryInProcess(configDir);
+    const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+    sockets.push(ws);
+    const waitMsg = (predicate: (m: Record<string, unknown>) => boolean, timeoutMs = 8_000): Promise<Record<string, unknown>> => {
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+      const timer = setTimeout(() => reject(new Error("timed out waiting for message")), timeoutMs);
+      const onMessage = (ev: MessageEvent) => {
+        const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+        if (predicate(msg)) { clearTimeout(timer); ws.removeEventListener("message", onMessage); resolve(msg); }
+      };
+      ws.addEventListener("message", onMessage);
+      return promise;
+    };
+    await waitMsg(m => m.type === "snapshot");
+    await waitForCondition(() => questionCalls.length >= 1, 10_000);
+    const ack = waitMsg(m => m.type === "ack" && m.reqId === "remote-slash-image");
+    ws.send(JSON.stringify({ type: "user_message", text: "  /model untrusted", imagePaths: [imagePath], reqId: "remote-slash-image" }));
+    expect(await ack).toEqual({ type: "ack", reqId: "remote-slash-image", ok: false });
+    expect(capturedTurnHistories).toHaveLength(0);
+
+    questionCalls[0]!.resolve("normal request");
+    await waitForCondition(() => capturedTurnHistories.length >= 1, 10_000);
+    const history = capturedTurnHistories[0]! as { role?: unknown; images?: unknown }[];
+    expect(history.filter(entry => entry.role === "user").some(entry => Array.isArray(entry.images))).toBe(false);
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[1]!.resolve("/exit");
+    await done;
+  } finally {
+    await fs.rm(imageDir, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // #4 — config_command: no direct external observable of notifyVerbosity/

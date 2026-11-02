@@ -2,7 +2,7 @@
 
 **Date**: 2026-10-01  
 **Status**: Research/Migration Backlog (28-Category Analysis)  
-**Scope**: Gates-first complete, capabilities retained as sourced backlog, no full parity claim.
+**Scope**: Gates-first review of requested changes; capabilities retained as sourced backlog, no full parity claim.
 **Upstream HEAD Reference**: GitHub gajae-code commit `8ead4a8c749a902cc07ed63bfad020bde00863ea`, 2026-09-30T11:06:45Z, tag v0.18.5. Prior capability matrix sources (README, docs/, codebase-overview.md) were mutable main snapshots; this commit pins the observed state.
 
 ---
@@ -11,14 +11,14 @@
 
 This document captures a sourced 28-category capability matrix comparing upstream gajae-code features against the current jeo implementation. The assignment prioritizes **truthfulness over parity claims**: capabilities are classified as Existing (E), Partial (P), or Missing (M), with detailed acceptance criteria and migration order.
 
-**Key Finding**: Telegram/Discord/Slack integration and plan/ratchet/completion/loop guard changes are implemented and covered by offline tests. Live Telegram polling was exercised; live Discord and Slack connectivity remains unverified without credentials. **28 categories are mapped**, with explicit remaining backlog for auth broker, SDK controller, ACP, managed DAG, plugin/MCP clients, branch-tree storage, and rich document conversion.
+**Key Finding**: Telegram/Discord/Slack integration and plan/ratchet/completion/loop guard changes are implemented and covered by focused offline tests. Live Telegram polling was exercised; live Discord and Slack connectivity remains unverified without credentials. Goal completion is transcript/tool-history judgment plus bounded deterministic evidence gates, not independent workspace verification. Test output is evidence for exercised cases, not proof of runner authenticity. **28 categories are mapped**, with explicit remaining backlog for auth broker, SDK controller, ACP, managed DAG, plugin/MCP clients, branch-tree storage, and rich document conversion.
 
 ---
 
 ## 28-Category Upstream Capability Matrix
 
 ### Evidence Frame
-- **OBSERVED** = local `src/` file read, exact test run, behavior verified
+- **OBSERVED** = local `src/` file read and/or exact focused test or runtime command output observed for the stated case; it is not proof of test-runner authenticity or full behavioral coverage.
 - **DOCUMENTED** = upstream README, docs, or source comment
 - **INFERENCE** = logical deduction from design (marked explicitly)
 
@@ -28,8 +28,8 @@ This document captures a sourced 28-category capability matrix comparing upstrea
 | **2** | **Custom Providers/Presets** | P | P | [src/ai/model-manager.ts](file:///Users/jangyoung/orca/jeo-code/src/ai/model-manager.ts) | Base URL + model config exist; upstream GOAT/ClinePass entitlements absent. | Data-driven preset only after API confirmed; unsupported providers omit field; secrets not persisted on failed setup. |
 | **3** | **Role/Model Routing/Reasoning/Cache** | E | E | [src/agent/engine.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/engine.ts) | Per-role model/thinking/step choice, prompt-cache keys, Anthropic cache_control ephemeral. | Opt-in retention survives roundtrip; maps only supported providers; unsupported omit. |
 | **4** | **Account Pools/Team Auth Broker/Gateway** | M | M | [src/auth/flows/index.ts](file:///Users/jangyoung/orca/jeo-code/src/auth/flows/index.ts) | One OAuth slot per provider, no multi-account pooling or remote broker. **BACKLOG**. | Account-scoped upsert, per-session pin isolation, cache-only list, explicit bounded probes, single-flight refresh, no refresh-secret exposure. Separate large service; not implement here. |
-| **5** | **Interview/Plan/Approval/Exec/Verify** | E | E | [src/cli/runner.ts](file:///Users/jangyoung/orca/jeo-code/src/cli/runner.ts) | Workflow CLI, seed/plan state, critic gate, read-only reviewer, serial team, goal verify. Five skills (five) vs upstream four. | Unapproved/stale plan or zero-evidence critic fails closed; generic suite never fabricates per-criterion PASS. Preserve jeo semantics. |
-| **6** | **Recovery/Source-Bound Quality Gates** | P | P | [src/agent/engine.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/engine.ts), [src/agent/loop-guards.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/loop-guards.ts) | Durable state, compaction, loop guards, ledger; upstream frozen sourceHash cohort/deterministic risk richer. Fixes from LoopAudit. | Contract identity, accepted/non-goal scope, unresolved criteria, next action restored; source changes invalidate; missing evidence fails closed. Ratchet-incremented on no-progress; TODO ownership from RatchetFix. |
+| **5** | **Interview/Plan/Approval/Exec/Verify** | E | E | [src/cli/runner.ts](file:///Users/jangyoung/orca/jeo-code/src/cli/runner.ts) | Workflow CLI, seed/plan state, critic gate, read-only reviewer, serial team, and `/goal` transcript judge. The goal judge reads recorded conversation/tool history, not workspace state. | Unapproved/stale plan or zero-evidence critic fails closed; goal `MET` after a tracked mutation requires fresh current-turn verification signal. Tool output is evidence, not proof of runner authenticity or workspace correctness. Preserve jeo semantics. |
+| **6** | **Recovery/Source-Bound Quality Gates** | P | P | [src/agent/engine.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/engine.ts), [src/agent/loop-guards.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/loop-guards.ts) | Durable state, compaction, loop guards, ledger; upstream frozen sourceHash cohorts/deterministic risk scoring remain richer. jeo's done and `/goal` gates track observed tool evidence, check verification ordering within a turn, persist pending tracked mutations across turns, and block completion while registered background jobs or mutating subagents are running. They do not hash/re-read the workspace or establish test-runner authenticity. | Contract identity, accepted/non-goal scope, unresolved criteria, and next action restored; source-bound risk/verification remains BACKLOG; missing recognized evidence fails closed after tracked mutations. Ratchet-incremented on no-progress; TODO ownership from RatchetFix. |
 | **7** | **Remote Telegram** | P | P | [src/agent/notify/session-endpoint.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/notify/session-endpoint.ts) | Session endpoint mirrors root identity/context/final output, free text/images/config in; forum topics/buttons/attachments exist. Missing: durable action_needed/ask/gate settlement, health/recovery UX. | Remote text never approves workflow gate; only pending gate + authorized user/channel + one-use reply settles; stale/duplicate ignored. Stale README fixed. |
 | **8** | **Discord** | M → P | P | [src/agent/notify/discord-api.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/notify/discord-api.ts), [src/agent/notify/discord-daemon.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/notify/discord-daemon.ts) | **DELIVERED**: REST+Gateway adapter (no SDK broker), text-message literal commands (not registered slash commands), allowlist-scoped authorization, duplicate/stale/bot event filtering. Config/channel routing; optional existing thread destination. In-memory reply mapping only (resets on daemon reload). **NOT full managed Discord parity or thread creation.** | Disabled is inert; credentials redacted; channel/thread routing; untrusted/bot/stale/dupe ignored; read-only health checks, test sends explicit message; 429/permission/disconnect observable; fixtures only, no live E2E required. Reload clears in-memory mappings (stop/start via SIGTERM). Fake transport tests pass. |
 | **9** | **Slack** | M | P | [src/agent/notify/slack-api.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/notify/slack-api.ts), [src/agent/notify/slack-daemon.ts](file:///Users/jangyoung/orca/jeo-code/src/agent/notify/slack-daemon.ts) | **Implemented**: native Web API + Socket Mode, existing shared daemon and authenticated local-session relay; offline behavior tests and scoped code/security/TypeScript reviews passed. Live Slack connection not verified: no configured bot/app credentials. | Slack Socket Mode adapter (native Bun WebSocket, no SDK), xoxb+xapp token pairs, allowlist-scoped authorization, message/app_mention subscriptions, per-session thread routing. Setup validates bot identity and channel membership without opening Socket Mode connection. Status shows `initialized` (ready for daemon) not `connected`. Same design patterns as Discord: in-memory session correlation, duplicate/stale filtering, bounded retries. Disabled is inert; credentials redacted. Health reads live bot identity/channel access (read-only); test sends explicit message. Offline test fixtures pass (no live Socket Mode required for acceptance). |
@@ -61,8 +61,8 @@ This document captures a sourced 28-category capability matrix comparing upstrea
 This records implemented changes and remaining gaps, not approval to reduce the user's requested scope. The 28-category matrix is an inventory; it is not a claim that every upstream feature has been ported.
 
 - **Discord transport** delivered: REST + Gateway, configured channel or existing thread destination, duplicate filtering, and in-memory reply mapping. No per-session thread creation or nonce reconciliation claim.
-- ✅ **Plan/Ratchet/Completion/Loop gate fixes** delivered
-- ✅ **Test evidence** independent (MessagingTests, DiscordTests, HarnessTests, RatchetTests)
+- ✅ **Plan/Ratchet/Completion/Loop gate changes** delivered, with documented limits: goal verification judges transcript/tool history and current-turn evidence; it is not independent workspace verification, and outstanding background jobs are not covered.
+- **Focused tests and reviews** (MessagingTests, DiscordTests, HarnessTests, RatchetTests) provide evidence for exercised cases; they do not establish full behavioral coverage or prove test-runner authenticity.
 - **Slack adapter** implemented: native Web API + Socket Mode, per-session threads, authenticated local-session relay, offline tests, and scoped code/security/TypeScript reviews. Live connectivity remains unverified without configured bot/app credentials.
 - ❌ **NOT delivered (explicit backlog)**:
   - Account broker / team auth gateway
@@ -148,24 +148,24 @@ The 402 (Payment Required) error on `aside exec` and fallback to direct REPL pro
 
 ## Loop Defects & Fixes
 
-### LoopAudit Findings (Source-Bound Verification)
+### Loop Gate Findings and Current Behavior
 **OBSERVED** (from LoopAudit report, merged into `loop-guards.ts`):
-- ✅ Fixed: Done gate verification now requires non-zero evidence (test pass, E2E proof, or explicit supervisor approval)
-- ✅ Fixed: No-progress detection increments counter; stale source invalidates old verification
+- ✅ Fixed: The done gate blocks tracked mutations without a successful recognized verification after the latest mutation, or when a post-turn hook remains failing; `/goal MET` is also downgraded when tracked mutations still lack fresh verification.
+- ✅ Fixed: No-progress detection increments its counter; verification freshness uses observed call ordering in a turn and pending tracked-mutation evidence persists across turns. This is not source-hash verification.
 - ⚠️ Heuristic limit: No-progress counter cannot distinguish "blocked legitimately waiting for input" from "agent spinning"
 - ⚠️ Heuristic limit: Loop guard relies on tool execution evidence; silent tool success (fake test runner, always-pass linter) bypasses gate
 
 ### Remaining Heuristic Limits
 1. **Contract identity** cannot be fully verified without upstream database (jeo stores locally, no consensus with Main)
 2. **Zero-evidence critic** detection assumes critic is present; missing critic role silently succeeds (mitigated: default role config)
-3. **Source changes invalidate verification** rule requires exact hash match; partial file edits may not trigger re-verify (acceptable: token budget trade-off)
+3. **No source-bound verification**: file hashes and partial-file change detection are not implemented; freshness relies on recognized tool-call ordering and persisted tracked-mutation evidence. External changes outside observed tools are not detected.
 
-### Test Coverage Evidence
-**INDEPENDENT** (from HarnessTests, RatchetTests, MessagingTests):
-- Unit tests pass for loop guards (loop-guards.ts fixtures)
-- Ratchet integration tests pass (state recovery, no-progress increment)
-- Messaging tests pass (Discord send/receive, Telegram daemons)
-- NO stale exact counts provided; test suites active and changing
+### Verification Output (Observed)
+**Observed in the current session**:
+- `bun test`: 3693 passed, 0 failed; 14,011 `expect()` calls across 330 files.
+- `bun run typecheck`: passed.
+- Live Telegram polling was exercised; live Discord and Slack connectivity remains unverified without credentials.
+
 
 ---
 
@@ -320,11 +320,11 @@ Every category preserved in matrix above. Acceptance gates per category:
 
 ## Next Steps for User/Main
 
-1. **Approve scope**: This document captures "integration/gates-first complete, 28 categories preserved, explicit backlog." Proceed to implementation if approved.
+1. **Scope status**: The requested integrations and gate changes have been implemented and reviewed with the limits above; the 28-category upstream comparison remains a sourced backlog, not a parity claim.
 2. **Route backlog items**: Tier 1 items (health/recovery, stale README) should be picked up in next sprint. Tier 2+ require separate feature planning.
-3. **Independent test evidence**: MessagingTests, HarnessTests, RatchetTests report pass/fail independently; exact counts omitted (tests evolve, counts stale quickly).
+3. **Focused test evidence**: MessagingTests, HarnessTests, and RatchetTests provide evidence for exercised cases; they do not establish full behavioral coverage or prove test-runner authenticity.
 4. **No installer/native changes**: All Tier 1 + Tier 2 work uses existing dependencies (no `npm install`, no Rust/C++).
-5. **Documentation update**: `docs/loop-engineering-report.md` unchanged for this research; update only if LoopAudit requests specific amendments.
+5. **Documentation update**: `docs/loop-engineering-report.md` was updated to describe the completion-gate limits and evidence boundary.
 
 ---
 

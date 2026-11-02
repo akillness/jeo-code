@@ -7,27 +7,82 @@ import {
 } from "../src/agent/loop-guards";
 
 
-test("isVerificationSignal matches test/build/typecheck commands and output banners", () => {
-  expect(isVerificationSignal("bun test")).toBe(true);
-  expect(isVerificationSignal("bun run typecheck")).toBe(true);
-  expect(isVerificationSignal("npm run build")).toBe(true);
-  expect(isVerificationSignal("eslint .")).toBe(false); // no word boundary inside "eslint" → "lint" does not match
-  expect(isVerificationSignal("eslint .")).toBe(false); // "eslint" has no standalone "lint" word boundary? -> ensure regex semantics
-  // A bare command with a verification signal only in its OUTPUT still counts.
-  expect(isVerificationSignal("./run.sh", "Running vitest suite...")).toBe(true);
-  expect(isVerificationSignal("ls -la", "drwxr-xr-x")).toBe(false);
+test("isVerificationSignal only accepts explicit supported verification commands", () => {
+  for (const command of ["bun test", "bun test test/foo.test.ts", "bun run typecheck", "tsc --noEmit", "cargo test", "npm run build", "eslint ."]) {
+    expect(isVerificationSignal(command)).toBe(true);
+  }
+  for (const command of [
+    "ls -la",
+    "git status",
+    "cat test.log",
+    "./run.sh",
+    "bun test\ntouch marker",
+  ]) {
+    expect(isVerificationSignal(command)).toBe(false);
+  }
 });
 
-test("isVerificationSignal only scans the first 2000 chars of output", () => {
-  const farSignal = "x".repeat(2100) + " typecheck";
-  expect(isVerificationSignal("echo hi", farSignal)).toBe(false);
-  const nearSignal = "x".repeat(1900) + " typecheck " + "y".repeat(500);
-  expect(isVerificationSignal("echo hi", nearSignal)).toBe(true);
+test("isVerificationSignal rejects bun test help mode", () => {
+  expect(isVerificationSignal("bun test --help")).toBe(false);
 });
+
+test("isVerificationSignal rejects tsc version mode", () => {
+  expect(isVerificationSignal("tsc --version")).toBe(false);
+});
+
+test("isVerificationSignal rejects bun test collection-only mode", () => {
+  expect(isVerificationSignal("bun test --list")).toBe(false);
+});
+
+test("isVerificationSignal rejects Jest passWithNoTests mode", () => {
+  expect(isVerificationSignal("jest missing.test.ts --passWithNoTests")).toBe(false);
+});
+
+test("isVerificationSignal rejects cargo compile-only test modes", () => {
+  for (const command of ["cargo test --no-run", "cargo test -- --no-run"]) {
+    expect(isVerificationSignal(command)).toBe(false);
+  }
+});
+
+test("isVerificationSignal accepts Go test -run filters as executing verification", () => {
+  for (const command of [
+    "go test -run=NoSuchTestName ./...",
+    "go test -run NoSuchTestName ./...",
+  ]) {
+    expect(isVerificationSignal(command)).toBe(true);
+  }
+  expect(isVerificationSignal("go test ./...")).toBe(true);
+});
+
+test("isVerificationSignal accepts Jest and Vitest --run execution modes", () => {
+  for (const command of ["jest --run", "vitest --run"]) {
+    expect(isVerificationSignal(command)).toBe(true);
+  }
+});
+test("isVerificationSignal rejects mutating flags while accepting read-only forms", () => {
+  const cases = [
+    { readOnly: "bun test", mutating: "bun test --fix" },
+    { readOnly: "npm run lint", mutating: "npm run lint --write" },
+    { readOnly: "pnpm exec eslint .", mutating: "pnpm exec eslint . --fix" },
+    { readOnly: "yarn test", mutating: "yarn test --update" },
+    { readOnly: "npx vitest --run", mutating: "npx vitest -u" },
+    { readOnly: "tsc --noEmit", mutating: "tsc --noEmit --update" },
+    { readOnly: "cargo test", mutating: "cargo test --fix" },
+    { readOnly: "go test ./...", mutating: "go test -u ./..." },
+    { readOnly: "make check", mutating: "make check --write" },
+  ];
+
+  for (const { readOnly, mutating } of cases) {
+    expect(isVerificationSignal(readOnly)).toBe(true);
+    expect(isVerificationSignal(mutating)).toBe(false);
+  }
+});
+
+
 
 test("VERIFY_SIGNAL_RE is the regex backing isVerificationSignal", () => {
-  expect(VERIFY_SIGNAL_RE.test("run the spec")).toBe(true);
-  expect(VERIFY_SIGNAL_RE.test("hello world")).toBe(false);
+  expect(VERIFY_SIGNAL_RE.test("bun test")).toBe(true);
+  expect(VERIFY_SIGNAL_RE.test("run the spec")).toBe(false);
 });
 
 test("repeatHint tailors guidance to the repeated tool", () => {

@@ -232,3 +232,103 @@ test("constructor defaults to an empty state when none is passed", () => {
   expect(registry.sessionIds()).toEqual([]);
   expect(registry.serialize()).toEqual({ topics: {} });
 });
+
+// ── integrity validation and reverse-index repair ────────────────────────────
+
+test("valid persisted records provide forward and reverse topic mappings", () => {
+  const registry = new TopicRegistry({
+    topics: {
+      "session-a": { topicId: 101, createdAt: 1000, name: "a" },
+      "session-b": { topicId: 202, createdAt: 2000, name: "b" },
+    },
+  });
+
+  expect(registry.get("session-a")).toEqual({ topicId: 101, createdAt: 1000, name: "a" });
+  expect(registry.get("session-b")).toEqual({ topicId: 202, createdAt: 2000, name: "b" });
+  expect(registry.sessionForTopic(101)).toBe("session-a");
+  expect(registry.sessionForTopic(202)).toBe("session-b");
+  expect(registry.sessionForTopic(303)).toBeUndefined();
+});
+
+test("duplicate topic IDs are rejected and a dynamic collision leaves the existing owner intact", async () => {
+  expect(() => new TopicRegistry({
+    topics: {
+      "session-a": { topicId: 101, createdAt: 1000 },
+      "session-b": { topicId: 101, createdAt: 2000 },
+    },
+  })).toThrow(/topic/i);
+
+  const registry = new TopicRegistry();
+  await registry.getOrCreateTopic("session-a", async () => 101, () => 1000);
+  await expect(registry.getOrCreateTopic("session-b", async () => 101, () => 2000)).rejects.toThrow(/topic/i);
+  expect(registry.get("session-b")).toBeUndefined();
+  expect(registry.sessionForTopic(101)).toBe("session-a");
+});
+
+test("malformed persisted topic IDs are rejected", () => {
+  for (const topicId of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "101"] as unknown[]) {
+    expect(() => new TopicRegistry({
+      topics: { "session-a": { topicId: topicId as number, createdAt: 1000 } },
+    })).toThrow(/topic/i);
+  }
+});
+
+test("load rejects malformed or duplicate merged ownership without mutating the existing registry", () => {
+  const registry = new TopicRegistry({
+    topics: {
+      "session-a": { topicId: 101, createdAt: 1000 },
+      "session-b": { topicId: 202, createdAt: 2000 },
+    },
+  });
+
+  expect(() => registry.load({
+    topics: {
+      "session-a": { topicId: 303, createdAt: 3000 },
+      "session-c": { topicId: "not-a-topic-id" as unknown as number, createdAt: 4000 },
+    },
+  })).toThrow(/topic/i);
+  expect(registry.get("session-a")?.topicId).toBe(101);
+  expect(registry.get("session-b")?.topicId).toBe(202);
+  expect(registry.sessionForTopic(101)).toBe("session-a");
+  expect(registry.sessionForTopic(303)).toBeUndefined();
+
+  expect(() => registry.load({
+    topics: {
+      "session-a": { topicId: 303, createdAt: 3000 },
+      "session-c": { topicId: 303, createdAt: 4000 },
+    },
+  })).toThrow(/topic/i);
+  expect(registry.get("session-a")?.topicId).toBe(101);
+  expect(registry.get("session-c")).toBeUndefined();
+  expect(registry.sessionForTopic(101)).toBe("session-a");
+  expect(registry.sessionForTopic(303)).toBeUndefined();
+});
+
+test("load removes the old reverse mapping when an owner's topic ID changes", () => {
+  const registry = new TopicRegistry({
+    topics: { "session-a": { topicId: 101, createdAt: 1000 } },
+  });
+
+  registry.load({ topics: { "session-a": { topicId: 202, createdAt: 2000 } } });
+
+  expect(registry.get("session-a")?.topicId).toBe(202);
+  expect(registry.sessionForTopic(101)).toBeUndefined();
+  expect(registry.sessionForTopic(202)).toBe("session-a");
+});
+
+test("load preserves omitted sessions while removing the replaced owner's stale reverse mapping", () => {
+  const registry = new TopicRegistry({
+    topics: {
+      "session-a": { topicId: 101, createdAt: 1000 },
+      "session-b": { topicId: 202, createdAt: 2000 },
+    },
+  });
+
+  registry.load({ topics: { "session-a": { topicId: 303, createdAt: 3000 } } });
+
+  expect(registry.get("session-a")?.topicId).toBe(303);
+  expect(registry.get("session-b")?.topicId).toBe(202);
+  expect(registry.sessionForTopic(101)).toBeUndefined();
+  expect(registry.sessionForTopic(202)).toBe("session-b");
+  expect(registry.sessionForTopic(303)).toBe("session-a");
+});

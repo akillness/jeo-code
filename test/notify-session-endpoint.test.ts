@@ -79,6 +79,92 @@ function waitForOpenOrClose(ws: WebSocket): Promise<"open" | "close"> {
     ws.addEventListener("close", () => resolve("close"), { once: true });
   });
 }
+type SnapshotRecord = {
+  id: string;
+  role: string;
+  task: string;
+  status: string;
+  startedAt: number;
+  finishedAt?: number;
+  success?: boolean;
+  result?: string;
+  mutationMayHaveOccurred?: boolean;
+};
+
+function expectRedactedSnapshot(snapshot: Record<string, unknown>, originals: SnapshotRecord[]): void {
+  const records = snapshot.subagents as SnapshotRecord[];
+  expect(records).toHaveLength(originals.length);
+  expect(records).toEqual(originals.map(record => ({
+    ...record,
+    task: "[redacted]",
+    ...(record.result === undefined ? {} : { result: "[redacted]" }),
+  })));
+  for (const record of originals) {
+    const payload = JSON.stringify(snapshot);
+    expect(payload).not.toContain(record.task);
+    if (record.result !== undefined) expect(payload).not.toContain(record.result);
+  }
+}
+
+test("redacts running and completed task/result content on connect, list, and cancel snapshots while preserving metadata", async () => {
+  const registry = new SubagentRegistry();
+  const completed = registry.launch("planner", "completed secret task", async () => ({ success: true, output: "completed secret result" }));
+  await registry.awaitIds([completed.id], 2000);
+  const running = registry.launch("executor", "running secret task", async signal => {
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { success: true, output: "cancelled secret result" };
+  });
+  endpoint = new SessionNotifyEndpoint("/tmp/proj", "redaction-snapshots", true);
+  endpoint.attachRegistry(registry);
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+
+  const initial = await waitForMessage(ws, m => m.type === "snapshot");
+  const initialOriginals = registry.list().map(record => ({ ...record }));
+  expectRedactedSnapshot(initial, initialOriginals);
+
+  const listedPromise = waitForMessage(ws, m => m.type === "snapshot" && (m.subagents as unknown[]).length === 2);
+  ws.send(JSON.stringify({ type: "list" }));
+  expectRedactedSnapshot(await listedPromise, initialOriginals);
+
+  const ackPromise = waitForMessage(ws, m => m.type === "ack" && m.reqId === "redact-cancel");
+  const cancelledSnapshotPromise = waitForMessage(ws, m => m.type === "snapshot" &&
+    (m.subagents as SnapshotRecord[]).some(record => record.id === running.id && record.status === "cancelled"));
+  ws.send(JSON.stringify({ type: "cancel", reqId: "redact-cancel", ids: [running.id] }));
+  expect(await ackPromise).toEqual({ type: "ack", reqId: "redact-cancel", ok: true });
+  const cancelled = await cancelledSnapshotPromise;
+  const cancelledOriginals = registry.list().map(record => ({ ...record }));
+  expectRedactedSnapshot(cancelled, cancelledOriginals);
+  await registry.awaitIds([running.id], 2000);
+});
+
+test("setRedact toggles connected snapshots immediately and turning it off restores ordinary values", async () => {
+  const registry = new SubagentRegistry();
+  const completed = registry.launch("planner", "toggle secret task", async () => ({ success: true, output: "toggle secret result" }));
+  await registry.awaitIds([completed.id], 2000);
+  const original = { ...registry.list()[0]! };
+  endpoint = new SessionNotifyEndpoint("/tmp/proj", "redaction-toggle", true);
+  endpoint.attachRegistry(registry);
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  expectRedactedSnapshot(await waitForMessage(ws, m => m.type === "snapshot"), [original]);
+
+  const ordinaryPromise = waitForMessage(ws, m => m.type === "snapshot" &&
+    (m.subagents as SnapshotRecord[])[0]?.task === original.task);
+  endpoint.setRedact(false);
+  expect(await ordinaryPromise).toEqual({
+    type: "snapshot",
+    sessionId: endpoint.sessionId,
+    cwd: "/tmp/proj",
+    pid: process.pid,
+    subagents: [original],
+  });
+
+  const redactedPromise = waitForMessage(ws, m => m.type === "snapshot" &&
+    (m.subagents as SnapshotRecord[])[0]?.task === "[redacted]");
+  endpoint.setRedact(true);
+  expectRedactedSnapshot(await redactedPromise, [original]);
+});
 
 test("start() publishes a discovery file and an initial snapshot is pushed on connect", async () => {
   const registry = new SubagentRegistry();
@@ -424,6 +510,24 @@ test("startSessionNotifyEndpoint: positive control — with notifications.enable
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+test("startSessionNotifyEndpoint initializes snapshot redaction from notifications.redact config", async () => {
+  await fs.writeFile(
+    path.join(endpointDir, "config.json"),
+    JSON.stringify({ providers: {}, defaultModel: "claude-sonnet-4-6", notifications: { enabled: true, redact: true } }),
+  );
+  const started = await startSessionNotifyEndpoint("/tmp/proj", "config-redaction-session");
+  expect(started).toBeDefined();
+  if (!started) throw new Error("expected session endpoint to start");
+  endpoint = started;
+
+  const registry = new SubagentRegistry();
+  const completed = registry.launch("planner", "configured secret task", async () => ({ success: true, output: "configured secret result" }));
+  await registry.awaitIds([completed.id], 2000);
+  const original = { ...registry.list()[0]! };
+  endpoint.attachRegistry(registry);
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  expectRedactedSnapshot(await waitForMessage(ws, m => m.type === "snapshot"), [original]);
+});
 
 test("ensureSessionNotifyEndpoint: when sessionEndpoint is passed, it attachRegistry()s onto THAT instance and creates no second endpoint/discovery file", async () => {
   const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -502,14 +606,14 @@ test("identity published before connection is replayed with latest identity on r
   });
 });
 
-test("slash user messages are rejected rather than executing the session command surface", async () => {
+test("slash and shell-escape user messages are rejected rather than executing the session command surface", async () => {
   endpoint = new SessionNotifyEndpoint("/tmp/project");
   const received: RemoteUserMessage[] = [];
   endpoint.onUserMessage = message => { received.push(message); };
   await endpoint.start();
   const ws = connect(await readDiscovery(endpoint.sessionId));
   await waitForMessage(ws, message => message.type === "snapshot");
-  for (const text of ["/shell dangerous", "  /model untrusted"]) {
+  for (const text of ["/shell dangerous", "  /model untrusted", "!echo remote-shell", "  !echo remote-shell"]) {
     const rejected = waitForMessage(ws, message => message.type === "ack" && message.reqId === text);
     ws.send(JSON.stringify({ type: "user_message", text, reqId: text }));
     expect(await rejected).toEqual({ type: "ack", reqId: text, ok: false });

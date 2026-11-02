@@ -25,6 +25,8 @@ export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  /** Failed operations set this when an attempted filesystem write may have partially changed state. */
+  mutationMayHaveOccurred?: boolean;
 }
 
 /**
@@ -314,18 +316,20 @@ export async function writeTool(
   content: string,
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
+  let mutationMayHaveOccurred = false;
   try {
     if (typeof filePath !== "string" || filePath.trim() === "") {
       return { success: false, output: "", error: 'write requires a non-empty "filePath".' };
     }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
+    mutationMayHaveOccurred = true;
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, content, "utf-8");
     markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully wrote ${content.length} characters to ${filePath}` };
   } catch (err: any) {
-    return { success: false, output: "", error: err.message };
+    return { success: false, output: "", error: err.message, mutationMayHaveOccurred };
   }
 }
 
@@ -362,6 +366,7 @@ export async function editTool(
   editBlock: string,
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
+  let mutationMayHaveOccurred = false;
   try {
     if (typeof filePath !== "string" || filePath.trim() === "") {
       return { success: false, output: "", error: 'edit requires a non-empty "filePath".' };
@@ -581,11 +586,12 @@ export async function editTool(
       };
     }
 
+    mutationMayHaveOccurred = true;
     await fs.writeFile(absPath, content, "utf-8");
     markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully updated ${filePath}` };
   } catch (err: any) {
-    return { success: false, output: "", error: err.message };
+    return { success: false, output: "", error: err.message, mutationMayHaveOccurred };
   }
 }
 
@@ -1078,6 +1084,7 @@ export async function mkdirTool(
   dirPath: string,
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
+  let mutationMayHaveOccurred = false;
   try {
     if (typeof dirPath !== "string" || dirPath.trim() === "") {
       return { success: false, output: "", error: 'mkdir requires a non-empty "dirPath".' };
@@ -1088,10 +1095,11 @@ export async function mkdirTool(
     if (existing && !existing.isDirectory()) {
       return { success: false, output: "", error: `Path exists and is not a directory: ${dirPath}` };
     }
+    mutationMayHaveOccurred = true;
     await fs.mkdir(abs, { recursive: true });
     return { success: true, output: `Directory ready: ${dirPath}` };
   } catch (err: any) {
-    return { success: false, output: "", error: err.message };
+    return { success: false, output: "", error: err.message, mutationMayHaveOccurred };
   }
 }
 
@@ -1107,6 +1115,7 @@ export async function deleteTool(
   cwd: string = process.cwd(),
   recursive: boolean = false
 ): Promise<ToolResult> {
+  let mutationMayHaveOccurred = false;
   try {
     if (typeof targetPath !== "string" || targetPath.trim() === "") {
       return { success: false, output: "", error: 'delete requires a non-empty "path".' };
@@ -1123,11 +1132,12 @@ export async function deleteTool(
     if (st.isDirectory() && !recursive) {
       return { success: false, output: "", error: `${targetPath} is a directory — pass recursive:true to remove it and its contents.` };
     }
+    mutationMayHaveOccurred = true;
     await fs.rm(abs, { recursive, force: false });
     readThisSession.delete(abs); // a future edit against this path must read it again first
     return { success: true, output: `Deleted ${st.isDirectory() ? "directory" : "file"}: ${targetPath}` };
   } catch (err: any) {
-    return { success: false, output: "", error: err.message };
+    return { success: false, output: "", error: err.message, mutationMayHaveOccurred };
   }
 }
 

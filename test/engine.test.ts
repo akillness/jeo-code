@@ -105,6 +105,187 @@ test("runAgentLoop: dispatches a tool then completes on done", async () => {
   expect(history.length).toBe(4);
   expect(history.some(m => m.content.includes("Tool [echotool] result (ok)"))).toBe(true);
 });
+test("runAgentLoop: a delegated tool mutation signal reaches evidence and blocks done", async () => {
+  let turn = 0;
+  const evidence: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  const doneChecks: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      return turn === 1
+        ? JSON.stringify({ tool: "delegated", arguments: { id: "executor-1" } })
+        : JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "user", content: "finish" }], {
+    cwd: process.cwd(),
+    maxSteps: 2,
+    tools: {
+      delegated: async () => ({
+        success: true,
+        output: "detached executor settled",
+        mutationMayHaveOccurred: true,
+      }),
+    },
+    events: {
+      onEvidence: event => { evidence.push(event); },
+      onBeforeDone: (_reason, event) => {
+        doneChecks.push(event);
+        return event.sawMutation && !event.sawVerification
+          ? "verification required after delegated mutation"
+          : null;
+      },
+    },
+  });
+
+  expect(evidence.some(event => event.sawMutation)).toBe(true);
+  expect(doneChecks.some(event => event.sawMutation && !event.sawVerification)).toBe(true);
+  expect(result.done).toBe(false);
+});
+test("runAgentLoop: a handler that throws after mutation preserves evidence until a fresh verifier", async () => {
+  const done = { tool: "done", arguments: { reason: "verified" } };
+  const steps = [
+    { tool: "bash", arguments: { command: "bun test" } },
+    { tool: "delegated", arguments: {} },
+    done,
+    { tool: "bash", arguments: { command: "bun test" } },
+    done,
+  ];
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify(steps[turn++] ?? done),
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const doneChecks: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  const verifierCalls: string[] = [];
+  const result = await runAgentLoop([{ role: "user", content: "delegate a change" }], {
+    cwd: process.cwd(),
+    maxSteps: 8,
+    budget: { maxExtensions: 0 },
+    tools: {
+      bash: async ({ command }) => {
+        verifierCalls.push(command);
+        return { success: true, output: "1 pass\\n0 fail" };
+      },
+      delegated: async () => {
+        throw Object.assign(new Error("delegated write failed after partial change"), { mutationMayHaveOccurred: true });
+      },
+    },
+    events: {
+      onBeforeDone: (_reason, evidence) => {
+        doneChecks.push(evidence);
+        return null;
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(verifierCalls).toEqual(["bun test", "bun test"]);
+  expect(doneChecks.some(evidence => evidence.verificationStale)).toBe(true);
+  expect(doneChecks.at(-1)).toEqual({ sawMutation: true, sawVerification: true, verificationStale: false });
+});
+
+test("runAgentLoop: a read-only handler failure does not create mutation evidence", async () => {
+  const steps = [
+    { tool: "bash", arguments: { command: "bun test" } },
+    { tool: "read", arguments: { filePath: "missing.txt" } },
+    { tool: "done", arguments: { reason: "verified" } },
+  ];
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify(steps[turn++] ?? steps[2]),
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const doneChecks: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  const result = await runAgentLoop([{ role: "user", content: "inspect" }], {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    budget: { maxExtensions: 0 },
+    tools: {
+      bash: async () => ({ success: true, output: "1 pass\\n0 fail" }),
+      read: async () => { throw new Error("read failed"); },
+    },
+    events: {
+      onBeforeDone: (_reason, evidence) => {
+        doneChecks.push(evidence);
+        return null;
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(doneChecks.at(-1)).toEqual({ sawMutation: false, sawVerification: true, verificationStale: false });
+});
+test("runAgentLoop: starting a background job counts as workspace mutation", async () => {
+  let turn = 0;
+  const evidence: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  const doneChecks: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      return turn === 1
+        ? JSON.stringify({ tool: "job", arguments: { action: "start", command: "printf ready" } })
+        : JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "user", content: "finish" }], {
+    cwd: process.cwd(),
+    maxSteps: 2,
+    tools: {
+      job: async () => ({ success: true, output: "job-1 started" }),
+    },
+    events: {
+      onEvidence: event => { evidence.push(event); },
+      onBeforeDone: (_reason, event) => {
+        doneChecks.push(event);
+        return event.sawMutation && !event.sawVerification ? "verification required after job start" : null;
+      },
+    },
+  });
+
+  expect(evidence.some(event => event.sawMutation)).toBe(true);
+  expect(doneChecks.some(event => event.sawMutation && !event.sawVerification)).toBe(true);
+  expect(result.done).toBe(false);
+});
+test("runAgentLoop: eval execution counts as mutation without a mutation result flag", async () => {
+  let turn = 0;
+  const evidence: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  const doneChecks: Array<{ sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }> = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      return turn === 1
+        ? JSON.stringify({ tool: "eval", arguments: { code: "workspaceMutation()" } })
+        : JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "user", content: "finish" }], {
+    cwd: process.cwd(),
+    maxSteps: 2,
+    tools: {
+      eval: async () => ({ success: true, output: "evaluation complete" }),
+    },
+    events: {
+      onEvidence: event => { evidence.push(event); },
+      onBeforeDone: (_reason, event) => {
+        doneChecks.push(event);
+        return event.sawMutation && !event.sawVerification ? "verification required after eval" : null;
+      },
+    },
+  });
+
+  expect(evidence.some(event => event.sawMutation)).toBe(true);
+  expect(doneChecks.some(event => event.sawMutation && !event.sawVerification)).toBe(true);
+  expect(result.done).toBe(false);
+});
 
 test("runAgentLoop: unknown tool surfaces error and keeps going until cap", async () => {
   await mock.module("../src/agent/loop", () => ({

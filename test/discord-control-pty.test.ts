@@ -8,7 +8,7 @@ const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
 const AGY = path.resolve(import.meta.dir, "fixtures/agy-fake-cli.ts");
 const GUARDIAN = path.resolve(import.meta.dir, "fixtures/pty-guardian.ts");
 
-for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of [[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false], [false, false, true, false, false, false], [true, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false], [false, false, false, false, true, true]] as const) test(`Discord terminal control and relay (no-tui=${noTui}, prior-paste=${priorPaste}, local-turn=${localTurn}, relay-turn=${relayTurn}, cancel-first=${cancelFirst}, paste-abort=${pasteAbort})`, async () => {
+for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dropWatchEvents = false] of [[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false], [false, false, true, false, false, false], [true, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false], [false, false, false, false, true, true], [false, false, false, false, false, false, true]] as const) test(`Discord terminal control and relay (no-tui=${noTui}, prior-paste=${priorPaste}, local-turn=${localTurn}, relay-turn=${relayTurn}, cancel-first=${cancelFirst}, paste-abort=${pasteAbort}, drop-watch-events=${dropWatchEvents})`, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-pty-"));
   const config = path.join(root, "config");
   const sessions = path.join(config, "notifications", "sessions");
@@ -28,6 +28,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
   const pending = new Set<string>();
   let typedCharacter = "";
   let discoveryEvents = 0;
+  let discoveryScans = 0;
   let discoveryError = "";
   const { promise: deadline, reject: rejectDeadline } = Promise.withResolvers<never>();
   const phase = async <T>(label: string, action: () => Promise<T>): Promise<T> => {
@@ -59,8 +60,8 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
     terminal.write("\r");
   });
   const discoveryReady = Promise.withResolvers<{ url: string; token: string; id: string }>();
-  const watcher = watch(sessions, async () => {
-    discoveryEvents++;
+  const scanDiscovery = async () => {
+    discoveryScans++;
     const names = await fs.readdir(sessions).catch(() => []);
     for (const name of names) if (name.endsWith(".json")) {
       try {
@@ -68,6 +69,10 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
         discoveryReady.resolve({ ...data, id: name.slice(0, -5) });
       } catch (error) { discoveryError = String(error); }
     }
+  };
+  const watcher = watch(sessions, () => {
+    discoveryEvents++;
+    if (!dropWatchEvents) void scanDiscovery();
   });
   const env = { HOME: root, PATH: `${bin}:${process.env.PATH ?? ""}`, JEO_CONFIG_DIR: config, JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color" };
   const command = process.env.JEO_TEST_BINARY ? [path.resolve(process.env.JEO_TEST_BINARY)] : [process.execPath, CLI];
@@ -86,11 +91,20 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort] of
   try {
     // Real PTY processes cannot use fake time; fail before Bun's timeout so cleanup can run.
     const diagnostic = setTimeout(() => {
-      rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; character: ${typedCharacter}; child exit: ${cliExitCode}; discovery events: ${discoveryEvents}; discovery error: ${discoveryError}; output tail: ${JSON.stringify(output.slice(-1000))}`));
+      void fs.readdir(sessions).then(
+        names => rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; character: ${typedCharacter}; child exit: ${cliExitCode}; discovery events: ${discoveryEvents}; discovery scans: ${discoveryScans}; discovery entries: ${JSON.stringify(names)}; discovery error: ${discoveryError}; output tail: ${JSON.stringify(output.slice(-1000))}`)),
+        error => rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; discovery readdir error: ${String(error)}`)),
+      );
     }, 25_000);
     try {
     await waitOutput("Type your message");
-    const discovery = await phase("session discovery", () => discoveryReady.promise);
+    // Filesystem watch events can be coalesced or lost; rescan until publication or the test deadline.
+    const discoveryPoll = setInterval(() => { void scanDiscovery(); }, 100);
+    let discovery: { url: string; token: string; id: string };
+    try {
+      if (!dropWatchEvents) await scanDiscovery();
+      discovery = await phase("session discovery", () => discoveryReady.promise);
+    } finally { clearInterval(discoveryPoll); }
     ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
     const frames: Record<string, unknown>[] = [];
     const listeners: (() => void)[] = [];

@@ -28,6 +28,7 @@ const launches: { sessionKey: string; revision: number; name: string; stderr: st
 const cleanupErrors: string[] = [];
 const confirmedAbsent: string[] = [];
 let root: string | undefined;
+let unmountedRoot: string | undefined;
 let failure: string | undefined;
 let current: Contract = "local-image";
 let image: { imageId: string; platform: string } | undefined;
@@ -216,13 +217,39 @@ try {
     pass(kind, { id, written: value, otherSessionCannotObserveRegistry: true });
   }
 
+  // An unmounted absolute host path is only a guest path name. On Linux the host
+  // temp root (/tmp) has the same name as the guest's private writable tmpfs, so a
+  // tool write to it may legitimately create a guest-private file. That is not a
+  // host effect; the invariant is that host bytes are never read or mutated.
   await denied(a, [outside]);
   const deniedRead = await a.call("read", { filePath: outside, raw: true }, { signal: AbortSignal.timeout(10_000) });
   assert.equal(deniedRead.success, false);
-  const deniedWrite = await a.call("write", { filePath: outside, content: "BAD" }, { signal: AbortSignal.timeout(10_000) });
-  assert.equal(deniedWrite.success, false);
+  assert.ok(!deniedRead.output.includes(sentinel) && !(deniedRead.error ?? "").includes(sentinel), "host sentinel leaked through read");
+  const collides = outside === "/tmp" || outside.startsWith("/tmp/");
+  const collisionWrite = await a.call("write", { filePath: outside, content: "GUEST_PRIVATE" }, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(await fs.readFile(outside, "utf8"), sentinel, "unmounted host sentinel was mutated");
+  if (collisionWrite.success) {
+    assert.ok(collides, "write to an unmounted non-guest-tmp path must be denied");
+    assert.equal(await tool(a, "read", { filePath: outside, raw: true }), "GUEST_PRIVATE", "guest scratch write must be self-consistent");
+    await denied(b, [outside]); // private scratch is not visible to another session
+  }
   assert.equal(await fs.readFile(outside, "utf8"), sentinel);
-  pass("unmounted-sentinel", { readDenied: true, writeDenied: true, hostSentinelUnchanged: true });
+  // Genuinely unwritable namespace: outside guest /tmp, so the read-only guest root applies.
+  const unmountedBase = collides ? "/var/tmp" : os.tmpdir();
+  unmountedRoot = await fs.realpath(await fs.mkdtemp(path.join(unmountedBase, "jeo-native-unmounted-")));
+  assert.ok(unmountedRoot !== "/tmp" && !unmountedRoot.startsWith("/tmp/"), "unwritable-namespace fixture must not alias guest /tmp");
+  await fs.chmod(unmountedRoot, 0o700);
+  const unmounted = path.join(unmountedRoot, "outside-secret.txt");
+  const unmountedSentinel = `UNMOUNTED-${crypto.randomUUID()}`;
+  await fs.writeFile(unmounted, unmountedSentinel);
+  await denied(a, [unmounted]);
+  const unmountedRead = await a.call("read", { filePath: unmounted, raw: true }, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(unmountedRead.success, false);
+  const deniedWrite = await a.call("write", { filePath: unmounted, content: "BAD" }, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(deniedWrite.success, false);
+  assert.equal(await fs.readFile(unmounted, "utf8"), unmountedSentinel);
+  assert.equal(await fs.readFile(outside, "utf8"), sentinel);
+  pass("unmounted-sentinel", { readDenied: true, hostSentinelsUnchanged: true, unwritableNamespaceWriteDenied: true, tmpNamespaceCollision: collides, collisionWriteWasGuestPrivate: collisionWrite.success });
 
   assert.equal(await tool(a, "read", { filePath: path.join(readOnly, "sentinel.txt"), raw: true }), readOnlySentinel);
   const rejected = await a.call("write", { filePath: path.join(readOnly, "forbidden.txt"), content: "BAD" }, { signal: AbortSignal.timeout(10_000) });
@@ -319,7 +346,10 @@ try {
     catch (error) { cleanupErrors.push(message(error)); }
   }
   if (root && cleanupErrors.length === 0) {
-    try { await fs.rm(root, { recursive: true, force: true }); }
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      if (unmountedRoot) await fs.rm(unmountedRoot, { recursive: true, force: true });
+    }
     catch (error) { cleanupErrors.push(message(error)); }
   }
 }

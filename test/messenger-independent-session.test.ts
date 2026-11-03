@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { createMessengerCliReply } from "../src/commands/messenger";
 import { parseMessengerConfig, DEFAULT_MESSENGER_TOOLS } from "../src/messenger/config";
 import { createDiscordAdapter } from "../src/messenger/discord";
+import { selectDiscordModel } from "../src/messenger/model-selection";
+import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
 const baseMessage: MessengerMessage = {
@@ -70,7 +72,12 @@ test("independent sessions allocate separate workers and session files per invoc
 		};
 	}) as typeof Bun.spawn;
 
-	const reply = createMessengerCliReply(config, spawn);
+	const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscordModel(explicit, {
+		...opts,
+		config: { providers: {}, defaultModel: "gpt-6.1-terra", thinkingLevel: "medium" },
+		list: async (provider: ProviderModelsResult["provider"]) => ({ provider, ok: true, source: "oauth", models: provider === "openai" ? ["gpt-6.1-terra"] : [] }),
+	});
+	const reply = createMessengerCliReply(config, spawn, selectModel);
 	try {
 		const signal = new AbortController().signal;
 		const activities: string[] = [];

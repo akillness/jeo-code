@@ -422,11 +422,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
 - **[0.12.10]** (2026-11-02)
 - **[0.12.11]** (2026-11-02)
-- **[0.12.9]** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

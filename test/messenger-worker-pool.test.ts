@@ -4,9 +4,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createMessengerSessionPool } from "../src/messenger/session-pool";
 import { createMessengerCliReply } from "../src/commands/messenger";
+import { selectDiscordModel } from "../src/messenger/model-selection";
+import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
 const message: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "channel", senderId: "owner", messageId: "1", text: "hello", direct: true, mentioned: false };
+const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscordModel(explicit, {
+  ...opts,
+  config: { providers: {}, defaultModel: "gpt-6.1-terra", thinkingLevel: "medium" },
+  list: async (provider: ProviderModelsResult["provider"]) => ({ provider, ok: true, source: "oauth", models: provider === "openai" ? ["gpt-6.1-terra"] : [] }),
+});
 
 test("conversation workers are reused, isolated, evicted and closed", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-worker-pool-"));
@@ -26,7 +33,7 @@ test("conversation workers are reused, isolated, evicted and closed", async () =
       stdin: { write(chunk: string | Uint8Array) { const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk); for (const line of text.trim().split("\n")) { const prompt = JSON.parse(line); worker.requests.push(prompt); out.enqueue(new TextEncoder().encode(`JEO_MESSENGER_RESULT ${JSON.stringify(`worker ${worker.id}: ${prompt}`)}\n`)); } return text.length; }, flush() {}, end() { kill(); } },
     };
   }) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(config, spawn);
+  const reply = createMessengerCliReply(config, spawn, selectModel);
   try {
     const signal = new AbortController().signal;
     expect(await reply(message, signal)).toBe("worker 0: hello");
@@ -63,7 +70,7 @@ test("real worker serves multiple turns and isolates conversations", async () =>
     children.push(child);
     return child;
   }) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(config, spawn);
+  const reply = createMessengerCliReply(config, spawn, selectModel);
   try {
     const signal = new AbortController().signal;
     expect(await reply(message, signal)).toBe("**answer 1**");
@@ -107,7 +114,7 @@ test("compiled CLI preserves two turns in one worker", async () => {
     launches++;
     return Bun.spawn([executable, ...argv.slice(argv.indexOf("launch"))], { ...options, env: { ...options.env, HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` } });
   }) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(config, spawn);
+  const reply = createMessengerCliReply(config, spawn, selectModel);
   try {
     const signal = new AbortController().signal;
     expect(await reply(message, signal)).toBe("compiled answer 1");

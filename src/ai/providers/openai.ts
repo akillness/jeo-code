@@ -1,8 +1,8 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError } from "./errors";
-import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
+import { providerHttpError, ProviderStreamError } from "./errors";
+import { codexResponsesCall, codexResponsesStream, ResponsesIncompleteError } from "./openai-responses";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { createThinkSplitter, stripLeakedReasoningTags } from "../think-tags";
@@ -110,32 +110,11 @@ function emptyCompletionError(finishReason: string | undefined): Error {
   return new Error(`OpenAI returned no content${finishReason ? ` (finish_reason=${finishReason})` : ""}${hint}.`);
 }
 
-/** Scan `text` for the first BALANCED, syntactically valid JSON object that carries a
- *  `tool`/`tools` key — i.e. a complete jeo tool envelope. Brace-depth aware and string/
- *  escape safe so a `{` inside a JSON string never miscounts. Returns the raw object
- *  substring, or "" if none is complete. Used to salvage a truncated (finish_reason=length)
- *  reasoning stream when the model finished the actionable JSON before it ran out of budget. */
-function firstCompleteToolEnvelope(text: string): string {
-  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
-    let depth = 0, inStr = false, esc = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (esc) { esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      if (ch === '"') { inStr = !inStr; continue; }
-      if (inStr) continue;
-      if (ch === "{") depth++;
-      else if (ch === "}" && --depth === 0) {
-        const candidate = text.slice(start, i + 1);
-        try {
-          const obj = JSON.parse(candidate) as Record<string, unknown>;
-          if (obj && (typeof obj.tool === "string" || Array.isArray(obj.tools))) return candidate;
-        } catch { /* not valid JSON — keep scanning from the next `{` */ }
-        break;
-      }
-    }
+function assertNormalFinish(finishReason: string | undefined): void {
+  if (finishReason && finishReason !== "stop" && finishReason !== "tool_calls" && finishReason !== "function_call") {
+    const hint = finishReason === "length" ? " — output budget exhausted; raise maxTokens or lower reasoning effort" : "";
+    throw new Error(`OpenAI response incomplete (finish_reason=${finishReason})${hint}.`);
   }
-  return "";
 }
 
 /** Recover a usable answer from the reasoning channel when `content` came back empty.
@@ -144,16 +123,10 @@ function firstCompleteToolEnvelope(text: string): string {
  *  `reasoning_content`/`reasoning` (or an inline `<think>…</think>` block) and leave
  *  `content` empty, which would otherwise kill the turn with "OpenAI returned no content".
  *
- *  Strips leaked think/scaffolding markup and returns the recovered text when the turn ended
- *  normally (no `finish_reason`, or `stop`). On a `length` finish the reasoning is truncated,
- *  but a thinking model often COMPLETES the JSON tool envelope before it runs out of budget —
- *  so we still salvage that complete envelope when present, and otherwise surface the
- *  actionable budget error. `content_filter` is never recovered (the reply was blocked).
+ *  Strips leaked think/scaffolding markup after a normal completion.
  *  Returns "" when nothing is recoverable. */
-function recoverFromReasoning(reasoning: string, finishReason: string | undefined): string {
+function recoverFromReasoning(reasoning: string): string {
   if (!reasoning) return "";
-  if (finishReason === "content_filter") return "";
-  if (finishReason === "length") return firstCompleteToolEnvelope(reasoning);
   return stripLeakedReasoningTags(reasoning);
 }
 
@@ -234,7 +207,10 @@ export const openaiAdapter: ProviderAdapter = {
     if (credential.kind === "api_key" && !options.baseUrl && isOpenAIReasoningModel(options.model)) {
       try {
         return await codexResponsesCall(messages, options, credential);
-      } catch { /* /responses unsupported for this model/account — fall through to chat */ }
+      } catch (e) {
+        if (e instanceof ResponsesIncompleteError || e instanceof ProviderStreamError) throw e;
+        // /responses unsupported for this model/account — fall through to chat.
+      }
     }
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     let response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
@@ -251,6 +227,8 @@ export const openaiAdapter: ProviderAdapter = {
 
     const result = (await response.json()) as { choices: { message: { content?: string; reasoning_content?: string; reasoning?: string; tool_calls?: { function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
+    const finishReason = result.choices[0]?.finish_reason;
+    assertNormalFinish(finishReason);
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const envelope = serializeToolCalls(parseOpenaiToolCalls(result.choices[0]?.message?.tool_calls));
     if (envelope) return envelope;
@@ -260,9 +238,8 @@ export const openaiAdapter: ProviderAdapter = {
     // OpenAI-compatible servers) running reasoning models routinely emit the WHOLE reply —
     // including the `{"tool":…}` JSON — into `reasoning_content`/`reasoning` while leaving
     // `content` empty, which otherwise dies as a dead "returned no content" turn.
-    const finishReason = result.choices[0]?.finish_reason;
     const msg = result.choices[0]?.message;
-    const recovered = recoverFromReasoning(msg?.reasoning_content ?? msg?.reasoning ?? "", finishReason);
+    const recovered = recoverFromReasoning(msg?.reasoning_content ?? msg?.reasoning ?? "");
     if (recovered) return recovered;
     throw emptyCompletionError(finishReason);
   },
@@ -279,7 +256,7 @@ export const openaiAdapter: ProviderAdapter = {
         for await (const chunk of codexResponsesStream(messages, options, credential)) { started = true; yield chunk; }
         return;
       } catch (e) {
-        if (started) throw e; // mid-stream failure — cannot safely restart on another endpoint
+        if (started || e instanceof ResponsesIncompleteError || e instanceof ProviderStreamError) throw e;
         // else fall through to chat completions below
       }
     }
@@ -305,6 +282,7 @@ export const openaiAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yieldedAny = false;
     let finishReason: string | undefined;
+    let receivedContent = false;
     // Mirror every reasoning delta into a local buffer so a content-less reply can be
     // recovered from the reasoning channel at end-of-stream (see recoverFromReasoning).
     let reasoningBuf = "";
@@ -323,6 +301,7 @@ export const openaiAdapter: ProviderAdapter = {
       }
       const raw = chunk.choices?.[0]?.delta?.content;
       if (raw) {
+        receivedContent = true;
         const visible = think.push(raw);
         if (visible) {
           yieldedAny = true;
@@ -347,6 +326,10 @@ export const openaiAdapter: ProviderAdapter = {
       if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
     }
+    if (!finishReason && (receivedContent || reasoningBuf || toolAcc.size)) {
+      throw new Error("OpenAI response incomplete (missing finish_reason).");
+    }
+    assertNormalFinish(finishReason);
     const trailing = think.flush();
     if (trailing) { yieldedAny = true; yield trailing; }
     // Native tool calls stream as tool_calls argument fragments — re-serialize once at end.
@@ -356,7 +339,7 @@ export const openaiAdapter: ProviderAdapter = {
       // Recover from the reasoning channel before failing the turn. Local reasoning models
       // (LM Studio, llama.cpp, …) often stream the whole reply — JSON tool call included —
       // as reasoning/<think> with an empty `content`.
-      const recovered = recoverFromReasoning(reasoningBuf, finishReason);
+      const recovered = recoverFromReasoning(reasoningBuf);
       if (recovered) { yield recovered; return; }
       throw emptyCompletionError(finishReason);
     }

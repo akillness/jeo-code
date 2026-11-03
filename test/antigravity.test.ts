@@ -112,7 +112,7 @@ async function drainStream(model: string, reasoningEffort: string | undefined): 
   const prevFetch = globalThis.fetch;
   const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
   globalThis.fetch = (async () =>
-    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] } }] } }), {
+    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }] } }), {
       status: 200, headers: { "content-type": "text/event-stream" },
     })) as any;
   let started = 0;

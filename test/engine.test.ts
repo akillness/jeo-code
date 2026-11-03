@@ -1,6 +1,13 @@
 import { test, expect, mock } from "bun:test";
 import { extractJsonObject, tryExtractJsonObject } from "../src/agent/json";
 import { truncateToolOutput, READ_OUTPUT_MAX, TOOL_OUTPUT_MAX } from "../src/agent/engine";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { JobRegistry } from "../src/agent/job-registry";
+import { createJobTool } from "../src/agent/job-tool";
+import { MonitorRegistry } from "../src/agent/monitor-registry";
+import { createMonitorTool } from "../src/agent/monitor-tool";
 
 test("extractJsonObject: pure JSON", () => {
   expect(extractJsonObject('{"tool":"done","arguments":{"reason":"x"}}')).toEqual({
@@ -143,6 +150,67 @@ test("runAgentLoop: a delegated tool mutation signal reaches evidence and blocks
   expect(evidence.some(event => event.sawMutation)).toBe(true);
   expect(doneChecks.some(event => event.sawMutation && !event.sawVerification)).toBe(true);
   expect(result.done).toBe(false);
+});
+test("runAgentLoop: an edit followed by a Go run with zero tests cannot complete", async () => {
+  const steps = [
+    { tool: "edit", arguments: {} },
+    { tool: "bash", arguments: { command: "go test ./..." } },
+    { tool: "done", arguments: { reason: "finished" } },
+  ];
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({ callLlm: async () => JSON.stringify(steps[Math.min(turn++, steps.length - 1)]) }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const checks: Array<{ sawMutation: boolean; sawVerification: boolean }> = [];
+  const result = await runAgentLoop([{ role: "user", content: "edit and verify" }], {
+    cwd: process.cwd(),
+    maxSteps: 3,
+    tools: {
+      edit: async () => ({ success: true, output: "edited" }),
+      bash: async () => ({ success: true, output: "? example/pkg [no test files]" }),
+    },
+    events: {
+      onBeforeDone: (_reason, evidence) => {
+        checks.push(evidence);
+        return evidence.sawMutation && !evidence.sawVerification ? "verification required" : null;
+      },
+    },
+  });
+  expect(checks.at(-1)).toMatchObject({ sawMutation: true, sawVerification: false });
+  expect(result.done).toBe(false);
+});
+test("bash pwd invalidates prior verification when BASH_ENV writes a file", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-bash-env-"));
+  const startup = path.join(root, "startup");
+  const marker = path.join(root, "marker");
+  await fs.writeFile(startup, 'printf changed > "$MARKER"\n');
+  const steps = [
+    { tool: "edit", arguments: {} },
+    { tool: "bash", arguments: { command: "bun test" } },
+    { tool: "bash", arguments: { command: "pwd" } },
+    { tool: "done", arguments: { reason: "finished" } },
+  ];
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({ callLlm: async () => JSON.stringify(steps[Math.min(turn++, steps.length - 1)]) }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const checks: Array<{ sawMutation: boolean; verificationStale: boolean }> = [];
+  try {
+    const result = await runAgentLoop([{ role: "user", content: "verify" }], {
+      cwd: root, maxSteps: 4,
+      tools: {
+        edit: async () => ({ success: true, output: "edited" }),
+        bash: async args => {
+          if (args.command === "bun test") return { success: true, output: "1 pass" };
+          const proc = Bun.spawn(["bash", "-c", "pwd"], { cwd: root, env: { ...process.env, BASH_ENV: startup, MARKER: marker }, stdout: "pipe" });
+          const output = await new Response(proc.stdout).text();
+          return { success: (await proc.exited) === 0, output };
+        },
+      },
+      events: { onBeforeDone: (_reason, evidence) => { checks.push(evidence); return evidence.verificationStale ? "verification stale" : null; } },
+    });
+    expect(await fs.readFile(marker, "utf8")).toBe("changed");
+    expect(checks.at(-1)).toMatchObject({ sawMutation: true, verificationStale: true });
+    expect(result.done).toBe(false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 test("runAgentLoop: a handler that throws after mutation preserves evidence until a fresh verifier", async () => {
   const done = { tool: "done", arguments: { reason: "verified" } };
@@ -582,3 +650,34 @@ test("runAgentLoop: exhausted step budget triggers a no-tools consolidation wrap
   expect(result.doneReason).toContain("step budget of 3 reached");
   expect(calls).toBe(4); // 3 tool steps + 1 wrap-up
 });
+
+for (const kind of ["job", "monitor"] as const) {
+  test(`${kind} settlement requires observation and fresh verification before done`, async () => {
+    for (const observeAndVerify of [false, true]) {
+      const registry = kind === "job" ? new JobRegistry() : new MonitorRegistry();
+      const tool = kind === "job" ? createJobTool(registry as JobRegistry) : createMonitorTool(registry as MonitorRegistry);
+      const steps = [
+        { tool: kind, arguments: { action: "start", command: "exit 0", persistent: true } },
+        { tool: "bash", arguments: { command: "bun test" } },
+        ...(observeAndVerify ? [
+          { tool: kind, arguments: { action: "await", ids: [`${kind}-1`] } },
+          { tool: "bash", arguments: { command: "bun test" } },
+        ] : []),
+        { tool: "done", arguments: { reason: "finished" } },
+      ];
+      let turn = 0;
+      await mock.module("../src/agent/loop", () => ({ callLlm: async () => JSON.stringify(steps[Math.min(turn++, steps.length - 1)]) }));
+      const { runAgentLoop } = await import("../src/agent/engine");
+      const result = await runAgentLoop([{ role: "user", content: "verify" }], {
+        cwd: process.cwd(), maxSteps: steps.length,
+        tools: {
+          [kind]: tool,
+          bash: async () => { await registry.awaitIds([`${kind}-1`], 3000); return { success: true, output: "1 pass" }; },
+        },
+        events: { onBeforeDone: (_reason, evidence) => registry.unobserved().length || evidence.verificationStale ? "background verification required" : null },
+      });
+      expect(result.done).toBe(observeAndVerify);
+      if (observeAndVerify) expect((await tool({ action: "list" }, process.cwd())).mutationMayHaveOccurred).not.toBe(true);
+    }
+  });
+}

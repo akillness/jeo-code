@@ -226,6 +226,8 @@ test("resolveCall + anthropic adapter over OAuth: an alias, a bare id, an anthro
                 new ReadableStream({
                   start(ctrl) {
                     ctrl.enqueue(enc.encode('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n'));
+                    ctrl.enqueue(enc.encode('data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'));
+                    ctrl.enqueue(enc.encode('data: {"type":"message_stop"}\n\n'));
                     ctrl.close();
                   },
                 }),
@@ -288,6 +290,8 @@ test("resolveCall + anthropic adapter over OAuth, fast mode (reasoningEffort non
                 new ReadableStream({
                   start(ctrl) {
                     ctrl.enqueue(enc.encode('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n'));
+                    ctrl.enqueue(enc.encode('data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'));
+                    ctrl.enqueue(enc.encode('data: {"type":"message_stop"}\n\n'));
                     ctrl.close();
                   },
                 }),

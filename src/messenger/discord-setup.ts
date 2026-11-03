@@ -8,7 +8,8 @@ import { isEnoent, isRecord } from "./types";
 
 export const DISCORD_TOKEN_ENV = "JEO_DISCORD_BOT_TOKEN";
 const TOKEN_FILE = "discord-token";
-const RUN_SCRIPT = "run-discord.sh";
+const RUN_SCRIPT_POSIX = "run-discord.sh";
+const RUN_SCRIPT_WINDOWS = "run-discord.cmd";
 const MESSAGE_CONTENT = 1 << 18;
 const MESSAGE_CONTENT_LIMITED = 1 << 19;
 /** The only application flags a bot token may change: the limited presence, member, and message intents. */
@@ -31,6 +32,28 @@ const THREAD_TYPES: Record<number, true> = { 10: true, 11: true, 12: true };
 const INVITE_POLL_MS = 3_000;
 const GATEWAY_PROBE_MS = 20_000;
 const DM_TEST_MESSAGE = "jeo messenger is set up for this bot. Reply here to test the connection.";
+
+function throwIfAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error("Discord setup cancelled");
+}
+
+async function interruptibleSleep(sleep: (ms: number) => Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+	if (!signal) return sleep(ms);
+	if (signal.aborted) throw new Error("Discord setup cancelled");
+	let cancel: (() => void) | undefined;
+	try {
+		await Promise.race([
+			sleep(ms),
+			new Promise<never>((_resolve, reject) => {
+				cancel = () => reject(new Error("Discord setup cancelled"));
+				signal.addEventListener("abort", cancel, { once: true });
+				if (signal.aborted) cancel();
+			}),
+		]);
+	} finally {
+		if (cancel) signal.removeEventListener("abort", cancel);
+	}
+}
 
 export interface DiscordSetupIO {
 	readonly interactive: boolean;
@@ -60,6 +83,11 @@ export interface DiscordSetupDeps {
 	/** argv that starts this jeo build; defaults to the running runtime and entry. */
 	jeoCommand?: string[];
 	installService?: typeof installMessengerService;
+	/** Cancels invite polling and the remaining setup work (the CLI wires Ctrl+C here). */
+	signal?: AbortSignal;
+	/** Injectable platform/path separator for cross-platform release tests. */
+	platform?: NodeJS.Platform;
+	pathDelimiter?: string;
 }
 
 export interface DiscordSetupResult {
@@ -89,18 +117,23 @@ export interface RequestChannel {
 
 type DiscordApiFn = (method: string, route: string, body?: unknown) => Promise<unknown>;
 
-function discordApi(token: string, fetchImpl: typeof fetch): DiscordApiFn {
-	return (method, route, body) =>
-		messengerFetchJson(
+function discordApi(token: string, fetchImpl: typeof fetch, signal?: AbortSignal): DiscordApiFn {
+	return async (method, route, body) => {
+		throwIfAborted(signal);
+		const result = await messengerFetchJson(
 			`${DISCORD_API}${route}`,
 			{
 				method,
+				signal,
 				headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
 			},
 			undefined,
 			fetchImpl,
 		);
+		throwIfAborted(signal);
+		return result;
+	};
 }
 
 function str(value: unknown): string | undefined {
@@ -201,15 +234,21 @@ export async function waitForDiscordGuilds(
 	io: DiscordSetupIO,
 	sleep: (ms: number) => Promise<void>,
 	waitMs: number,
+	signal?: AbortSignal,
 ): Promise<Record<string, unknown>[]> {
+	throwIfAborted(signal);
 	let guilds = records(await api("GET", "/users/@me/guilds"));
+	throwIfAborted(signal);
 	if (guilds.length) return guilds;
 	if (!io.interactive) throw new Error(`Invite the bot to a server, then rerun: ${inviteUrl}`);
 	io.say(`Invite the bot to your server (choose the server and authorize):\n  ${inviteUrl}`);
 	io.say("Waiting for the bot to join…");
 	for (const deadline = Date.now() + waitMs; Date.now() < deadline; ) {
-		await sleep(INVITE_POLL_MS);
+		throwIfAborted(signal);
+		await interruptibleSleep(sleep, Math.min(INVITE_POLL_MS, Math.max(0, deadline - Date.now())), signal);
+		throwIfAborted(signal);
 		guilds = records(await api("GET", "/users/@me/guilds"));
+		throwIfAborted(signal);
 		if (guilds.length) return guilds;
 	}
 	throw new Error(`The bot has not joined a server yet; invite it, then rerun: ${inviteUrl}`);
@@ -363,8 +402,11 @@ export async function probeDiscordGateway(
 	api: DiscordApiFn,
 	token: string,
 	WebSocketImpl: typeof WebSocket,
+	signal?: AbortSignal,
 ): Promise<void> {
+	throwIfAborted(signal);
 	const discovery = await api("GET", "/gateway/bot");
+	throwIfAborted(signal);
 	const url = discordGatewayUrl(isRecord(discovery) ? discovery.url : undefined);
 	const result = Promise.withResolvers<void>();
 	const socket = new WebSocketImpl(url);
@@ -372,7 +414,11 @@ export async function probeDiscordGateway(
 		() => result.reject(new Error("Discord Gateway did not confirm the bot session in time")),
 		GATEWAY_PROBE_MS,
 	);
+	const cancel = () => result.reject(new Error("Discord setup cancelled"));
+	signal?.addEventListener("abort", cancel, { once: true });
+	if (signal?.aborted) cancel();
 	socket.addEventListener("message", (event: MessageEvent) => {
+		if (signal?.aborted) return;
 		let packet: unknown;
 		try {
 			packet = typeof event.data === "string" ? JSON.parse(event.data) : undefined;
@@ -404,8 +450,10 @@ export async function probeDiscordGateway(
 	socket.addEventListener("error", () => result.reject(new Error("Discord Gateway connection failed")));
 	try {
 		await result.promise;
+		throwIfAborted(signal);
 	} finally {
 		clearTimeout(timer);
+		signal?.removeEventListener("abort", cancel);
 		try {
 			socket.close(1000);
 		} catch {
@@ -434,6 +482,16 @@ exec ${command.map(quote).join(" ")} messenger run --config "$dir/${configName}"
 `;
 }
 
+/** Windows launcher equivalent. The token remains in the private sidecar and is never embedded. */
+export function discordRunCommand(command: string[], configName: string, tokenEnv: string, envPath: string): string {
+	const literal = (value: string): string => {
+		if (/["\r\n]/.test(value)) throw new Error("Windows launcher values must not contain quotes or newlines");
+		return value.replace(/%/g, "%%");
+	};
+	const quote = (value: string): string => `"${literal(value)}"`;
+	return `@echo off\r\nsetlocal DisableDelayedExpansion\r\nset "PATH=${literal(envPath)}"\r\nset /p "${tokenEnv}="<"%~dp0${TOKEN_FILE}"\r\n${command.map(quote).join(" ")} messenger run --config "%~dp0${literal(configName)}"\r\n`;
+}
+
 async function writePrivate(file: string, content: string, mode: number): Promise<void> {
 	const temporary = `${file}.${process.pid}.tmp`;
 	await Bun.write(temporary, content);
@@ -458,9 +516,14 @@ async function readExistingConfig(configPath: string): Promise<Record<string, un
 	throw new Error(`${configPath} exists but is not a JSON object; fix or move it before setup`);
 }
 
-function currentJeoCommand(): string[] {
-	const entry = Bun.main;
-	return entry === process.execPath || entry.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, entry];
+export function currentJeoCommand(entry = Bun.main, execPath = process.execPath): string[] {
+	return entry === execPath || entry.startsWith("/$bunfs/") || entry.startsWith("B:\\~BUN\\") ? [execPath] : [execPath, entry];
+}
+
+export function messengerExecutablePath(execPath: string, inheritedPath: string | undefined, delimiter: string, platform: NodeJS.Platform): string {
+	const fallbackPath = platform === "win32" ? "" : "/usr/bin:/bin";
+	const runtimeDirectory = platform === "win32" ? path.win32.dirname(execPath) : path.dirname(execPath);
+	return [...new Set([runtimeDirectory, ...(inheritedPath ?? fallbackPath).split(delimiter).filter(Boolean)])].join(delimiter);
 }
 
 /** Create or repair a Discord messenger profile with as few manual steps as Discord allows. */
@@ -473,20 +536,32 @@ export async function setupDiscordMessenger(
 	const configPath = path.resolve(options.configPath);
 	const directory = path.dirname(configPath);
 	const tokenPath = path.join(directory, TOKEN_FILE);
-	const runScript = path.join(directory, RUN_SCRIPT);
+	const platform = deps.platform ?? process.platform;
+	throwIfAborted(deps.signal);
+	if (options.service && platform !== "darwin" && platform !== "linux") {
+		throw new Error("Background services are supported only on macOS and Linux");
+	}
+	const runScript = path.join(directory, platform === "win32" ? RUN_SCRIPT_WINDOWS : RUN_SCRIPT_POSIX);
 
 	const token = await resolveToken(env, tokenPath, io);
-	const api = discordApi(token, deps.fetch ?? fetch);
+	throwIfAborted(deps.signal);
+	const api = discordApi(token, deps.fetch ?? fetch, deps.signal);
 	const bot = await inspectDiscordBot(api);
+	throwIfAborted(deps.signal);
 	io.say(`Bot ${bot.username} (${bot.id}), application ${bot.applicationId}`);
 	await ensureMessageContentIntent(api, bot, io);
+	throwIfAborted(deps.signal);
 
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+	throwIfAborted(deps.signal);
 	await writePrivate(tokenPath, `${token}\n`, 0o600);
+	throwIfAborted(deps.signal);
 
 	const inviteUrl = discordInviteUrl(bot.applicationId);
-	const guilds = await waitForDiscordGuilds(api, inviteUrl, io, deps.sleep ?? Bun.sleep, options.inviteWaitMs ?? 300_000);
+	const guilds = await waitForDiscordGuilds(api, inviteUrl, io, deps.sleep ?? Bun.sleep, options.inviteWaitMs ?? 300_000, deps.signal);
+	throwIfAborted(deps.signal);
 	const existing = await readExistingConfig(configPath);
+	throwIfAborted(deps.signal);
 	const platforms = isRecord(existing?.platforms) ? existing.platforms : {};
 	const previous = isRecord(platforms.discord) ? platforms.discord : {};
 	const previousList = (key: string): string[] | undefined => {
@@ -499,12 +574,14 @@ export async function setupDiscordMessenger(
 	let channelIds: string[];
 	if (options.channelIds?.length || !previousList("allowedChannelIds")) {
 		const channels = await selectDiscordChannels(api, bot, guilds, options.channelIds, inviteUrl, io);
+		throwIfAborted(deps.signal);
 		for (const channel of channels) io.say(`Request channel: #${channel.name} in ${channel.guildName}`);
 		channelIds = channels.map(channel => channel.id);
 	} else {
 		channelIds = previousList("allowedChannelIds") as string[];
 	}
 	const dmChannel = options.dmTest === false ? undefined : await openOwnerDm(api, userIds[0]!, io);
+	throwIfAborted(deps.signal);
 	const allowedChannelIds = [...new Set([...channelIds, ...(dmChannel ? [dmChannel] : [])])];
 	const tokenEnv = str(previous.tokenEnv) ?? DISCORD_TOKEN_ENV;
 
@@ -522,16 +599,20 @@ export async function setupDiscordMessenger(
 	for (const relative of [config.cwd, config.sessionDir, discord.artifactDir]) {
 		if (typeof relative === "string")
 			await fs.mkdir(path.resolve(directory, relative), { recursive: true, mode: 0o700 });
+		throwIfAborted(deps.signal);
 	}
 	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
-	const envPath = [...new Set([path.dirname(process.execPath), ...(env.PATH ?? "/usr/bin:/bin").split(":")])].join(
-		":",
-	);
+	throwIfAborted(deps.signal);
+	const delimiter = deps.pathDelimiter ?? path.delimiter;
+	const envPath = messengerExecutablePath(process.execPath, env.PATH, delimiter, platform);
 	await writePrivate(
 		runScript,
-		discordRunScript(deps.jeoCommand ?? currentJeoCommand(), path.basename(configPath), tokenEnv, envPath),
+		platform === "win32"
+			? discordRunCommand(deps.jeoCommand ?? currentJeoCommand(), path.basename(configPath), tokenEnv, envPath)
+			: discordRunScript(deps.jeoCommand ?? currentJeoCommand(), path.basename(configPath), tokenEnv, envPath),
 		0o700,
 	);
+	throwIfAborted(deps.signal);
 	// The same loader `messenger run` uses must accept what was written.
 	const written = await loadMessengerConfig(configPath);
 	validateMessengerEnvironment(
@@ -539,12 +620,14 @@ export async function setupDiscordMessenger(
 		{ [tokenEnv]: token },
 	);
 
-	await probeDiscordGateway(api, token, deps.WebSocket ?? WebSocket);
+	await probeDiscordGateway(api, token, deps.WebSocket ?? WebSocket, deps.signal);
+	throwIfAborted(deps.signal);
 	io.say("Discord Gateway accepted the bot session and intents.");
 
 	let service: string | undefined;
 	if (options.service) {
 		service = await (deps.installService ?? installMessengerService)(messengerServicePlan(directory, runScript));
+		throwIfAborted(deps.signal);
 		io.say(`Gateway running as ${service}`);
 	}
 	if (dmChannel) {
@@ -555,8 +638,10 @@ export async function setupDiscordMessenger(
 			io.say(
 				"Could not send the test DM (the owner may block DMs from server members); server requests still work.",
 			);
+			throwIfAborted(deps.signal);
 		}
 	}
+	throwIfAborted(deps.signal);
 	return {
 		configPath,
 		botName: bot.username,

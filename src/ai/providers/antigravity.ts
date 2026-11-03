@@ -323,6 +323,7 @@ export const antigravityAdapter: ProviderAdapter = {
     let out = "";
     let usage: CcaUsage | undefined;
     let lastEmptyReason: string | undefined;
+    let terminal = false;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
@@ -332,11 +333,14 @@ export const antigravityAdapter: ProviderAdapter = {
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) out += delta;
-      else lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
+      lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
+      if (chunk.response?.candidates?.[0]?.finishReason) terminal = true;
       fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
+    if (lastEmptyReason && (out || fnCalls.length)) throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
+    if (!terminal && (out || fnCalls.length)) throw new Error("Antigravity Cloud Code Assist response incomplete (missing finishReason).");
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) return envelope;
@@ -352,6 +356,7 @@ export const antigravityAdapter: ProviderAdapter = {
     let yielded = false;
     let usage: CcaUsage | undefined;
     let lastEmptyReason: string | undefined;
+    let terminal = false;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: CcaChunk;
@@ -361,11 +366,14 @@ export const antigravityAdapter: ProviderAdapter = {
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) { yielded = true; yield delta; }
-      else lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
+      lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
+      if (chunk.response?.candidates?.[0]?.finishReason) terminal = true;
       fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
+    if (lastEmptyReason && (yielded || fnCalls.length)) throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
+    if (!terminal && (yielded || fnCalls.length)) throw new Error("Antigravity Cloud Code Assist response incomplete (missing finishReason).");
     // Native tool calls have no text deltas — yield the re-serialized envelope once at end.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) { yielded = true; yield envelope; }

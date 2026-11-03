@@ -13,6 +13,7 @@ import { createSlackAdapter } from "../messenger/slack";
 import { createTelegramAdapter } from "../messenger/telegram";
 import type { MessengerAdapter, MessengerConfig, MessengerReply } from "../messenger/types";
 import { createSession } from "../agent/session";
+import { selectDiscordModel } from "../messenger/model-selection";
 
 type Flags = { config?: string; channel: string[]; user: string[]; tools?: string; artifacts: boolean; service: boolean; noDm: boolean };
 
@@ -41,10 +42,12 @@ function terminalIO() {
 	let muted = false;
 	const output = new Writable({ write(chunk, _encoding, callback) { if (!muted) process.stdout.write(chunk); callback(); } });
 	const rl = createInterface({ input: process.stdin, output, terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY) });
+	const controller = new AbortController();
+	rl.on("close", () => controller.abort());
 	const ask = async (question: string, secret = false) => {
 		process.stdout.write(question);
 		muted = secret;
-		try { return (await rl.question("")).trim(); }
+		try { return (await rl.question("", { signal: controller.signal })).trim(); }
 		finally { muted = false; if (secret) process.stdout.write("\n"); }
 	};
 	return {
@@ -66,28 +69,34 @@ function routeUuid(config: MessengerConfig, message: Parameters<MessengerReply>[
 }
 
 /** Run each conversation in its own reusable agent process. */
-export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn): MessengerReply & { close(): Promise<void> } {
+export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel): MessengerReply & { close(): Promise<void> } {
 	const pool = createMessengerSessionPool(spawn);
 	const reply: MessengerReply = async (message, signal, onActivity) => {
 		if (signal.aborted) throw new Error("Messenger request aborted");
 		const id = routeUuid(config, message);
 		await fs.mkdir(config.sessionDir, { recursive: true, mode: 0o700 });
+		if (signal.aborted) throw new Error("Messenger request aborted");
 		const target = path.join(config.sessionDir, `${id}.jsonl`);
 		const legacy = path.join(config.cwd, ".jeo", "sessions", `${id}.jsonl`);
 		try {
 			await fs.access(target);
+			if (signal.aborted) throw new Error("Messenger request aborted");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			let old;
 			try { old = await fs.open(legacy, constants.O_RDONLY | constants.O_NOFOLLOW); }
 			catch (openError) { if ((openError as NodeJS.ErrnoException).code !== "ENOENT") throw openError; }
+			if (signal.aborted) { await old?.close(); throw new Error("Messenger request aborted"); }
 			try {
 				if (old) {
 					if (!(await old.stat()).isFile()) throw new Error("Invalid legacy messenger session");
+					if (signal.aborted) throw new Error("Messenger request aborted");
 					const contents = await old.readFile();
+					if (signal.aborted) throw new Error("Messenger request aborted");
 					const temporary = `${target}.${crypto.randomUUID()}.tmp`;
 					try {
 						await fs.writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
+						if (signal.aborted) throw new Error("Messenger request aborted");
 						await fs.link(temporary, target);
 					} finally { await fs.unlink(temporary).catch(() => {}); }
 				} else {
@@ -98,12 +107,14 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 			} finally { await old?.close(); }
 		}
 		const artifactPrompt = await messengerArtifactPrompt(config.platforms[message.platform]?.artifactDir, message, signal);
+		if (signal.aborted) throw new Error("Messenger request aborted");
 		const executable = process.execPath;
 		const sourceEntry = process.argv[1]?.endsWith(".ts") ? process.argv[1] : undefined;
 		const tools = [...new Set(config.toolNames.map(name => name === "grep" ? "search" : name === "glob" ? "find" : name))];
 		const toolFlags = tools.length ? ["--tools", tools.join(",")] : ["--no-tools"];
 		const platformConfig = config.platforms[message.platform];
-		const modelFlags = platformConfig?.model ? ["--model", platformConfig.model] : [];
+		const model = message.platform === "discord" ? await selectModel(platformConfig?.model, { signal }) : platformConfig?.model;
+		const modelFlags = model ? ["--model", model] : [];
 		const command = [executable, ...(sourceEntry ? ["--no-env-file", sourceEntry] : []), "launch", "--print", "--no-tui", "--no-skills", "--literal-worker", ...toolFlags, ...modelFlags, "--resume", id, "--", "worker"];
 		const secretNames = new Set<string>();
 		for (const platform of Object.values(config.platforms)) {
@@ -122,10 +133,20 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		env.JEO_MESSENGER_COMPUTER_ENABLED = tools.includes("computer") ? "1" : "0";
 		// Never inherit another platform's fallback policy from the gateway environment.
 		delete env.JEO_MESSENGER_USAGE_FALLBACK_MODEL;
-		if (platformConfig?.usageFallbackModel) env.JEO_MESSENGER_USAGE_FALLBACK_MODEL = platformConfig.usageFallbackModel;
+		if (platformConfig?.usageFallbackModel) {
+			if (message.platform !== "discord") env.JEO_MESSENGER_USAGE_FALLBACK_MODEL = platformConfig.usageFallbackModel;
+			else {
+				try { env.JEO_MESSENGER_USAGE_FALLBACK_MODEL = await selectModel(platformConfig.usageFallbackModel, { signal }); }
+				catch {
+					if (signal.aborted) throw new Error("Messenger request aborted");
+					console.warn("Discord usage fallback model could not be verified; fallback disabled for this request.");
+				}
+			}
+		}
 		delete env.JEO_MESSENGER_FIXED_MODEL;
-		if (platformConfig?.model) env.JEO_MESSENGER_FIXED_MODEL = "1";
-		return pool.turn(id, command, config.cwd, env, [message.text, artifactPrompt].filter(Boolean).join("\n\n"), signal, onActivity);
+		if (model) env.JEO_MESSENGER_FIXED_MODEL = "1";
+		const policyKey = message.platform === "discord" ? JSON.stringify([model, env.JEO_MESSENGER_USAGE_FALLBACK_MODEL]) : undefined;
+		return pool.turn(id, command, config.cwd, env, [message.text, artifactPrompt].filter(Boolean).join("\n\n"), signal, onActivity, policyKey);
 	};
 	return Object.assign(reply, { close: pool.close });
 }
@@ -134,10 +155,14 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 	const { action, flags } = parse([...args]);
 	if (action === "setup") {
 		const io = terminalIO();
+		const controller = new AbortController();
+		const stop = () => { controller.abort(); io.close(); };
+		process.once("SIGINT", stop);
+		process.once("SIGTERM", stop);
 		try {
-			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm }, io);
+			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm }, io, { signal: controller.signal });
 			process.stdout.write(`Discord messenger ready: ${result.configPath}\nStart: ${result.runScript}\n`);
-		} finally { io.close(); }
+		} finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); io.close(); }
 		return;
 	}
 	let config: MessengerConfig;

@@ -190,7 +190,7 @@ test("openai.stream: 400-on-stream_options retries once without the field", asyn
       });
     }
     return new Response(
-      sse(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]\n\n"]),
+      sse(['data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n', "data: [DONE]\n\n"]),
       { status: 200, headers: { "content-type": "text/event-stream" } },
     );
   }) as typeof fetch;
@@ -291,23 +291,23 @@ test("openai.stream: empty content + finish_reason=length still throws (reasonin
   }
 });
 
-test("openai.stream: finish_reason=length but a COMPLETE tool envelope in reasoning is salvaged", async () => {
-  // A local thinking model that finished the actionable JSON before its token budget ran
-  // out: the trailing prose is truncated, but the `{"tool":…}` object is complete and valid,
-  // so we recover it rather than burning the turn on "no content".
+test("openai.stream: length rejects even a complete tool envelope in reasoning", async () => {
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(
       sse([
-        'data: {"choices":[{"delta":{"reasoning_content":"Let me think. I will run the test. {\\"tool\\":\\"bash\\",\\"arguments\\":{\\"command\\":\\"bun test\\"}} then I sho"},"finish_reason":"length"}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"{\\"tool\\":\\"bash\\",\\"arguments\\":{\\"command\\":\\"bun test\\"}}"},"finish_reason":"length"}]}\n\n',
         "data: [DONE]\n\n",
       ]),
       { status: 200, headers: { "content-type": "text/event-stream" } },
     )) as typeof fetch;
   try {
     let out = "";
-    for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) out += d;
-    expect(out).toBe('{"tool":"bash","arguments":{"command":"bun test"}}');
+    const run = async () => {
+      for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) out += d;
+    };
+    await expect(run()).rejects.toThrow("length");
+    expect(out).not.toContain('"tool"');
   } finally {
     globalThis.fetch = prevFetch;
   }

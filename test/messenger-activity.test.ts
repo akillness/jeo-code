@@ -17,6 +17,18 @@ test("progress events expose steps and tool outcomes but never arguments or erro
   expect(lines).toEqual(["Step 2 · Thinking", "Step 2 · Running bash", "Step 2 · bash failed", "Retrying after a provider error"]);
 });
 
+test("progress never forwards model reasoning, credentials, arguments, or results", () => {
+  const lines: string[] = [];
+  const events = createMessengerActivityEvents(line => lines.push(line));
+  const privateText = "customer@example.com Bearer abcdef token=xyz";
+  events.onStep!(3);
+  events.onAssistant!(JSON.stringify({ reasoning: privateText, tool: "bash", arguments: { command: privateText } }), { tool: "bash", arguments: { command: privateText } });
+  events.onToolResult!("bash", true, privateText);
+  events.onNotice!(privateText);
+  expect(lines).toEqual(["Step 3 · Thinking", "Step 3 · Running bash", "Step 3 · bash finished"]);
+  expect(lines.join(" ")).not.toContain(privateText);
+});
+
 test("gateway finalizes progress with the actual reply outcome", async () => {
   for (const outcome of ["success", "failure"] as const) {
     const calls: Array<[string | undefined, string | undefined]> = [];

@@ -12,7 +12,7 @@ export const JOB_TOOL_PROTOCOL_LINE =
   `job {action:"start", command, cwd?} runs a shell command in the BACKGROUND as a real ` +
   `parallel OS process and returns a job id immediately. job {action:"list"|"tail"|"await"|"cancel", ` +
   `ids?, timeoutMs?} — 'tail' shows buffered output so far; 'await' blocks (optionally up to timeoutMs ` +
-  `ms) until it exits; 'cancel' kills it; omit ids to target all running.`;
+  `ms) until it exits; 'cancel' kills it; omit ids to target all running, plus unreported completions for 'await'.`;
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -24,7 +24,8 @@ function elapsed(rec: JobRecord): string {
 }
 
 function rowLine(rec: JobRecord): string {
-  return `- ${rec.id} [${rec.status.toUpperCase()}] ${elapsed(rec)} · ${truncate(rec.command, 100)}`;
+  const exit = rec.exitCode != null ? ` (exit code ${rec.exitCode})` : "";
+  return `- ${rec.id} [${rec.status.toUpperCase()}]${exit} ${elapsed(rec)} · ${truncate(rec.command, 100)}`;
 }
 
 function idsOf(args: Record<string, any>): string[] {
@@ -33,8 +34,8 @@ function idsOf(args: Record<string, any>): string[] {
   return [];
 }
 
-export function createJobTool(registry: JobRegistry): ToolHandler {
-  return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+export function createJobTool(registry: JobRegistry, reportMutations = true): ToolHandler {
+  const handle: ToolHandler = async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
     const action = String(args.action ?? "list").trim().toLowerCase();
     const ids = idsOf(args);
 
@@ -79,17 +80,23 @@ export function createJobTool(registry: JobRegistry): ToolHandler {
     }
 
     if (action === "await") {
-      const targets = ids.length ? ids : registry.running().map(r => r.id);
+      const targets = ids.length ? ids : registry.awaiting().map(r => r.id);
       if (targets.length === 0) {
-        return { success: true, output: "No running jobs to await." };
+        return { success: true, output: "No jobs to await." };
+      }
+      const unknown = targets.filter(id => !registry.get(id));
+      if (unknown.length > 0) {
+        return { success: false, output: "", error: `No job matches ${unknown.join(", ")}.` };
       }
       const timeoutMs = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : undefined;
       const recs = await registry.awaitIds(targets, timeoutMs);
+      if (reportMutations) registry.markReported(recs);
       const stillRunning = recs.filter(r => r.status === "running").length;
       const head = stillRunning > 0
         ? `Awaited ${recs.length} job(s); ${stillRunning} still running after the ${timeoutMs}ms timeout — await again or cancel.`
         : `Awaited ${recs.length} job(s); all settled.`;
-      return { success: stillRunning === 0, output: `${head}\n\n${recs.map(rowLine).join("\n")}` };
+      const success = recs.every(r => r.status === "exited" && r.exitCode === 0);
+      return { success, output: `${head}\n\n${recs.map(rowLine).join("\n")}\n\nUse job {action:"tail", ids:[...]} to inspect output.` };
     }
 
     if (action === "cancel") {
@@ -97,10 +104,22 @@ export function createJobTool(registry: JobRegistry): ToolHandler {
       if (targets.length === 0) {
         return { success: true, output: "No running jobs to cancel." };
       }
+      const hadRunning = targets.some(id => registry.get(id)?.status === "running");
       const recs = registry.cancel(targets);
-      return { success: true, output: `Cancelled ${recs.length} job(s):\n${recs.map(rowLine).join("\n")}` };
+      return { success: true, output: `Cancelled ${recs.length} job(s):\n${recs.map(rowLine).join("\n")}`, mutationMayHaveOccurred: hadRunning };
     }
 
     return { success: false, output: "", error: `Unknown job action '${action}'. Use start | list | tail | await | cancel.` };
+  };
+  return async (args, cwd) => {
+    const action = String(args.action ?? "list").trim().toLowerCase();
+    const ids = idsOf(args);
+    const targets = action === "list" ? registry.list().map(r => r.id)
+      : action === "await" ? (ids.length ? ids : registry.awaiting().map(r => r.id))
+      : action === "tail" || action === "cancel" ? (ids.length ? ids : registry.running().map(r => r.id))
+      : [];
+    const result = await handle(args, cwd);
+    if (reportMutations && !result.error && registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;
+    return result;
   };
 }

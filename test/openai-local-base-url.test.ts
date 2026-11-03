@@ -42,7 +42,7 @@ test("credentialForCall: a local api_key credential passes through unchanged", (
 const envKeys = ["JEO_CONFIG_DIR", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_OAUTH_TOKEN", "JEO_DEFAULT_MODEL"] as const;
 
 function sseResponse(events: object[]): Response {
-  const body = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n";
+  const body = [...events, { type: "response.completed", response: {} }].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n";
   return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 

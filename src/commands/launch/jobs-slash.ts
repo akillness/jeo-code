@@ -60,7 +60,7 @@ export async function runJobsSlash(
     return;
   }
 
-  const result = await createJobTool(registry)(args, cwd);
+  const result = await createJobTool(registry, false)(args, cwd);
   if (result.output) logLines(result.output.split("\n"));
   if (!result.success && result.error) logLines([`! ${result.error}`]);
 }

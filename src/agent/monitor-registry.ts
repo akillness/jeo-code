@@ -34,15 +34,29 @@ interface Entry {
   record: MonitorRecord;
   proc?: Bun.Subprocess<"ignore", "pipe", "pipe">;
   promise: Promise<void>;
+  cancel?: () => void;
 }
+interface NoticeQueue {
+  tails: [Promise<void>, Promise<void>];
+  count: number;
+  chars: number;
+  overflow: boolean;
+  firstLineClaimed: boolean;
+}
+
 
 const OUTPUT_CAP = 20_000;
 const TRUNCATION_MARKER = "[…output truncated…]\n";
+const PIPE_LINGER_MS = 500;
+const NOTICE_CHAR_LIMIT = 20_000;
+const NOTICE_COUNT_LIMIT = 1000;
 
 export class MonitorRegistry {
   private readonly entries = new Map<string, Entry>();
   private readonly buffers = new Map<string, string>();
   private readonly truncated = new Set<string>();
+  private readonly active = new Set<string>();
+  private readonly pendingMutations = new Set<string>();
   private readonly onLine?: MonitorLineHandler;
   private seq = 0;
   constructor(options: MonitorRegistryOptions | MonitorLineHandler = {}) {
@@ -75,19 +89,43 @@ export class MonitorRegistry {
     if (entry.record.status !== "running") return;
     entry.record.status = "killed";
     entry.record.finishedAt = Date.now();
-    try {
-      entry.proc?.kill();
-    } catch {
-      // The process may have exited between the line event and kill().
-    }
+    entry.cancel?.();
   }
 
-  private async drain(entry: Entry, stream: ReadableStream<Uint8Array>): Promise<void> {
+  private async drain(entry: Entry, reader: { read: () => Promise<{ done?: boolean; value?: Uint8Array }> }, queue: NoticeQueue, index: 0 | 1): Promise<void> {
     const decoder = new TextDecoder();
     let pending = "";
+    const overflow = () => {
+      if (queue.overflow) return;
+      queue.overflow = true;
+      entry.cancel?.();
+    };
+    const queueLine = (line: string) => {
+      if (entry.record.status !== "running" || queue.overflow || (!entry.record.persistent && queue.firstLineClaimed)) return;
+      if (queue.count >= NOTICE_COUNT_LIMIT || queue.chars + line.length > NOTICE_CHAR_LIMIT) {
+        overflow();
+        return;
+      }
+      if (!entry.record.persistent) queue.firstLineClaimed = true;
+      queue.count++;
+      queue.chars += line.length;
+      queue.tails[index] = queue.tails[index].then(async () => {
+        try {
+          if (queue.overflow) return;
+          await this.emit(entry.record, line);
+          if (!entry.record.persistent) this.stopAfterFirstLine(entry);
+        } finally {
+          queue.count--;
+          queue.chars -= line.length;
+        }
+      });
+    };
     try {
-      for await (const chunk of stream) {
-        const text = decoder.decode(chunk, { stream: true });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        const text = decoder.decode(value, { stream: true });
         this.append(entry.record.id, text);
         pending += text;
         while (true) {
@@ -96,12 +134,13 @@ export class MonitorRegistry {
           const line = pending.slice(0, match.index);
           pending = pending.slice(match.index + match[0].length);
           if (entry.record.status !== "running") return;
-          await this.emit(entry.record, line);
-          if (!entry.record.persistent) {
-            this.stopAfterFirstLine(entry);
-            return;
+          if (queue.count >= NOTICE_COUNT_LIMIT || queue.chars + line.length > NOTICE_CHAR_LIMIT) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
           }
+          queueLine(line);
+          if (queue.overflow || !entry.record.persistent) return;
         }
+        if (pending.length > NOTICE_CHAR_LIMIT) { overflow(); return; }
       }
       const tail = decoder.decode();
       if (tail) {
@@ -109,8 +148,7 @@ export class MonitorRegistry {
         pending += tail;
       }
       if (pending.length > 0 && entry.record.status === "running") {
-        await this.emit(entry.record, pending);
-        if (!entry.record.persistent) this.stopAfterFirstLine(entry);
+        queueLine(pending);
       }
     } catch {
       // SIGTERM commonly closes a Bun stream with an iteration error. Cancellation
@@ -137,22 +175,67 @@ export class MonitorRegistry {
 
     let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
     try {
-      proc = Bun.spawn(["bash", "-c", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      proc = Bun.spawn(["bash", "-c", command], {
+        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+        ...(process.platform !== "win32" ? { detached: true } : {}),
+      });
     } catch (err) {
       record.status = "failed";
       record.finishedAt = Date.now();
       this.append(id, err instanceof Error ? err.message : String(err));
+      this.pendingMutations.add(id);
       const failed: Entry = { record, promise: Promise.resolve() };
       this.entries.set(id, failed);
       return record;
     }
 
-    const entry = { record, proc, promise: Promise.resolve() } as Entry;
+    this.active.add(id);
+    const entry: Entry = { record, proc, promise: Promise.resolve() };
+    entry.cancel = () => {
+      if (process.platform !== "win32") {
+        try { process.kill(-proc.pid, "SIGKILL"); return; } catch { /* fall back to the shell */ }
+      }
+      try { proc.kill(9); } catch { /* already exited */ }
+    };
+    const queue: NoticeQueue = { tails: [Promise.resolve(), Promise.resolve()], count: 0, chars: 0, overflow: false, firstLineClaimed: false };
+    const stdoutReader = proc.stdout.getReader();
+    const stderrReader = proc.stderr.getReader();
+    const drains = Promise.all([this.drain(entry, stdoutReader, queue, 0), this.drain(entry, stderrReader, queue, 1)]);
     this.entries.set(id, entry);
     entry.promise = (async () => {
       try {
-        await Promise.all([this.drain(entry, proc.stdout), this.drain(entry, proc.stderr)]);
         const exitCode = await proc.exited;
+        let lingerTimer: NodeJS.Timeout | undefined;
+        const drained = await Promise.race([
+          drains.then(() => true),
+          new Promise<false>(resolve => { lingerTimer = setTimeout(() => resolve(false), PIPE_LINGER_MS); }),
+        ]);
+        clearTimeout(lingerTimer);
+        if (!drained) {
+          void stdoutReader.cancel().catch(() => {});
+          void stderrReader.cancel().catch(() => {});
+          await drains;
+          await Promise.all(queue.tails);
+          if (queue.overflow) {
+            record.status = "failed";
+            record.exitCode = exitCode;
+            this.append(id, "\n[monitor output incomplete: notice queue limit exceeded]\n");
+            return;
+          }
+          if (record.status !== "killed") {
+            record.status = "failed";
+            record.exitCode = exitCode;
+            this.append(id, "\n[monitor output incomplete: a descendant kept stdout or stderr open after the shell exited]\n");
+            return;
+          }
+        }
+        await Promise.all(queue.tails);
+        if (queue.overflow) {
+          record.status = "failed";
+          record.exitCode = exitCode;
+          this.append(id, "\n[monitor output incomplete: notice queue limit exceeded]\n");
+          return;
+        }
         if (record.status === "killed") return;
         record.status = "exited";
         record.exitCode = exitCode;
@@ -161,6 +244,9 @@ export class MonitorRegistry {
         record.status = "failed";
         this.append(id, err instanceof Error ? err.message : String(err));
       } finally {
+        await proc.exited;
+        this.active.delete(id);
+        this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
       }
     })();
@@ -180,6 +266,22 @@ export class MonitorRegistry {
 
   running(): MonitorRecord[] {
     return this.list().filter(r => r.status === "running");
+  }
+
+  /** Processes not yet settled or whose completion has not reached the engine. */
+  unobserved(): MonitorRecord[] {
+    return this.list().filter(record => this.active.has(record.id) || this.pendingMutations.has(record.id));
+  }
+
+  consumeMutations(ids?: string[]): boolean {
+    if (ids === undefined) {
+      const pending = this.pendingMutations.size > 0;
+      this.pendingMutations.clear();
+      return pending;
+    }
+    let pending = false;
+    for (const id of ids) pending = this.pendingMutations.delete(id) || pending;
+    return pending;
   }
 
   /** Current buffered stdout/stderr for one monitor. */
@@ -215,11 +317,7 @@ export class MonitorRegistry {
       if (entry.record.status === "running") {
         entry.record.status = "killed";
         entry.record.finishedAt = Date.now();
-        try {
-          entry.proc?.kill();
-        } catch {
-          // Process exited concurrently; the terminal state is already correct.
-        }
+        entry.cancel?.();
       }
       out.push(entry.record);
     }

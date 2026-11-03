@@ -73,8 +73,9 @@ export const GUARD_LIMITS = Object.freeze({
  * filenames, prose, and shell output from impersonating verification evidence.
  */
 export const VERIFY_SIGNAL_RE = /^(?:(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?(?:test|tests|typecheck|lint|build|check|spec|tsc|eslint|vitest|jest)(?::[\w-]+)?|(?:npx|bunx)\s+(?:tsc|eslint|vitest|jest|pytest)|(?:tsc|eslint|vitest|jest|pytest)|(?:python(?:3(?:\.\d+)?)?|uv)\s+(?:-m\s+)?pytest|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|(?:make|just)\s+(?:test|check|lint|build|typecheck))(?:\s+[A-Za-z0-9_./:@+*?,=-]+)*$/i;
-const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--show-?config|--init|--dry-run|--no-run|--passWithNoTests)(?=$|\s|=)/i;
+const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--co|--show-?config|--init|--dry-run|--no-run|--passWithNoTests|--if-present)(?=$|\s|=)/i;
 const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
+const MUTATING_VERIFY_SCRIPT_RE = /:(?:[^\s]*)(?:fix|update|write|deploy|publish)(?:[^\s]*)/i;
 
 /**
  * True only when the command itself is a recognized verifier invocation. Output
@@ -82,7 +83,21 @@ const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-
  */
 export function isVerificationSignal(cmd: string): boolean {
   const command = cmd.trim();
-  return !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command);
+  const shortNoOp = /^(?:(?:npx|bunx|bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?)?tsc\b.*(?:^|\s)-[vV](?=\s|$)/.test(command)
+    || /^(?:make|just|go)\s+.*(?:^|\s)-n(?=\s|$)/.test(command);
+  return !shortNoOp && !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_SCRIPT_RE.test(command);
+}
+
+/** Require test-run evidence for Go and Cargo's recognized text output. */
+export function verificationProducedEvidence(cmd: string, output: string): boolean {
+  if (/^go\s+test(?:\s|$)/.test(cmd.trim())) {
+    const summaries = output.split(/\r?\n/).filter(line => /^(?:ok|\?)\s+/.test(line));
+    return summaries.some(line => !/\[no tests to run\]|\[no test files\]/i.test(line));
+  }
+  if (/^cargo\s+test(?:\s|$)/.test(cmd.trim())) {
+    return [...output.matchAll(/test result: ok\.\s+(\d+) passed/g)].some(match => Number(match[1]) > 0);
+  }
+  return true;
 }
 
 /**

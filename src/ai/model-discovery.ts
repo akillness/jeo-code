@@ -43,6 +43,8 @@ export interface ProviderModelsResult {
   error?: string;
   /** True when the live endpoint was unusable and ids came from the static catalog. */
   fallback?: boolean;
+  /** Display names from the same live response, keyed by callable model id. */
+  displayNames?: Record<string, string>;
 }
 
 export interface DiscoveryOptions {
@@ -565,6 +567,15 @@ export async function listProviderModels(
       }
     }
     let ids = parseModelsBody(provider, body, { openaiCompatible: provider === "openai" && !!baseUrl });
+    const displayNames: Record<string, string> = {};
+    if (provider === "antigravity" && body && typeof body === "object" && "models" in body && body.models && typeof body.models === "object") {
+      for (const [key, row] of Object.entries(body.models)) {
+        if (!row || typeof row !== "object" || !("displayName" in row) || typeof row.displayName !== "string" || !row.displayName.trim()) continue;
+        const rawId: string = Array.isArray(body.models) ? ("slug" in row && typeof row.slug === "string" ? row.slug : "id" in row && typeof row.id === "string" ? row.id : "name" in row && typeof row.name === "string" ? row.name : "") : key;
+        const id = `antigravity/${normalizeAntigravityModelId(rawId)}`;
+        if (ids.includes(id)) displayNames[id] = row.displayName;
+      }
+    }
     // Gemini paginates: follow nextPageToken (bounded) so the available list is
     // COMPLETE — page 1 alone silently dropped the newest models (round-15).
     if (provider === "gemini") {
@@ -609,6 +620,7 @@ export async function listProviderModels(
       models,
       ok: true,
       source,
+      ...(Object.keys(displayNames).length ? { displayNames } : {}),
       ...scope,
     };
   } catch (err) {

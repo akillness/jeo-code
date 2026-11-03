@@ -12,7 +12,7 @@ For a separate Discord conversation gateway, use the guided setup:
 jeo messenger setup --config ~/.jeo/discord/messenger.json --service
 ```
 
-The setup validates the bot, discovers or checks request channels, writes a private token file and run script, and probes the Gateway. `--service` optionally installs a user service; omit it to run the generated script manually. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` to select settings. `jeo messenger check --config <file>` checks configuration and credentials locally without network calls; `jeo messenger run --config <file>` starts the gateway. The generated run script supplies the saved token for manual use.
+The setup validates the bot, discovers or checks request channels, writes a private token file and platform-native launcher (`run-discord.sh` on macOS/Linux, `run-discord.cmd` on Windows), and probes the Gateway. `--service` optionally installs a macOS/Linux user service; omit it on Windows and run the generated `.cmd` under your process manager. Ctrl+C cancels prompts, invite polling, and the Gateway probe. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` to select settings. `jeo messenger check --config <file>` checks configuration and credentials locally without network calls; `jeo messenger run --config <file>` starts the gateway. The generated launcher reads the saved token sidecar at runtime; it does not embed the token in its command line.
 
 Messenger conversations use separate persisted sessions scoped to workspace, bot account, channel or thread, and sender. Server requests mention the bot and receive replies in threads visible to channel readers. Local tools default to none; an explicit tool allowlist grants authorized remote users corresponding host authority, not a sandbox. Attachments require opt-in. See the [messenger guide](messenger.md) for permissions and file limits. This gateway is separate from the notification daemon and its session-control commands below.
 
@@ -32,7 +32,7 @@ jeo notify health --provider discord
 jeo daemon start
 ```
 
-Setup stores the token in plaintext in `~/.jeo/config.json` (or under `JEO_CONFIG_DIR`); protect that file. Existing jeo provider authentication is reused by the host session: Discord does not need a separate model-provider login. Never put bot tokens, provider keys, passwords, or other credentials in Discord messages, prompts, or output files. There is no guarantee that secrets in messages or files will be redacted.
+Setup stores the token in plaintext in `~/.jeo/config.json` (or under `JEO_CONFIG_DIR`); protect that file. Setup verifies and saves configuration but deliberately does not start a background process: `daemon=stopped (configuration is saved; run 'jeo daemon start')` is therefore actionable lifecycle state, not a failed Discord setup. Existing jeo provider authentication is reused by the host session: Discord does not need a separate model-provider login. Never put bot tokens, provider keys, passwords, or other credentials in Discord messages, prompts, or output files. There is no guarantee that secrets in messages or files will be redacted.
 
 Discord control is **off by default** for each interactive session. From the host's directly submitted local session prompt, explicitly enable it with:
 

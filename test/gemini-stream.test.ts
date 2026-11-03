@@ -14,7 +14,7 @@ test("geminiAdapter.stream: concatenates SSE text deltas + reports usage", async
     new Response(
       sseStream([
         'data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}\n\n',
-        'data: {"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}\n\n',
       ]),
       { status: 200, headers: { "content-type": "text/event-stream" } }
     )) as typeof fetch;

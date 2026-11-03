@@ -399,6 +399,7 @@ test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endp
   expect(r.source).toBe("oauth");
   expect(r.fallback).toBeUndefined();
   expect(r.models).toEqual(["antigravity/gemini-2.5-pro", "antigravity/gemini-3-pro-high"]);
+  expect(r.displayNames?.["antigravity/gemini-3-pro-high"]).toBe("Gemini 3 Pro High");
 });
 
 test("listProviderModels: Antigravity prefers the API's own agentModelSorts as the positive chat set", async () => {

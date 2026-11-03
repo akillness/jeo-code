@@ -138,7 +138,7 @@ test("geminiAdapter: OAuth credential routes to Cloud Code Assist and unwraps re
   globalThis.fetch = (async (url: any, init?: RequestInit) => {
     calls.push({ url: String(url), init });
     const body = sse({ response: { candidates: [{ content: { parts: [{ text: "hel" }] } }] } }) +
-      sse({ response: { candidates: [{ content: { parts: [{ text: "lo" }] } }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2, thoughtsTokenCount: 3 } } });
+      sse({ response: { candidates: [{ content: { parts: [{ text: "lo" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2, thoughtsTokenCount: 3 } } });
     return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as any;
   try {
@@ -236,7 +236,7 @@ test("geminiAdapter (OAuth/CCA): fires onReasoningStart up front only when think
   const prevFetch = globalThis.fetch;
   const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
   globalThis.fetch = (async () =>
-    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] } }] } }), {
+    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }] } }), {
       status: 200, headers: { "content-type": "text/event-stream" },
     })) as any;
   const oauth = { kind: "oauth", provider: "gemini", token: "t", projectId: "p" } as any;

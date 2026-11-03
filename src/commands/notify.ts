@@ -175,7 +175,7 @@ async function runSetup(flags: Flags, opts: NotifyOptions): Promise<void> {
     });
     console.log(`Telegram bot verified; chatId=${chatId}. Notifications enabled. Setup did not send a message.`);
   }
-  console.log("Run 'jeo daemon start' (or reload if already running) to apply. Use 'jeo notify health --provider " + flags.provider + "' for read-only API checks; 'jeo notify test --provider " + flags.provider + "' explicitly sends a test message.");
+  console.log("Setup only saves and verifies configuration; it does not start the notification daemon. Run 'jeo daemon start' (or reload if already running) to apply. Use 'jeo notify health --provider " + flags.provider + "' for read-only API checks; 'jeo notify test --provider " + flags.provider + "' explicitly sends a test message.");
 }
 
 async function runStatus(provider: Provider): Promise<void> {
@@ -188,7 +188,7 @@ async function runStatus(provider: Provider): Promise<void> {
   if (provider === "slack") console.log(`appToken=${n?.slack?.appToken ? "(set)" : "(not set)"}`);
   console.log(provider === "telegram" ? `chatId=${n?.telegram?.chatId ?? "(not set)"}` : `channelId=${n?.[provider]?.channelId ?? "(not set)"}`);
   console.log(`allowedUserIds=${channel?.allowedUserIds?.join(",") ?? (provider === "telegram" ? "private chat owner only" : "(not set; inbound disabled)")}`);
-  console.log(`daemon=${status.pairing ? "pairing owns polling (daemon not running)" : status.running ? `process ${status.ready ? "initialized" : "initializing"} (pid ${status.pid}; transport connectivity not checked)` : status.stale ? "stale" : "stopped"}`);
+  console.log(`daemon=${status.pairing ? "pairing owns polling (daemon not running)" : status.running ? `process ${status.ready ? "initialized" : "initializing"} (pid ${status.pid}; transport connectivity not checked)` : status.stale ? "stale" : status.configured ? "stopped (configuration is saved; run 'jeo daemon start')" : "stopped (not configured)"}`);
   console.log("Channel health not checked; use 'jeo notify health --provider " + provider + "'.");
 }
 

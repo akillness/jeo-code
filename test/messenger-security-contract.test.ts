@@ -6,6 +6,8 @@ import { createMessengerCliReply } from "../src/commands/messenger";
 import { downloadMessengerAttachments, messengerArtifactDirectory } from "../src/messenger/artifacts";
 import { discordChannelPermissions, ensureMessageContentIntent, inspectDiscordBot } from "../src/messenger/discord-setup";
 import { isMessengerMessageAllowed, messengerSessionRoute } from "../src/messenger/gateway";
+import { selectDiscordModel } from "../src/messenger/model-selection";
+import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
 const roots: string[] = [];
@@ -14,6 +16,11 @@ const base: MessengerMessage = { platform: "discord", accountId: "bot", channelI
 const config: MessengerConfig = { cwd: "/repo", sessionDir: "/sessions", toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } };
 const attachment = { url: "https://cdn.discordapp.com/attachments/1/2/input", filename: "../../input.txt", size: 2 };
 async function directory(): Promise<string> { const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-messenger-contract-")); roots.push(root); return root; }
+const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscordModel(explicit, {
+  ...opts,
+  config: { providers: {}, defaultModel: "antigravity/gemini-3.8-flash-medium", thinkingLevel: "medium" },
+  list: async (provider: ProviderModelsResult["provider"]) => ({ provider, ok: true, source: "oauth", models: provider === "antigravity" ? ["antigravity/gemini-3.8-flash-medium"] : provider === "openai" ? ["gpt-6.1-terra"] : [] }),
+});
 function fakeWorker(response: string, requests: string[] = []) {
   const exited = Promise.withResolvers<number>();
   let out: ReadableStreamDefaultController<Uint8Array>;
@@ -101,14 +108,14 @@ test("messenger launches isolated sessions with explicit tool authority and no b
   const replies: { close(): Promise<void> }[] = [];
   try {
     const safe = { ...config, cwd, sessionDir: path.join(cwd, "sessions"), toolNames: [] };
-    const reply = createMessengerCliReply(safe, fakeSpawn);
+    const reply = createMessengerCliReply(safe, fakeSpawn, selectModel);
     replies.push(reply);
     const activity: string[] = [];
     expect(await reply(base, new AbortController().signal, line => activity.push(line))).toBe("reply");
     expect(activity).toEqual(["Working on your request"]);
     await reply({ ...base, messageId: "later" }, new AbortController().signal);
     await reply({ ...base, senderId: "different" }, new AbortController().signal);
-    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash", "computer"] }, fakeSpawn);
+    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash", "computer"] }, fakeSpawn, selectModel);
 
     replies.push(permittedReply);
     await permittedReply(base, new AbortController().signal);
@@ -152,7 +159,7 @@ test("legacy conversation history is copied once without removing or overwriting
   const history = '{"type":"legacy-history"}\n';
   await fs.writeFile(legacy, history);
   const fakeSpawn = (() => fakeWorker("ok")) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(safe, fakeSpawn);
+  const reply = createMessengerCliReply(safe, fakeSpawn, selectModel);
   await reply(base, new AbortController().signal);
   expect(await fs.readFile(legacy, "utf8")).toBe(history);
   expect(await fs.readFile(target, "utf8")).toBe(history);
@@ -170,7 +177,7 @@ test("Bun dotenv autoload cannot restore messenger credentials to the child proc
   await fs.writeFile(entry, 'for await (const chunk of Bun.stdin.stream()) { console.log("JEO_MESSENGER_RESULT " + JSON.stringify(JSON.stringify([process.env.JEO_DISCORD_BOT_TOKEN, process.env.JEOPI_DISCORD_BOT_TOKEN]))); }\n');
   const spawn = ((_argv: string[], options: Parameters<typeof Bun.spawn>[1]) => Bun.spawn([process.execPath, entry], options)) as typeof Bun.spawn;
   const safe = { ...config, cwd, sessionDir: path.join(cwd, "sessions") };
-  const reply = createMessengerCliReply(safe, spawn);
+  const reply = createMessengerCliReply(safe, spawn, selectModel);
   try { expect(JSON.parse(await reply(base, new AbortController().signal))).toEqual(["", ""]); }
   finally { await reply.close(); }
 });
@@ -183,7 +190,7 @@ test("Discord model and fallback do not leak to a Telegram worker", async () => 
     discord: { ...config.platforms.discord!, model: "antigravity/gemini-3.8-flash-medium", usageFallbackModel: "gpt-6.1-terra" },
     telegram: { tokenEnv: "JEO_TELEGRAM_BOT_TOKEN", allowedUserIds: ["owner"] },
   } };
-  const reply = createMessengerCliReply(safe, spawn);
+  const reply = createMessengerCliReply(safe, spawn, selectModel);
   try {
     await reply(base, new AbortController().signal);
     await reply({ ...base, platform: "telegram", accountId: "telegram-bot" }, new AbortController().signal);

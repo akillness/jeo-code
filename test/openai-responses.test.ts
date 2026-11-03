@@ -56,7 +56,7 @@ test("parseResponsesEvent extracts deltas, usage, and errors", () => {
   expect(parseResponsesEvent(JSON.stringify({ type: "response.output_text.delta", delta: "PO" }))).toEqual({ delta: "PO" });
   expect(
     parseResponsesEvent(JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 19, output_tokens: 17 } } })),
-  ).toEqual({ usage: { inputTokens: 19, outputTokens: 17 } });
+  ).toEqual({ completed: true, usage: { inputTokens: 19, outputTokens: 17 } });
   expect(parseResponsesEvent(JSON.stringify({ type: "response.failed", response: { error: { message: "boom" } } }))).toEqual({ error: "boom" });
   expect(parseResponsesEvent(JSON.stringify({ type: "response.created" }))).toEqual({}); // ignored
   expect(parseResponsesEvent("not json")).toEqual({}); // tolerant

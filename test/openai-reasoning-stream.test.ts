@@ -4,7 +4,7 @@ import { openaiAdapter, reasoningDeltaOf, openaiRequest } from "../src/ai/provid
 const cred = { kind: "api_key", provider: "openai", token: "k" } as const;
 
 function sseResponse(chunks: object[]): Response {
-  const body = chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n";
+  const body = [...chunks, { choices: [{ delta: {}, finish_reason: "stop" }] }].map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n";
   return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
@@ -107,7 +107,7 @@ async function drainRouted(model: string, opts: { baseUrl?: string; responsesSta
       ]);
     }
     hitChat = true;
-    return sse([{ choices: [{ delta: { content: "chat answer" } }] }]);
+    return sse([{ choices: [{ delta: { content: "chat answer" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }] }]);
   }) as unknown as typeof fetch;
   try {
     let text = "", reasoning = "";

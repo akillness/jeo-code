@@ -320,9 +320,6 @@ function blockedReason(chunk: GeminiChunk): string | undefined {
   if (block) return `blockReason=${block}`;
   const finish = chunk.candidates?.[0]?.finishReason;
   if (finish === "MAX_TOKENS") {
-    // Only reached when NO text was produced at all (both call/stream paths guard
-    // on emptiness): the output budget was consumed before any visible text —
-    // typically thinking tokens on a 2.5+/latest model.
     return "finishReason=MAX_TOKENS — output budget exhausted before any text; raise maxTokens or lower the thinking level";
   }
   if (finish && finish !== "STOP") return `finishReason=${finish}`;
@@ -360,6 +357,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
   let lastUsage: GeminiChunk["usageMetadata"];
   let yieldedAny = false;
   let lastEmptyReason: string | undefined;
+  let terminal = false;
   const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
   const seenSigs = new Set<string>();
   for await (const data of readSse(response.body, options.onStreamActivity)) {
@@ -379,12 +377,14 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
     if (delta) {
       yieldedAny = true;
       yield delta;
-    } else {
-      lastEmptyReason = blockedReason(inner) ?? lastEmptyReason;
     }
+    lastEmptyReason = blockedReason(inner) ?? lastEmptyReason;
+    if (inner.candidates?.[0]?.finishReason) terminal = true;
     if (inner.usageMetadata) lastUsage = inner.usageMetadata;
     fnCalls.push(...geminiFunctionCallsOf(inner));
   }
+  if (lastEmptyReason && (yieldedAny || fnCalls.length)) throw new Error(`Gemini (Cloud Code Assist) response incomplete (${lastEmptyReason.replace(" before any text", "")}).`);
+  if (!terminal && (yieldedAny || fnCalls.length)) throw new Error("Gemini (Cloud Code Assist) response incomplete (missing finishReason).");
   const envelope = serializeToolCalls(fnCalls);
   if (envelope) { yieldedAny = true; yield envelope; }
   if (!yieldedAny) {
@@ -415,13 +415,14 @@ export const geminiAdapter: ProviderAdapter = {
     if (result.usageMetadata) {
       options.onUsage?.({ inputTokens: result.usageMetadata.promptTokenCount, outputTokens: result.usageMetadata.candidatesTokenCount });
     }
+    const reason = blockedReason(result);
+    if (reason) {
+      const hasContent = !!textOf(result) || geminiFunctionCallsOf(result).length > 0;
+      throw new Error(hasContent ? `Gemini response incomplete (${reason.replace(" before any text", "")}).` : `Gemini returned no content (${reason}).`);
+    }
     const envelope = serializeToolCalls(geminiFunctionCallsOf(result));
     if (envelope) return envelope;
     const text = textOf(result);
-    if (!text) {
-      const reason = blockedReason(result);
-      if (reason) throw new Error(`Gemini returned no content (${reason}).`);
-    }
     return text;
   },
   async *stream(messages, options, credential) {
@@ -435,8 +436,9 @@ export const geminiAdapter: ProviderAdapter = {
     if (!response.body) return;
     if (geminiThinkingActive(options)) options.onReasoningStart?.();
     let lastUsage: GeminiChunk["usageMetadata"];
-    let yieldedAny = false;
     let lastEmptyReason: string | undefined;
+    let terminal = false;
+    let receivedText = false;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     const seenSigs = new Set<string>();
     for await (const data of readSse(response.body, options.onStreamActivity)) {
@@ -452,21 +454,23 @@ export const geminiAdapter: ProviderAdapter = {
       captureGeminiSignatures(chunk, options, seenSigs);
       const delta = textOf(chunk);
       if (delta) {
-        yieldedAny = true;
+        receivedText = true;
         yield delta;
-      } else {
-        lastEmptyReason = blockedReason(chunk) ?? lastEmptyReason;
       }
+      lastEmptyReason = blockedReason(chunk) ?? lastEmptyReason;
+      if (chunk.candidates?.[0]?.finishReason) terminal = true;
       // Gemini emits cumulative usageMetadata on most chunks; capture the last and
       // report ONCE after the stream so an accumulating sink can't over-count.
       if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
       fnCalls.push(...geminiFunctionCallsOf(chunk));
     }
-    const envelope = serializeToolCalls(fnCalls);
-    if (envelope) { yieldedAny = true; yield envelope; }
-    if (!yieldedAny && lastEmptyReason) {
+    if (lastEmptyReason) {
+      if (receivedText || fnCalls.length) throw new Error(`Gemini response incomplete (${lastEmptyReason.replace(" before any text", "")}).`);
       throw new Error(`Gemini returned no content (${lastEmptyReason}).`);
     }
+    if (!terminal && (receivedText || fnCalls.length)) throw new Error("Gemini response incomplete (missing finishReason).");
+    const envelope = serializeToolCalls(fnCalls);
+    if (envelope) yield envelope;
     if (lastUsage) {
       options.onUsage?.({ inputTokens: lastUsage.promptTokenCount, outputTokens: lastUsage.candidatesTokenCount });
     }

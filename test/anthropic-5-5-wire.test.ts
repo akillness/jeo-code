@@ -208,7 +208,7 @@ for (const model of WIRE_IDS) {
 function okResponse(mode: "call" | "stream"): Response {
   return mode === "call"
     ? new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 2 } }), { status: 200, headers: { "content-type": "application/json" } })
-    : new Response(sseStream(['data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n']), { status: 200, headers: { "content-type": "text/event-stream" } });
+    : new Response(sseStream(['data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']), { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
 async function runAdapter(mode: "call" | "stream", opts: CallOptions, cred: Credential): Promise<string> {

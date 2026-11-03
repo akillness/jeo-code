@@ -64,6 +64,13 @@ function emptyCompletionError(doneReason: string | undefined): Error {
   return new Error(`Ollama returned no content${doneReason ? ` (done_reason=${doneReason})` : ""}${hint}.`);
 }
 
+function assertNormalDone(doneReason: string | undefined): void {
+  if (doneReason && doneReason !== "stop") {
+    const hint = doneReason === "length" ? " — output budget exhausted; raise maxTokens" : "";
+    throw new Error(`Ollama response incomplete (done_reason=${doneReason})${hint}.`);
+  }
+}
+
 export const ollamaAdapter: ProviderAdapter = {
   name: "ollama",
   async call(messages, options) {
@@ -72,6 +79,7 @@ export const ollamaAdapter: ProviderAdapter = {
     if (!response.ok) throw await providerHttpError("Ollama", response, `at ${url}`);
     const result = (await response.json()) as { message?: { content?: string }; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
     options.onUsage?.({ inputTokens: result.prompt_eval_count, outputTokens: result.eval_count, durationMs: result.total_duration ? Math.round(result.total_duration / 1e6) : undefined });
+    assertNormalDone(result.done_reason);
     const text = result.message?.content ?? "";
     if (!text) throw emptyCompletionError(result.done_reason);
     return text;
@@ -83,6 +91,8 @@ export const ollamaAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yieldedAny = false;
     let doneReason: string | undefined;
+    let terminal = false;
+    let receivedContent = false;
     // Route inline <think>…</think> (local reasoning models) to the reasoning channel.
     const think = createThinkSplitter(options.onReasoning);
     for await (const line of readLines(response.body, options.onStreamActivity)) {
@@ -94,6 +104,7 @@ export const ollamaAdapter: ProviderAdapter = {
       }
       const raw = chunk.message?.content;
       if (raw) {
+        receivedContent = true;
         const visible = think.push(raw);
         if (visible) {
           yieldedAny = true;
@@ -105,11 +116,14 @@ export const ollamaAdapter: ProviderAdapter = {
       const reason = chunk.message?.thinking;
       if (reason) options.onReasoning?.(reason);
       if (chunk.done) {
+        terminal = true;
         if (chunk.done_reason) doneReason = chunk.done_reason;
         options.onUsage?.({ inputTokens: chunk.prompt_eval_count, outputTokens: chunk.eval_count, durationMs: chunk.total_duration ? Math.round(chunk.total_duration / 1e6) : undefined });
         break;
       }
     }
+    if (!terminal && receivedContent) throw new Error("Ollama response incomplete (missing done event).");
+    assertNormalDone(doneReason);
     const trailing = think.flush();
     if (trailing) { yieldedAny = true; yield trailing; }
     if (!yieldedAny) throw emptyCompletionError(doneReason);

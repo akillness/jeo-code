@@ -36,7 +36,7 @@ function idsOf(args: Record<string, any>): string[] {
 }
 
 export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
-  return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+  const handle: ToolHandler = async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
     const action = String(args.action ?? "list").trim().toLowerCase();
     const ids = idsOf(args);
 
@@ -77,7 +77,7 @@ export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
     }
 
     if (action === "await") {
-      const targets = ids.length ? ids : registry.running().map(record => record.id);
+      const targets = ids.length ? ids : registry.unobserved().map(record => record.id);
       if (targets.length === 0) return { success: true, output: "No running monitors to await." };
       const timeoutMs = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : undefined;
       const records = await registry.awaitIds(targets, timeoutMs);
@@ -85,16 +85,29 @@ export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
       const head = stillRunning > 0
         ? `Awaited ${records.length} monitor(s); ${stillRunning} still running after the ${timeoutMs}ms timeout — await again or cancel.`
         : `Awaited ${records.length} monitor(s); all settled.`;
-      return { success: stillRunning === 0, output: `${head}\n\n${records.map(rowLine).join("\n")}` };
+      return { success: stillRunning === 0 && records.every(record => record.status !== "failed"), output: `${head}\n\n${records.map(rowLine).join("\n")}` };
     }
 
     if (action === "cancel") {
       const targets = ids.length ? ids : registry.running().map(record => record.id);
       if (targets.length === 0) return { success: true, output: "No running monitors to cancel." };
+      const hadRunning = targets.some(id => registry.get(id)?.status === "running");
       const records = registry.cancel(targets);
-      return { success: true, output: `Cancelled ${records.length} monitor(s):\n${records.map(rowLine).join("\n")}` };
+      return { success: true, output: `Cancelled ${records.length} monitor(s):\n${records.map(rowLine).join("\n")}`, mutationMayHaveOccurred: hadRunning };
     }
 
     return { success: false, output: "", error: `Unknown monitor action '${action}'. Use start | list | tail | await | cancel.` };
+  };
+  return async (args, cwd) => {
+    const action = String(args.action ?? "list").trim().toLowerCase();
+    const ids = idsOf(args);
+    const targets = action === "list" ? registry.list().map(r => r.id)
+      : action === "await" ? (ids.length ? ids : registry.unobserved().map(r => r.id))
+      : action === "tail" || action === "cancel"
+        ? (ids.length ? ids : registry.running().map(r => r.id))
+        : [];
+    const result = await handle(args, cwd);
+    if (!result.error && registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;
+    return result;
   };
 }

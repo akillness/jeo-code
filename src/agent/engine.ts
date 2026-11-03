@@ -32,7 +32,7 @@ import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSigna
 
 import { historyTokens, trimToolResultsInPlace, stripReasoningArtifactsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
-import { GUARD_LIMITS, isVerificationSignal, repeatHint, classifyDoneGate } from "./loop-guards";
+import { GUARD_LIMITS, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate } from "./loop-guards";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
 
 
@@ -1463,9 +1463,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     for (let i = 0; i < toolCalls.length; i++) {
       if (!results[i].executed) continue;
       const t = toolCalls[i].tool;
-      const verificationCall = t === "bash" && isVerificationSignal(String(toolCalls[i].arguments?.command ?? toolCalls[i].arguments?.cmd ?? ""));
+      const command = String(toolCalls[i].arguments?.command ?? toolCalls[i].arguments?.cmd ?? "");
+      const verificationCall = t === "bash" && isVerificationSignal(command);
       if (verificationCall) {
-        if (results[i].success) {
+        if (results[i].success && verificationProducedEvidence(command, String(results[i].output ?? ""))) {
           sawVerification = true;
           lastVerificationSeq = ++mutVerSeq;
         } else {
@@ -1514,7 +1515,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
       } else if (t === "bash") {
-        // Non-verification shell commands may mutate files even when they exit unsuccessfully.
+        // Even simple commands can run shell startup hooks or inherited functions.
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
       }

@@ -1755,20 +1755,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           reason: string,
           evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean },
         ): Promise<string | null> => {
-          const runningJobs = jobRegistry.running();
+          const liveJobs = jobRegistry.running();
+          if (liveJobs.length > 0) {
+            const jobs = liveJobs.map(record => `${record.id} (${record.command})`).join(", ");
+            return `Cannot finish while background job(s) are still running: ${jobs}. Wait for them to exit or cancel them, then run fresh verification before calling done again.`;
+          }
+          const runningJobs = jobRegistry.unobserved();
           if (runningJobs.length > 0) {
             const jobs = runningJobs.map(record => `${record.id} (${record.command})`).join(", ");
             return (
-              `Cannot finish while background job(s) are still running: ${jobs}. ` +
-              `Wait for them to exit or cancel them, then call done again.`
+              `Cannot finish while background job(s) have unobserved completions: ${jobs}. ` +
+              `Await them, then run fresh verification before calling done again.`
             );
           }
-          const runningMonitors = monitorRegistry.running();
+          const liveMonitors = monitorRegistry.running();
+          if (liveMonitors.length > 0) {
+            const monitors = liveMonitors.map(record => `${record.id} (${record.command})`).join(", ");
+            return `Cannot finish while background monitor(s) are still running: ${monitors}. Wait for them to exit or cancel them, then run fresh verification before calling done again.`;
+          }
+          const runningMonitors = monitorRegistry.unobserved();
           if (runningMonitors.length > 0) {
             const monitors = runningMonitors.map(record => `${record.id} (${record.command})`).join(", ");
             return (
-              `Cannot finish while background monitor(s) are still running: ${monitors}. ` +
-              `Wait for them to exit or cancel them, then call done again.`
+              `Cannot finish while background monitor(s) have unobserved completions: ${monitors}. ` +
+              `Await them, then run fresh verification before calling done again.`
             );
           }
 

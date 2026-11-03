@@ -86,6 +86,7 @@ test("anthropicAdapter.stream: reports usage ONCE at message_delta (no double-co
         'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}\n\n',
         'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
         'data: {"type":"message_delta","usage":{"output_tokens":5}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
       ]),
       { status: 200, headers: { "content-type": "text/event-stream" } }
     )) as typeof fetch;
@@ -160,7 +161,7 @@ test("anthropicAdapter.stream: retries once without temperature for deprecated m
       );
     }
     return new Response(
-      sseStream(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n']),
+      sseStream(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n', 'data: {"type":"message_stop"}\n\n']),
       { status: 200, headers: { "content-type": "text/event-stream" } },
     );
   }) as typeof fetch;

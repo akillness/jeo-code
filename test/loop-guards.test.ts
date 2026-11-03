@@ -5,6 +5,7 @@ import {
   repeatHint,
   classifyDoneGate,
 } from "../src/agent/loop-guards";
+import { verificationProducedEvidence } from "../src/agent/loop-guards";
 
 
 test("isVerificationSignal only accepts explicit supported verification commands", () => {
@@ -179,4 +180,37 @@ test("classifyDoneGate: failing hook outranks stale verification", () => {
   });
   expect(v.state).toBe("done_hook_failing");
   expect(v.block).toBe(true);
+});
+
+
+test("optional npm scripts are not verification evidence", () => {
+  for (const command of ["npm run test --if-present", "npm test --if-present"]) expect(isVerificationSignal(command)).toBe(false);
+});
+
+test("Go test no-test output is not verification evidence", () => {
+  expect(verificationProducedEvidence("go test ./...", "ok example/pkg 0.01s [no tests to run]")).toBe(false);
+  expect(verificationProducedEvidence("go test ./...", "? example/pkg [no test files]")).toBe(false);
+  expect(verificationProducedEvidence("go test ./...", "ok example/pkg 0.01s")).toBe(true);
+  expect(verificationProducedEvidence("go test ./...", "? example/empty [no test files]\nok example/tested 0.01s")).toBe(true);
+  expect(verificationProducedEvidence("go test ./...", "? example/empty [no test files]\nok example/filtered 0.01s [no tests to run]")).toBe(false);
+  expect(verificationProducedEvidence("go test -json ./...", '{"Action":"pass","Package":"example/pkg"}\n')).toBe(false);
+  expect(verificationProducedEvidence("go test ./...", "")).toBe(false);
+  expect(verificationProducedEvidence("go test ./...", "unexpected output")).toBe(false);
+  expect(verificationProducedEvidence("bun test", "1 pass")).toBe(true);
+});
+
+test("non-verifying scripts and runner inspection flags are not verification", () => {
+  for (const command of ["npm run lint:fix", "npm run test:update", "npm run check:fix", "npm run build:deploy", "tsc -v", "tsc -V", "pytest --co", "make test -n", "go build -n ./..."]) {
+    expect(isVerificationSignal(command)).toBe(false);
+  }
+});
+
+test("runner-specific verbose and parallel flags remain valid verification", () => {
+  for (const command of ["go test -v ./...", "cargo test -v", "pytest -n 2"]) expect(isVerificationSignal(command)).toBe(true);
+  for (const command of ["go test -n ./...", "just test -n", "tsc -V", "tsc -v"]) expect(isVerificationSignal(command)).toBe(false);
+});
+
+test("cargo test with no executed tests is not verification", () => {
+  expect(verificationProducedEvidence("cargo test missing", "test result: ok. 0 passed; 0 failed; 0 ignored; 12 filtered out; finished in 0.00s")).toBe(false);
+  expect(verificationProducedEvidence("cargo test", "test result: ok. 2 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.00s")).toBe(true);
 });

@@ -18,9 +18,12 @@ interface Pending {
 
 interface Worker {
 	child: WorkerProcess;
+	exit: Promise<number>;
+	policyKey?: string;
 	pending?: Pending;
 	lastUsed: number;
 	dead: boolean;
+	forceSent?: boolean;
 	exited?: boolean;
 	idleTimer?: ReturnType<typeof setTimeout>;
 	exitTimer?: ReturnType<typeof setTimeout>;
@@ -29,7 +32,7 @@ interface Worker {
 export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, limit = 16, idleTimeoutMs = 5 * 60_000, shutdownTimeoutMs = 5_000) {
 	const workers = new Map<string, Worker>();
 	const allWorkers = new Map<Worker, string>();
-	const exits = new Map<Promise<number>, WorkerProcess>();
+	const exits = new Map<Promise<number>, Worker>();
 	const retiring = new Map<string, Promise<number>>();
 
 	let closed = false;
@@ -37,16 +40,21 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 
 	let tick = 0;
 
+	function forceKill(worker: Worker) {
+		if (worker.forceSent) return;
+		try { worker.child.kill("SIGKILL"); worker.forceSent = true; } catch { /* Retry on shutdown if termination failed. */ }
+	}
+
 	function retire(key: string, worker: Worker) {
 		if (worker.dead) return;
 		worker.dead = true;
 		if (workers.get(key) === worker) workers.delete(key);
 		allWorkers.delete(worker);
 		if (!worker.exited) {
-			retiring.set(key, worker.child.exited);
-			void worker.child.exited.then(
-				() => { if (retiring.get(key) === worker.child.exited) retiring.delete(key); },
-				() => { if (retiring.get(key) === worker.child.exited) retiring.delete(key); },
+			retiring.set(key, worker.exit);
+			void worker.exit.then(
+				() => { if (retiring.get(key) === worker.exit) retiring.delete(key); },
+				() => { /* Keep the key blocked when process exit cannot be confirmed. */ },
 			);
 		}
 		if (worker.idleTimer) clearTimeout(worker.idleTimer);
@@ -56,6 +64,9 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		worker.pending = undefined;
 		if (!worker.exited) {
 			try { worker.child.kill(); } catch { /* Shutdown will attempt forced termination. */ }
+			const force = setTimeout(() => forceKill(worker), shutdownTimeoutMs);
+			force.unref();
+			void worker.exit.then(() => clearTimeout(force), () => clearTimeout(force));
 		}
 	}
 
@@ -89,16 +100,16 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		} finally { reader.releaseLock(); }
 	}
 
-	function start(key: string, command: string[], cwd: string, env: Record<string, string>): Worker {
+	function start(key: string, command: string[], cwd: string, env: Record<string, string>, policyKey?: string): Worker {
 		if (workers.size >= limit) {
 			const idle = [...workers.entries()].filter(([, worker]) => !worker.pending).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
 			if (!idle) throw new Error("Messenger worker capacity reached");
 			retire(idle[0], idle[1]);
 		}
 		const child = spawn(command, { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" }) as unknown as WorkerProcess;
-		const worker: Worker = { child, lastUsed: ++tick, dead: false };
-		exits.set(child.exited, child);
-		void child.exited.then(() => exits.delete(child.exited), () => exits.delete(child.exited));
+		const worker: Worker = { child, exit: child.exited, policyKey, lastUsed: ++tick, dead: false };
+		exits.set(worker.exit, worker);
+		void worker.exit.then(() => exits.delete(worker.exit), () => exits.delete(worker.exit));
 		workers.set(key, worker);
 		allWorkers.set(worker, key);
 		const stdoutDone = readLines(child.stdout, line => {
@@ -121,7 +132,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 				worker.pending?.report?.("Working on your request");
 			}
 		}).catch(() => retire(key, worker));
-		void child.exited.then(() => {
+		void worker.exit.then(() => {
 			if (worker.dead) return;
 			worker.exited = true;
 			if (workers.get(key) === worker) workers.delete(key);
@@ -134,24 +145,31 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		return worker;
 	}
 
-	async function turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter): Promise<string> {
+	async function turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string> {
 		if (closed || signal.aborted) throw new Error("Messenger request aborted");
-		const previousExit = retiring.get(key);
-		if (previousExit) {
+		for (;;) {
+			const existing = workers.get(key);
+			if (existing && existing.policyKey !== policyKey) {
+				if (existing.pending) throw new Error("Messenger conversation is already active");
+				retire(key, existing);
+			}
+			const previousExit = retiring.get(key);
+			if (!previousExit) break;
 			await new Promise<void>((resolve, reject) => {
 				const abort = () => { cleanup(); reject(new Error("Messenger request aborted")); };
-				const cleanup = () => { signal.removeEventListener("abort", abort); closedSignal.signal.removeEventListener("abort", abort); };
+				const timer = setTimeout(() => { cleanup(); reject(new Error("Messenger worker did not exit")); }, shutdownTimeoutMs * 2);
+				const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); closedSignal.signal.removeEventListener("abort", abort); };
 				signal.addEventListener("abort", abort, { once: true });
 				closedSignal.signal.addEventListener("abort", abort, { once: true });
 				if (signal.aborted || closed) { abort(); return; }
-				void previousExit.then(() => { cleanup(); resolve(); }, () => { cleanup(); resolve(); });
+				void previousExit.then(() => { cleanup(); resolve(); }, () => { cleanup(); reject(new Error("Messenger worker exit could not be confirmed")); });
 			});
 		}
 		if (closed || signal.aborted) throw new Error("Messenger request aborted");
 		if ([...allWorkers].some(([worker, workerKey]) => workerKey === key && worker.pending)) {
 			throw new Error("Messenger conversation is already active");
 		}
-		const worker = workers.get(key) ?? start(key, command, cwd, env);
+		const worker = workers.get(key) ?? start(key, command, cwd, env, policyKey);
 		if (worker.pending) throw new Error("Messenger conversation is already active");
 		if (worker.idleTimer) clearTimeout(worker.idleTimer);
 		worker.idleTimer = undefined;
@@ -185,9 +203,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			} finally { if (timer) clearTimeout(timer); }
 		};
 		if (await waitForExits()) return;
-		for (const child of exits.values()) {
-			try { child.kill("SIGKILL"); } catch { /* The process may have exited concurrently. */ }
-		}
+		for (const worker of exits.values()) forceKill(worker);
 		if (!(await waitForExits())) throw new Error("Messenger workers did not exit after forced termination");
 	}
 

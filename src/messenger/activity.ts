@@ -1,7 +1,8 @@
 import type { AgentLoopEvents, ToolInvocation } from "../agent/engine";
 import type { MessengerActivityReporter } from "./types";
 
-/** Derive bounded progress without exposing tool arguments, results, or provider errors. */
+
+/** Report only fixed status text and validated tool names, never model-authored content. */
 export function createMessengerActivityEvents(report: MessengerActivityReporter): AgentLoopEvents {
 	let step = 0;
 	return {

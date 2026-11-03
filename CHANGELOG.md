@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.14] - 2026-11-03
+
+### Fixed
+- **Discord on Windows** — improve setup cancellation, launcher handling, and progress privacy; explain notification daemon state.
+- **Discord model selection** — choose from the authenticated provider's live models, preserve session continuity across model changes, and reject unverifiable choices.
+- **Completion evidence** — expose background process failures and require fresh verification after unobserved jobs and monitors settle.
+- **Provider responses** — reject truncated or explicitly incomplete model responses instead of reporting completion.
+
 ## [0.12.13] - 2026-11-03
 
 ### Fixed

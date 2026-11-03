@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { ProviderHttpError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "./errors";
+import { ProviderHttpError, ProviderStreamError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "./errors";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { jeoEnv } from "../../util/env";
@@ -501,6 +501,13 @@ function emptyCompletionError(stopReason: string | undefined, category?: string)
   return new Error(`Anthropic returned no content${reason ? ` (${reason})` : ""}${hint}.`);
 }
 
+function assertNormalStop(stopReason: string | undefined, category?: string): void {
+  if (stopReason && stopReason !== "end_turn" && stopReason !== "tool_use" && stopReason !== "stop_sequence") {
+    const hint = stopReason === "max_tokens" ? " — output budget exhausted; raise maxTokens or lower the thinking level" : "";
+    throw new Error(`Anthropic response incomplete (stop_reason=${stopReason}${category ? `, category=${category}` : ""})${hint}.`);
+  }
+}
+
 export const anthropicAdapter: ProviderAdapter = {
   name: "anthropic",
   supportsNativeTools: true,
@@ -508,6 +515,10 @@ export const anthropicAdapter: ProviderAdapter = {
     const response = await postAnthropic(messages, options, credential, false);
     const result = (await response.json()) as { model?: string; content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; stop_details?: { category?: string }; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
+    if (!result.content.some(c => (c.type === "text" && c.text) || (c.type === "tool_use" && c.name)) && result.stop_reason && !["end_turn", "tool_use", "stop_sequence"].includes(result.stop_reason)) {
+      throw emptyCompletionError(result.stop_reason, result.stop_details?.category);
+    }
+    assertNormalStop(result.stop_reason, result.stop_details?.category);
     // Tag with the model that ACTUALLY produced the content — on a server-side
     // fallback (see anthropicFallbackModels), `result.model` names the fallback
     // model, not `options.model` (the originally requested one). Stamping the
@@ -541,6 +552,7 @@ export const anthropicAdapter: ProviderAdapter = {
     let yieldedAny = false;
     let stopReason: string | undefined;
     let stopCategory: string | undefined;
+    let terminal = false;
     // The model that actually served the response — starts at the requested model,
     // updated from `message_start.message.model` and, on a mid-stream server-side
     // fallback (see anthropicFallbackModels), from the `fallback` block's `to.model`.
@@ -563,11 +575,17 @@ export const anthropicAdapter: ProviderAdapter = {
         delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string; stop_details?: { category?: string } };
         message?: { model?: string; usage?: AnthropicUsage; stop_reason?: string; stop_details?: { category?: string } };
         usage?: { output_tokens?: number };
+        error?: { type?: string; message?: string };
       };
       try {
         evt = JSON.parse(data);
       } catch {
         continue;
+      }
+      if (evt.type === "error") {
+        const code = evt.error?.type;
+        const statuses: Record<string, number> = { invalid_request_error: 400, authentication_error: 401, permission_error: 403, not_found_error: 404, request_too_large: 413, rate_limit_error: 429, api_error: 500, overloaded_error: 529 };
+        throw new ProviderStreamError("Anthropic", evt.error?.message ?? "unknown error", code, code ? statuses[code] : undefined);
       }
       if (evt.type === "content_block_start" && evt.content_block?.type === "tool_use" && typeof evt.index === "number") {
         toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
@@ -619,12 +637,19 @@ export const anthropicAdapter: ProviderAdapter = {
           // message_start is harmless).
           cachedInput = totalInputTokens(evt.message.usage);
         }
+      } else if (evt.type === "message_stop") {
+        terminal = true;
       } else if (evt.type === "message_delta") {
-        if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.delta?.stop_reason) { stopReason = evt.delta.stop_reason; terminal = true; }
         if (evt.delta?.stop_details?.category) stopCategory = evt.delta.stop_details.category;
         if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }
     }
+    if (!yieldedAny && !toolBlocks.size && stopReason && !["end_turn", "tool_use", "stop_sequence"].includes(stopReason)) {
+      throw emptyCompletionError(stopReason, stopCategory);
+    }
+    if (!terminal && (yieldedAny || toolBlocks.size)) throw new Error("Anthropic response incomplete (missing terminal event).");
+    assertNormalStop(stopReason, stopCategory);
     // Emit captured thinking blocks as replay artifacts (signed thought + signature).
     for (const tb of thinkBlocks.values()) {
       if (tb.text || tb.signature) {

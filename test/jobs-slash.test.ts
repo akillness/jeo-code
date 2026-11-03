@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 
 import { JobRegistry } from "../src/agent/job-registry";
 import { runJobsSlash } from "../src/commands/launch/jobs-slash";
+import { createJobTool } from "../src/agent/job-tool";
 
 function capture() {
   const lines: string[] = [];
@@ -30,4 +31,16 @@ test("/jobs reports unknown actions and rejects malformed timeout options", asyn
   const badTimeout = capture();
   await runJobsSlash("/jobs await --timeout-ms nope", registry, process.cwd(), badTimeout.log);
   expect(badTimeout.lines.join("\n")).toContain("Invalid timeout");
+});
+
+test("slash inspection cannot consume completion evidence needed by agent verification", async () => {
+  const registry = new JobRegistry();
+  const job = registry.start("exit 7", process.cwd());
+  await registry.awaitIds([job.id], 3000);
+  const out = capture();
+  await runJobsSlash(`/jobs await ${job.id}`, registry, process.cwd(), out.log);
+  expect(registry.unobserved().map(record => record.id)).toContain(job.id);
+  const result = await createJobTool(registry)({ action: "await", ids: [job.id] }, process.cwd());
+  expect(result.success).toBe(false);
+  expect(result.mutationMayHaveOccurred).toBe(true);
 });

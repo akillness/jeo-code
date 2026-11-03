@@ -186,9 +186,9 @@ export interface ResponsesEvent {
    *  carried separately from the human-readable message so callers can classify
    *  retryability without parsing prose (round: in-band SSE error retry fix). */
   errorCode?: string;
-  /** `response.incomplete` cause (e.g. max_output_tokens) — surfaced when the
-   *  whole response produced no text (round-5 #1). */
+  /** `response.incomplete` cause (e.g. max_output_tokens). */
   incompleteReason?: string;
+  completed?: boolean;
   /** NATIVE function_call output items (accumulated by the caller across SSE events). */
   toolCallName?: string;
   toolCallArgsDelta?: string;
@@ -235,10 +235,11 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     return { reasoningDelta: o.delta };
   }
   // `response.incomplete` (max_output_tokens / content filter) also carries usage — don't drop it.
-  if ((o.type === "response.completed" || o.type === "response.incomplete") && o.response?.usage) {
+  if (o.type === "response.completed" || o.type === "response.incomplete") {
     return {
-      usage: { inputTokens: o.response.usage.input_tokens, outputTokens: o.response.usage.output_tokens },
-      ...(o.type === "response.incomplete" ? { incompleteReason: o.response.incomplete_details?.reason ?? "incomplete" } : {}),
+      ...(o.response?.usage ? { usage: { inputTokens: o.response.usage.input_tokens, outputTokens: o.response.usage.output_tokens } } : {}),
+      ...(o.type === "response.completed" ? { completed: true } : {}),
+      ...(o.type === "response.incomplete" ? { incompleteReason: o.response?.incomplete_details?.reason ?? "incomplete" } : {}),
     };
   }
   if (o.type === "response.failed" || o.type === "error") {
@@ -284,6 +285,14 @@ function fetchResponses(messages: Message[], options: CallOptions, credential: C
   );
 }
 
+export class ResponsesIncompleteError extends Error {
+  constructor(reason: string) {
+    const hint = reason === "max_output_tokens" ? " — output budget exhausted; raise maxTokens or lower reasoning effort" : "";
+    super(`OpenAI Codex response incomplete (finish_reason=${reason})${hint}.`);
+    this.name = "ResponsesIncompleteError";
+  }
+}
+
 /** Non-streaming call over the Codex backend (collects the streamed output). */
 export async function codexResponsesCall(messages: Message[], options: CallOptions, credential: Credential): Promise<string> {
   const response = await fetchResponses(messages, options, credential);
@@ -291,6 +300,7 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
   if (!response.body) return "";
   let out = "";
   let incompleteReason: string | undefined;
+  let completed = false;
   const toolAcc = new Map<number, { name: string; args: string }>();
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
@@ -300,8 +310,11 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
+    if (ev.completed) completed = true;
     if (ev.error) throw new ProviderStreamError("OpenAI Codex", ev.error, ev.errorCode);
   }
+  if (incompleteReason) throw new ResponsesIncompleteError(incompleteReason);
+  if (!completed && (out || toolAcc.size)) throw new ResponsesIncompleteError("missing_terminal_event");
   // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
   const envelope = serializeAccumulatedToolCalls(toolAcc);
   if (envelope) return envelope;
@@ -320,6 +333,7 @@ export async function* codexResponsesStream(
   if (!response.body) return;
   let yieldedAny = false;
   let incompleteReason: string | undefined;
+  let completed = false;
   const toolAcc = new Map<number, { name: string; args: string }>();
   for await (const data of readSse(response.body, options.onStreamActivity)) {
     const ev = parseResponsesEvent(data);
@@ -332,8 +346,11 @@ export async function* codexResponsesStream(
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
+    if (ev.completed) completed = true;
     if (ev.error) throw new ProviderStreamError("OpenAI Codex", ev.error, ev.errorCode);
   }
+  if (incompleteReason) throw new ResponsesIncompleteError(incompleteReason);
+  if (!completed && (yieldedAny || toolAcc.size)) throw new ResponsesIncompleteError("missing_terminal_event");
   // Native tool calls have no output_text deltas — yield the re-serialized envelope once.
   const envelope = serializeAccumulatedToolCalls(toolAcc);
   if (envelope) { yieldedAny = true; yield envelope; }

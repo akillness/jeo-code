@@ -253,6 +253,9 @@ test("in-flight and settled background job mutation blocks done until fresh veri
     const cancelled = await job({ action: "cancel", ids: ["job-1"] }, opts.cwd);
     await mutationEvents.return?.();
     if (!cancelled.success) return { done: false, steps: 0, doneReason: "background job failed to cancel" };
+    const drained = await job({ action: "await", ids: ["job-1"] }, opts.cwd);
+    expect(drained.mutationMayHaveOccurred).toBe(true);
+    await onEvidence({ sawMutation: true, sawVerification: false, verificationStale: false });
     expect(await onBeforeDone("finished", {
       sawMutation: true,
       sawVerification: false,

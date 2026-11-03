@@ -10,11 +10,13 @@ Create a Discord application and bot in the Developer Portal, copy its token, th
 jeo messenger setup --config ~/.jeo/discord/messenger.json --service
 ```
 
-Setup validates the bot, enables Message Content intent when Discord permits it, discovers a request channel with the required permissions, writes a private token file and run script, probes the Gateway, and optionally installs a user service. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` for non-interactive choices.
+Setup validates the bot, enables Message Content intent when Discord permits it, discovers a request channel with the required permissions, writes a token file and a platform-native launcher (`run-discord.sh` or Windows `run-discord.cmd`), probes the Gateway, and optionally installs a macOS/Linux user service. On Windows, omit `--service` and run the `.cmd` with your process manager. Ctrl+C cancels an active prompt, invite wait, or Gateway probe. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` for non-interactive choices.
+
+On Windows, setup's file mode does not establish or verify a private NTFS ACL. Before setup, create the profile directory with Windows permissions that restrict access to the intended account and administrators; after setup, verify that the token file's ACL is also appropriately restricted before running the launcher. Windows ACL protection has not been verified by this setup flow.
 
 The bot needs View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, and Send Messages in Threads. Server requests must mention the bot; replies are isolated in threads. DMs and thread follow-ups retain separate session history.
 
-While a request runs, Discord shows one silently updated progress message in the reply thread or DM. It displays only the latest progress update on one line (step number, tool name and outcome), then marks the request complete, failed or cancelled. Updates are throttled and coalesced, so fast intermediate steps may not appear. Tool arguments, tool output and provider error details are not included; the final answer is sent separately.
+While a request runs, Discord shows one silently updated progress message in the reply thread or DM. It shows fixed status text, the current step and validated tool names, then marks the request complete, failed or cancelled. Updates are throttled and coalesced, so fast intermediate steps may not appear. Model reasoning, tool arguments, tool output and provider error details are not included in progress messages; the final answer is sent separately.
 
 ## Check and run
 
@@ -25,7 +27,7 @@ jeo messenger run --config /absolute/private/path/messenger.json
 
 `check` validates JSON and credential presence locally and performs no network calls. Credentials default to `JEO_DISCORD_BOT_TOKEN`, `JEO_TELEGRAM_BOT_TOKEN`, `JEO_SLACK_BOT_TOKEN`, and `JEO_SLACK_APP_TOKEN`; equivalent `JEOPI_` names are accepted during migration. Tokens are removed from agent child-process environments.
 
-Local tools default to none. Enabling them grants allowlisted remote users the corresponding host authority; it is not an OS sandbox.
+Local tools default to none. Enabling them grants allowlisted remote users the corresponding host authority; it is not an OS sandbox. Messenger workers intentionally run with skills disabled, so installing `jeo-skills` is not required and remote messages cannot activate local skill instructions; the explicit tool allowlist remains the authority boundary.
 
 For example, `"toolNames": ["read", "find", "search", "write", "edit", "computer"]` enables file operations and desktop automation in every messenger conversation using that configuration. `computer` is an explicit per-worker opt-in and does not change the global desktop setting; its supervisor and OS accessibility/screen-recording permissions still apply. All allowlisted users and platforms in the same configuration receive these tools, and they share the host desktop and filesystem, not isolated desktops. Restart the messenger service to apply changes.
 

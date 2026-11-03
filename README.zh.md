@@ -13,6 +13,7 @@
   <a href="https://github.com/akillness/jeo-code"><img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3.14-f9f1e1?style=flat-square&logo=bun&logoColor=black">
   <img alt="zero native deps" src="https://img.shields.io/badge/native%20deps-0-blue?style=flat-square">
+  <a href="https://buymeacoffee.com/akillness3q"><img alt="通过 Buy Me a Coffee 赞助" src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-AC6415?style=flat-square&logo=buy-me-a-coffee"></a>
 </p>
 
 <p align="center">

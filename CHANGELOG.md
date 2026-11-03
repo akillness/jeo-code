@@ -25,8 +25,15 @@ The GitHub-only 0.12.14 release was not published to npm; its changes (listed un
 - Protected-worker shutdown sends a private Bun IPC exact-nonce frame instead of SIGTERM. Parent cleanup ACK plus actual worker exit remains the gate; a missing or throwing `send` quarantines the worker with no signal fallback (no SIGTERM/SIGKILL), and signal-only termination is not relied on for Windows. Focused pool tests passed 75, 0 failed.
 - Current source wrappers preserve the teardown cleanup owner, bounded shutdown waits, human per-session grants, one persistent thread/FIFO, and the shared workspace. Legacy workspace history in `.jeo/memory/raw`, `.jeo/sessions`, or `.jeo/messenger-sessions` fails closed until deliberately relocated; no automatic copy or deletion occurs.
 
+### Verified (Linux x64 GitHub Actions dry-run, completed)
+- Ubuntu 24.04 Linux x64 [run 41696052194](https://github.com/akillness/jeo-code/actions/runs/41696052194) at source `d44ef5a1b1ec5b44e4607dfc20976f73b3b92265` is now COMPLETED SUCCESS. It is a dry-run, recorded separately from the local macOS arm64 checks above.
+- Primary `bun test`: 4422 pass, 19 skip, 0 fail, 4441 total across 386 files. The separate mandatory browser step passed 15, 0 failed; those 15 browser cases were skipped in the primary process, leaving 4 existing conditional skips.
+- The real native Ubuntu 24.04 / Linux x64 sandbox verifier passed 20 contracts. Collision evidence: `hostSentinelsUnchanged=true`, `unwritableNamespaceWriteDenied=true`, `tmpNamespaceCollision=true`, `collisionWriteWasGuestPrivate=true`.
+- `pack:check` passed 329 files; the packed CLI runner and launch booted; the npm dry-run passed. No real npm publish occurred, and the binary job was intentionally skipped in the dry-run.
+- The Linux `/tmp` namespace-collision contract proves together that host sentinels are preserved, the session-private `/tmp` shadows the colliding path inside the guest, and a write to the unwritable namespace is denied. This tightens the isolation test; it does not imply a production escape, and no assertion was weakened.
+
 ### Limitations
-- The local checks above do not qualify native Linux or Windows hosts, and live Discord is not qualified. A Linux guest does not qualify those native hosts.
+- The local macOS checks above do not qualify native Linux or Windows hosts. The Linux x64 GitHub Actions dry-run above completed successfully but is not an all-OS qualification and is not a published npm release. Native Windows is not qualified, and live Discord is not qualified. A Linux guest on macOS does not qualify native hosts.
 - Worker/container cleanup must be confirmed; errors or unconfirmed removal must not be reported as success.
 - Tagged release CI results are recorded separately from this local pre-release evidence.
 

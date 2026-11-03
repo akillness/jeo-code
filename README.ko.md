@@ -477,11 +477,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
 - **[0.12.10]** (2026-11-02)
 - **[0.12.11]** (2026-11-02)
 - **[0.12.9]** (2026-11-02)
-- **[0.12.7]** (2026-10-18) — Repair desktop screenshot vision feedback, macOS scrolling, complete drag gestures, and keyboard normalization.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

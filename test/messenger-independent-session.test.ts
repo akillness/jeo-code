@@ -120,21 +120,21 @@ test("Discord activity updates progress and marks complete on finish without del
 	const signal = new AbortController().signal;
 	await adapter.activity!(baseMessage, "Processing step 1", signal);
 	expect(requests[0]!.method).toBe("POST");
-	expect(requests[0]!.body).toMatchObject({ content: "⏳ In progress\n• Processing step 1", allowed_mentions: { parse: [] } });
+	expect(requests[0]!.body).toMatchObject({ content: "⏳ Processing step 1", allowed_mentions: { parse: [] } });
 
 	await adapter.activity!(baseMessage, "Using computer tool", signal);
 	expect(requests[1]!.method).toBe("PATCH");
-	expect(requests[1]!.body).toMatchObject({ content: "⏳ In progress\n• Processing step 1\n• Using computer tool" });
+	expect(requests[1]!.body).toMatchObject({ content: "⏳ Using computer tool" });
 
 	// When completed (text === undefined)
 	await adapter.activity!(baseMessage, undefined, signal);
 	expect(requests[2]!.method).toBe("PATCH");
-	expect(requests[2]!.body).toMatchObject({ content: "✅ Complete\n• Processing step 1\n• Using computer tool" });
+	expect(requests[2]!.body).toMatchObject({ content: "✅ Complete" });
 	// Must NOT delete!
 	expect(requests.some(r => r.method === "DELETE")).toBe(false);
 });
 
-test("Discord keeps a bounded progress history and marks a failed request", async () => {
+test("Discord displays only the latest progress and marks a failed request", async () => {
 	const contents: string[] = [];
 	const fetcher = (async (_url: string | URL | Request, init?: RequestInit) => {
 		contents.push(JSON.parse(init!.body as string).content);
@@ -143,5 +143,10 @@ test("Discord keeps a bounded progress history and marks a failed request", asyn
 	const adapter = createDiscordAdapter({ tokenEnv: "TOKEN", allowedUserIds: ["user-1"] }, { TOKEN: "secret" }, { fetch: fetcher });
 	for (let i = 1; i <= 8; i++) await adapter.activity!(baseMessage, `Step ${i}`, undefined);
 	await adapter.activity!(baseMessage, undefined, undefined, "failure");
-	expect(contents.at(-1)).toBe("❌ Failed\n• Step 3\n• Step 4\n• Step 5\n• Step 6\n• Step 7\n• Step 8");
+	expect(contents.slice(0, 8)).toEqual(Array.from({ length: 8 }, (_, i) => `⏳ Step ${i + 1}`));
+	expect(contents.at(-1)).toBe("❌ Failed");
+	await adapter.activity!(baseMessage, "First\nSecond", undefined);
+	expect(contents.at(-1)).toBe("⏳ First Second");
+	await adapter.activity!(baseMessage, undefined, undefined, "cancelled");
+	expect(contents.at(-1)).toBe("⏹ Cancelled");
 });

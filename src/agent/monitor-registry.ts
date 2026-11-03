@@ -8,6 +8,8 @@
  * `cancelAll()` is called during explicit session teardown.
  */
 
+import { settlesWithin, spawnLeasedShell, type LeasedShell } from "./shell-lease";
+
 export type MonitorStatus = "running" | "exited" | "killed" | "failed";
 
 export interface MonitorRecord {
@@ -32,9 +34,12 @@ export interface MonitorRegistryOptions {
 
 interface Entry {
   record: MonitorRecord;
-  proc?: Bun.Subprocess<"ignore", "pipe", "pipe">;
   promise: Promise<void>;
-  cancel?: () => void;
+  cancel?: () => boolean;
+  /** SIGKILL reached the pinned process group. */
+  killDelivered?: boolean;
+  /** Termination of every process holding the monitor's group or pipes cannot be confirmed. */
+  incomplete?: boolean;
 }
 interface NoticeQueue {
   tails: [Promise<void>, Promise<void>];
@@ -87,9 +92,9 @@ export class MonitorRegistry {
 
   private stopAfterFirstLine(entry: Entry): void {
     if (entry.record.status !== "running") return;
-    entry.record.status = "killed";
+    const killed = entry.cancel?.();
+    entry.record.status = killed ? "killed" : "failed";
     entry.record.finishedAt = Date.now();
-    entry.cancel?.();
   }
 
   private async drain(entry: Entry, reader: { read: () => Promise<{ done?: boolean; value?: Uint8Array }> }, queue: NoticeQueue, index: 0 | 1): Promise<void> {
@@ -173,12 +178,9 @@ export class MonitorRegistry {
     };
     this.buffers.set(id, "");
 
-    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    let shell: LeasedShell;
     try {
-      proc = Bun.spawn(["bash", "-c", command], {
-        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-        ...(process.platform !== "win32" ? { detached: true } : {}),
-      });
+      shell = spawnLeasedShell(command, cwd);
     } catch (err) {
       record.status = "failed";
       record.finishedAt = Date.now();
@@ -190,44 +192,36 @@ export class MonitorRegistry {
     }
 
     this.active.add(id);
-    const entry: Entry = { record, proc, promise: Promise.resolve() };
-    entry.cancel = () => {
-      if (process.platform !== "win32") {
-        try { process.kill(-proc.pid, "SIGKILL"); return; } catch { /* fall back to the shell */ }
-      }
-      try { proc.kill(9); } catch { /* already exited */ }
+    const entry: Entry = { record, promise: Promise.resolve() };
+    entry.cancel = (): boolean => {
+      const outcome = shell.killGroup();
+      if (outcome === "delivered") { entry.killDelivered = true; return true; }
+      entry.incomplete = true;
+      this.append(id, outcome === "unpinned"
+        ? "\n[monitor process group is no longer pinned; termination cannot be confirmed]\n"
+        : outcome === "unsupported"
+          ? "\n[monitor process tree termination cannot be confirmed on Windows]\n"
+          : `\n[monitor process group termination attempt failed: ${String(outcome.error)}]\n`);
+      shell.killDirect();
+      return false;
     };
     const queue: NoticeQueue = { tails: [Promise.resolve(), Promise.resolve()], count: 0, chars: 0, overflow: false, firstLineClaimed: false };
-    const stdoutReader = proc.stdout.getReader();
-    const stderrReader = proc.stderr.getReader();
-    const drains = Promise.all([this.drain(entry, stdoutReader, queue, 0), this.drain(entry, stderrReader, queue, 1)]);
+    const drains = Promise.all([this.drain(entry, shell.stdout, queue, 0), this.drain(entry, shell.stderr, queue, 1)]);
     this.entries.set(id, entry);
     entry.promise = (async () => {
       try {
-        const exitCode = await proc.exited;
-        let lingerTimer: NodeJS.Timeout | undefined;
-        const drained = await Promise.race([
-          drains.then(() => true),
-          new Promise<false>(resolve => { lingerTimer = setTimeout(() => resolve(false), PIPE_LINGER_MS); }),
-        ]);
-        clearTimeout(lingerTimer);
-        if (!drained) {
-          void stdoutReader.cancel().catch(() => {});
-          void stderrReader.cancel().catch(() => {});
+        const exitCode = await shell.exit;
+        let lingered = false;
+        if (!(await settlesWithin(drains, PIPE_LINGER_MS))) {
+          lingered = true;
+          // A descendant still holds stdout/stderr. Only the pinned group may be signalled; if EOF does
+          // not follow the delivered SIGKILL, the holder left the group and stays unresolved.
+          if ((entry.killDelivered || entry.cancel!()) && !(await settlesWithin(drains, PIPE_LINGER_MS))) {
+            entry.incomplete = true;
+            this.append(id, "\n[monitor pipe remains open outside the process group; termination cannot be confirmed]\n");
+          }
+          shell.dispose();
           await drains;
-          await Promise.all(queue.tails);
-          if (queue.overflow) {
-            record.status = "failed";
-            record.exitCode = exitCode;
-            this.append(id, "\n[monitor output incomplete: notice queue limit exceeded]\n");
-            return;
-          }
-          if (record.status !== "killed") {
-            record.status = "failed";
-            record.exitCode = exitCode;
-            this.append(id, "\n[monitor output incomplete: a descendant kept stdout or stderr open after the shell exited]\n");
-            return;
-          }
         }
         await Promise.all(queue.tails);
         if (queue.overflow) {
@@ -236,16 +230,30 @@ export class MonitorRegistry {
           this.append(id, "\n[monitor output incomplete: notice queue limit exceeded]\n");
           return;
         }
-        if (record.status === "killed") return;
-        record.status = "exited";
+        if (exitCode === null && !entry.killDelivered && !entry.incomplete) {
+          entry.incomplete = true;
+          this.append(id, "\n[monitor process group lease ended without an exit report; termination cannot be confirmed]\n");
+        }
+        if (record.status === "killed" && !entry.incomplete) return;
+        if (!lingered && !entry.incomplete) {
+          record.status = "exited";
+          record.exitCode = exitCode;
+          return;
+        }
+        record.status = "failed";
         record.exitCode = exitCode;
+        if (lingered) this.append(id, "\n[monitor output incomplete: a descendant kept stdout or stderr open after the shell exited]\n");
       } catch (err) {
+        // Output can no longer be observed: stop the group now so the holder can be reaped.
+        if (!entry.killDelivered) entry.cancel!();
         if (record.status === "killed") return;
         record.status = "failed";
         this.append(id, err instanceof Error ? err.message : String(err));
       } finally {
-        await proc.exited;
-        this.active.delete(id);
+        shell.release();
+        await shell.reaped;
+        shell.dispose();
+        if (!entry.incomplete) this.active.delete(id);
         this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
       }
@@ -314,18 +322,24 @@ export class MonitorRegistry {
     for (const id of ids) {
       const entry = this.entries.get(id);
       if (!entry) continue;
+      if (entry.incomplete) { out.push(entry.record); continue; }
       if (entry.record.status === "running") {
-        entry.record.status = "killed";
+        const killed = entry.cancel?.();
+        entry.record.status = killed ? "killed" : "failed";
         entry.record.finishedAt = Date.now();
-        entry.cancel?.();
       }
       out.push(entry.record);
     }
     return out;
   }
 
+  /** Include unresolved process groups even if their shell has exited. */
+  cancellable(): MonitorRecord[] {
+    return this.list().filter(record => record.status === "running" || this.entries.get(record.id)?.incomplete);
+  }
+
   /** Kill every monitor still running at session teardown / Ctrl-C. */
   cancelAll(): MonitorRecord[] {
-    return this.cancel(this.running().map(record => record.id));
+    return this.cancel(this.cancellable().map(record => record.id));
   }
 }

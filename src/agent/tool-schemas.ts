@@ -133,6 +133,19 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       required: ["action"],
     },
   },
+  sandbox_request: {
+    name: "sandbox_request",
+    description: "Request an additional session sandbox mount with host and mode ro|rw, or inspect grants and their guest paths with action=status. This tool cannot approve, reject, or revoke access; only authenticated human /sandbox controls can do that.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["request", "status"] },
+        host: STRING,
+        mode: { type: "string", enum: ["ro", "rw"] },
+      },
+      required: [],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

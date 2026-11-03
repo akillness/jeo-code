@@ -9,6 +9,43 @@ import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
 const message: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "channel", senderId: "owner", messageId: "1", text: "hello", direct: true, mentioned: false };
+// Discord now always requires the sandbox section; limits mirror the required contract.
+const sandbox = { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } };
+// Real workers start the actual local runtime, so they use the already-qualified local image (no pull, no skip).
+const realSandbox = { image: "oven/bun:1.3.14", limits: { ...sandbox.limits, pids: 64 } };
+// Bounded, redacted copy of a real worker's stderr (tee: the pool still consumes the original stream).
+function redact(text: string): string {
+  let out = text.replaceAll("test-key", "[redacted]");
+  for (const value of [process.env.HOME, process.env.JEO_DISCORD_BOT_TOKEN, "dotenv-secret", "dotenv-alias"]) if (value && value.length > 3) out = out.replaceAll(value, "[redacted]");
+  return out.replace(/(bearer\s+)\S+/gi, "$1[redacted]").replace(/([A-Za-z0-9_]*(?:token|key|secret|password|authorization)[A-Za-z0-9_]*\s*[=:]\s*)\S+/gi, "$1[redacted]");
+}
+function captureStderr<T extends ReturnType<typeof Bun.spawn>>(child: T, sink: (read: () => Promise<string>) => void): T {
+  const [forPool, forDiagnostics] = (child.stderr as ReadableStream<Uint8Array>).tee();
+  let text = "";
+  const done = (async () => {
+    const decoder = new TextDecoder();
+    for await (const chunk of forDiagnostics) if (text.length < 4000) text += decoder.decode(chunk, { stream: true });
+  })().catch(() => {});
+  sink(async () => { await Promise.race([done, Bun.sleep(200)]); return redact(text).slice(0, 4000); });
+  return new Proxy(child, { get(target, key) {
+    if (key === "stderr") return forPool;
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+async function withDiagnostics(readers: (() => Promise<string>)[], run: () => Promise<void>): Promise<void> {
+  try { await run(); } catch (error) {
+    const stderr = (await Promise.all(readers.map(read => read()))).join("\n---\n");
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nworker stderr (redacted, bounded):\n${stderr || "<empty>"}`, { cause: error });
+  }
+}
+// Workspace and private session storage are disjoint siblings; config stays outside both.
+async function layout(prefix: string) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace);
+  return { root, workspace, sessionDir: path.join(root, "sessions") };
+}
 const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscordModel(explicit, {
   ...opts,
   config: { providers: {}, defaultModel: "gpt-6.1-terra", thinkingLevel: "medium" },
@@ -16,21 +53,43 @@ const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscord
 });
 
 test("conversation workers are reused, isolated, evicted and closed", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-worker-pool-"));
-  const config: MessengerConfig = { cwd: root, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
-  const workers: { id: number; killed: boolean; requests: string[] }[] = [];
-  const spawn = ((_argv: string[], _options: unknown) => {
-    const worker = { id: workers.length, killed: false, requests: [] as string[] };
+  const { root, workspace, sessionDir } = await layout("jeo-worker-pool-");
+  const config: MessengerConfig = { cwd: workspace, sessionDir, sandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
+  const workers: { id: number; killed: boolean; requests: string[]; kills: number; frames: unknown[] }[] = [];
+  const spawnOptions: { ipc?: unknown; serialization?: unknown }[] = [];
+  const spawn = ((_argv: string[], options: { env: Record<string, string>; ipc?: unknown; serialization?: unknown }) => {
+    const nonce = options.env.JEO_MESSENGER_SHUTDOWN_NONCE;
+    if (!nonce) throw new Error("parent did not supply a shutdown nonce");
+    spawnOptions.push(options);
+    const worker = { id: workers.length, killed: false, requests: [] as string[], kills: 0, frames: [] as unknown[] };
     workers.push(worker);
     const exit = Promise.withResolvers<number>();
     let out: ReadableStreamDefaultController<Uint8Array>;
     let err: ReadableStreamDefaultController<Uint8Array>;
     const stdout = new ReadableStream<Uint8Array>({ start(controller) { out = controller; } });
     const stderr = new ReadableStream<Uint8Array>({ start(controller) { err = controller; } });
-    const kill = () => { if (!worker.killed) { worker.killed = true; out.close(); err.close(); exit.resolve(0); } };
+    // Graceful stop happens only via the exact private IPC frame carrying the parent's nonce:
+    // the cleanup is acknowledged on stderr, then the process exits 143.
+    const send = (frame: unknown) => {
+      worker.frames.push(frame);
+      const f = frame as { type?: unknown; nonce?: unknown } | null;
+      if (!f || Object.keys(f).sort().join() !== "nonce,type" || f.type !== "jeo_messenger_shutdown" || f.nonce !== nonce) return true;
+      if (worker.killed) return true;
+      worker.killed = true;
+      err.enqueue(new TextEncoder().encode(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce, gone: true })}\n`));
+      out.close(); err.close(); exit.resolve(143);
+      return true;
+    };
+    // A signal is an actual crash: no acknowledgement.
+    const kill = () => {
+      worker.kills++;
+      if (worker.killed) return;
+      worker.killed = true;
+      out.close(); err.close(); exit.resolve(143);
+    };
     return {
-      stdout, stderr, exited: exit.promise, kill,
-      stdin: { write(chunk: string | Uint8Array) { const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk); for (const line of text.trim().split("\n")) { const prompt = JSON.parse(line); worker.requests.push(prompt); out.enqueue(new TextEncoder().encode(`JEO_MESSENGER_RESULT ${JSON.stringify(`worker ${worker.id}: ${prompt}`)}\n`)); } return text.length; }, flush() {}, end() { kill(); } },
+      stdout, stderr, exited: exit.promise, kill, send,
+      stdin: { write(chunk: string | Uint8Array) { const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk); for (const line of text.trim().split("\n")) { const prompt = JSON.parse(line); worker.requests.push(prompt); out.enqueue(new TextEncoder().encode(`JEO_MESSENGER_RESULT ${JSON.stringify(`worker ${worker.id}: ${prompt}`)}\n`)); } return text.length; }, flush() {}, end() {} },
     };
   }) as typeof Bun.spawn;
   const reply = createMessengerCliReply(config, spawn, selectModel);
@@ -47,10 +106,18 @@ test("conversation workers are reused, isolated, evicted and closed", async () =
     expect(await reply(message, signal)).toBe("worker 17: hello");
   } finally { await reply.close(); await fs.rm(root, { recursive: true, force: true }); }
   expect(workers.every(worker => worker.killed)).toBe(true);
+  // Protected graceful retirement/close never signals; each worker got exactly one exact private frame.
+  expect(workers.every(worker => worker.kills === 0)).toBe(true);
+  expect(workers.every(worker => worker.frames.length === 1 && (worker.frames[0] as { type: string }).type === "jeo_messenger_shutdown")).toBe(true);
+  expect(spawnOptions).toHaveLength(workers.length);
+  for (const options of spawnOptions) {
+    expect(typeof options.ipc).toBe("function");
+    expect(options.serialization).toBe("json");
+  }
 });
 
 test("real worker serves multiple turns and isolates conversations", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-real-worker-"));
+  const { root, workspace, sessionDir } = await layout("jeo-real-worker-");
   const configDir = path.join(root, "config");
   await fs.mkdir(configDir);
   await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini" }));
@@ -60,18 +127,20 @@ test("real worker serves multiple turns and isolates conversations", async () =>
     requests.push(await request.json());
     return Response.json({ choices: [{ message: { role: "assistant", content: `**answer ${requests.length}**` }, finish_reason: "stop" }] });
   } });
-  const config: MessengerConfig = { cwd: root, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
+  const config: MessengerConfig = { cwd: workspace, sessionDir, sandbox: realSandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
   let launches = 0;
   const children: ReturnType<typeof Bun.spawn>[] = [];
   const spawn = ((argv: string[], options: { cwd: string; env: Record<string, string>; stdin: "pipe"; stdout: "pipe"; stderr: "pipe" }) => {
     launches++;
     const launch = argv.indexOf("launch");
-    const child = Bun.spawn([process.execPath, "--no-env-file", path.resolve(import.meta.dir, "../src/cli.ts"), ...argv.slice(launch)], { ...options, env: { ...options.env, HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` } });
+    const child = Bun.spawn([process.execPath, "--no-env-file", path.resolve(import.meta.dir, "../src/cli.ts"), ...argv.slice(launch)], { ...options, env: { ...options.env, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` } });
     children.push(child);
-    return child;
+    return captureStderr(child, read => readers.push(read));
   }) as typeof Bun.spawn;
+  const readers: (() => Promise<string>)[] = [];
   const reply = createMessengerCliReply(config, spawn, selectModel);
   try {
+    await withDiagnostics(readers, async () => {
     const signal = new AbortController().signal;
     expect(await reply(message, signal)).toBe("**answer 1**");
     expect(await reply({ ...message, messageId: "2", text: "/theme matrix" }, signal)).toBe("**answer 2**");
@@ -87,17 +156,18 @@ test("real worker serves multiple turns and isolates conversations", async () =>
     expect(JSON.stringify(requests[3])).toContain("/theme matrix");
     expect(JSON.stringify(requests[3])).toContain("answer 2");
     expect(JSON.parse(await fs.readFile(path.join(configDir, "config.json"), "utf8")).theme).toBeUndefined();
+    });
   } finally { await reply.close(); server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 30000);
 
 test("compiled CLI preserves two turns in one worker", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-compiled-worker-"));
+  const { root, workspace, sessionDir } = await layout("jeo-compiled-worker-");
   const configDir = path.join(root, "config");
   const executable = path.join(root, "jeo");
   await fs.mkdir(configDir);
   await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini" }));
   const build = Bun.spawn([process.execPath, "build", path.resolve(import.meta.dir, "../src/cli.ts"), "--compile", "--keep-names", "--external", "chromium-bidi", "--no-compile-autoload-dotenv", "--outfile", executable], { stdout: "pipe", stderr: "pipe" });
-  await fs.writeFile(path.join(root, ".env"), "JEO_DISCORD_BOT_TOKEN=dotenv-secret\nJEOPI_DISCORD_BOT_TOKEN=dotenv-alias\n");
+  await fs.writeFile(path.join(workspace, ".env"), "JEO_DISCORD_BOT_TOKEN=dotenv-secret\nJEOPI_DISCORD_BOT_TOKEN=dotenv-alias\n");
   const [buildOut, buildErr, buildCode] = await Promise.all([new Response(build.stdout).text(), new Response(build.stderr).text(), build.exited]);
   expect({ code: buildCode, error: buildErr }).toEqual({ code: 0, error: "" });
   expect(buildOut).toContain("jeo");
@@ -108,14 +178,17 @@ test("compiled CLI preserves two turns in one worker", async () => {
     modelRequests.push(await request.json());
     return Response.json({ choices: [{ message: { role: "assistant", content: `compiled answer ${++calls}` }, finish_reason: "stop" }] });
   } });
-  const config: MessengerConfig = { cwd: root, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
+  const config: MessengerConfig = { cwd: workspace, sessionDir, sandbox: realSandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
   let launches = 0;
   const spawn = ((argv: string[], options: { cwd: string; env: Record<string, string>; stdin: "pipe"; stdout: "pipe"; stderr: "pipe" }) => {
     launches++;
-    return Bun.spawn([executable, ...argv.slice(argv.indexOf("launch"))], { ...options, env: { ...options.env, HOME: root, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` } });
+    const child = Bun.spawn([executable, ...argv.slice(argv.indexOf("launch"))], { ...options, env: { ...options.env, JEO_CONFIG_DIR: configDir, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: `http://127.0.0.1:${server.port}/v1` } });
+    return captureStderr(child, read => readers.push(read));
   }) as typeof Bun.spawn;
+  const readers: (() => Promise<string>)[] = [];
   const reply = createMessengerCliReply(config, spawn, selectModel);
   try {
+    await withDiagnostics(readers, async () => {
     const signal = new AbortController().signal;
     expect(await reply(message, signal)).toBe("compiled answer 1");
     expect(await reply({ ...message, messageId: "2", text: "/theme matrix" }, signal)).toBe("compiled answer 2");
@@ -125,6 +198,7 @@ test("compiled CLI preserves two turns in one worker", async () => {
     expect(JSON.stringify(modelRequests)).not.toContain("dotenv-secret");
     expect(JSON.stringify(modelRequests)).not.toContain("dotenv-alias");
     expect(JSON.parse(await fs.readFile(path.join(configDir, "config.json"), "utf8")).theme).toBeUndefined();
+    });
   } finally { await reply.close(); server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 120000);
 
@@ -326,24 +400,144 @@ test("a final buffered result survives exit while stdin write is still settling"
   await pool.close();
 });
 
-test("natural exit does not permit a concurrent turn while the prior result drains", async () => {
-  const exited = Promise.withResolvers<number>();
-  let out!: ReadableStreamDefaultController<Uint8Array>;
+// Bounded barrier: a fixed number of macrotask turns lets queued pool continuations run without wall-clock sleeps.
+async function turns(count = 5): Promise<void> { for (let i = 0; i < count; i++) await Bun.sleep(0); }
+// Per-spawn fake workers. Prompts listed in `held` get no reply until release(prompt); others reply "w<id>:<prompt>".
+function fakeWorkers(held: string[] = []) {
+  const workers: { id: number; requests: string[]; killed: boolean }[] = [];
+  const pending = new Map<string, () => void>();
+  const spawn = (() => {
+    const worker = { id: workers.length, requests: [] as string[], killed: false };
+    workers.push(worker);
+    const exit = Promise.withResolvers<number>();
+    let out!: ReadableStreamDefaultController<Uint8Array>;
+    const stdout = new ReadableStream<Uint8Array>({ start(c) { out = c; } });
+    const reply = (prompt: string) => out.enqueue(new TextEncoder().encode(`JEO_MESSENGER_RESULT ${JSON.stringify(`w${worker.id}:${prompt}`)}\n`));
+    return { stdout, stderr: new ReadableStream<Uint8Array>(), exited: exit.promise,
+      kill() { if (worker.killed) return; worker.killed = true; try { out.close(); } catch {} exit.resolve(0); },
+      stdin: { write(chunk: string | Uint8Array) {
+        const prompt = JSON.parse(typeof chunk === "string" ? chunk.trim() : new TextDecoder().decode(chunk).trim()) as string;
+        worker.requests.push(prompt);
+        if (held.includes(prompt)) pending.set(prompt, () => reply(prompt)); else reply(prompt);
+      }, flush() {}, end() {} } };
+  }) as unknown as typeof Bun.spawn;
+  return { workers, spawn, release(prompt: string) { const send = pending.get(prompt); if (!send) throw new Error(`no held prompt ${prompt}`); pending.delete(prompt); send(); } };
+}
+const settleOf = <T>(promise: Promise<T>) => promise.then(value => ({ value }), (error: unknown) => ({ error: (error as Error).message }));
+
+test("natural exit queues a same-key turn FIFO behind the draining result instead of overlapping it", async () => {
+  const events: string[] = [];
+  const firstExit = Promise.withResolvers<number>();
+  let firstOut!: ReadableStreamDefaultController<Uint8Array>;
+  let firstResultSent = false;
+  const requests: string[][] = [];
   let launches = 0;
-  const spawn = (() => { launches++; return { stdout: new ReadableStream<Uint8Array>({ start(c) { out = c; } }),
-    stderr: new ReadableStream<Uint8Array>(), exited: exited.promise, kill() {},
-    stdin: { write() {}, flush() {}, end() {} } }; }) as unknown as typeof Bun.spawn;
+  const spawn = (() => {
+    const id = launches++;
+    events.push(`spawn${id}`);
+    if (id === 1) expect(firstResultSent).toBe(true); // no second worker before the first result was delivered
+    const mine: string[] = [];
+    requests.push(mine);
+    const exit = id === 0 ? firstExit : Promise.withResolvers<number>();
+    let out!: ReadableStreamDefaultController<Uint8Array>;
+    const stdout = new ReadableStream<Uint8Array>({ start(c) { out = c; if (id === 0) firstOut = c; } });
+    return { stdout, stderr: new ReadableStream<Uint8Array>(), exited: exit.promise,
+      kill() { if (id) { try { out.close(); } catch {} exit.resolve(0); } },
+      stdin: { write(chunk: string | Uint8Array) {
+        const prompt = JSON.parse(typeof chunk === "string" ? chunk.trim() : new TextDecoder().decode(chunk).trim()) as string;
+        mine.push(prompt);
+        if (id === 1) out.enqueue(new TextEncoder().encode(`JEO_MESSENGER_RESULT ${JSON.stringify(`second-own:${prompt}`)}\n`));
+      }, flush() {}, end() {} } };
+  }) as unknown as typeof Bun.spawn;
   const pool = createMessengerSessionPool(spawn);
   const signal = new AbortController().signal;
-  const first = pool.turn("one", ["worker"], "/tmp", {}, "first", signal);
-  exited.resolve(0);
-  await Bun.sleep(0);
-  await expect(pool.turn("one", ["worker"], "/tmp", {}, "second", signal)).rejects.toThrow("Messenger conversation is already active");
+  const first = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "first", signal));
+  first.then(() => events.push("first-settled"));
+  firstExit.resolve(0);
+  await turns();
+  const secondPromise = pool.turn("one", ["worker"], "/tmp", {}, "second", signal);
+  const second = settleOf(secondPromise);
+  second.then(() => events.push("second-settled"));
+  await turns();
+  // Still queued: neither settled, no second spawn, nothing written to the draining worker.
+  expect(events).toEqual(["spawn0"]);
   expect(launches).toBe(1);
-  out.enqueue(new TextEncoder().encode('JEO_MESSENGER_RESULT "first"\n'));
-  out.close();
-  expect(await first).toBe("first");
+  expect(requests[0]).toEqual(["first"]);
+  firstResultSent = true;
+  firstOut.enqueue(new TextEncoder().encode('JEO_MESSENGER_RESULT "first"\n'));
+  firstOut.close();
+  expect(await first).toEqual({ value: "first" });
+  expect(await second).toEqual({ value: "second-own:second" });
+  expect([...events].sort()).toEqual(["first-settled", "second-settled", "spawn0", "spawn1"]);
+  expect(events.indexOf("first-settled")).toBeLessThan(events.indexOf("second-settled"));
+  expect(events.indexOf("spawn1")).toBeLessThan(events.indexOf("second-settled"));
+  expect(launches).toBe(2);
+  expect(requests).toEqual([["first"], ["second"]]);
   await pool.close();
+});
+
+test("a queued same-key request that is cancelled rejects promptly and does not let a later one jump the queue", async () => {
+  const fake = fakeWorkers(["first"]);
+  const pool = createMessengerSessionPool(fake.spawn);
+  const signal = new AbortController().signal;
+  const cancel = new AbortController();
+  const first = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "first", signal));
+  await turns();
+  const second = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "second", cancel.signal));
+  const third = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "third", signal));
+  let thirdSettled = false;
+  third.then(() => { thirdSettled = true; });
+  await turns();
+  cancel.abort();
+  // The cancelled waiter settles while the first turn is still running (not only after it finishes).
+  expect(await Promise.race([second, turns(50).then(() => "not prompt")])).toEqual({ error: "Messenger request aborted" });
+  await turns();
+  expect(thirdSettled).toBe(false);
+  expect(fake.workers.map(w => w.requests)).toEqual([["first"]]);
+  fake.release("first");
+  expect(await first).toEqual({ value: "w0:first" });
+  expect(await third).toEqual({ value: "w0:third" });
+  expect(fake.workers.flatMap(w => w.requests)).toEqual(["first", "third"]);
+  await pool.close();
+});
+
+test("a queued same-key turn does not block other keys, even when worker slots are scarce", async () => {
+  const fake = fakeWorkers(["a1"]);
+  const pool = createMessengerSessionPool(fake.spawn, 2);
+  const signal = new AbortController().signal;
+  const a1 = settleOf(pool.turn("a", ["worker"], "/tmp", {}, "a1", signal));
+  await turns();
+  const a2 = settleOf(pool.turn("a", ["worker"], "/tmp", {}, "a2", signal));
+  let a2Settled = false;
+  a2.then(() => { a2Settled = true; });
+  await turns();
+  // Key "a" is held with a waiter queued; keys "b" and "c" (the latter needs to reclaim idle "b") must still progress.
+  expect(await Promise.race([settleOf(pool.turn("b", ["worker"], "/tmp", {}, "b1", signal)), turns(200).then(() => "blocked")])).toEqual({ value: "w1:b1" });
+  expect(await Promise.race([settleOf(pool.turn("c", ["worker"], "/tmp", {}, "c1", signal)), turns(200).then(() => "blocked")])).toEqual({ value: "w2:c1" });
+  expect(a2Settled).toBe(false);
+  expect(fake.workers[0]!.requests).toEqual(["a1"]);
+  fake.release("a1");
+  expect(await a1).toEqual({ value: "w0:a1" });
+  expect(await a2).toEqual({ value: "w0:a2" });
+  expect(fake.workers).toHaveLength(3);
+  await pool.close();
+});
+
+test("close rejects queued same-key requests without launching anything for them", async () => {
+  const fake = fakeWorkers(["first"]);
+  const pool = createMessengerSessionPool(fake.spawn);
+  const signal = new AbortController().signal;
+  const first = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "first", signal));
+  await turns();
+  const second = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "second", signal));
+  const third = settleOf(pool.turn("one", ["worker"], "/tmp", {}, "third", signal));
+  await turns();
+  await pool.close();
+  expect(await first).toEqual({ error: "Messenger worker stopped" });
+  expect(await second).toEqual({ error: "Messenger request aborted" });
+  expect(await third).toEqual({ error: "Messenger request aborted" });
+  expect(fake.workers).toHaveLength(1);
+  expect(fake.workers[0]!.requests).toEqual(["first"]);
 });
 
 test("close escalates termination for a worker that ignores the first signal", async () => {

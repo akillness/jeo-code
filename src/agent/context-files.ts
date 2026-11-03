@@ -3,6 +3,23 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { IGNORED_DIRS } from "./tools";
+import { currentSandboxExecution } from "./hooks";
+
+async function sandboxContext(operation: "loadContext", cwd: string): Promise<ProjectContextFile[]>;
+async function sandboxContext(operation: "discoverGuidance", cwd: string): Promise<Array<{ filePath: string; displayPath: string }>>;
+async function sandboxContext(operation: "loadContext" | "discoverGuidance", cwd: string): Promise<ProjectContextFile[] | Array<{ filePath: string; displayPath: string }>> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) throw new Error("SANDBOX_CONTEXT: missing execution scope");
+  const result = await sandbox.supervisor.call("__workflow", { operation }, { cwd, signal: sandbox.signal });
+  if (!result.success) throw new Error(result.error || "SANDBOX_CONTEXT: context read failed");
+  const value: unknown = JSON.parse(result.output);
+  const keys = operation === "loadContext" ? ["path", "content"] : ["filePath", "displayPath"];
+  if (!Array.isArray(value) || !value.every(item => item !== null && typeof item === "object" &&
+      keys.every(key => typeof item[key] === "string"))) {
+    throw new Error("SANDBOX_CONTEXT: invalid guest response");
+  }
+  return value as ProjectContextFile[] | Array<{ filePath: string; displayPath: string }>;
+}
 
 /**
  * The user's home directory, or `undefined` when it genuinely cannot be determined.
@@ -293,6 +310,7 @@ export function invalidateWorkspaceScan(cwd?: string): void {
 }
 
 export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<Array<{ filePath: string; displayPath: string }>> {
+  if (currentSandboxExecution()) return sandboxContext("discoverGuidance", cwd);
   const scan = await getWorkspaceScan(cwd);
   const out: Array<{ filePath: string; displayPath: string }> = [...scan.localGuidance];
   // No resolvable home → NO home roots. Previously this fell back to `path.join("", …)`,
@@ -325,6 +343,7 @@ export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<A
 // cache. This keeps the result disk-truthful — a guidance/AGENTS.md edit is reflected on the
 // next spawn — while still avoiding the dominant per-spawn cost (re-reading every file).
 export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectContextFile[]> {
+  if (currentSandboxExecution()) return sandboxContext("loadContext", cwd);
   const result: ProjectContextFile[] = [];
   let baseChars = 0;
   let guidanceChars = 0;

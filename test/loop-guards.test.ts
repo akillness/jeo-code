@@ -23,6 +23,15 @@ test("isVerificationSignal only accepts explicit supported verification commands
   }
 });
 
+test("targeted pytest and cargo selectors are verification, not mutating scripts", () => {
+  for (const command of [
+    "pytest tests/test_users.py::test_update_profile",
+    "pytest tests/test_io.py::TestWriter::test_write_file",
+    "cargo test config::write_defaults",
+  ]) expect(isVerificationSignal(command)).toBe(true);
+  expect(isVerificationSignal("npm run test:fix")).toBe(false);
+});
+
 test("isVerificationSignal rejects bun test help mode", () => {
   expect(isVerificationSignal("bun test --help")).toBe(false);
 });

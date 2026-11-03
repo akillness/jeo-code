@@ -1,4 +1,5 @@
 import { MessengerHttpError } from "./http";
+import { DiscordModelSelectionError } from "./model-selection";
 import type {
 	MessengerActivityReporter,
 	MessengerAdapter,
@@ -173,7 +174,7 @@ export type MessengerSessionIdentity = readonly [
 	channel: string,
 	thread: OptionalIdentity,
 	conversation: OptionalIdentity,
-	user: string,
+	user: OptionalIdentity,
 ];
 
 function optionalIdentity(name: string, value: string | undefined): OptionalIdentity {
@@ -201,7 +202,7 @@ export function messengerSessionIdentity(message: MessengerMessage): MessengerSe
 		message.parentChannelId ?? message.channelId,
 		optionalIdentity("thread", message.threadId),
 		optionalIdentity("conversation", message.conversationId),
-		message.senderId,
+		message.platform === "discord" && message.threadId !== undefined ? ["absent"] : ["present", message.senderId],
 	];
 }
 
@@ -217,7 +218,7 @@ export function messengerSessionRoute(cwd: string, message: MessengerMessage): s
 
 function schedulingKey(message: MessengerMessage, adapter: MessengerAdapter): string {
 	if (adapter.prepare && !message.direct && !message.threadId && !message.parentChannelId) {
-		return JSON.stringify([message.platform, message.accountId, message.channelId, message.messageId]);
+		return JSON.stringify([message.platform, message.accountId, message.guildId, message.channelId, message.platform === "discord" ? null : message.senderId]);
 	}
 	return messengerConversationKey(message);
 }
@@ -263,6 +264,8 @@ export interface MessengerGatewayOptions {
 	 * order; above 1 the reply implementation must accept concurrent turns for different conversations.
 	 */
 	concurrency?: number;
+	/** Authenticated human controls bypass model queues, including busy sessions. */
+	sandboxControl?: (message: MessengerMessage, signal: AbortSignal) => Promise<{ handled: boolean; output: string }>;
 }
 
 export function createMessengerGateway(
@@ -285,6 +288,7 @@ export function createMessengerGateway(
 	const turns = new Set<Promise<void>>();
 	/** Settles when the latest request of a prepared conversation has delivered its reply. */
 	const conversationTails = new Map<string, Promise<void>>();
+	const admissionTails = new Map<string, Promise<void>>();
 	const lifetime = new AbortController();
 	let running = false;
 	let fatalError: MessengerFatalError | undefined;
@@ -353,7 +357,9 @@ export function createMessengerGateway(
 					return;
 				}
 				if (signal.aborted) return;
-				text = "The request could not be completed. Please try again.";
+				text = error instanceof DiscordModelSelectionError
+					? "Discord could not verify a model. Ask the operator to configure an explicit Discord model, check provider credentials and live model discovery, then restart the messenger service."
+					: "The request could not be completed. Please try again.";
 			}
 			if (!signal.aborted && text.trim()) {
 				// A failed send may already have delivered a chunk: never retry the entire reply.
@@ -390,21 +396,38 @@ export function createMessengerGateway(
 		}
 	}
 
-	function handle(message: MessengerMessage, signal?: AbortSignal): Promise<void> {
+	async function handle(message: MessengerMessage, signal?: AbortSignal): Promise<void> {
 		const adapter = byPlatform.get(message.platform);
 		const effectiveSignal = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
 		if (effectiveSignal.aborted || !adapter || !isMessengerMessageAllowed(message, config)) return Promise.resolve();
 		const id = JSON.stringify([message.platform, message.accountId, message.channelId, message.messageId]);
-		if (seen.has(id) || queue.length >= MAX_QUEUED_MESSAGES) return Promise.resolve();
+		if (seen.has(id)) return;
 		seen.add(id);
 		if (seen.size > MAX_SEEN_MESSAGES) {
 			const oldest = seen.values().next().value;
 			if (oldest !== undefined) seen.delete(oldest);
 		}
-		const { promise, resolve } = Promise.withResolvers<void>();
-		queue.push({ message, adapter, signal: effectiveSignal, resolve, key: schedulingKey(message, adapter) });
-		schedule();
-		return promise;
+		const key = schedulingKey(message, adapter);
+		const previous = admissionTails.get(key) ?? Promise.resolve();
+		const ready = Promise.withResolvers<void>();
+		const tail = previous.then(() => ready.promise);
+		admissionTails.set(key, tail);
+		void tail.then(() => { if (admissionTails.get(key) === tail) admissionTails.delete(key); });
+		try {
+			if (options.sandboxControl) {
+				const control = await options.sandboxControl(message, effectiveSignal);
+				if (control.handled) {
+					if (!effectiveSignal.aborted && control.output.trim()) await adapter.send(message, control.output, effectiveSignal);
+					return;
+				}
+			}
+			await previous;
+			if (effectiveSignal.aborted || queue.length >= MAX_QUEUED_MESSAGES) return;
+			const { promise, resolve } = Promise.withResolvers<void>();
+			queue.push({ message, adapter, signal: effectiveSignal, resolve, key });
+			schedule();
+			return promise;
+		} finally { ready.resolve(); }
 	}
 
 	return {

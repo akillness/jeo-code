@@ -1,3 +1,5 @@
+import type { SandboxConfig } from "../agent/sandbox/types";
+
 export type MessengerPlatform = "discord" | "telegram" | "slack";
 
 export interface MessengerMessage {
@@ -51,9 +53,8 @@ export interface MessengerConfig {
 	cwd: string;
 	sessionDir: string;
 	toolNames: string[];
+	sandbox?: SandboxConfig;
 	platforms: Partial<Record<MessengerPlatform, MessengerPlatformConfig>>;
-	/** Whether each message invocation runs in an isolated independent session. Defaults to true. */
-	independentSessions?: boolean;
 }
 
 export interface MessengerTransportDeps {

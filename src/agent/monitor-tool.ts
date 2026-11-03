@@ -6,6 +6,10 @@
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 import type { MonitorRecord, MonitorRegistry } from "./monitor-registry";
+import { settlesWithin } from "./shell-lease";
+
+/** Upper bound on pipe-linger, escape detection and notice-queue drain after a cancel. */
+const CANCEL_SETTLE_MS = 3000;
 
 /** One-line protocol description appended to the launch system prompt. */
 export const MONITOR_TOOL_PROTOCOL_LINE =
@@ -26,7 +30,8 @@ function elapsed(record: MonitorRecord): string {
 
 function rowLine(record: MonitorRecord): string {
   const mode = record.persistent ? "persistent" : "one-shot";
-  return `- ${record.id} [${record.status.toUpperCase()}] ${mode} ${elapsed(record)} · ${truncate(record.command, 100)}`;
+  const exit = record.exitCode != null ? ` (exit code ${record.exitCode})` : "";
+  return `- ${record.id} [${record.status.toUpperCase()}]${exit} ${mode} ${elapsed(record)} · ${truncate(record.command, 100)}`;
 }
 
 function idsOf(args: Record<string, any>): string[] {
@@ -79,21 +84,31 @@ export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
     if (action === "await") {
       const targets = ids.length ? ids : registry.unobserved().map(record => record.id);
       if (targets.length === 0) return { success: true, output: "No running monitors to await." };
+      const unknown = targets.filter(id => !registry.get(id));
+      if (unknown.length > 0) return { success: false, output: "", error: `No monitor matches ${unknown.join(", ")}.` };
       const timeoutMs = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : undefined;
       const records = await registry.awaitIds(targets, timeoutMs);
       const stillRunning = records.filter(record => record.status === "running").length;
       const head = stillRunning > 0
         ? `Awaited ${records.length} monitor(s); ${stillRunning} still running after the ${timeoutMs}ms timeout — await again or cancel.`
         : `Awaited ${records.length} monitor(s); all settled.`;
-      return { success: stillRunning === 0 && records.every(record => record.status !== "failed"), output: `${head}\n\n${records.map(rowLine).join("\n")}` };
+      return { success: stillRunning === 0 && records.every(record => record.status !== "failed" && (record.status !== "exited" || record.exitCode === 0)), output: `${head}\n\n${records.map(rowLine).join("\n")}` };
     }
 
     if (action === "cancel") {
-      const targets = ids.length ? ids : registry.running().map(record => record.id);
+      const cancellable = new Set(registry.cancellable().map(record => record.id));
+      const targets = ids.length ? [...new Set(ids)] : [...cancellable];
       if (targets.length === 0) return { success: true, output: "No running monitors to cancel." };
-      const hadRunning = targets.some(id => registry.get(id)?.status === "running");
+      const unknown = targets.filter(id => !registry.get(id));
+      if (unknown.length > 0) return { success: false, output: "", error: `No monitor matches ${unknown.join(", ")}.` };
+      const attempted = targets.filter(id => cancellable.has(id));
       const records = registry.cancel(targets);
-      return { success: true, output: `Cancelled ${records.length} monitor(s):\n${records.map(rowLine).join("\n")}`, mutationMayHaveOccurred: hadRunning };
+      // A delivered SIGKILL is only verified once the output pipes close; settlement can still
+      // downgrade `killed` to `failed` (a holder that left the group), so wait before judging.
+      const settled = attempted.length === 0 || await settlesWithin(registry.awaitIds(attempted), CANCEL_SETTLE_MS);
+      const failed = records.filter(record => cancellable.has(record.id) && (!settled || record.status !== "killed")).length;
+      const head = attempted.length ? `Cancelled ${attempted.length - failed} monitor(s); ${failed} cancellation(s) failed; ${records.length - attempted.length} already settled.` : "No running monitors to cancel; requested monitors are already settled.";
+      return { success: failed === 0, output: `${head}\n${records.map(rowLine).join("\n")}`, mutationMayHaveOccurred: attempted.length > 0 };
     }
 
     return { success: false, output: "", error: `Unknown monitor action '${action}'. Use start | list | tail | await | cancel.` };
@@ -103,8 +118,8 @@ export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
     const ids = idsOf(args);
     const targets = action === "list" ? registry.list().map(r => r.id)
       : action === "await" ? (ids.length ? ids : registry.unobserved().map(r => r.id))
-      : action === "tail" || action === "cancel"
-        ? (ids.length ? ids : registry.running().map(r => r.id))
+      : action === "tail" ? (ids.length ? ids : registry.running().map(r => r.id))
+      : action === "cancel" ? (ids.length ? ids : registry.cancellable().map(r => r.id))
         : [];
     const result = await handle(args, cwd);
     if (!result.error && registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;

@@ -87,6 +87,21 @@ test("registry: non-persistent monitors stop after the first emitted line", asyn
   }
 });
 
+test("fast one-shot monitor settles and clears its observed mutation", async () => {
+  const registry = new MonitorRegistry();
+  try {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const monitor = registry.start("echo hi", cwd, false);
+      const [settled] = await registry.awaitIds([monitor.id]);
+      expect(settled!.status).toBe("killed");
+      expect(registry.consumeMutations([monitor.id])).toBe(true);
+      expect(registry.unobserved().map(record => record.id)).not.toContain(monitor.id);
+    }
+  } finally {
+    await cleanup(registry);
+  }
+});
+
 test("registry: persistent monitors deliver multiple lines and cancel marks them killed", async () => {
   const lines: string[] = [];
   const ready = lineBarrier(lines, 2);
@@ -198,3 +213,54 @@ test("monitor tool: protocol and invalid arguments report actionable failures", 
 
   await cleanup(registry);
 });
+
+test("monitor await rejects unknown IDs atomically and reports nonzero exit", async () => {
+  const registry = new MonitorRegistry();
+  const tool = createMonitorTool(registry);
+  const monitor = registry.start("exit 7", cwd, true);
+  try {
+    const unknown = await tool({ action: "await", ids: [monitor.id, "monitor-999"] }, cwd);
+    expect(unknown.success).toBe(false);
+    expect(unknown.error).toContain("monitor-999");
+    const result = await tool({ action: "await", ids: [monitor.id] }, cwd);
+    expect(result.success).toBe(false);
+    expect(result.output).toContain("exit code 7");
+  } finally {
+    await cleanup(registry);
+  }
+});
+
+test("monitor cancel rejects mixed unknown IDs without killing the valid monitor", async () => {
+  const registry = new MonitorRegistry();
+  const tool = createMonitorTool(registry);
+  const monitor = registry.start("sleep 30", cwd, true);
+  try {
+    const result = await tool({ action: "cancel", ids: [monitor.id, "monitor-999"] }, cwd);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("monitor-999");
+    expect(registry.running().map(record => record.id)).toContain(monitor.id);
+  } finally {
+    await cleanup(registry);
+  }
+});
+
+test.skipIf(process.platform !== "win32")("Windows monitor cancellation remains unresolved after the shell exits", async () => {
+  const registry = new MonitorRegistry();
+  const tool = createMonitorTool(registry);
+  const monitor = registry.start("while :; do :; done", cwd, true);
+  try {
+    const result = await tool({ action: "cancel", ids: [monitor.id] }, cwd);
+    expect(result.success).toBe(false);
+    const [settled] = await registry.awaitIds([monitor.id], 2500);
+    expect(settled!.status).toBe("failed");
+    registry.consumeMutations([monitor.id]);
+    expect(registry.unobserved().map(record => record.id)).toContain(monitor.id);
+    expect(registry.cancellable().map(record => record.id)).toContain(monitor.id);
+    const retry = await tool({ action: "cancel" }, cwd);
+    expect(retry.success).toBe(false);
+    expect(registry.unobserved().map(record => record.id)).toContain(monitor.id);
+  } finally {
+    registry.cancelAll();
+    await registry.awaitIds([monitor.id], 2500);
+  }
+}, 5000);

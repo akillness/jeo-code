@@ -17,6 +17,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { buildSandboxWorker } from "./build-sandbox-worker";
 
 export interface BinaryTarget {
   id: string;
@@ -180,6 +181,7 @@ async function main(): Promise<void> {
     );
   }
 
+  if (!isDryRun) await buildSandboxWorker();
   if (!isDryRun) await fs.mkdir(distDir, { recursive: true });
   for (const target of selectedTargets) {
     await buildBinary(target, isDryRun);

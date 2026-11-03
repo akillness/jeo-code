@@ -18,9 +18,13 @@ describe("messenger model policy", () => {
     expect(messengerUsageFallback("gemini", "gemini", failure("quota exceeded"))).toBeUndefined();
   });
   test("accepts model policy only on Discord and requires a primary model", () => {
+    const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 256 * 1024 * 1024, pids: 64, cpus: 1 } };
     const discord = { allowedUserIds: ["1"], model: "gemini", usageFallbackModel: "terra" };
-    expect(parseMessengerConfig({ platforms: { discord } }, ".").platforms.discord?.usageFallbackModel).toBe("terra");
-    expect(() => parseMessengerConfig({ platforms: { telegram: discord } }, ".")).toThrow();
-    expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"], usageFallbackModel: "terra" } } }, ".")).toThrow();
+    expect(parseMessengerConfig({ sandbox, platforms: { discord } }, ".").platforms.discord?.usageFallbackModel).toBe("terra");
+    expect(() => parseMessengerConfig({ sandbox, platforms: { telegram: discord } }, ".")).toThrow();
+    expect(() => parseMessengerConfig({ sandbox, platforms: { discord: { allowedUserIds: ["1"], usageFallbackModel: "terra" } } }, ".")).toThrow("requires discord.model");
+  });
+  test("requires an explicit sandbox for Discord", () => {
+    expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"], model: "gemini" } } }, ".")).toThrow();
   });
 });

@@ -9,7 +9,7 @@
  * review/plan lane physically cannot edit the repo, mirroring gjc's read-only
  * role agents.
  */
-import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
+import { DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
 import type { Config } from "./state";
 import type { CatalogModel } from "../ai/model-catalog";
 import architectPrompt from "../prompts/agents/architect.md" with { type: "text" };
@@ -304,7 +304,7 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
   if (prefixes && prefixes.length > 0) {
     const inner = DEFAULT_TOOLS.bash;
     const guarded: Record<string, ToolHandler> = { ...DEFAULT_TOOLS };
-    guarded.bash = async (a, cwd) => {
+    guarded.bash = async (a, cwd, onProgress) => {
       const command = String(a.command ?? a.cmd ?? "");
       if (!bashCommandAllowed(command, prefixes)) {
         return {
@@ -315,8 +315,9 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
             `Received: ${command.trim().slice(0, 120)}`,
         };
       }
-      return inner(a, cwd);
+      return inner(a, cwd, onProgress);
     };
+    SANDBOX_MEDIATED_TOOLS.add(guarded.bash);
     return guarded;
   }
   return DEFAULT_TOOLS;

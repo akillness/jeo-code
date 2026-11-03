@@ -57,19 +57,23 @@ function gatewayUrl(raw: string): string {
   return url.href;
 }
 
-const HELP = "Discord controls:\n/sessions\n/subagents\n/send <unique-session> <text>\n/steer <unique-session> <subagent-id> <text>\n/cancel <unique-session> <subagent-id>\nReply to a session notification to send that session text. Other slash commands are not executed.";
+const HELP = "Discord controls:\n/sessions\n/subagents\n/send <unique-session> <text>\n/steer <unique-session> <subagent-id> <text>\n/cancel <unique-session> <subagent-id>\n/send <unique-session> /sandbox status\n/send <unique-session> /sandbox approve <requestId>\n/send <unique-session> /sandbox deny <requestId>\n/send <unique-session> /sandbox revoke\nReply to a session notification to send that session text or a sandbox access control. Other slash commands are not executed.";
 
 /** One provider adapter inside the existing daemon; local commands use SessionNotifyEndpoint only. */
 export class DiscordDaemon {
   readonly sessions = new Map<string, DiscordSession>();
   private readonly api: NonNullable<DiscordDaemonDependencies["api"]>;
   private readonly timers = new Set<Timer>();
-  private readonly pending = new Map<string, { sessionId: string; finish: (ok: boolean) => void }>();
+  private readonly pending = new Map<string, { sessionId: string; finish: (ok: boolean, output?: string) => void }>();
   private readonly remote = new Map<string, { sessionId: string; acknowledged: boolean; finish: (result: RemoteResult) => void }>();
   private readonly staging = new Map<AbortController, string>();
+  private readonly promptTails = new Map<string, Promise<void>>();
+  private queuedPrompts = 0;
+  private readonly preparationTails = new Map<string, Promise<void>>();
+  private readonly preparations = new Set<() => void>();
   private readonly replies = new Map<string, { sessionId: string; at: number }>();
   private readonly seen = new Set<string>();
-  private readonly threads = new Map<string, string>();
+  private readonly threads = new Set<string>();
   private readonly relayDestinations = new Map<string, string>();
   private readonly relayVersions = new Map<string, number>();
   private channelType = -1;
@@ -135,8 +139,7 @@ export class DiscordDaemon {
       if (![0, 1, 5, 10, 11, 12].includes(channel.type)) throw new Error("Unsupported Discord channel type");
       this.channelType = channel.type;
       if ([10, 11, 12].includes(channel.type)) {
-        if (typeof channel.owner_id !== "string" || !this.allowed.has(channel.owner_id)) throw new Error("Configured thread must have an allowed human owner");
-        this.threads.set(channel.id, channel.owner_id);
+        this.threads.add(channel.id);
       }
       this.intents = channel.type === 1 ? 1 << 12 : (1 << 9) | (1 << 15);
       this.gatewayInfo = await this.api.getGatewayBot();
@@ -156,6 +159,8 @@ export class DiscordDaemon {
 
   stop(): void {
     this.stopped = true;
+    for (const release of this.preparations) release();
+    this.preparationTails.clear();
     for (const controller of this.staging.keys()) controller.abort();
     for (const timer of this.timers) (this.deps.clearTimeout ?? clearTimeout)(timer);
     this.timers.clear();
@@ -352,7 +357,7 @@ export class DiscordDaemon {
   private onSessionFrame(session: DiscordSession, frame: Record<string, unknown>): void {
     if (frame.type === "ack" && typeof frame.reqId === "string" && typeof frame.ok === "boolean") {
       const request = this.pending.get(frame.reqId);
-      if (request?.sessionId === session.sessionId) request.finish(frame.ok);
+      if (request?.sessionId === session.sessionId) request.finish(frame.ok, typeof frame.output === "string" ? frame.output : undefined);
       return;
     }
     if (frame.sessionId !== session.sessionId) return;
@@ -453,7 +458,18 @@ export class DiscordDaemon {
     return promise;
   }
 
-  private remoteRequest(session: DiscordSession, text: string, reqId: string, controlGeneration: number): Promise<RemoteResult> {
+  private sandboxControl(session: DiscordSession, text: string, userId: string): Promise<{ ok: boolean; output: string }> {
+    if (!session.controlEnabled || this.pending.size >= 128) return Promise.resolve({ ok: false, output: "Discord sandbox control is disabled or unavailable." });
+    const reqId = crypto.randomUUID();
+    const { promise, resolve } = Promise.withResolvers<{ ok: boolean; output: string }>();
+    const timer = this.later(() => finish(false, "Sandbox control timed out; outcome is unconfirmed."), 30_000);
+    const finish = (ok: boolean, output = "Sandbox control was not acknowledged.") => { this.clear(timer); this.pending.delete(reqId); resolve({ ok, output }); };
+    this.pending.set(reqId, { sessionId: session.sessionId, finish });
+    if (!this.send(session, { type: "sandbox_control", sessionId: session.sessionId, reqId, text, actor: { origin: "discord", sessionKey: session.sessionId, userId }, controlGeneration: session.controlGeneration })) finish(false);
+    return promise;
+  }
+
+  private remoteRequest(session: DiscordSession, text: string, reqId: string, controlGeneration: number, userId: string): Promise<RemoteResult> {
     if (this.remote.size >= 128 || this.pending.size >= 128) return Promise.resolve({ ok: false });
     const { promise, resolve } = Promise.withResolvers<RemoteResult>();
     const cancel = () => {
@@ -471,7 +487,7 @@ export class DiscordDaemon {
     const remote = { sessionId: session.sessionId, acknowledged: false, finish };
     this.remote.set(reqId, remote);
     this.pending.set(reqId, { sessionId: session.sessionId, finish: ok => { this.clear(ackTimer); this.pending.delete(reqId); if (ok) remote.acknowledged = true; else finish({ ok: false }); } });
-    if (!this.send(session, { type: "remote_request", sessionId: session.sessionId, reqId, text, staged: true, controlGeneration })) finish({ ok: false });
+    if (!this.send(session, { type: "remote_request", sessionId: session.sessionId, reqId, text, staged: true, controlGeneration, actor: { origin: "discord", sessionKey: session.sessionId, userId } })) finish({ ok: false });
     return promise;
   }
 
@@ -482,48 +498,99 @@ export class DiscordDaemon {
         message.author.bot === true || (message.author.bot !== undefined && message.author.bot !== false) ||
         "webhook_id" in message || ![0, 19].includes(message.type as number) ||
         typeof message.content !== "string" || (!message.content.trim() && !(Array.isArray(message.attachments) && message.attachments.length)) || message.content.length > 4_000 || this.seen.has(message.id)) return;
-    this.seen.add(message.id);
-    if (this.seen.size > 2048) this.seen.delete(this.seen.values().next().value!);
     const channelId = message.channel_id;
-    // Preserve the validated scalar values across the channel lookup await. TypeScript
-    // intentionally does not retain narrowing through an await on a mutable object.
-    const authorId = message.author.id;
     const messageId = message.id;
-    if (channelId !== this.config.channelId && !this.threads.has(channelId)) {
-      const channel = await this.api.getChannel(channelId).catch(() => undefined);
-      if (!channel || ![10, 11, 12].includes(channel.type) || channel.parent_id !== this.config.channelId || channel.owner_id !== authorId) return;
-      this.threads.set(channelId, authorId);
-    }
-    if ((channelId !== this.config.channelId || [10, 11, 12].includes(this.channelType)) && this.threads.get(channelId) !== authorId) return;
-    let text = message.content.trim();
-    for (const mention of [`<@${this.botId}>`, `<@!${this.botId}>`]) {
-      if (text === mention || text.startsWith(`${mention} `) || text.startsWith(`${mention}\n`)) {
-        text = text.slice(mention.length).trimStart();
-        break;
-      }
-    }
-    if (!text && !(Array.isArray(message.attachments) && message.attachments.length)) return;
-    let destination = channelId;
-    try {
-      if (channelId === this.config.channelId && [0, 5].includes(this.channelType)) {
-        destination = (await this.api.createThread(channelId, messageId, "jeo reply")).id;
-        this.threads.set(destination, authorId);
-      }
-    } catch (error) {
-      if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
-      else { this.deps.onError?.("Discord thread creation failed"); void this.emit("Unable to create a reply thread; check bot permissions.", undefined, channelId); }
-      return;
-    }
+    const content = message.content;
     const reaction = async (emoji: string, remove = false) => {
+      if (this.stopped) return;
       try { await (remove ? this.api.removeReaction(channelId, messageId, emoji) : this.api.addReaction(channelId, messageId, emoji)); }
       catch (error) {
         if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
         else this.deps.onError?.("Discord reaction failed");
       }
     };
-    const progress = reaction("⏳");
+    if (this.preparations.size >= 128) {
+      this.deps.onError?.("Discord message preparation queue full");
+      await reaction("❌");
+      return;
+    }
+    this.seen.add(messageId);
+    if (this.seen.size > 2048) this.seen.delete(this.seen.values().next().value!);
+    // Reserve arrival order before metadata/thread creation can yield. Senders sharing
+    // a Discord channel share this admission lane, not the lifetime of a model turn.
+    const key = JSON.stringify([this.botId, typeof message.guild_id === "string" ? message.guild_id : "", channelId]);
+    const previous = this.preparationTails.get(key) ?? Promise.resolve();
+    const ready = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const tail = previous.then(() => ready.promise);
+    let createdThreadKey: string | undefined;
+    const release = () => {
+      if (!this.preparations.delete(release)) return;
+      ready.resolve();
+      cancelled.resolve();
+      if (this.preparationTails.get(key) === tail) this.preparationTails.delete(key);
+      if (createdThreadKey && this.preparationTails.get(createdThreadKey) === tail) this.preparationTails.delete(createdThreadKey);
+    };
+    this.preparationTails.set(key, tail);
+    this.preparations.add(release);
+    let command: Promise<boolean>;
+    let progress: Promise<void>;
     try {
-      const ok = await this.handleCommand(message, text, destination);
+      await Promise.race([previous, cancelled.promise]);
+      if (this.stopped) return;
+      if (channelId !== this.config.channelId && !this.threads.has(channelId)) {
+        const channel = await Promise.race([
+          this.api.getChannel(channelId).catch((error: unknown) => {
+            if (this.stopped) return undefined;
+            this.seen.delete(messageId);
+            if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+            else {
+              this.deps.onError?.("Discord channel metadata lookup failed");
+              void reaction("❌");
+            }
+            return undefined;
+          }),
+          cancelled.promise.then(() => undefined),
+        ]);
+        if (this.stopped || !channel || ![10, 11, 12].includes(channel.type) || channel.parent_id !== this.config.channelId) return;
+        this.threads.add(channelId);
+      }
+      let text = content.trim();
+      for (const mention of [`<@${this.botId}>`, `<@!${this.botId}>`]) {
+        if (text === mention || text.startsWith(`${mention} `) || text.startsWith(`${mention}\n`)) {
+          text = text.slice(mention.length).trimStart();
+          break;
+        }
+      }
+      if (!text && !(Array.isArray(message.attachments) && message.attachments.length)) return;
+      let destination = channelId;
+      try {
+        if (channelId === this.config.channelId && [0, 5].includes(this.channelType)) {
+          createdThreadKey = JSON.stringify([this.botId, typeof message.guild_id === "string" ? message.guild_id : "", messageId]);
+          this.preparationTails.set(createdThreadKey, tail);
+          const thread = await Promise.race([
+            this.api.createThread(channelId, messageId, "jeo reply"),
+            cancelled.promise.then(() => undefined),
+          ]);
+          if (this.stopped || !thread) return;
+          destination = thread.id;
+          this.threads.add(destination);
+        }
+      } catch (error) {
+        if (this.stopped) return;
+        if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+        else { this.deps.onError?.("Discord thread creation failed"); void this.emit("Unable to create a reply thread; check bot permissions.", undefined, channelId); }
+        return;
+      }
+      progress = reaction("⏳");
+      // handleCommand installs a normal prompt's canonical session tail before its
+      // first await. Release admission now so sandbox controls can bypass that tail.
+      command = this.handleCommand(message, text, destination);
+    } finally {
+      release();
+    }
+    try {
+      const ok = await command;
       void progress.then(() => reaction("⏳", true)).then(() => reaction(ok ? "✅" : "❌"));
     } catch {
       void progress.then(() => reaction("⏳", true)).then(() => reaction("❌"));
@@ -534,6 +601,26 @@ export class DiscordDaemon {
   private async handleCommand(message: Record<string, unknown>, text: string, destination: string): Promise<boolean> {
     const emit = (content: string, sessionId?: string) => this.emit(content, sessionId, destination);
     const sendPrompt = async (session: DiscordSession, body: string): Promise<boolean> => {
+      if (/^\/sandbox(?:\s|$)/.test(body)) {
+        const author = object(message.author) && typeof message.author.id === "string" ? message.author.id : "";
+        if (!this.allowed.has(author)) return false;
+        const result = await this.sandboxControl(session, body, author);
+        await emit(result.output, session.sessionId);
+        return result.ok;
+      }
+      if (this.queuedPrompts >= 128) { await emit("Session request queue is full.", session.sessionId); return false; }
+      const generation = session.controlGeneration;
+      const previous = this.promptTails.get(session.sessionId) ?? Promise.resolve();
+      const ready = Promise.withResolvers<void>();
+      const tail = previous.then(() => ready.promise);
+      this.promptTails.set(session.sessionId, tail);
+      this.queuedPrompts++;
+      await previous;
+      try {
+      if (this.stopped || this.sessions.get(session.sessionId) !== session || session.controlGeneration !== generation) {
+        await emit("Queued request cancelled because session control changed.", session.sessionId);
+        return false;
+      }
       if (/^[\/!$]/.test(body) || body.includes("\u0003")) {
         await emit("Remote commands are disabled; send ordinary prompt text.");
         return false;
@@ -556,7 +643,8 @@ export class DiscordDaemon {
         output = await createDiscordArtifactStage(session.sessionId, reqId);
         if (Array.isArray(message.attachments) && message.attachments.length) input = await (this.deps.stageAttachments ?? stageDiscordAttachments)(message.attachments, { directory: path.join(output.requestDirectory, "input"), signal: controller.signal });
         if (controller.signal.aborted || this.sessions.get(session.sessionId) !== session || !session.controlEnabled || session.controlGeneration !== controlGeneration) return false;
-        const result = await this.remoteRequest(session, body || "Please inspect the attached files.", reqId, controlGeneration);
+        const author = object(message.author) && typeof message.author.id === "string" ? message.author.id : "";
+        const result = await this.remoteRequest(session, body || "Please inspect the attached files.", reqId, controlGeneration, author);
         if (!result.ok || result.text === undefined) {
           await emit("Session request failed, was rejected, interrupted, or timed out.", session.sessionId);
           return false;
@@ -586,6 +674,11 @@ export class DiscordDaemon {
         await output?.cleanup().catch(() => this.deps.onError?.("Discord output cleanup failed"));
         this.staging.delete(controller);
       }
+      } finally {
+        this.queuedPrompts--;
+        ready.resolve();
+        if (this.promptTails.get(session.sessionId) === tail) this.promptTails.delete(session.sessionId);
+      }
     };
     if (text === "/sessions" || text === "/subagents") {
       const sessions = [...this.sessions.values()].filter(s => s.verified && s.ws.readyState === 1);
@@ -607,7 +700,7 @@ export class DiscordDaemon {
       const delivered = await emit(ok ? "Session acknowledged command." : "Command not acknowledged (unavailable, rejected or timed out).", session.sessionId);
       return ok && delivered;
     }
-    if (text.startsWith("/") || text.startsWith("!")) { await emit(HELP); return false; }
+    if ((text.startsWith("/") && !/^\/sandbox(?:\s|$)/.test(text)) || text.startsWith("!")) { await emit(HELP); return false; }
 
     const reference = object(message.message_reference) ? message.message_reference : undefined;
     const reply = reference && typeof reference.message_id === "string" && (reference.channel_id === undefined || reference.channel_id === message.channel_id)

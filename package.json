@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.12.14",
+  "version": "0.12.15",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
 
@@ -46,13 +46,15 @@
   "scripts": {
     "start": "bun src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
+    "build": "bun scripts/build-sandbox-worker.ts && bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
     "build:binaries": "bun scripts/ci-release-build-binaries.ts",
     "build:win": "bun scripts/ci-release-build-binaries.ts --targets win32-x64",
     "pack:check": "bun scripts/check-package.ts",
     "publish:npm": "npm publish --access public --registry https://registry.npmjs.org/",
     "changelog:sync": "bun scripts/sync-changelog.ts",
     "test": "bun test",
+    "build:hands": "bun scripts/build-sandbox-worker.ts",
+    "verify:sandbox": "bun scripts/verify-sandbox-isolation.ts",
     "verify:browser": "bun scripts/verify-browser.ts",
     "verify:discord": "bun scripts/verify-discord-integration.ts",
     "verify:tmux": "bash scripts/tmux-verify.sh",

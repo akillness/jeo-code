@@ -31,7 +31,7 @@ describe("Discord canonical session identity", () => {
 			"channel",
 			["absent"],
 			["absent"],
-			"user",
+			["present", "user"],
 		]);
 		expect(messengerSessionIdentity(discord({ guildId: undefined }))[3]).toEqual(["absent"]);
 		expect(messengerConversationKey(discord({ threadId: "literal,[\"absent\"]" }))).not.toBe(

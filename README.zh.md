@@ -32,7 +32,7 @@
 
 - [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
 
-**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。本地工具默认关闭；明确启用 `computer` 可访问共享主机桌面，启用 `bash` 可访问 shell，两者均非沙箱。详见[消息网关指南](docs/integrations/messenger.md)。
+**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。Discord 必须显式配置本地 Docker 沙箱；配置的工具在 Linux 客体中执行，不直接操作主机桌面或 shell。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
 
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
 
@@ -59,7 +59,7 @@
 - **计划 critic 门禁** — 计划不能跳过 architect/critic 步骤：`PlanSchema` 会拒绝以未验证变更结束的计划(变更之前的 verifier 不算)，并在 `ralplan` 起草阶段以及 `team`/`approve` 执行阶段生效。critic 裁决需要观察到仓库读取/搜索证据；这提高可审查性，但不等于独立验证工作区。
 - **安全边界自动模型回退** — 未分类的安全拒绝(可能是分类器误报，而非真实的内容策略命中)现在会切换到真正不同提供商的模型，而不是在同一个模型上无限退让 — 与现有的 rate-limit 快速回退是同一套模式。`Refusal (<category>)` 这种形态的确定性拒绝不受影响，仍然零回退硬失败。
 - **内存: 应得的信任** — 概念的验证日期现在只在蒸馏阶段被明确标记为已验证时才会写入，而不是每次写入都记录；`isConceptStale` 把未验证(或超过 30 天过期)的概念视为需要重新验证，而不是信任一个被动的时间戳。
-- **动态工作流(`eval` 工具)** — 围绕子代理派遣编写真正的 JS 控制流: `task(role, taskText, context?)`、`parallel(thunks)`、`pipeline(items, ...stages)`、`log(message)`，组合出 `task` 单阶段 `tasks[]` 批次无法表达的顺序/分支编排。运行在隔离的 Worker 线程中，具备真正的抢占式超时(`worker.terminate()`，而非同进程内的竞争) — 与 `bash` 同等的全进程信任级别，不假装沙箱，受同一个 interview 变更锁门控。
+- **动态工作流(`eval` 工具)** — 用 `task(role, taskText, context?)`、`parallel(thunks)`、`pipeline(items, ...stages)`、`log(message)` 组合 JS 流程。没有会话沙箱时，Worker 线程超时不是安全边界。启用沙箱后 eval 在 Linux 客体中执行，不支持其中的 task/parallel/pipeline 委派辅助函数；请使用父进程的 `task` 工具委派。
 - **在破损输出管道上安静退出** — 当管道输出到提前停止读取的命令时(`jeo --help | head`、消失的远程对端),不再转储原始的 `EPIPE` 堆栈 — 现在会以 shell 对被 SIGPIPE 终止的管道生产者报告的相同退出码(141)安静退出。真正的崩溃不受影响,仍会清晰地暴露出来。
 - **macOS 低文件描述符上限警告** — 较低的 `ulimit -n`(BSD 默认 256/1024)可能导致文件监视、浏览器工具或大范围仓库扫描出现不明的 `EMFILE` 失败 — jeo 现在会在启动时警告一次(仅 stderr,绝不污染被管道的 `-p` 输出),并给出具体的 `ulimit`/`launchctl` 指引。可通过 `JEO_SKIP_NOFILE_CHECK=1` 选择退出。
 
@@ -238,6 +238,29 @@ jeo ultragoal
 
 可选功能: 一个共享守护进程监视本机上所有活跃的 `jeo` 会话，并在每次**子代理状态变化**(启动 → 完成/失败/取消)时推送消息，另附会话身份头、回合开始/结束摘要以及最终的回合文本 — 绝不会重复"仍在运行"之类的通知。allowlist 中的人类可以在聊天里列出、发送、引导和取消；每一条控制都会转发给本地会话，并报告为**已确认(已接受，未必已完成)**或**未确认** — 守护进程绝不声称某条命令已执行。
 
+### Discord 会话与沙箱边界
+
+一个 Discord 线程保留一个持久会话，不因发送者或消息而改变。同线程请求按 FIFO 执行，其他会话可并发。会话共享所选工作区，不创建每会话 Git worktree，因此文件修改可能冲突。
+
+在消息网关配置中设置 `sandbox`；在 `~/.jeo/config.json` 中采用相同格式可隔离终端会话：
+
+```json
+{
+  "sandbox": {
+    "image": "oven/bun:1.3.14",
+    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
+  }
+}
+```
+
+这只是沙箱部分，不是完整的消息网关配置；请保留现有 `platforms` 白名单及凭据环境变量名。Linux Bun 镜像必须已存在于本地 Docker 守护进程。后端解析其不可变镜像 ID，使用 `--pull=never`，不会拉取镜像、安装依赖、使用远程 Docker 或回退到主机执行。即使主机是 Mac/Windows，运行的仍是 **Linux 客体 shell**，不是主机原生 shell。网络为 `none`；`/workspace` 可读写，额外路径需要会话级 `ro`/`rw` 授权。整个主目录、私有控制路径及控制 socket 均不可授权。主机操作者和 Docker 守护进程仍属于可信边界。
+
+只有直接提交给父进程的人类控制才能决定授权：`/sandbox status`、`/sandbox approve <requestId>`、`/sandbox deny <requestId>`、`/sandbox revoke`。模型的 `sandbox_request {host, mode:'ro'|'rw'}` 仅能申请，不能自批。决定要求已认证操作者自己的会话及当前请求 revision，过期或跨会话请求会被拒绝。现有终端 Discord 远程控制也必须使用沙箱：本地 `/discord control on --allow-full-control` 开启，`/discord control off` 关闭；远程轮次保留本地输入草稿。
+
+运行时拒绝 `independentSessions`，显式执行 `jeo messenger setup` 迁移才会移除该项。`sessionDir` 必须是工作区外、与之不重叠的私有路径。工作区中的旧 `.jeo/sessions`、`.jeo/messenger-sessions`、`.jeo/memory/raw` 会话与原始记录存储会阻止启动并给出移动指引；重启前须主动迁移，不会自动复制或删除。完整对话历史只留在父进程专用存储，蒸馏后的项目学习共享。复用现有 ECC 技能/工作流安装，未进行全局重装；受保护的全局技能在执行前保存快照，工作区/获准文档通过客体读取。
+
+**验证范围（2026-11-03）：** 实际的 macOS 真实 Docker 验证器（`bun run verify:sandbox`）通过 **20 项行为契约**，源码独立构建也已通过。复制出的独立二进制通过了范围有限的验证，涵盖真实 PTY FIFO、父进程 `sandbox_request` 与真实 Linux 客体工具、完整历史隐私、与父进程生成的 stderr 关闭 nonce 匹配的 ACK、真实 worker 退出（143）以及 Docker 容器不存在。当前源码包装层保留 teardown 清理所有者、有界的关闭等待、人类按会话授权、一个持久线程/FIFO 以及共享工作区。这不是完整测试套件、跨平台或生产环境的验证：完整 `bun test` 超时，**未通过**；通用聚焦套件仍有陈旧 fixture 失败，正在修复。原生 Linux 和 Windows 主机验证暂不可用，也未实际向 Discord 发送消息。macOS 上的 Linux 客体不等于主机认证。`bun run build:hands` 构建 worker；`bun run verify:sandbox` 运行真实 Docker 检查，不安装前置依赖。必须确认 worker/容器已清理，错误或未确认移除不能报告成功。
+
 各平台详细独立指南：
 - 📖 [渠道集成概览与架构](docs/integrations/README.md) — 功能对比矩阵与架构图
 - 📱 [Telegram 集成指南](docs/integrations/telegram.md) — 内置后台守护进程、BotFather 交互配对、论坛主题与 `/steer` 命令
@@ -267,7 +290,7 @@ jeo daemon start|stop|status|reload   # the shared daemon has no provider select
 - **Setup** 会通过官方 API 验证机器人身份和目标访问权限(Telegram `getMe`，Discord 机器人 + 频道查询，Slack `auth.test`/`bots.info`/`conversations.info` 以及一个 Socket Mode URL)，并把结果存入 `~/.jeo/config.json` 的 `notifications.<provider>` 下 — **明文**；请保持该文件私有。它不会发送消息，也不会打开 socket。
 - **`initialized`**(`jeo daemon status`)表示守护进程已持有自己的锁并启动了各传输层；它并不证明 Telegram 轮询、Discord Gateway 握手或 Slack Socket Mode 连接已经成功。要验证这些请使用 `notify health` / `notify test`。
 - **更改 token 或目标**会重置 Discord 和 Slack 的 allowlist(你必须再次传入 `--allowed-user-ids`)以及 Telegram 的每会话主题映射；用完全相同的凭证和目标重新运行 setup 则会保留它们。
-- **远程命令是字面文本**(`/subagents` 等)，仅对已配置的聊天/频道和 allowlist 授权；Slack 还额外接受同名的已注册斜杠命令。allowlist 中的操作者实际上拥有本地代理的全部能力 — 请把这份名单当作信任边界对待。
+- **远程命令是字面文本**(`/subagents` 等)，仅对配置的聊天/频道及白名单授权；Slack 也接受同名注册斜杠命令。Discord 终端控制默认关闭，须在沙箱会话中本地提交 `/discord control on --allow-full-control` 开启，`/discord control off` 撤销。遵守上文沙箱和人类授权边界，不要在聊天中放入凭据。
 - **重试按提供商有界**: Telegram 遵守 429 的 `retry_after` 冷却(限制在 1 秒–1 小时之间)并使用独立的轮询退避；Discord 和 Slack 在 429 时按服务器的 `Retry-After` 最多重试 3 次，且绝不重发结果未知的 POST(平台可能已经收到了它)。
 - **孤儿恢复**: 守护进程崩溃后，其锁会变为 `stale`；下一次 `jeo daemon start` 会回收它。当宿主机能够报告进程启动时间时，`jeo daemon stop` 会拒绝向已被复用的 PID 发送信号；无法报告时也会明确说明。
 - **目前已验证**: Telegram 端到端(真实发送、轮询、干净关闭)。Discord 和 Slack 基于同一个守护进程实现，配有离线的传输/接线测试以及代码、安全和类型审查；尚未用真实的机器人/应用凭证进行实际连通性验证。
@@ -322,7 +345,7 @@ jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval
 jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
 ```
 
-生成一个 GitHub Actions 工作流(`.github/workflows/<name>.yml`),安装 jeo 并在 `schedule` / `issues` / `pull_request` 上以无头模式运行它(`jeo "<prompt>" -p`)— 始终与 `workflow_dispatch` 搭配,便于手动测试运行 — 运行在 GitHub 自己的托管 runner 上。这就是 jeo "无需笔记本电脑运行"的故事:jeo 自身内部没有进程内调度器、没有 webhook 监听器、没有代码执行沙箱 — 由 GitHub 的基础设施负责触发,jeo 只是运行它现有的无头模式。默认在有任何变更时开一个 PR(`peter-evans/create-pull-request`,diff 为空时是安全的空操作);`--no-pr` 则改为直接提交到触发分支。`--dry-run` 只打印 YAML 而不写入;在相同的 `--out` 路径上重新运行 `jeo routine init`,若不加 `--force` 会拒绝覆盖。请在工作流首次真正运行前,设置好仓库密钥 `ANTHROPIC_API_KEY`(或 `--api-key-env <VAR>`)。
+生成 GitHub Actions 工作流(`.github/workflows/<name>.yml`)，在 GitHub 托管 runner 上安装 jeo，并按 `schedule` / `issues` / `pull_request` 无头执行(`jeo "<prompt>" -p`)，同时提供手动执行的 `workflow_dispatch`。GitHub 负责触发；例行任务不增加进程内调度器或 webhook 监听器。会话沙箱是需要上述本地前置条件的独立显式配置，不由工作流生成器安装。默认对变更创建 PR(`peter-evans/create-pull-request`，空 diff 为 no-op)；`--no-pr` 则提交到触发分支。`--dry-run` 仅输出 YAML，覆盖已有 `--out` 须加 `--force`。首次实际运行前设置仓库 secret `ANTHROPIC_API_KEY`（或 `--api-key-env <VAR>`）。
 
 ## 本地模型
 
@@ -335,7 +358,7 @@ jeo doctor && jeo
 ## 配置
 
 - 全局配置: `~/.jeo/config.json`(模型选择 MRU 持久化)
-- 项目状态/会话: `<project>/.jeo/`
+- 项目状态：`<project>/.jeo/`；沙箱会话记录保留在工作区外（参见上文 Discord 会话边界）。
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -420,11 +443,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]**
+- **[0.12.15]** (2026-11-03)
 - **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
-- **[0.12.10]** (2026-11-02)
-- **[0.12.11]** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

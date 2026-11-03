@@ -232,6 +232,8 @@ test("activity ring is bounded and resets per turn", () => {
 
 // ── read lineRange crash guard (field bug: `spec.split is not a function`) ──
 import { parseLineSelector, readTool } from "../src/agent/tools";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 test("parseLineSelector tolerates numeric selectors and rejects junk politely", () => {
   expect(parseLineSelector(10, 100)).toEqual({ ranges: [[10, 10]] });
@@ -240,7 +242,9 @@ test("parseLineSelector tolerates numeric selectors and rejects junk politely", 
 });
 
 test("readTool no longer crashes on a numeric lineRange", async () => {
-  const res = await readTool("package.json", 2 as unknown as string, process.cwd());
+  // Anchor to this module, not ambient process.cwd() (other suites may chdir).
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const res = await readTool(join(repoRoot, "package.json"), 2 as unknown as string, repoRoot);
   expect(res.success).toBe(true);
   expect(res.output).toMatch(/^2[a-z0-9]{2}\|/); // line-2 slice, anchor-prefixed
 });

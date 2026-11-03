@@ -49,6 +49,7 @@ import {
 } from "./task-tool";
 import { getSubagentRole, defaultSubagentRole, subagentRoleIds } from "./subagents";
 import { loadProjectContext, type ProjectContextFile } from "./context-files";
+import { currentSandboxExecution } from "./hooks";
 
 export interface EvalToolOptions {
   config: SubagentTaskConfig;
@@ -101,6 +102,9 @@ const DEFAULT_EVAL_TIMEOUT_MS = 300_000; // 5 minutes
 const MAX_EVAL_TIMEOUT_MS = 1_800_000; // 30 minutes — same outer ceiling as JEO_CALL_TIMEOUT_MS's default
 
 export function evalToolProtocolLine(config?: Pick<import("./state").Config, "subagents">): string {
+  if (currentSandboxExecution()) {
+    return "eval {code, timeoutMs?} executes JavaScript in the persistent session hands kernel at the mapped working directory. Filesystem/process access stays inside the container. task(), parallel(), and pipeline() orchestration are not available there; use the parent task tool to delegate model work.";
+  }
   return (
     `eval    {code, timeoutMs?}  — Dynamic Workflows: write an async JS function BODY (return value or throw) ` +
     `composing subagent dispatch with REAL control flow (loops/conditionals/sequencing) instead of one static tool call. ` +
@@ -224,6 +228,8 @@ type WorkerMsg = TaskRequestMsg | LogMsg | DoneMsg;
 
 export function createEvalTool(opts: EvalToolOptions): ToolHandler {
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+    const sandbox = currentSandboxExecution();
+    if (sandbox) return sandbox.supervisor.call("eval", args, { cwd, signal: opts.signal ?? sandbox.signal });
     const code = typeof args.code === "string" ? args.code : "";
     if (!code.trim()) {
       return { success: false, output: "", error: `eval requires a non-empty 'code' body (an async function BODY — the last expression or an explicit 'return' becomes the result).` };

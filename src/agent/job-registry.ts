@@ -1,7 +1,7 @@
 /**
  * In-process registry for BACKGROUND shell processes (gjc `job`/async-bash parity,
  * scoped down to one runtime). Unlike the synchronous `bash` tool, `start()` spawns
- * a real parallel OS process via `Bun.spawn` and returns immediately — the parent
+ * a real parallel OS process (see `shell-lease.ts`) and returns immediately — the parent
  * can keep working and later list / tail / await / cancel it via the `job` control
  * tool while stdout/stderr drain into a bounded buffer in the background.
  *
@@ -11,6 +11,8 @@
  * `cancelAll()` is also safe for explicit Ctrl-C cleanup.
  *
  */
+
+import { settlesWithin, spawnLeasedShell, type LeasedShell } from "./shell-lease";
 
 export type JobStatus = "running" | "exited" | "killed" | "failed";
 
@@ -27,9 +29,12 @@ export interface JobRecord {
 
 interface Entry {
   record: JobRecord;
-  proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   promise: Promise<void>;
-  cancel?: () => void;
+  cancel?: () => boolean;
+  /** SIGKILL reached the pinned process group. */
+  killDelivered?: boolean;
+  /** Termination of every process holding the job's group or pipes cannot be confirmed. */
+  incomplete?: boolean;
 }
 
 const OUTPUT_CAP = 20000;
@@ -71,34 +76,32 @@ export class JobRegistry {
     };
     this.buffers.set(id, "");
 
-    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    let shell: LeasedShell;
     try {
-      proc = Bun.spawn(["bash", "-c", command], {
-        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-        ...(process.platform !== "win32" ? { detached: true } : {}),
-      });
+      shell = spawnLeasedShell(command, cwd);
     } catch (err) {
       record.status = "failed";
       record.finishedAt = Date.now();
       this.append(id, err instanceof Error ? err.message : String(err));
       this.pendingMutations.add(id);
       // No process handle to store — nothing further to drain or cancel.
-      this.entries.set(id, { record, proc: undefined as any, promise: Promise.resolve() });
+      this.entries.set(id, { record, promise: Promise.resolve() });
       return record;
     }
     this.active.add(id);
 
-    const stdoutReader = proc.stdout.getReader();
-    const stderrReader = proc.stderr.getReader();
-    const cancelReaders = () => {
-      void stdoutReader.cancel().catch(() => {});
-      void stderrReader.cancel().catch(() => {});
-    };
-    const cancel = () => {
-      if (process.platform !== "win32") {
-        try { process.kill(-proc.pid, "SIGKILL"); return; } catch { /* fall back to the shell */ }
-      }
-      try { proc.kill(9); } catch { /* already exited */ }
+    const entry: Entry = { record, promise: Promise.resolve() };
+    entry.cancel = (): boolean => {
+      const outcome = shell.killGroup();
+      if (outcome === "delivered") { entry.killDelivered = true; return true; }
+      entry.incomplete = true;
+      this.append(id, outcome === "unpinned"
+        ? "\n[job process group is no longer pinned; termination cannot be confirmed]\n"
+        : outcome === "unsupported"
+          ? "\n[job process tree termination cannot be confirmed on Windows]\n"
+          : `\n[job process group termination attempt failed: ${String(outcome.error)}]\n`);
+      shell.killDirect();
+      return false;
     };
     const drain = async (reader: { read: () => Promise<{ done?: boolean; value?: Uint8Array }> }) => {
       const decoder = new TextDecoder();
@@ -109,44 +112,55 @@ export class JobRegistry {
       }
       this.append(id, decoder.decode());
     };
-    const drains = Promise.all([drain(stdoutReader), drain(stderrReader)]);
+    const drains = Promise.all([drain(shell.stdout), drain(shell.stderr)]);
     void drains.catch(() => {});
 
     const promise = (async () => {
       try {
-        const exitCode = await proc.exited;
-        let lingerTimer: NodeJS.Timeout | undefined;
-        const drained = await Promise.race([
-          drains.then(() => true),
-          new Promise<false>(resolve => { lingerTimer = setTimeout(() => resolve(false), PIPE_LINGER_MS); }),
-        ]);
-        clearTimeout(lingerTimer);
-        if (!drained) {
-          cancelReaders();
-          await drains;
-          if (record.status !== "killed") {
-            record.status = "failed";
-            record.exitCode = exitCode;
-            this.append(id, "\n[job output incomplete: a descendant kept stdout or stderr open after the shell exited]\n");
-            return;
+        const exitCode = await shell.exit;
+        let lingered = false;
+        if (!(await settlesWithin(drains, PIPE_LINGER_MS))) {
+          lingered = true;
+          // A descendant still holds stdout/stderr. Only the pinned group may be signalled; if EOF does
+          // not follow the delivered SIGKILL, the holder left the group and stays unresolved.
+          if ((entry.killDelivered || entry.cancel!()) && !(await settlesWithin(drains, PIPE_LINGER_MS))) {
+            entry.incomplete = true;
+            this.append(id, "\n[job pipe remains open outside the process group; termination cannot be confirmed]\n");
           }
+          shell.dispose();
+          await drains;
         }
-        if (record.status === "killed") return;
-        record.status = "exited";
+        if (exitCode === null && !entry.killDelivered && !entry.incomplete) {
+          entry.incomplete = true;
+          this.append(id, "\n[job process group lease ended without an exit report; termination cannot be confirmed]\n");
+        }
+        if (record.status === "killed" && !entry.incomplete) return;
+        if (!lingered && !entry.incomplete) {
+          record.status = "exited";
+          record.exitCode = exitCode;
+          return;
+        }
+        record.status = "failed";
         record.exitCode = exitCode;
+        if (lingered) this.append(id, "\n[job output incomplete: a descendant kept stdout or stderr open after the shell exited]\n");
       } catch (err) {
+        // Output can no longer be observed: stop the group now so the holder can be reaped.
+        if (!entry.killDelivered) entry.cancel!();
         if (record.status === "killed") return;
         record.status = "failed";
         this.append(id, err instanceof Error ? err.message : String(err));
       } finally {
-        await proc.exited;
-        this.active.delete(id);
+        shell.release();
+        await shell.reaped;
+        shell.dispose();
+        if (!entry.incomplete) this.active.delete(id);
         this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
       }
     })();
 
-    this.entries.set(id, { record, proc, promise, cancel });
+    entry.promise = promise;
+    this.entries.set(id, entry);
     return record;
   }
 
@@ -221,18 +235,24 @@ export class JobRegistry {
     for (const id of ids) {
       const e = this.entries.get(id);
       if (!e) continue;
+      if (e.incomplete) { out.push(e.record); continue; }
       if (e.record.status === "running") {
-        e.record.status = "killed";
+        const killed = e.cancel?.();
+        e.record.status = killed ? "killed" : "failed";
         e.record.finishedAt = Date.now();
-        e.cancel?.();
       }
       out.push(e.record);
     }
     return out;
   }
 
+  /** Include unresolved process groups even if their shell has exited. */
+  cancellable(): JobRecord[] {
+    return this.list().filter(r => r.status === "running" || this.entries.get(r.id)?.incomplete);
+  }
+
   /** Kill every still-running job (session teardown / Ctrl-C). */
   cancelAll(): JobRecord[] {
-    return this.cancel(this.running().map(r => r.id));
+    return this.cancel(this.cancellable().map(r => r.id));
   }
 }

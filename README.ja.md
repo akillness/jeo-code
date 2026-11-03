@@ -32,7 +32,7 @@
 
 - [双方向メッセンジャーゲートウェイ (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。ローカルツールは既定で無効です。`computer` を明示的に許可すると共有ホストのデスクトップに、`bash` を許可するとシェルにアクセスでき、サンドボックスではありません。[ガイド](docs/integrations/messenger.md)を参照してください。
+**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。Discord には明示的なローカル Docker サンドボックスが必須で、設定されたツールはホストのデスクトップ/シェルではなく Linux ゲストで実行します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
 
 📖 **[使い方ガイド](docs/usage-guide.md)** — インストール、TUI操作（↑履歴、Ctrl+O、`!`シェル）、スラッシュコマンド、`/resume`、スペックファーストワークフローをデモ動画付きで解説。
 
@@ -59,7 +59,7 @@
 - **プラン critic ゲート** — プランは architect/critic の工程を省略できません。`PlanSchema` は未検証の変更で終わるプランを拒否し(変更より前の verifier は対象にならない)、`ralplan` の作成時と `team`/`approve` の実行時に適用します。critic 評決には観測されたリポジトリ読み取り・検索の証拠が必要ですが、これはレビュー可能性を支えるものであり、ワークスペースの独立検証ではありません。
 - **セーフティバウンダリの自動モデルフォールバック** — 未分類のセーフティ拒否(本物のコンテンツポリシー違反ではなく、分類器の誤検知の可能性)は、同じモデルで永遠に譲歩するのではなく、実際に別プロバイダのモデルへ切り替わるようになりました — 既存のレート制限時の高速フォールバックと同じパターンです。`Refusal (<category>)` 形式の確定的な拒否は影響を受けず、引き続きフォールバックなしでハードフェイルします。
 - **メモリ: 勝ち取った信頼** — コンセプトの検証日付は、あらゆる書き込みではなく、蒸留パスが明示的に検証済みとマークした場合にのみ記録されるようになりました。`isConceptStale` は受動的なタイムスタンプを信頼する代わりに、未検証(または30日超の陳腐化)のコンセプトを再検証が必要なものとして扱います。
-- **ダイナミックワークフロー(`eval` ツール)** — サブエージェントディスパッチの周りに実際の JS 制御フローを書けます: `task(role, taskText, context?)`、`parallel(thunks)`、`pipeline(items, ...stages)`、`log(message)` を組み合わせ、`task` の単一ステージ `tasks[]` バッチでは表現できない逐次/分岐オーケストレーションを構成します。隔離された Worker スレッドで、真のプリエンプティブなタイムアウト(同一プロセス内のレースではなく `worker.terminate()`)を伴って実行され — `bash` と同じフルプロセスの信頼度で、サンドボックスのふりはせず、同じ interview 変更ロックでゲートされます。
+- **ダイナミックワークフロー(`eval` ツール)** — `task(role, taskText, context?)`、`parallel(thunks)`、`pipeline(items, ...stages)`、`log(message)` で JS フローを構成します。セッションサンドボックスなしでは Worker スレッドのタイムアウトはセキュリティ境界ではありません。サンドボックスでは eval は Linux ゲストで実行され、task/parallel/pipeline の委任ヘルパーは非対応です。委任には親の `task` ツールを使ってください。
 - **壊れた出力パイプで静かに終了** — 早期に読み取りを止めるコマンドへパイプした場合(`jeo --help | head`、消えたリモートピア)、生の `EPIPE` スタックダンプはもう発生しません — シェルが SIGPIPE で終了したパイプラインプロデューサに対して報告するのと同じコード(141)で静かに終了します。本物のクラッシュには影響せず、引き続き明確に表面化します。
 - **macOS の低いファイルディスクリプタ上限警告** — 低い `ulimit -n`(BSD のデフォルト 256/1024)は、ファイル監視、ブラウザツール、広範なリポジトリスキャンで不明瞭な `EMFILE` 失敗を招くおそれがあります — jeo は起動時に一度(stderr のみ、パイプされる `-p` 出力を汚染しません)、具体的な `ulimit`/`launchctl` ガイダンスとともに警告するようになりました。`JEO_SKIP_NOFILE_CHECK=1` でオプトアウトできます。
 
@@ -238,6 +238,29 @@ jeo ultragoal
 
 オプトイン: 共有デーモン 1 つがマシン上の稼働中の `jeo` セッションをすべて監視し、**サブエージェントの状態遷移**(開始 → 完了/失敗/キャンセル)ごとにメッセージを送ります。加えてセッション識別ヘッダー、ターンの開始/終了サマリー、確定したターンのテキストも送りますが、「まだ実行中」という繰り返しの ping は決して送りません。allowlist に登録された人間はチャットから一覧・送信・ステア・キャンセルができ、すべての制御はローカルセッションへ中継されて **確認応答済み(受理であって完了ではない)** または **未確認応答** として報告されます — デーモンがコマンドの実行完了を主張することはありません。
 
+### Discord セッションとサンドボックス境界
+
+Discord の1スレッドは送信者・メッセージに関係なく1つの永続セッションを保持します。同じスレッドは FIFO、別セッションは並行実行できます。選択したワークスペースを共有し、セッション別の Git worktree は作らないため、ファイル変更は競合し得ます。
+
+メッセンジャー設定に `sandbox` を指定します。`~/.jeo/config.json` にも同じ形式で設定すると、ターミナルセッションを隔離します:
+
+```json
+{
+  "sandbox": {
+    "image": "oven/bun:1.3.14",
+    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
+  }
+}
+```
+
+これは完全なメッセンジャープロファイルではなくサンドボックス部分です。既存の `platforms` 許可リストと認証情報の環境変数名は保持してください。Linux Bun イメージはローカル Docker デーモンに既に存在する必要があります。不変のイメージ ID を確認して `--pull=never` で起動し、pull・依存関係インストール・リモート Docker・ホスト実行へのフォールバックは行いません。Mac/Windows でもホストシェルではなく **Linux ゲストシェル**です。ネットワークは `none`、`/workspace` は読み書き可能、追加パスにはセッション別 `ro`/`rw` 許可が必要です。ホーム全体・非公開制御パス・制御ソケットは許可できません。ホスト運用者と Docker デーモンは信頼対象です。
+
+アクセスを決定できるのは親に直接提出された人間の `/sandbox status`、`/sandbox approve <requestId>`、`/sandbox deny <requestId>`、`/sandbox revoke` のみです。モデルの `sandbox_request {host, mode:'ro'|'rw'}` は要求専用で、自己承認できません。認証済み主体自身のセッションと現在の要求 revision が必要で、古い要求や別セッションの要求は拒否します。既存ターミナルの Discord 制御にもサンドボックスが必要です。ローカル `/discord control on --allow-full-control` で有効、`/discord control off` で無効にし、リモートターンはローカル入力の下書きを保持します。
+
+`independentSessions` は実行時に拒否し、明示的な `jeo messenger setup` 移行で削除します。`sessionDir` はワークスペースと重ならない外部の非公開パスに置いてください。旧 `.jeo/sessions`・`.jeo/messenger-sessions`・`.jeo/memory/raw` の記録がワークスペースにある場合は移動案内とともに起動を拒否します。再起動前に意図的に移動し、自動コピー・削除は行いません。完全な会話履歴は親専用ストアに保持し、蒸留済みプロジェクト学習は共有します。既存 ECC スキル/ワークフロー導入を再利用し、グローバル再インストールは行っていません。保護されたグローバルスキルは実行前にスナップショット化し、ワークスペース/許可済み文書はゲスト経由で読みます。
+
+**検証範囲(2026-11-03):** 実際の macOS 実 Docker 検証(`bun run verify:sandbox`)が **20動作契約**に成功し、ソースのスタンドアロンビルドも成功しました。コピーしたスタンドアロンバイナリは、実 PTY FIFO、親の `sandbox_request` と実 Linux ゲストツール、全履歴の非公開、親が生成した stderr シャットダウン nonce と一致する ACK、実ワーカー終了(143)、Docker コンテナ不在を対象とする限定的な検証に成功しました。現在のソースラッパーは teardown のクリーンアップ所有者、有界なシャットダウン待機、人間によるセッション別許可、永続スレッド/FIFO 1 つ、共有ワークスペースを維持します。これは全スイート・クロスプラットフォーム・本番の検証ではありません。全体の `bun test` はタイムアウトし**成功ではなく**、一般の集中スイートには古いフィクスチャの失敗が残り修正中です。ネイティブ Linux・Windows ホストの検証は利用できず、実 Discord 送信も行っていません。macOS 上の Linux ゲストはホスト認定ではありません。`bun run build:hands` はワーカーをビルドし、`bun run verify:sandbox` は前提条件をインストールせず実 Docker を検査します。ワーカー/コンテナの除去確認が必要で、エラーや未確認の除去を成功と報告しません。
+
 プラットフォーム別詳細ガイド:
 - 📖 [チャネル連携概要 & アーキテクチャ](docs/integrations/README.md) — 機能マトリクスと全体構成
 - 📱 [Telegram 連携詳細ガイド](docs/integrations/telegram.md) — 内蔵バックグラウンドデーモン、BotFather ペアリング、フォーラムトピック、`/steer` コマンド
@@ -267,7 +290,7 @@ jeo daemon start|stop|status|reload   # 共有デーモンにプロバイダ選�
 - **セットアップ**は公式 API(Telegram `getMe`、Discord のボット + チャネル検索、Slack `auth.test`/`bots.info`/`conversations.info` と Socket Mode URL)でボット ID と宛先アクセスを検証し、結果を `~/.jeo/config.json` の `notifications.<provider>` 配下に **平文** で保存します — このファイルは非公開に保ってください。メッセージは送信せず、ソケットも開きません。
 - **`initialized`**(`jeo daemon status`)はデーモンプロセスがロックを所有しトランスポートを起動したことを意味し、Telegram ポール、Discord Gateway ハンドシェイク、Slack Socket Mode 接続が成功した証明ではありません。それには `notify health` / `notify test` を使ってください。
 - **トークンや宛先を変更する**と、Discord と Slack では allowlist が(`--allowed-user-ids` を再度渡す必要があります)、Telegram ではセッション単位トピックのマップがリセットされます。まったく同じ認証情報と宛先でセットアップを再実行した場合は保持されます。
-- **リモートコマンドはリテラルなテキスト**(`/subagents` など)で、設定済みチャット/チャネルと allowlist に対して認可されます。Slack ではさらに同じ名前を登録済みスラッシュコマンドとしても受け付けます。allowlist に載ったオペレータは事実上ローカルエージェントの能力を握るため、この一覧は信頼境界として扱ってください。
+- **リモートコマンドはリテラルテキスト**(`/subagents` など)で、設定済みチャット/チャネルと allowlist に対して認可されます。Slack は同名の登録済みスラッシュコマンドも受け付けます。Discord ターミナル制御は既定で無効です。サンドボックスセッションでローカル `/discord control on --allow-full-control` により有効化し、`/discord control off` で解除します。上記の隔離・人間の承認境界に従い、認証情報をチャットに書かないでください。
 - **再試行はプロバイダごとに上限あり**: Telegram は 429 の `retry_after` クールダウン(1 秒〜1 時間にクランプ)を尊重し、ポールのバックオフは別途管理します。Discord と Slack は 429 時にサーバーの `Retry-After` を使って最大 3 回まで再試行し、結果が不明な POST を再送することはありません(プラットフォーム側がすでに受理している可能性があるため)。
 - **オーファン復旧**: デーモンがクラッシュするとロックは `stale` になり、次の `jeo daemon start` が回収します。`jeo daemon stop` は、ホストがプロセス起動時刻を報告できる場合は再利用された PID へのシグナル送信を拒否し、報告できない場合はその旨を伝えます。
 - **これまでの検証状況**: Telegram はエンドツーエンドで検証済み(実送信、ポーリング、クリーンシャットダウン)。Discord と Slack は同じデーモンの背後に実装され、オフラインのトランスポート/配線テストとコード・セキュリティ・型レビューを経ていますが、実際のボット/アプリ認証情報を使ったライブ接続はまだ行っていません。
@@ -322,7 +345,7 @@ jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval
 jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
 ```
 
-GitHub Actions ワークフロー(`.github/workflows/<name>.yml`)を生成し、jeo をインストールして `schedule` / `issues` / `pull_request` でヘッドレス実行します(`jeo "<prompt>" -p`) — 手動テスト実行のために常に `workflow_dispatch` と組み合わせます — GitHub 自身のホステッドランナー上で。これが jeo の「ラップトップなしで動く」ストーリーです: jeo 自体の内部にインプロセスのスケジューラも、Webhook リスナーも、コード実行サンドボックスもありません — GitHub のインフラがトリガーを担い、jeo は既存のヘッドレスモードを実行するだけです。デフォルトでは変更があれば PR を開きます(`peter-evans/create-pull-request`、diff が空なら安全な no-op); `--no-pr` はトリガーしたブランチへ直接コミットします。`--dry-run` は YAML を書き込まずに出力するだけです; 同じ `--out` パスで `jeo routine init` を再実行すると `--force` なしでは上書きを拒否します。ワークフローの最初の実際の実行前に、リポジトリシークレット `ANTHROPIC_API_KEY`(または `--api-key-env <VAR>`)を設定してください。
+GitHub Actions ワークフロー(`.github/workflows/<name>.yml`)を生成し、GitHub ホステッドランナーで jeo をインストールして `schedule` / `issues` / `pull_request` によりヘッドレス実行します(`jeo "<prompt>" -p`)。手動実行用 `workflow_dispatch` も含みます。トリガーは GitHub が担い、ルーティンはプロセス内スケジューラや Webhook リスナーを追加しません。セッションサンドボックスは上記ローカル前提条件を伴う別の明示的設定で、ルーティン生成がインストールするものではありません。既定は変更の PR 作成(`peter-evans/create-pull-request`、空 diff は no-op)、`--no-pr` はトリガーブランチへコミットします。`--dry-run` は YAML 出力のみ、既存 `--out` の上書きには `--force` が必要です。最初の実行前にリポジトリシークレット `ANTHROPIC_API_KEY`(または `--api-key-env <VAR>`)を設定してください。
 
 ## ローカルモデル
 
@@ -335,7 +358,7 @@ jeo doctor && jeo
 ## 設定
 
 - グローバル設定: `~/.jeo/config.json`(モデル選択は MRU 永続)
-- プロジェクト状態/セッション: `<project>/.jeo/`
+- プロジェクト状態: `<project>/.jeo/`。サンドボックスの会話記録はワークスペース外に保持します(上記 Discord セッション境界を参照)。
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -422,11 +445,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]**
+- **[0.12.15]** (2026-11-03)
 - **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
-- **[0.12.10]** (2026-11-02)
-- **[0.12.11]** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

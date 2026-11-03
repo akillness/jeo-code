@@ -6,6 +6,25 @@ import type { AuthProvider } from "../auth/storage";
 import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { resolveCustomApiKey, setCustomProviders, type CustomProviderConfig } from "../ai/providers/custom-providers";
 import { jeoEnv } from "../util/env";
+import type { SandboxConfig } from "./sandbox/types";
+import { currentSandboxExecution } from "./hooks";
+import { discoverAgentGuidanceFiles, loadProjectContext } from "./context-files";
+import type { ToolHandler } from "./engine";
+import { createTodoTool, type TodoItem } from "./todo-tool";
+import { executeMemoryOperation } from "./memory";
+import { executeSkillCatalogOperation } from "../skills/catalog";
+import { encodeHandsFrame, MAX_FRAME_BYTES } from "./sandbox/rpc";
+import { readGoalFile, clearGoalState } from "./goal-verifier";
+import { inspectApprovalPath } from "../commands/approve";
+
+/** Only workspace workflow data crosses this boundary; global config stays in the brain. */
+async function sandboxWorkflow<T>(operation: string, args: Record<string, unknown>, cwd: string): Promise<T> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) throw new Error("SANDBOX_WORKFLOW: missing execution scope");
+  const result = await sandbox.supervisor.call("__workflow", { operation, ...args }, { cwd, signal: sandbox.signal });
+  if (!result.success) throw new Error(result.error || "SANDBOX_WORKFLOW: operation failed");
+  return JSON.parse(result.output) as T;
+}
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
 export interface StoredOAuth {
@@ -57,6 +76,8 @@ export interface Config {
    *  overrides. Resolve with `resolveWikiRoot()`. */
   wikiRoot?: string;
   theme?: string;
+  /** Explicit local container image and finite session resource limits; never auto-pulled. */
+  sandbox?: SandboxConfig;
   /** Terminal-bell notifications (gajae-code 0.7.8 parity). `bell` is the master
    *  toggle; per-event flags refine it. Env `JEO_NOTIFY_BELL=1/0` force-overrides. */
   notify?: {
@@ -582,6 +603,10 @@ export function getLocalJeoDir(cwd: string = process.cwd()): string {
  *  correctness requirement — a missing .gitignore degrades gracefully to "no
  *  ignore", not a broken feature). */
 export async function ensureJeoGitignore(cwd: string = process.cwd()): Promise<void> {
+  if (currentSandboxExecution()) {
+    await sandboxWorkflow("ensureGitignore", {}, cwd);
+    return;
+  }
   const gitignorePath = path.join(getLocalJeoDir(cwd), ".gitignore");
   try {
     await fs.access(gitignorePath);
@@ -654,6 +679,7 @@ export async function readWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
+  if (currentSandboxExecution()) return sandboxWorkflow("read", { skill }, cwd);
   const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   return loadWorkflowStateFile(statePath, false);
 }
@@ -667,6 +693,7 @@ export async function readWorkflowStateStrict(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
+  if (currentSandboxExecution()) return sandboxWorkflow("readStrict", { skill }, cwd);
   const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   return loadWorkflowStateFile(statePath, true);
 }
@@ -676,6 +703,7 @@ export async function writeWorkflowState(
   state: WorkflowState,
   cwd: string = process.cwd()
 ): Promise<string> {
+  if (currentSandboxExecution()) return sandboxWorkflow("write", { skill, state }, cwd);
   const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const statePath = path.join(stateDir, `${skill}-state.json`);
@@ -705,6 +733,10 @@ export async function clearWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<void> {
+  if (currentSandboxExecution()) {
+    await sandboxWorkflow("clear", { skill }, cwd);
+    return;
+  }
   const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   try {
     await fs.unlink(statePath);
@@ -736,6 +768,19 @@ export async function acquireWorkflowRunLock(
   skill: "team" | "ultragoal",
   cwd: string = process.cwd(),
 ): Promise<() => Promise<void>> {
+  if (currentSandboxExecution()) {
+    const sandbox = currentSandboxExecution()!;
+    const token = await sandboxWorkflow<unknown>("acquireLock", { skill }, cwd);
+    if (typeof token !== "string" || !token) throw new Error("SANDBOX_WORKFLOW: invalid lock token");
+    let released = false;
+    return async () => {
+      if (released) return;
+      // Capture the owning supervisor: release can run after its caller's ALS scope ends.
+      const result = await sandbox.supervisor.call("__workflow", { operation: "releaseLock", token }, { cwd });
+      if (!result.success) throw new Error(result.error || "SANDBOX_WORKFLOW: lock release failed");
+      released = true;
+    };
+  }
   const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const lockPath = path.join(stateDir, `${skill}.lock`);
@@ -779,6 +824,128 @@ export async function acquireWorkflowRunLock(
     }
   }
   throw new Error(`could not acquire ${lockPath} even after stale-lock takeover.`);
+}
+
+/** Read exact UTF-8 workflow bytes; never feed a silently truncated plan into an executor. */
+export async function readWorkflowFile(filePath: string, cwd: string = process.cwd()): Promise<string> {
+  if (currentSandboxExecution()) return sandboxWorkflow("readFile", { path: filePath }, cwd);
+  const file = await fs.open(path.resolve(cwd, filePath), "r");
+  let content: string;
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > MAX_FRAME_BYTES) throw new Error("Workflow file exceeds bounded sandbox transport or is not a regular file");
+    const bytes = Buffer.allocUnsafe(stat.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const chunk = await file.read(bytes, length, bytes.length - length, length);
+      if (chunk.bytesRead === 0) break;
+      length += chunk.bytesRead;
+    }
+    if (length !== stat.size) throw new Error("Workflow file changed during read");
+    content = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+  } finally { await file.close(); }
+  // The nested JSON string must fit the final RPC envelope, including its largest permitted identity.
+  encodeHandsFrame({ id: "x".repeat(256), type: "result", result: { success: true, output: JSON.stringify(content) } });
+  return content;
+}
+
+/** Atomically publish a workflow artifact through the same guest filesystem boundary as tool writes. */
+export async function writeWorkflowFile(filePath: string, content: string, cwd: string = process.cwd()): Promise<void> {
+  if (currentSandboxExecution()) { await sandboxWorkflow("writeFile", { path: filePath, content }, cwd); return; }
+  if (Buffer.byteLength(content, "utf8") > MAX_FRAME_BYTES) throw new Error("Workflow file exceeds bounded sandbox transport");
+  const target = path.resolve(cwd, filePath);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = path.join(path.dirname(target), `.jeo-workflow-${crypto.randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(temporary, content, { flag: "wx", mode: 0o600 });
+    await fs.rename(temporary, target);
+  } catch (error) {
+    try { await fs.unlink(temporary); }
+    catch (cleanupError) { if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw new AggregateError([error, cleanupError], "Workflow artifact write and temporary cleanup failed"); }
+    throw error;
+  }
+}
+
+/** Create once per hands worker so opaque lock tokens retain their guest-held release callbacks. */
+export function createWorkflowStateTool(): ToolHandler {
+  const locks = new Map<string, () => Promise<void>>();
+  let todos: TodoItem[] = [];
+  const todo = createTodoTool({ onChange: items => { todos = items; } });
+  return async (args, cwd) => {
+    if (currentSandboxExecution()) throw new Error("SANDBOX_WORKFLOW: guest handler cannot run in the brain");
+    try {
+      let value: unknown = null;
+      switch (args.operation) {
+        case "readGoal": value = await readGoalFile(cwd); break;
+        case "clearGoal": await clearGoalState(cwd); break;
+        case "approvalPath": {
+          if (typeof args.path !== "string") throw new Error("Invalid approval path");
+          value = await inspectApprovalPath(args.path, cwd);
+          break;
+        }
+        case "readFile": {
+          if (typeof args.path !== "string") throw new Error("Invalid workflow file path");
+          value = await readWorkflowFile(args.path, cwd);
+          break;
+        }
+        case "writeFile": {
+          if (typeof args.path !== "string" || typeof args.content !== "string") throw new Error("Invalid workflow file write");
+          await writeWorkflowFile(args.path, args.content, cwd);
+          break;
+        }
+        case "memory": {
+          if (typeof args.action !== "string") throw new Error("Invalid memory action");
+          value = await executeMemoryOperation(args.action, args, cwd);
+          break;
+        }
+        case "skillCatalog": value = await executeSkillCatalogOperation(args, cwd); break;
+        case "loadContext": value = await loadProjectContext(cwd); break;
+        case "discoverGuidance": value = await discoverAgentGuidanceFiles(cwd); break;
+        case "ensureGitignore": await ensureJeoGitignore(cwd); break;
+        case "todo": {
+          if (!args.args || typeof args.args !== "object" || Array.isArray(args.args)) throw new Error("Invalid todo arguments");
+          value = { result: await todo(args.args, cwd), todos };
+          break;
+        }
+        case "releaseLock": {
+          if (typeof args.token !== "string") throw new Error("Invalid workflow lock token");
+          const release = locks.get(args.token);
+          if (!release) throw new Error("Unknown workflow lock token");
+          await release();
+          locks.delete(args.token);
+          break;
+        }
+        default: {
+          const skill = args.skill;
+          if (skill !== "deep-interview" && skill !== "ralplan" && skill !== "team" && skill !== "ultragoal") {
+            throw new Error("Invalid workflow skill");
+          }
+          switch (args.operation) {
+            case "read": value = await readWorkflowState(skill, cwd); break;
+            case "readStrict": value = await readWorkflowStateStrict(skill, cwd); break;
+            case "write": {
+              if (!args.state || typeof args.state !== "object" || Array.isArray(args.state)) throw new Error("Invalid workflow state");
+              value = await writeWorkflowState(skill, args.state as WorkflowState, cwd);
+              break;
+            }
+            case "clear": await clearWorkflowState(skill, cwd); break;
+            case "acquireLock": {
+              if (skill !== "team" && skill !== "ultragoal") throw new Error("Invalid run-lock skill");
+              const release = await acquireWorkflowRunLock(skill, cwd);
+              const token = crypto.randomUUID();
+              locks.set(token, release);
+              value = token;
+              break;
+            }
+            default: throw new Error("Unknown workflow operation");
+          }
+        }
+      }
+      return { success: true, output: JSON.stringify(value) };
+    } catch (error) {
+      return { success: false, output: "", error: error instanceof Error ? error.message : String(error) };
+    }
+  };
 }
 
 /** Returns true if the agent is running in development mode (enables self-improvement). */

@@ -253,9 +253,13 @@ test("in-flight and settled background job mutation blocks done until fresh veri
     const cancelled = await job({ action: "cancel", ids: ["job-1"] }, opts.cwd);
     await mutationEvents.return?.();
     if (!cancelled.success) return { done: false, steps: 0, doneReason: "background job failed to cancel" };
+    expect(cancelled.mutationMayHaveOccurred).toBe(true);
+    await onEvidence({ sawMutation: cancelled.mutationMayHaveOccurred === true, sawVerification: false, verificationStale: false });
     const drained = await job({ action: "await", ids: ["job-1"] }, opts.cwd);
-    expect(drained.mutationMayHaveOccurred).toBe(true);
-    await onEvidence({ sawMutation: true, sawVerification: false, verificationStale: false });
+    expect(drained.success).toBe(false);
+    expect(drained.output).toContain("all settled");
+    expect(drained.output).toContain("job-1 [KILLED]");
+    expect(drained.mutationMayHaveOccurred).not.toBe(true);
     expect(await onBeforeDone("finished", {
       sawMutation: true,
       sawVerification: false,
@@ -264,7 +268,6 @@ test("in-flight and settled background job mutation blocks done until fresh veri
  
     // The completed job's mutation was observed on its originating turn and
     // persisted by launch; this later engine run must verify before accepting done.
-    await onEvidence({ sawMutation: true, sawVerification: false, verificationStale: false });
     await fs.writeFile(path.join(workdir, "background-mutation.test.ts"),
       'import { test, expect } from "bun:test";\nimport { readFileSync } from "node:fs";\ntest("job mutation is present", () => expect(readFileSync("background-mutation.txt", "utf8")).toBe("changed"));\n');
     completionResult = await realEngine.runAgentLoop([{ role: "user", content: "finish the task" }], {

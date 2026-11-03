@@ -410,6 +410,9 @@ function leadingGlobalFlag(argv: string[], targets: readonly string[]): boolean 
 }
 export async function dispatch(argv: string[], ctx: DispatchContext): Promise<number> {
   const first = argv[0];
+  if (process.env.JEO_MESSENGER_SESSION_KEY && first !== "launch") {
+    throw new Error("SANDBOX_REQUIRED: messenger workers may only enter the sandboxed launch command");
+  }
 
   if (first === "--version" || first === "-v") {
     console.log(`${ctx.appName} v${ctx.version}`);

@@ -209,6 +209,17 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 import { jeoEnv } from "../util/env";
+import { currentSandboxExecution } from "../agent/hooks";
+import type { SandboxSupervisor } from "../agent/sandbox/types";
+import { canonicalSandboxPath, nativeSandboxHome } from "../agent/sandbox/policy";
+
+async function sandboxSkillCatalog<T>(action: string, cwd: string, args: Record<string, unknown> = {}): Promise<T> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) throw new Error("SANDBOX_SKILLS: missing execution scope");
+  const result = await sandbox.supervisor.call("__workflow", { operation: "skillCatalog", action, ...args }, { cwd, signal: sandbox.signal });
+  if (!result.success) throw new Error(result.error || "SANDBOX_SKILLS: operation failed");
+  return JSON.parse(result.output) as T;
+}
 
 const BUILTIN_SLASH_ALIASES = new Set([
   "/help", "/clear", "/compact", "/model", "/fast", "/provider", "/logout",
@@ -479,8 +490,204 @@ async function resolveSkillEntry(dir: string, entry: Dirent): Promise<SkillDoc |
  *  batches racing across the `skillDirs` loop below. */
 const SKILL_ENTRY_LOAD_BATCH = 32;
 
+interface CatalogPath { path: string; traversal: string[]; visited?: string[]; guestPath?: string }
+interface CatalogEntry { location: CatalogPath; skillName: string; doc?: SkillDoc }
+interface CatalogDirectory { location: CatalogPath; entries: CatalogEntry[] }
+interface SandboxSkillCatalog { cwd: string; roots: string[]; readableRoots: string[]; directories: CatalogDirectory[] }
+const sandboxSkillCatalogs = new WeakMap<SandboxSupervisor, SandboxSkillCatalog>();
+
+function withinCatalogRoot(file: string, root: string): boolean {
+  const relative = path.relative(root, file);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function guestCatalogPath(location: CatalogPath, roots: string[]): string | undefined {
+  if (location.guestPath) return location.guestPath;
+  const route = location.traversal.find(file => roots.some(root => withinCatalogRoot(file, root)));
+  if (!route && location.visited?.some(file => roots.some(root => withinCatalogRoot(file, root)))) {
+    throw new Error("SANDBOX_SKILLS: catalog traversal leaves a writable root; explicit guest access required");
+  }
+  return route;
+}
+
+/** Metadata only: stop BEFORE traversing a workspace-controlled symlink. Called
+ * only while constructing the pre-execution snapshot, never for live host reads. */
+async function traceCatalogPath(file: string, roots: string[], protectedRoots: string[]): Promise<CatalogPath> {
+  const absolute = path.resolve(file);
+  const parsed = path.parse(absolute);
+  let current = parsed.root;
+  let parts = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  const traversal = [absolute];
+  if (!protectedRoots.some(root => withinCatalogRoot(absolute, root))) return { path: absolute, traversal, guestPath: absolute };
+  const visited: string[] = [];
+  let links = 0;
+  while (parts.length > 0) {
+    const part = parts.shift()!;
+    if (part === ".") continue;
+    current = part === ".." ? path.dirname(current) : path.join(current, part);
+    visited.push(current);
+    const candidate = path.join(current, ...parts);
+    if (!protectedRoots.some(root => withinCatalogRoot(current, root) || withinCatalogRoot(root, current))) {
+      return { path: candidate, traversal, visited, guestPath: candidate };
+    }
+    if (roots.some(root => withinCatalogRoot(current, root))) {
+      traversal.push(candidate);
+      const location = { path: candidate, traversal, visited };
+      guestCatalogPath(location, roots); // Reject '..' escape, never normalize it into a trusted host read.
+      return location;
+    }
+    if (part !== ".." && (await fs.lstat(current)).isSymbolicLink()) {
+      if (++links > 40) throw new Error("Too many skill catalog symlinks");
+      const target = await fs.readlink(current);
+      const targetRoot = path.parse(target).root;
+      current = targetRoot || path.dirname(current);
+      // Retain '..' until its preceding components and symlinks have been visited.
+      parts = target.slice(targetRoot.length).split(path.sep).filter(Boolean).concat(parts);
+      traversal.push(path.join(current, ...parts));
+    }
+  }
+  return { path: current, traversal, visited };
+}
+
+/** Must run before the supervisor executes any model-controlled guest code.
+ * Parent skill bytes are frozen in memory, not reread after tools can mutate paths. */
+export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, cwd: string, writableRoots: readonly string[] = [], readableRoots: readonly string[] = writableRoots): Promise<void> {
+  if (currentSandboxExecution()) throw new Error("SANDBOX_SKILLS: snapshot requires trusted initialization");
+  if (sandboxSkillCatalogs.has(supervisor)) throw new Error("SANDBOX_SKILLS: catalog already initialized");
+  const roots = [...new Set([path.resolve(cwd), await fs.realpath(cwd), ...writableRoots.map(root => path.resolve(root))])];
+  // These roots (and their canonical aliases) are forbidden to EVERY sandbox
+  // profile, unlike runtime HOME/config directories or another session's grants.
+  const nativeHome = await nativeSandboxHome();
+  const nativeRoots = [".agents", ".claude", ".jeo", ".jeopi"].map(name => path.join(nativeHome, name));
+  const protectedRoots = [...new Set([...nativeRoots, ...await Promise.all(nativeRoots.map(root => canonicalSandboxPath(root, false)))])];
+  const authorizedRoots = [...new Set([path.resolve(cwd), await fs.realpath(cwd), ...readableRoots.map(root => path.resolve(root))])];
+  const directories: CatalogDirectory[] = [];
+  for (const dir of skillDirs(cwd)) {
+    let location: CatalogPath;
+    try { location = await traceCatalogPath(dir, roots, protectedRoots); }
+    catch {
+      directories.push({ location: { path: path.resolve(dir), traversal: [path.resolve(dir)] }, entries: [] });
+      continue;
+    }
+    const directory: CatalogDirectory = { location, entries: [] };
+    directories.push(directory);
+    if (guestCatalogPath(location, roots)) continue;
+    let entries: Dirent[];
+    try { entries = await fs.readdir(location.path, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      try {
+        let resolved = await traceCatalogPath(path.join(location.path, entry.name), roots, protectedRoots);
+        resolved.traversal.unshift(...location.traversal.map(root => path.join(root, entry.name)));
+        resolved.visited = [...(location.visited ?? []), ...(resolved.visited ?? [])];
+        let isDirectory = false;
+        if (!guestCatalogPath(resolved, roots)) {
+          const stat = await fs.stat(resolved.path);
+          if (stat.isDirectory()) {
+            isDirectory = true;
+            const skillFile = await traceCatalogPath(path.join(resolved.path, "SKILL.md"), roots, protectedRoots);
+            skillFile.traversal.unshift(...resolved.traversal.map(root => path.join(root, "SKILL.md")));
+            skillFile.visited = [...(resolved.visited ?? []), ...(skillFile.visited ?? [])];
+            resolved = skillFile;
+          } else if (!stat.isFile() || !entry.name.endsWith(".md")) continue;
+        }
+        const item: CatalogEntry = { location: resolved, skillName: entry.name.replace(/\.md$/, "") };
+        directory.entries.push(item);
+        if (guestCatalogPath(resolved, roots)) continue;
+        const doc = parseSkillMarkdown(entry.name.replace(/\.md$/, ""), await fs.readFile(resolved.path, "utf-8"), { preferMetaName: true });
+        doc.sourcePath = path.join(dir, entry.name, ...(isDirectory ? ["SKILL.md"] : []));
+        if (isSupportedExternalSkill(doc)) item.doc = doc;
+      } catch {
+        // Absent/unreadable global docs are not part of this session's snapshot.
+      }
+    }
+  }
+  sandboxSkillCatalogs.set(supervisor, { cwd: path.resolve(cwd), roots, readableRoots: authorizedRoots, directories });
+}
+
+/** Grant revisions may taint formerly trusted paths. Reclassify captured path
+ * provenance only; never refresh content from a now-running model's host paths. */
+export function updateSandboxSkillCatalogRoots(supervisor: SandboxSupervisor, writableRoots: readonly string[], readableRoots: readonly string[] = writableRoots): void {
+  const catalog = sandboxSkillCatalogs.get(supervisor);
+  if (!catalog) throw new Error("SANDBOX_SKILLS: catalog not initialized");
+  catalog.roots = [...new Set([...catalog.roots, ...writableRoots.map(root => path.resolve(root))])];
+  catalog.readableRoots = [...new Set([catalog.cwd, ...readableRoots.map(root => path.resolve(root))])];
+}
+
+async function loadSandboxSkills(cwd: string): Promise<SkillDoc[]> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) throw new Error("SANDBOX_SKILLS: missing execution scope");
+  const catalog = sandboxSkillCatalogs.get(sandbox.supervisor);
+  if (!catalog) throw new Error("SANDBOX_SKILLS: trusted catalog not initialized");
+  const byName = new Map<string, SkillDoc>(SKILLS.map(skill => [skill.name.toLowerCase(), skill]));
+  for (const name of await sandboxSkillCatalog<string[]>("lock", cwd)) ALLOWED_SKILL_NAMES.add(name.toLowerCase());
+  // A subagent may use another approved cwd: reuse only trusted global bytes,
+  // and derive its project directories without touching host filesystem state.
+  const directories = path.resolve(cwd) === catalog.cwd
+    ? catalog.directories
+    : catalog.directories.map((directory, index) => index >= 5 && index < 10
+      ? { location: { path: skillDirs(cwd)[index]!, traversal: [skillDirs(cwd)[index]!] }, entries: [] }
+      : directory);
+  for (const directory of directories) {
+    const guestDir = guestCatalogPath(directory.location, catalog.roots)
+      ?? (path.resolve(cwd) !== catalog.cwd && withinCatalogRoot(directory.location.path, path.resolve(cwd)) ? directory.location.path : undefined);
+    if (guestDir) {
+      if (!catalog.readableRoots.some(root => withinCatalogRoot(guestDir, root))) continue;
+      for (const doc of await sandboxSkillCatalog<SkillDoc[]>("scan", guestDir)) byName.set(doc.name.toLowerCase(), doc);
+      continue;
+    }
+    for (const entry of directory.entries) {
+      const guestFile = guestCatalogPath(entry.location, catalog.roots);
+      if (guestFile && !catalog.readableRoots.some(root => withinCatalogRoot(guestFile, root))) continue;
+      const doc = guestFile
+        ? await sandboxSkillCatalog<SkillDoc | null>("entry", path.dirname(guestFile), { name: path.basename(guestFile), skillName: entry.skillName })
+        : entry.doc;
+      if (doc) byName.set(doc.name.toLowerCase(), { ...doc });
+    }
+  }
+  return [...byName.values()];
+}
+
+async function scanSkillDirectory(dir: string): Promise<SkillDoc[]> {
+  let entries: Dirent[];
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return []; }
+  const skills: SkillDoc[] = [];
+  for (let i = 0; i < entries.length; i += SKILL_ENTRY_LOAD_BATCH) {
+    const resolved = await Promise.all(entries.slice(i, i + SKILL_ENTRY_LOAD_BATCH).map(entry => resolveSkillEntry(dir, entry)));
+    for (const skill of resolved) if (skill) skills.push(skill);
+  }
+  return skills;
+}
+
+/** Only workspace catalog effects execute in hands; trusted global docs stay in brain. */
+export async function executeSkillCatalogOperation(args: Record<string, unknown>, cwd: string): Promise<unknown> {
+  if (currentSandboxExecution()) throw new Error("SANDBOX_SKILLS: guest handler cannot run in the brain");
+  if (args.action === "lock") {
+    try {
+      const lockData: unknown = JSON.parse(await fs.readFile(path.join(cwd, "skills-lock.json"), "utf-8"));
+      if (lockData && typeof lockData === "object" && "skills" in lockData && lockData.skills && typeof lockData.skills === "object") return Object.keys(lockData.skills);
+    } catch {}
+    return [];
+  }
+  if (args.action === "scan") return scanSkillDirectory(cwd);
+  if (args.action === "entry") {
+    if (typeof args.name !== "string" || args.name !== path.basename(args.name)) throw new Error("Invalid skill entry name");
+    const entryPath = path.join(cwd, args.name);
+    try {
+      const stat = await fs.stat(entryPath);
+      const file = stat.isDirectory() ? path.join(entryPath, "SKILL.md") : entryPath;
+      if (!stat.isDirectory() && (!stat.isFile() || !args.name.endsWith(".md"))) return null;
+      const doc = parseSkillMarkdown(typeof args.skillName === "string" ? args.skillName : args.name.replace(/\.md$/, ""), await fs.readFile(file, "utf-8"), { preferMetaName: true });
+      doc.sourcePath = file;
+      return isSupportedExternalSkill(doc) ? doc : null;
+    } catch { return null; }
+  }
+  throw new Error("Unknown skill catalog operation");
+}
+
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
+  if (currentSandboxExecution()) return loadSandboxSkills(cwd);
   try {
     const lockPath = path.join(cwd, "skills-lock.json");
     const lockContent = await fs.readFile(lockPath, "utf-8");

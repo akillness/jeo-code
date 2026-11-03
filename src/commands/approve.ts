@@ -5,13 +5,45 @@ import {
   readGlobalConfig,
   readWorkflowState,
   writeWorkflowState,
+  readWorkflowFile,
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 import { getSubagentRole, subagentRoleIds } from "../agent/subagents";
+import { currentSandboxExecution } from "../agent/hooks";
 
 export interface ApprovePlanResult {
   ok: boolean;
   message: string;
+}
+
+export interface ApprovalPathInspection {
+  exists: boolean;
+  canonical: string;
+}
+
+/** Inspect only workspace paths in the guest; role configuration stays in the brain. */
+export async function inspectApprovalPath(filePath: string, cwd: string): Promise<ApprovalPathInspection> {
+  const resolved = path.resolve(cwd, filePath);
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const result = await sandbox.supervisor.call("__workflow", { operation: "approvalPath", path: resolved }, { cwd, signal: sandbox.signal });
+    if (!result.success) throw new Error(result.error || "SANDBOX_WORKFLOW: approval path inspection failed");
+    const value: unknown = JSON.parse(result.output);
+    if (typeof value !== "object" || value === null || !("exists" in value) || typeof value.exists !== "boolean" || !("canonical" in value) || typeof value.canonical !== "string") {
+      throw new Error("SANDBOX_WORKFLOW: invalid approval path inspection");
+    }
+    return { exists: value.exists, canonical: value.canonical };
+  }
+  try {
+    await fs.access(resolved);
+  } catch {
+    return { exists: false, canonical: resolved };
+  }
+  try {
+    return { exists: true, canonical: await fs.realpath(resolved) };
+  } catch {
+    return { exists: true, canonical: resolved };
+  }
 }
 
 /** Core approval gate, shared by the `jeo approve` CLI command and the agent-facing
@@ -29,9 +61,8 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
   const resolvedInputPath = path.resolve(cwd, planPathInput);
 
   // Rejection if the plan file doesn't exist on disk
-  try {
-    await fs.access(resolvedInputPath);
-  } catch {
+  const inputPath = await inspectApprovalPath(resolvedInputPath, cwd);
+  if (!inputPath.exists) {
     return { ok: false, message: `[ERROR] Plan file not found: ${resolvedInputPath}` };
   }
 
@@ -47,16 +78,9 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
 
   // Compare canonical (symlink-resolved) paths so a relative arg, an absolute arg,
   // or a /var↔/private/var (macOS) form all match the stored plan path.
-  const canonical = async (p: string): Promise<string> => {
-    try {
-      return await fs.realpath(p);
-    } catch {
-      return p;
-    }
-  };
   const resolvedStatePath = path.resolve(cwd, ralplanState.plan_path);
-  const [canonInput, canonState] = await Promise.all([canonical(resolvedInputPath), canonical(resolvedStatePath)]);
-  if (canonInput !== canonState) {
+  const statePath = await inspectApprovalPath(resolvedStatePath, cwd);
+  if (inputPath.canonical !== statePath.canonical) {
     return {
       ok: false,
       message:
@@ -73,7 +97,7 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
   // aborting later at execution time.
   let planContent = "";
   try {
-    planContent = await fs.readFile(resolvedInputPath, "utf-8");
+    planContent = await readWorkflowFile(resolvedInputPath, cwd);
     const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(planContent)));
     if (!parsed.success) {
       return {

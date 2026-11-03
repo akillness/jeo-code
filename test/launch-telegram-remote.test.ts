@@ -359,6 +359,16 @@ afterAll(() => {
   mock.module("../src/agent/engine", () => realEngine);
 });
 
+/** Approved OS-isolation contract: local Docker, already-present image, minimal limits. */
+const SANDBOX_CONFIG = {
+  image: "oven/bun:1.3.14",
+  limits: { memoryBytes: 256 * 1024 * 1024, pids: 64, cpus: 1 },
+};
+/** Remote-worker env that would make launch.ts use a different sandbox/session identity. */
+const REMOTE_WORKER_ENV = ["JEO_MESSENGER_SANDBOX", "JEO_MESSENGER_SESSION_KEY", "JEO_MESSENGER_ALLOWED_USER_IDS", "JEO_SESSION_DIR"];
+const REAL_HOME = process.env.HOME;
+const activeRuns: { restore: () => Promise<void>; done: Promise<void> | undefined }[] = [];
+
 let originalIsTTY: boolean | undefined;
 let logs: string[];
 let logSpy: Mock<typeof console.log>;
@@ -380,7 +390,30 @@ beforeEach(() => {
   }
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Even when an ACK/timeout assertion failed before the test sent "/exit", drive
+  // the REPL to exit and unconditionally restore cwd/env so a failure here cannot
+  // cascade ENOENT into unrelated tests.
+  for (const run of activeRuns.splice(0)) {
+    try {
+      if (run.done) {
+        let settled = false;
+        const finished = run.done.then(() => {}, () => {}).then(() => { settled = true; });
+        const deadline = Date.now() + 10_000;
+        let resolvedCount = 0;
+        while (!settled && Date.now() < deadline) {
+          for (; resolvedCount < questionCalls.length; resolvedCount++) questionCalls[resolvedCount]!.resolve("/exit");
+          runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "test" });
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 20);
+          await promise;
+        }
+        if (settled) await finished;
+      }
+    } finally {
+      await run.restore();
+    }
+  }
   process.stdin.isTTY = originalIsTTY;
   logSpy.mockRestore();
   for (const k of CRED_ENV) {
@@ -393,12 +426,44 @@ afterEach(() => {
  *  but interactive startup still lists cwd/.jeo/sessions before its first prompt.
  *  Only the unrelated npm update request is stubbed; the endpoint stays real. */
 async function runInteractiveWithNotify(): Promise<{ done: Promise<void>; configDir: string }> {
+  // Sibling, mutually non-nested temp roots: private config/session state, the
+  // workspace, and the sandbox authority state (created by launch.ts) never
+  // contain one another. The sandbox is mandatory: launch.ts refuses remote
+  // user_message input without sandbox authority, and there is no host fallback.
   const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tg-remote-inproc-"));
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tg-remote-inproc-proj-"));
-  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ ...NOTIFY_CONFIG, hooks: { enabled: false } }));
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ ...NOTIFY_CONFIG, hooks: { enabled: false }, sandbox: SANDBOX_CONFIG }));
   const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedStaticMemory = process.env.JEO_STATIC_MEMORY;
+  const savedHome = process.env.HOME;
+  const savedRemoteEnv: Record<string, string | undefined> = {};
+  for (const k of REMOTE_WORKER_ENV) savedRemoteEnv[k] = process.env[k];
   const savedCwd = process.cwd();
+  let restored = false;
+  const restore = async (): Promise<void> => {
+    if (restored) return;
+    restored = true;
+    // Restore process-global state first so a failed rm cannot leave later
+    // tests in a deleted working directory.
+    try { process.chdir(savedCwd); } catch {}
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    if (savedStaticMemory === undefined) delete process.env.JEO_STATIC_MEMORY;
+    else process.env.JEO_STATIC_MEMORY = savedStaticMemory;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    for (const k of REMOTE_WORKER_ENV) {
+      if (savedRemoteEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedRemoteEnv[k];
+    }
+    await fs.rm(configDir, { recursive: true, force: true });
+    await fs.rm(projectDir, { recursive: true, force: true });
+  };
+  activeRuns.push({ restore, done: undefined });
+  const activeRun = activeRuns[activeRuns.length - 1]!;
+  for (const k of REMOTE_WORKER_ENV) delete process.env[k];
+  if (REAL_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = REAL_HOME; // local Docker locates its client config via the real HOME
   process.chdir(projectDir);
   process.env.JEO_CONFIG_DIR = configDir;
   process.env.JEO_STATIC_MEMORY = "1";
@@ -413,14 +478,9 @@ async function runInteractiveWithNotify(): Promise<{ done: Promise<void>; config
   const updateSpy = spyOn(updateModule, "checkForUpdate").mockResolvedValue(null);
   const done = runLaunchCommand(["--no-tui", "--no-session", "--no-skills"]).finally(async () => {
     updateSpy.mockRestore();
-    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
-    else process.env.JEO_CONFIG_DIR = savedCfg;
-    if (savedStaticMemory === undefined) delete process.env.JEO_STATIC_MEMORY;
-    else process.env.JEO_STATIC_MEMORY = savedStaticMemory;
-    process.chdir(savedCwd);
-    await fs.rm(configDir, { recursive: true, force: true });
-    await fs.rm(projectDir, { recursive: true, force: true });
+    await restore();
   });
+  activeRun.done = done;
   return { done, configDir };
 }
 

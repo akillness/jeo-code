@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [Unreleased]
+
+## [0.12.15] - 2026-11-03
+
+The GitHub-only 0.12.14 release was not published to npm; its changes (listed under [0.12.14]) are included in this release.
+
+### Changed
+- **Discord session continuity** — one persistent session per thread regardless of sender/message, FIFO within a thread and concurrency across sessions, without creating per-session worktrees. Existing terminal Discord control also requires isolation and preserves the local input draft.
+- **Explicit local Docker isolation** — require `sandbox: {image, limits: {memoryBytes, pids, cpus}}`, an already-local Linux Bun image resolved to its immutable ID, network `none`, and workspace/approved mounts. No pull, dependency installation, remote Docker endpoint, or host fallback; macOS/Windows still execute a Linux guest shell. Parent-human `/sandbox status|approve <requestId>|deny <requestId>|revoke` controls require the authenticated actor's own session/current request revision; `sandbox_request {host, mode}` only requests access and cannot self-approve.
+- **Private state and migration** — reject `independentSessions` except for its explicit removal by `jeo messenger setup`; reject legacy workspace transcript and raw-history storage with move guidance, never automatic copy/deletion. Full histories remain parent-only; derived learning remains shared. Reuse existing ECC skills/workflow installation without a global reinstall; snapshot protected global skills and read workspace/granted documents through the guest.
+
+### Verified (local pre-release evidence)
+- Full repository regression: `bun test` with `JEO_TEST_TERMINAL_FIFO=1` and inherited provider credentials/base-URL overrides cleared for the test process passed 4,437 tests, with 4 existing conditional skips and 0 failures (4,441 total across 386 files).
+- `bun run build` and `bun run typecheck` passed. `bun run verify:sandbox` passed **20 macOS arm64 host / Linux x64 guest contracts**, confirmed container removal, and removed its fixtures. The verifier requires an already-local image and Docker; it does not install prerequisites.
+- Copied `dist/jeo` standalone qualification: `bun test test/sandbox-terminal-fifo.test.ts test/sandbox-requester-reachability.test.ts test/sandbox-metadata-privacy.test.ts test/sandbox-worker-ipc-shutdown.test.ts` with `JEO_TEST_TERMINAL_FIFO=1` and `JEO_TEST_CLI_BINARY` set to the absolute `dist/jeo` path passed 16 tests, 0 failed, 151 assertions. It verified rejected private-IPC bad frames; active guest shutdown with no signals, a matching stderr ACK, exit 143 and container removal; natural EOF exit 0; and immediate startup shutdown before any model call.
+- Protected-worker shutdown sends a private Bun IPC exact-nonce frame instead of SIGTERM. Parent cleanup ACK plus actual worker exit remains the gate; a missing or throwing `send` quarantines the worker with no signal fallback (no SIGTERM/SIGKILL), and signal-only termination is not relied on for Windows. Focused pool tests passed 75, 0 failed.
+- Current source wrappers preserve the teardown cleanup owner, bounded shutdown waits, human per-session grants, one persistent thread/FIFO, and the shared workspace. Legacy workspace history in `.jeo/memory/raw`, `.jeo/sessions`, or `.jeo/messenger-sessions` fails closed until deliberately relocated; no automatic copy or deletion occurs.
+
+### Limitations
+- The local checks above do not qualify native Linux or Windows hosts, and live Discord is not qualified. A Linux guest does not qualify those native hosts.
+- Worker/container cleanup must be confirmed; errors or unconfirmed removal must not be reported as success.
+- Tagged release CI results are recorded separately from this local pre-release evidence.
+
+### Fixed
+- **Release verification** — make subprocess tests reliable on Linux and gate release binaries on successful npm publishing.
+- **Background process lifecycle** — `job`/`monitor` shells now run under a group-pinning lease holder: descendants that keep stdout/stderr open after the shell exits are killed through the still-pinned process group, a one-shot monitor stopped after its first line reports `killed`, and a lost lease or a pipe holder that left the group is reported as unresolved instead of success (no signal is ever sent to a released or reaped process group).
+
 ## [0.12.14] - 2026-11-03
 
 ### Fixed

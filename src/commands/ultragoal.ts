@@ -1,7 +1,6 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readWorkflowState, writeWorkflowState, getLocalJeoDir, type WorkflowState } from "../agent/state";
-import { bashTool } from "../agent/tools";
+import { readWorkflowState, writeWorkflowState, readWorkflowFile, writeWorkflowFile, getLocalJeoDir, type WorkflowState } from "../agent/state";
+import { DEFAULT_TOOLS } from "../agent/engine";
 import { parseSeedAcceptanceCriteria, parseCriterion } from "../agent/seed";
 
 export interface UltragoalEngineOptions {
@@ -62,7 +61,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
 
   let seedContent = "";
   try {
-    seedContent = await fs.readFile(seedPath, "utf-8");
+    seedContent = await readWorkflowFile(seedPath, cwd);
   } catch (err: any) {
     log(`[ERROR] Failed to read seed file: ${err.message}`);
     return { ok: false, reason: err.message };
@@ -94,7 +93,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
   if (opts.onProgress) {
     opts.onProgress({ skill: "ultragoal", phase: "verifying", detail: "Running verification suite" });
   }
-  const suite = await bashTool("bun test", cwd);
+  const suite = await DEFAULT_TOOLS.bash!({ command: "bun test" }, cwd);
   log(`  └─ Suite: ${suite.success ? "GREEN" : "FAILED"}`);
 
   if (opts.signal?.aborted) {
@@ -111,7 +110,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
         opts.onProgress({ skill: "ultragoal", phase: "verifying", detail: `Verifying: ${c.text}` });
       }
       log(`[CHECK] ${c.text}\n  └─ $ ${c.verify}`);
-      const check = await bashTool(c.verify, cwd);
+      const check = await DEFAULT_TOOLS.bash!({ command: c.verify }, cwd);
       log(`     ${check.success ? "PASS" : "FAIL"}`);
       results.push(
         check.success
@@ -131,7 +130,6 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
 
   // Write verification report
   const reportDir = path.join(getLocalJeoDir(cwd), "state");
-  await fs.mkdir(reportDir, { recursive: true });
   const reportPath = path.join(reportDir, "ultragoal-report.md");
 
   const totalCount = results.length;
@@ -168,15 +166,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
     results.map(r => `| ${r.criterion} | ${r.status === "passed" ? "✅ PASSED" : r.status === "failed" ? "❌ FAILED" : "⚠️ UNVERIFIED"} | ${r.note} |`).join("\n") +
     `\n`;
 
-  // Atomic temp+rename (zeroclaw): a torn report must not disagree with the state JSON.
-  const tmpReport = `${reportPath}.${Math.random().toString(36).slice(2)}.tmp`;
-  try {
-    await fs.writeFile(tmpReport, reportContent, "utf-8");
-    await fs.rename(tmpReport, reportPath);
-  } catch (err) {
-    await fs.unlink(tmpReport).catch(() => {});
-    throw err;
-  }
+  await writeWorkflowFile(reportPath, reportContent, cwd);
 
   // Persist a machine-readable terminal phase so the chain is queryable end-to-end.
   const ultragoalState: WorkflowState = {

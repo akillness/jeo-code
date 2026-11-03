@@ -25,7 +25,7 @@ import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
 import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
-import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
+import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, toolTarget, type StepBudgetConfig } from "./step-budget";
@@ -110,6 +110,17 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   bisect: (a, cwd) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd),
   calc: a => calcTool(Array.isArray(a.calculations) ? a.calculations : []),
 };
+
+/** Trusted wrappers that preserve role checks before forwarding to hands. */
+export const SANDBOX_MEDIATED_TOOLS = new WeakSet<ToolHandler>();
+// Engine and workflow callers share these handlers; the async scope is session-local.
+for (const [name, handler] of Object.entries(DEFAULT_TOOLS)) {
+  DEFAULT_TOOLS[name] = (args, cwd, onProgress) => {
+    const sandbox = currentSandboxExecution();
+    return sandbox ? sandbox.supervisor.call(name, args, { cwd, signal: sandbox.signal, onProgress }) : handler(args, cwd, onProgress);
+  };
+  SANDBOX_MEDIATED_TOOLS.add(DEFAULT_TOOLS[name]);
+}
 
 /** Tool names whose calls have no workspace side effects. Shared by execution,
  *  failure accounting, and the refusal-recovery replay exemption. */
@@ -520,6 +531,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     history.unshift({ role: "system", content: opts.systemPrompt });
   }
   const tools = opts.tools ?? DEFAULT_TOOLS;
+  const sandbox = currentSandboxExecution();
+  const parentTools: Record<string, true> = { task: true, subagent: true, irc: true, todo: true, sandbox_request: true };
   const maxSteps = opts.maxSteps ?? 15;
   // gjc-style retry flow: the step limit is a flexible BUDGET, not a bare counter.
   // While the recent window shows real progress the budget extends itself; a stalled
@@ -1277,7 +1290,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           } else {
             try {
               const onProgress = ev.onToolProgress ? (partial: string) => ev.onToolProgress!(tool, partial) : undefined;
-              const res = await handler(args ?? {}, cwd, onProgress);
+              const sandboxedHandler = sandbox && !Object.hasOwn(parentTools, tool) && !SANDBOX_MEDIATED_TOOLS.has(handler)
+                ? (input: Record<string, any>, _cwd: string, progress?: (text: string) => void) => sandbox.supervisor.call(tool, input, { cwd, signal: opts.signal, onProgress: progress })
+                : handler;
+              const res = await (sandbox
+                ? withSandboxExecution({ ...sandbox, signal: opts.signal }, () => sandboxedHandler(args ?? {}, cwd, onProgress))
+                : sandboxedHandler(args ?? {}, cwd, onProgress));
               success = res.success;
               images = res.images;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);

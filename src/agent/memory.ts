@@ -19,6 +19,15 @@ import { parseConcept, serializeConcept, slugify, isReservedFile, conceptId } fr
 import { tryExtractJsonObject } from "./json";
 import { buildConceptGraph, expandByGraph, lintConceptGraph, type ConceptGraph, type GraphLintReport } from "./memory-graph";
 import { ensureJeoGitignore } from "./state";
+import { currentSandboxExecution } from "./hooks";
+
+async function sandboxMemory<T>(action: string, cwd: string, args: Record<string, unknown> = {}): Promise<T> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) throw new Error("SANDBOX_MEMORY: missing execution scope");
+  const result = await sandbox.supervisor.call("__workflow", { operation: "memory", action, ...args }, { cwd, signal: sandbox.signal });
+  if (!result.success) throw new Error(result.error || "SANDBOX_MEMORY: operation failed");
+  return JSON.parse(result.output) as T;
+}
 
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
@@ -47,6 +56,7 @@ export function memoryFilePath(cwd: string): string {
 }
 
 export async function loadMemory(cwd: string): Promise<string> {
+  if (currentSandboxExecution()) return sandboxMemory("loadMemory", cwd);
   try {
     return (await fs.readFile(memoryFilePath(cwd), "utf-8")).trim();
   } catch {
@@ -134,6 +144,7 @@ export interface MigrationResult {
  * so the active path is the bundle while a rollback copy survives.
  */
 export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult> {
+  if (currentSandboxExecution()) return sandboxMemory("migrate", cwd);
   const bundleDir = path.join(cwd, ".jeo", "memory");
   // Idempotent: an existing concept bundle wins — never double-migrate.
   if ((await loadConcepts(cwd)).length > 0) {
@@ -301,6 +312,7 @@ export function invalidateConceptCache(): void {
  *  files (index.md/log.md) and raw/ payloads are skipped; unparseable or
  *  frontmatter-less files are ignored (lenient consumption). */
 export async function loadConcepts(cwd: string): Promise<Concept[]> {
+  if (currentSandboxExecution()) return sandboxMemory("loadConcepts", cwd);
   return loadConceptsFromBundle(path.join(cwd, ".jeo", "memory"));
 }
 
@@ -672,11 +684,12 @@ function selectWithinBudget(concepts: Concept[], query: string | undefined, budg
  *  The memory text is MODEL-DISTILLED from session transcripts (which include tool
  *  outputs — file contents, web results), so it is injection-hardened like subagent
  *  reports: tag-breakout sequences are neutralized and the block is framed as DATA. */
-export async function memoryPromptSection(cwd: string, query?: string): Promise<string> {
+export async function memoryPromptSection(cwd: string, query?: string, legacy: boolean = jeoEnv("MEMORY_LEGACY") === "1"): Promise<string> {
   if (jeoEnv("NO_MEMORY") === "1") return "";
+  if (currentSandboxExecution()) return sandboxMemory("prompt", cwd, { query, legacy });
   // Rollback toggle (Sprint 05): JEO_MEMORY_LEGACY=1 forces the legacy single-doc
   // path, ignoring any concept bundle — reads MEMORY.md, or its migration backup.
-  if (jeoEnv("MEMORY_LEGACY") === "1") {
+  if (legacy) {
     let memory = await loadMemory(cwd);
     if (!memory) memory = (await fs.readFile(`${memoryFilePath(cwd)}.bak`, "utf-8").catch(() => "")).trim();
     return memory ? frameMemory(memory) : "";
@@ -833,7 +846,8 @@ async function updateLog(bundleDir: string, updatedConcepts: { title: string; ty
   await fs.rename(tmpPath, logPath);
 }
 
-export async function saveRawPayload(bundleDir: string, payload: any): Promise<void> {
+export async function saveRawPayload(bundleDir: string, payload: unknown): Promise<void> {
+  if (currentSandboxExecution()) throw new Error("SANDBOX_MEMORY: raw session payloads are parent-only");
   const rawDir = path.join(bundleDir, "raw");
   await fs.mkdir(rawDir, { recursive: true });
   const filename = `session-${Date.now()}-${process.pid}.json`;
@@ -909,6 +923,118 @@ async function upsertConceptFile(
   return relPath;
 }
 
+interface DistillInput { existingConcepts: Record<string, unknown>[] }
+
+async function loadDistillInput(cwd: string): Promise<DistillInput> {
+  if (currentSandboxExecution()) return sandboxMemory("distillInput", cwd);
+  const bundleDir = path.join(cwd, ".jeo", "memory");
+  const existingConcepts: Record<string, unknown>[] = [];
+  for (const file of await findMarkdownFiles(bundleDir)) {
+    const relPath = path.relative(bundleDir, file);
+    if (isReservedFile(relPath)) continue;
+    try {
+      const parsed = parseConcept(await fs.readFile(file, "utf-8"));
+      if (!parsed.hasFrontmatter) continue;
+      existingConcepts.push({
+        type: parsed.frontmatter.type,
+        title: parsed.frontmatter.title || "",
+        description: parsed.frontmatter.description,
+        body: parsed.body,
+        tags: parsed.frontmatter.tags,
+        confidence: parsed.frontmatter.confidence,
+        links: parsed.frontmatter.links,
+        path: relPath,
+      });
+    } catch {}
+  }
+  return { existingConcepts };
+}
+
+async function applyDistilledMemory(cwd: string, distilled: string, existingCount: number, legacyDoc: boolean, verified: boolean): Promise<DistillResult> {
+  if (currentSandboxExecution()) return sandboxMemory("applyDistilled", cwd, { distilled, existingCount, legacyDoc, verified });
+  const bundleDir = path.join(cwd, ".jeo", "memory");
+  const parsedJson = tryExtractJsonObject<{ concepts?: unknown }>(distilled);
+  if (parsedJson && Array.isArray(parsedJson.concepts)) {
+    await fs.mkdir(bundleDir, { recursive: true });
+    await ensureJeoGitignore(cwd);
+    const updatedConcepts: { title: string; type: string }[] = [];
+    for (const raw of parsedJson.concepts) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const concept = raw as Record<string, unknown>;
+      const type = typeof concept.type === "string" ? concept.type.trim() : "";
+      const title = typeof concept.title === "string" ? concept.title.trim() : "";
+      if (!type || !title) continue;
+      try {
+        await upsertConceptFile(bundleDir, {
+          type,
+          title,
+          description: typeof concept.description === "string" ? concept.description : "",
+          body: typeof concept.body === "string" ? concept.body : "",
+          tags: Array.isArray(concept.tags) ? concept.tags.filter((t): t is string => typeof t === "string") : [],
+          confidence: typeof concept.confidence === "string" ? concept.confidence : "high",
+          links: Array.isArray(concept.links) ? concept.links.filter((l): l is string => typeof l === "string") : [],
+        }, { verified });
+        updatedConcepts.push({ title, type });
+      } catch {
+        // Preserve valid learnings when one concept cannot be stored.
+      }
+    }
+    await withIndexLock(bundleDir, async () => {
+      await rebuildIndex(bundleDir);
+      if (updatedConcepts.length > 0) await updateLog(bundleDir, updatedConcepts);
+    });
+    if (legacyDoc) await fs.rename(memoryFilePath(cwd), `${memoryFilePath(cwd)}.bak`).catch(() => {});
+    await cleanupStalePendingFiles(bundleDir);
+    invalidateConceptCache();
+    return { updated: true };
+  }
+  if (existingCount > 0) return { updated: false, skipped: "distill produced no JSON; kept existing concept bundle (legacy blob suppressed)" };
+  const doc = distilled.trim().slice(0, MEMORY_MAX_CHARS);
+  if (!doc) return { updated: false, skipped: "model returned an empty document" };
+  const file = memoryFilePath(cwd);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, doc + "\n", "utf-8");
+  await fs.rename(tmp, file);
+  invalidateConceptCache();
+  return { updated: true };
+}
+
+/** Guest-only deterministic operations; provider calls never cross this boundary. */
+export async function executeMemoryOperation(action: string, args: Record<string, unknown>, cwd: string): Promise<unknown> {
+  if (currentSandboxExecution()) throw new Error("SANDBOX_MEMORY: guest handler cannot run in the brain");
+  switch (action) {
+    case "loadMemory": return loadMemory(cwd);
+    case "loadConcepts": return loadConcepts(cwd);
+    case "prompt": return memoryPromptSection(cwd, typeof args.query === "string" ? args.query : undefined, args.legacy === true);
+    case "migrate": return migrateLegacyMemory(cwd);
+    case "distillInput": return loadDistillInput(cwd);
+    case "record": {
+      if (!args.attempt || typeof args.attempt !== "object" || !("title" in args.attempt) || typeof args.attempt.title !== "string") throw new Error("Invalid memory attempt");
+      const attempt = args.attempt;
+      return recordFailedAttempt(cwd, {
+        title: args.attempt.title,
+        description: "description" in attempt && typeof attempt.description === "string" ? attempt.description : undefined,
+        body: "body" in attempt && typeof attempt.body === "string" ? attempt.body : undefined,
+        tags: "tags" in attempt && Array.isArray(attempt.tags) ? attempt.tags.filter((tag): tag is string => typeof tag === "string") : undefined,
+      });
+    }
+    case "applyDistilled": {
+      if (typeof args.distilled !== "string" || typeof args.existingCount !== "number" || !Number.isSafeInteger(args.existingCount) || args.existingCount < 0) throw new Error("Invalid memory distill result");
+      return applyDistilledMemory(cwd, args.distilled, args.existingCount, args.legacyDoc === true, args.verified === true);
+    }
+    case "readPayload":
+    case "removePayload": {
+      if (typeof args.name !== "string" || args.name !== path.basename(args.name)) throw new Error("Invalid memory payload name");
+      const file = path.join(cwd, args.name);
+      if (action === "readPayload") return fs.readFile(file, "utf-8");
+      await fs.unlink(file).catch(() => {});
+      return null;
+    }
+    default: throw new Error("Unknown memory operation");
+  }
+}
+
 export async function distillSessionMemory(
   history: Message[],
   cwd: string,
@@ -918,30 +1044,7 @@ export async function distillSessionMemory(
   const body = history.filter(m => m.role !== "system");
   if (body.length < MIN_HISTORY_MESSAGES) return { updated: false, skipped: "session too short" };
   try {
-    const bundleDir = path.join(cwd, ".jeo", "memory");
-    const existingConcepts: any[] = [];
-    try {
-      const files = await findMarkdownFiles(bundleDir);
-      for (const file of files) {
-        const relPath = path.relative(bundleDir, file);
-        if (isReservedFile(relPath)) continue;
-        try {
-          const content = await fs.readFile(file, "utf-8");
-          const parsed = parseConcept(content);
-          if (!parsed.hasFrontmatter) continue; // skip MEMORY.md and other legacy blobs
-          existingConcepts.push({
-            type: parsed.frontmatter.type,
-            title: parsed.frontmatter.title || "",
-            description: parsed.frontmatter.description,
-            body: parsed.body,
-            tags: parsed.frontmatter.tags,
-            confidence: parsed.frontmatter.confidence,
-            links: parsed.frontmatter.links,
-            path: relPath,
-          });
-        } catch {}
-      }
-    } catch {}
+    const { existingConcepts } = await loadDistillInput(cwd);
     // A lingering single-doc MEMORY.md (legacy, or a prior text-only bootstrap
     // fallback) is NOT a concept document — loadConcepts ignores it and it breaks
     // OKF conformance. Feed its content into the merge context so its learnings
@@ -994,86 +1097,9 @@ export async function distillSessionMemory(
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`memory distill timed out after ${timeoutMs}ms`)), timeoutMs)),
     ]);
 
-    // Robust extraction: the distill prompt requests JSON, but text-only providers
-    // (the default antigravity backend) routinely wrap it in prose or  fences.
-    // tryExtractJsonObject recovers the first balanced {...}, tolerating that noise;
-    // a null result means the model gave plain text → old MEMORY.md fallback below.
-    const parsedJson = tryExtractJsonObject<{ concepts?: unknown }>(distilled);
-
-
-    if (parsedJson && Array.isArray(parsedJson.concepts)) {
-      await fs.mkdir(bundleDir, { recursive: true });
-      await ensureJeoGitignore(cwd);
-      const updatedConcepts: { title: string; type: string }[] = [];
-
-      for (const raw of parsedJson.concepts) {
-        // A text-only / small model (the default antigravity backend) can emit
-        // stray non-object array elements (null, strings, numbers) or non-string
-        // type/title fields. Validate each element and isolate per-concept failures:
-        // one malformed concept must NEVER throw out of the loop, because the outer
-        // catch would then discard every valid learning distilled in this run.
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-        const concept = raw as {
-          type?: unknown; title?: unknown; description?: unknown; body?: unknown;
-          tags?: unknown; confidence?: unknown; links?: unknown;
-        };
-        const type = typeof concept.type === "string" ? concept.type.trim() : "";
-        const title = typeof concept.title === "string" ? concept.title.trim() : "";
-        if (!type || !title) continue;
-        try {
-          await upsertConceptFile(bundleDir, {
-            type, // unknown types fall back to facts/ inside the helper (lenient)
-            title,
-            description: typeof concept.description === "string" ? concept.description : "",
-            body: typeof concept.body === "string" ? concept.body : "",
-            tags: Array.isArray(concept.tags) ? concept.tags.filter((t): t is string => typeof t === "string") : [],
-            confidence: typeof concept.confidence === "string" ? concept.confidence : "high",
-            links: Array.isArray(concept.links) ? concept.links.filter((l): l is string => typeof l === "string") : [],
-          }, { verified: opts.sessionVerified === true });
-          updatedConcepts.push({ title, type });
-        } catch {
-          // Skip just this concept; keep distilling the rest of the batch.
-        }
-      }
-
-      await withIndexLock(bundleDir, async () => {
-        await rebuildIndex(bundleDir);
-        if (updatedConcepts.length > 0) {
-          await updateLog(bundleDir, updatedConcepts);
-        }
-      });
-      // Concepts now own the durable memory and the legacy blob (if any) was
-      // folded into the merge above. Archive a lingering MEMORY.md off the active
-      // read path so it can never break OKF conformance or shadow the bundle.
-      if (legacyDoc) {
-        await fs.rename(memoryFilePath(cwd), `${memoryFilePath(cwd)}.bak`).catch(() => {});
-      }
-      await cleanupStalePendingFiles(bundleDir);
-      invalidateConceptCache();
-      return { updated: true };
-    } else {
-      // JSON extraction failed (text-only models often wrap or drop the JSON).
-      // The single-doc MEMORY.md is a BOOTSTRAP fallback only: it is injected by
-      // memoryPromptSection ONLY when the OKF concept bundle is empty. Writing it
-      // while concepts already exist would (a) be silently ignored at injection
-      // (concepts win) — losing the learning — and (b) break OKF conformance
-      // (MEMORY.md has no frontmatter). So when a bundle exists, do NOT clobber
-      // it with a dead blob; keep the prior concepts as the durable memory.
-      if (existingConcepts.length > 0) {
-        return { updated: false, skipped: "distill produced no JSON; kept existing concept bundle (legacy blob suppressed)" };
-      }
-      const doc = distilled.trim().slice(0, MEMORY_MAX_CHARS);
-      if (!doc) return { updated: false, skipped: "model returned an empty document" };
-      const file = memoryFilePath(cwd);
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      const tmp = `${file}.tmp-${process.pid}`;
-      await fs.writeFile(tmp, doc + "\n", "utf-8");
-      await fs.rename(tmp, file);
-      invalidateConceptCache();
-      return { updated: true };
-    }
-  } catch (err: any) {
-    return { updated: false, skipped: `distill failed: ${err?.message ?? String(err)}` };
+    return await applyDistilledMemory(cwd, distilled, existingConcepts.length, !!legacyDoc, opts.sessionVerified === true);
+  } catch (err: unknown) {
+    return { updated: false, skipped: `distill failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -1092,6 +1118,7 @@ export async function recordFailedAttempt(
   attempt: { title: string; description?: string; body?: string; tags?: string[] },
 ): Promise<{ recorded: boolean; skipped?: string }> {
   if (jeoEnv("NO_MEMORY") === "1") return { recorded: false, skipped: "disabled (JEO_NO_MEMORY=1)" };
+  if (currentSandboxExecution()) return sandboxMemory("record", cwd, { attempt });
   const title = attempt.title?.trim();
   if (!title) return { recorded: false, skipped: "empty title" };
   try {
@@ -1143,8 +1170,8 @@ export function distillInvocation(argv1: string | undefined, execPath: string, c
 
 type SpawnLike = (opts: { cmd: string[]; cwd: string; stdin: "ignore"; stdout: "ignore"; stderr: "ignore" }) => { unref(): void };
 
-/** Write the payload and hand distillation to a detached child. Returns true when
- *  a child was spawned. Best-effort: failure means no memory update, never a slow exit. */
+/** Detached in nonsandbox mode. Sandboxed learning must finish before its owning
+ * supervisor closes; credentials stay in brain and file effects stay in hands. */
 export async function spawnDetachedDistill(
   history: Message[],
   cwd: string,
@@ -1153,6 +1180,15 @@ export async function spawnDetachedDistill(
 ): Promise<boolean> {
   if (jeoEnv("NO_MEMORY") === "1") return false;
   if (history.filter(m => m.role !== "system").length < MIN_HISTORY_MESSAGES) return false;
+  if (currentSandboxExecution()) {
+    try {
+      // The transcript and system prompt never enter the shared guest workspace.
+      // Only the derived learning document crosses the deterministic apply RPC.
+      return (await distillSessionMemory(history, cwd, { model })).updated;
+    } catch {
+      return false;
+    }
+  }
   try {
     const dir = path.join(cwd, ".jeo", "memory");
     await fs.mkdir(dir, { recursive: true });
@@ -1188,17 +1224,20 @@ export async function runMemoryDistillCommand(
     const payloadPath = (args[0] ?? "").trim();
     if (!payloadPath) return;
     try {
-      const payloadContent = await fs.readFile(payloadPath, "utf-8");
+      const payloadContent = currentSandboxExecution()
+        ? await sandboxMemory<string>("readPayload", path.dirname(path.resolve(payloadPath)), { name: path.basename(payloadPath) })
+        : await fs.readFile(payloadPath, "utf-8");
       const payload = JSON.parse(payloadContent) as { model?: string; messages?: Message[] };
       const bundleDir = path.join(process.cwd(), ".jeo", "memory");
-      await saveRawPayload(bundleDir, payload);
+      if (!currentSandboxExecution()) await saveRawPayload(bundleDir, payload);
       if (Array.isArray(payload.messages)) {
         await distillSessionMemory(payload.messages, process.cwd(), { model: payload.model });
       }
     } catch {
       // best-effort — a broken payload must not leave error noise in a detached child
     } finally {
-      await fs.unlink(payloadPath).catch(() => {});
+      if (currentSandboxExecution()) await sandboxMemory("removePayload", path.dirname(path.resolve(payloadPath)), { name: path.basename(payloadPath) });
+      else await fs.unlink(payloadPath).catch(() => {});
     }
   } finally {
     // Guaranteed on every path (incl. the no-payload early return and a distill timeout):

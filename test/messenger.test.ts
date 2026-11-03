@@ -21,13 +21,17 @@ function config(): MessengerConfig {
 
 describe("messenger security and configuration", () => {
 	test("requires exact explicit allowlists and rejects unknown or unsafe configuration", () => {
-		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: [] } } }, "/tmp")).toThrow();
-		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["*"] } } }, "/tmp")).toThrow();
-		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"], surprise: true } } }, "/tmp")).toThrow();
-		expect(() => parseMessengerConfig({ toolNames: ["delete"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow();
-		const parsed = parseMessengerConfig({ cwd: "work", sessionDir: "private", toolNames: ["read"], platforms: { discord: { allowedUserIds: ["1"], allowedChannelIds: ["2"] } } }, "/profile");
-		expect(parseMessengerConfig({ toolNames: ["read", "find", "search", "edit", "write", "computer"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual(["read", "find", "search", "edit", "write", "computer"]);
-		expect(parsed.cwd).toBe("/profile/work");
+		const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } };
+		const layout = { cwd: "ws", sessionDir: "private", sandbox };
+		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow("sandbox must be an object");
+		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: [] } } }, "/tmp")).toThrow();
+		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["*"] } } }, "/tmp")).toThrow();
+		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["1"], surprise: true } } }, "/tmp")).toThrow("unknown setting");
+		expect(() => parseMessengerConfig({ ...layout, toolNames: ["delete"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow();
+		const parsed = parseMessengerConfig({ ...layout, toolNames: ["read"], platforms: { discord: { allowedUserIds: ["1"], allowedChannelIds: ["2"] } } }, "/profile");
+		expect(parseMessengerConfig({ ...layout, toolNames: ["read", "find", "search", "edit", "write", "computer"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual(["read", "find", "search", "edit", "write", "computer"]);
+		expect(parsed.cwd).toBe("/profile/ws");
+		expect(parsed.sandbox).toEqual(sandbox);
 		expect(parsed.sessionDir).toBe("/profile/private");
 		expect(() => validateMessengerEnvironment(parsed, {})).toThrow();
 		validateMessengerEnvironment(parsed, { JEO_DISCORD_BOT_TOKEN: "token" });

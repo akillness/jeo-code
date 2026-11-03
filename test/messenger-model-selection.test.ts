@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { selectDiscordModel } from "../src/messenger/model-selection";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
+import { parseModelsBody } from "../src/ai/model-discovery";
 import type { Config } from "../src/agent/state";
 
 const config = (defaultModel: string): Config => ({ providers: {}, defaultModel, thinkingLevel: "medium" });
@@ -111,4 +112,74 @@ test("Discord expands built-in alias and rejects it when absent from live catalo
   const list = async (provider: ProviderModelsResult["provider"]) => { seen.push(provider); return { provider, ok: true, source: "oauth" as const, models: ["claude-sonnet-4-6"] }; };
   await expect(selectDiscordModel("sonnet", { config: config("gpt-5"), list })).rejects.toThrow();
   expect(seen).toEqual(["anthropic"]);
+});
+
+test("Discord ranks versions before snapshot dates and excludes automatic variants", async () => {
+  for (const [model, candidates, expected] of [
+    ["gpt-5", ["gpt-5-terra-2026-01-01", "gpt-5.5-terra", "gpt-9-terra-mini", "gpt-9-terra-codex"], "gpt-5.5-terra"],
+    ["gpt-5", ["gpt-5-terra-20260101", "gpt-5.5-terra"], "gpt-5.5-terra"],
+    ["claude-sonnet-4-6", ["claude-sonnet-4-20260101", "claude-sonnet-4-5", "claude-sonnet-9-thinking"], "claude-sonnet-4-5"],
+    ["antigravity/gemini-3-flash", ["antigravity/gemini-3-flash", "antigravity/gemini-9-flash-lite"], "antigravity/gemini-3-flash"],
+  ] as const) {
+    for (const models of [candidates, [...candidates].reverse()]) {
+      const list = async (provider: ProviderModelsResult["provider"]) => ({ provider, models: [...models], displayNames: Object.fromEntries(models.map(id => [id, id])), ok: true, source: "oauth" as const });
+      expect(await selectDiscordModel(undefined, { config: config(model), list })).toBe(expected);
+    }
+  }
+});
+
+test("Discord does not rank OpenAI snapshot suffixes as model versions", async () => {
+  for (const older of ["gpt-5-terra-0409", "gpt-5-terra-2026-01", "gpt-5-terra-preview-0409"]) {
+    for (const models of [[older, "gpt-5.5-terra"], ["gpt-5.5-terra", older]]) {
+      const list = async (provider: ProviderModelsResult["provider"]) => ({ provider, models, ok: true, source: "oauth" as const });
+      await expect(selectDiscordModel(undefined, { config: config("gpt-5"), list })).rejects.toThrow(/explicit model/i);
+    }
+  }
+});
+
+test("Discord fails closed when same-version Antigravity tier preference is ambiguous", async () => {
+  for (const [first, second] of [["High", ""], ["Medium", ""], ["Low", ""]]) {
+    for (const reverse of [false, true]) {
+      const models = ["antigravity/gemini-3-flash-a", "antigravity/gemini-3-flash-b"];
+      if (reverse) models.reverse();
+      const list = async (provider: ProviderModelsResult["provider"]) => ({
+        provider, models, ok: true, source: "oauth" as const,
+        displayNames: { "antigravity/gemini-3-flash-a": `Gemini 3 Flash (${first})`, "antigravity/gemini-3-flash-b": `Gemini 3 Flash${second ? ` (${second})` : ""}` },
+      });
+      await expect(selectDiscordModel(undefined, { config: config("antigravity/gemini-3-flash"), list })).rejects.toThrow(/explicit model/i);
+    }
+  }
+});
+
+test("Discord ranks explicit Antigravity High, Medium and Low tiers", async () => {
+  for (const [first, second] of [["High", "Medium"], ["High", "Low"], ["Medium", "Low"]]) {
+    const models = ["antigravity/gemini-3-flash-a", "antigravity/gemini-3-flash-b"];
+    for (const candidates of [models, [...models].reverse()]) {
+      const list = async (provider: ProviderModelsResult["provider"]) => ({
+        provider, models: candidates, ok: true, source: "oauth" as const,
+        displayNames: { "antigravity/gemini-3-flash-a": `Gemini 3 Flash (${first})`, "antigravity/gemini-3-flash-b": `Gemini 3 Flash (${second})` },
+      });
+      expect(await selectDiscordModel(undefined, { config: config("antigravity/gemini-3-flash"), list })).toBe("antigravity/gemini-3-flash-a");
+    }
+  }
+});
+
+test("Antigravity refuses to rank a tiered Flash candidate without a display name", async () => {
+  for (const reverse of [false, true]) {
+    const entries = [
+      ["gemini-3-flash", { displayName: "Gemini 3 Flash (High)" }],
+      ["gemini-3-flash-agent", {}],
+    ] as const;
+    const body = {
+      models: Object.fromEntries(reverse ? [...entries].reverse() : entries),
+      tieredModelIds: { standard: ["gemini-3-flash", "gemini-3-flash-agent"] },
+    };
+    const list = async (provider: ProviderModelsResult["provider"]) => ({
+      provider, ok: true, source: "oauth" as const,
+      models: parseModelsBody(provider, body),
+      displayNames: { "antigravity/gemini-3-flash": "Gemini 3 Flash (High)" },
+    });
+    await expect(selectDiscordModel(undefined, { config: config("antigravity/gemini-3-flash"), list })).rejects.toThrow("live catalog is missing display names; configure an explicit model from the live catalog");
+    expect(await selectDiscordModel("antigravity/gemini-3-flash", { config: config("antigravity/gemini-3-flash"), list })).toBe("antigravity/gemini-3-flash");
+  }
 });

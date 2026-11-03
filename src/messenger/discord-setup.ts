@@ -1,10 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { loadMessengerConfig, resolveMessengerToken, validateMessengerEnvironment } from "./config";
+import { loadMessengerConfig, parseMessengerSandbox, resolveMessengerToken, validateMessengerEnvironment } from "./config";
 import { DISCORD_API, DISCORD_GATEWAY_INTENTS, discordGatewayUrl } from "./discord";
 import { MessengerHttpError, messengerFetchJson } from "./http";
 import { installMessengerService, messengerServicePlan } from "./service";
 import { isEnoent, isRecord } from "./types";
+import { notifyDir } from "../agent/notify/paths";
 
 export const DISCORD_TOKEN_ENV = "JEO_DISCORD_BOT_TOKEN";
 const TOKEN_FILE = "discord-token";
@@ -482,14 +483,16 @@ exec ${command.map(quote).join(" ")} messenger run --config "$dir/${configName}"
 `;
 }
 
-/** Windows launcher equivalent. The token remains in the private sidecar and is never embedded. */
-export function discordRunCommand(command: string[], configName: string, tokenEnv: string, envPath: string): string {
-	const literal = (value: string): string => {
-		if (/["\r\n]/.test(value)) throw new Error("Windows launcher values must not contain quotes or newlines");
+/** The Windows launcher inherits PATH at launch; the token remains in the private sidecar. */
+export function discordRunCommand(command: string[], configName: string, tokenEnv: string): string {
+	if (!/^[A-Za-z_]/u.test(tokenEnv) || /[^A-Za-z0-9_]/u.test(tokenEnv)) throw new Error("discord.tokenEnv must name an environment variable");
+	const literal = (value: string, label: string): string => {
+		if (/["\r\n]/.test(value)) throw new Error(`Windows launcher ${label} must not contain quotes or newlines`);
+		if (/[^\x00-\x7f]/.test(value)) throw new Error(`Windows launcher ${label} must contain only ASCII characters; use ASCII paths`);
 		return value.replace(/%/g, "%%");
 	};
-	const quote = (value: string): string => `"${literal(value)}"`;
-	return `@echo off\r\nsetlocal DisableDelayedExpansion\r\nset "PATH=${literal(envPath)}"\r\nset /p "${tokenEnv}="<"%~dp0${TOKEN_FILE}"\r\n${command.map(quote).join(" ")} messenger run --config "%~dp0${literal(configName)}"\r\n`;
+	const quote = (value: string): string => `"${literal(value, "command")}"`;
+	return `@echo off\r\nsetlocal DisableDelayedExpansion\r\nset /p "${tokenEnv}="<"%~dp0${TOKEN_FILE}"\r\n${command.map(quote).join(" ")} messenger run --config "%~dp0${literal(configName, "config name")}"\r\n`;
 }
 
 async function writePrivate(file: string, content: string, mode: number): Promise<void> {
@@ -517,7 +520,7 @@ async function readExistingConfig(configPath: string): Promise<Record<string, un
 }
 
 export function currentJeoCommand(entry = Bun.main, execPath = process.execPath): string[] {
-	return entry === execPath || entry.startsWith("/$bunfs/") || entry.startsWith("B:\\~BUN\\") ? [execPath] : [execPath, entry];
+	return entry === execPath || entry.startsWith("/$bunfs/") || entry.replaceAll("\\", "/").startsWith("B:/~BUN/") ? [execPath] : [execPath, entry];
 }
 
 export function messengerExecutablePath(execPath: string, inheritedPath: string | undefined, delimiter: string, platform: NodeJS.Platform): string {
@@ -542,6 +545,23 @@ export async function setupDiscordMessenger(
 		throw new Error("Background services are supported only on macOS and Linux");
 	}
 	const runScript = path.join(directory, platform === "win32" ? RUN_SCRIPT_WINDOWS : RUN_SCRIPT_POSIX);
+	const delimiter = deps.pathDelimiter ?? path.delimiter;
+	const envPath = messengerExecutablePath(process.execPath, env.PATH, delimiter, platform);
+	const command = deps.jeoCommand ?? currentJeoCommand();
+	const existing = await readExistingConfig(configPath);
+	const sandbox = existing?.sandbox !== undefined ? parseMessengerSandbox(existing.sandbox) : parseMessengerSandbox({
+		image: await io.ask("Existing local Linux sandbox image (no image will be pulled): "),
+		limits: {
+			memoryBytes: Number(await io.ask("Sandbox memory limit in bytes: ")),
+			pids: Number(await io.ask("Sandbox process limit: ")),
+			cpus: Number(await io.ask("Sandbox CPU limit: ")),
+		},
+	});
+	if (existing && Object.hasOwn(existing, "independentSessions")) {
+		delete existing.independentSessions;
+		io.say("Removed obsolete independentSessions setting. Discord threads now keep one persistent session.");
+	}
+	if (platform === "win32") discordRunCommand(command, path.basename(configPath), DISCORD_TOKEN_ENV);
 
 	const token = await resolveToken(env, tokenPath, io);
 	throwIfAborted(deps.signal);
@@ -559,8 +579,6 @@ export async function setupDiscordMessenger(
 
 	const inviteUrl = discordInviteUrl(bot.applicationId);
 	const guilds = await waitForDiscordGuilds(api, inviteUrl, io, deps.sleep ?? Bun.sleep, options.inviteWaitMs ?? 300_000, deps.signal);
-	throwIfAborted(deps.signal);
-	const existing = await readExistingConfig(configPath);
 	throwIfAborted(deps.signal);
 	const platforms = isRecord(existing?.platforms) ? existing.platforms : {};
 	const previous = isRecord(platforms.discord) ? platforms.discord : {};
@@ -584,6 +602,7 @@ export async function setupDiscordMessenger(
 	throwIfAborted(deps.signal);
 	const allowedChannelIds = [...new Set([...channelIds, ...(dmChannel ? [dmChannel] : [])])];
 	const tokenEnv = str(previous.tokenEnv) ?? DISCORD_TOKEN_ENV;
+	if (platform === "win32") discordRunCommand(command, path.basename(configPath), tokenEnv);
 
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
 	if (options.artifacts) discord.artifactDir = "./artifacts";
@@ -591,9 +610,9 @@ export async function setupDiscordMessenger(
 	const config = {
 		...existing,
 		cwd: str(existing?.cwd) ?? "./workspace",
-		sessionDir: str(existing?.sessionDir) ?? "./sessions",
+		sessionDir: str(existing?.sessionDir) ?? path.join(notifyDir(), "messenger-sessions"),
+		sandbox,
 		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : defaultTools),
-		independentSessions: existing?.independentSessions !== undefined ? Boolean(existing.independentSessions) : true,
 		platforms: { ...platforms, discord },
 	};
 	for (const relative of [config.cwd, config.sessionDir, discord.artifactDir]) {
@@ -603,13 +622,11 @@ export async function setupDiscordMessenger(
 	}
 	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
 	throwIfAborted(deps.signal);
-	const delimiter = deps.pathDelimiter ?? path.delimiter;
-	const envPath = messengerExecutablePath(process.execPath, env.PATH, delimiter, platform);
 	await writePrivate(
 		runScript,
 		platform === "win32"
-			? discordRunCommand(deps.jeoCommand ?? currentJeoCommand(), path.basename(configPath), tokenEnv, envPath)
-			: discordRunScript(deps.jeoCommand ?? currentJeoCommand(), path.basename(configPath), tokenEnv, envPath),
+			? discordRunCommand(command, path.basename(configPath), tokenEnv)
+			: discordRunScript(command, path.basename(configPath), tokenEnv, envPath),
 		0o700,
 	);
 	throwIfAborted(deps.signal);

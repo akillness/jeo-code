@@ -27,7 +27,7 @@
       "id": "authorization-and-request-shape",
       "referenceSource": { "path": "packages/coding-agent/src/messenger/gateway.ts", "anchor": "L198-L215#isMessengerMessageAllowed" },
       "observableBehavior": "Only explicitly allowed users and channels dispatch; guild top-level messages require a bot mention, while direct messages and authorized Discord thread follow-ups do not.",
-      "permittedDifference": "None; jeo additionally binds thread ownership in its managed daemon without broadening this gateway rule.",
+      "permittedDifference": "Authenticated allowlisted participants in an allowed Discord thread share its persistent session; session identity is not thread-owner authorization.",
       "jeoBoundary": { "path": "src/messenger/gateway.ts", "symbol": "isMessengerMessageAllowed" },
       "focusedProof": { "path": "test/messenger.test.ts", "assertion": "authorizes only the configured user, channel and mention shape" }
     },
@@ -42,10 +42,10 @@
     {
       "id": "conversation-identity-and-persistence",
       "referenceSource": { "path": "packages/coding-agent/src/messenger/gateway.ts", "anchor": "L169-L183#messengerConversationKey" },
-      "observableBehavior": "Conversation identity includes platform, account, effective parent channel, thread, and sender, excludes message ID, and feeds the stable persisted-session route.",
-      "permittedDifference": "jeo uses tagged optional components to prevent absent and literal identifiers from colliding; that is an intentional collision-safety strengthening.",
+      "observableBehavior": "Conversation identity includes platform, account, guild, effective parent channel, and thread or conversation. Discord thread participants share persistent history across message IDs; direct messages and non-thread conversations preserve sender isolation.",
+      "permittedDifference": "The approved session-container contract replaces independent-message and Discord-thread-sender sessions with one persistent session per thread. Tagged optional components prevent absent and literal identifiers from colliding; human authorization remains independent from session identity.",
       "jeoBoundary": { "path": "src/messenger/gateway.ts", "symbol": "messengerConversationKey" },
-      "focusedProof": { "path": "test/messenger.test.ts", "assertion": "routes DMs by sender and server work by thread, deterministically" }
+      "focusedProof": { "path": "test/messenger-independent-session.test.ts", "assertion": "session routing preserves shared thread continuity and isolates distinct threads" }
     },
     {
       "id": "deduplication-order-and-observable-status",

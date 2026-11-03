@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { callLlm, type Message } from "./loop";
+import { callLlm } from "./loop";
+import type { Message } from "./loop";
 
 export interface GoalVerdict {
   verdict: "MET" | "NOT_MET" | "IMPOSSIBLE";
@@ -204,25 +205,42 @@ export function applyPendingEvidence(state: GoalState, evidence: TurnEvidence): 
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { getLocalJeoDir } from "./state";
+import { getLocalJeoDir, readWorkflowFile, writeWorkflowFile } from "./state";
+import { currentSandboxExecution } from "./hooks";
 
 export function getGoalPath(cwd: string = process.cwd()): string {
   return path.join(getLocalJeoDir(cwd), "state", "goal.json");
 }
 
-export async function readGoalState(cwd: string = process.cwd()): Promise<GoalState | null> {
+/** Return exact persisted bytes (or absence) so corruption is classified in the brain. */
+export async function readGoalFile(cwd: string = process.cwd()): Promise<string | null> {
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const result = await sandbox.supervisor.call("__workflow", { operation: "readGoal" }, { cwd, signal: sandbox.signal });
+    if (!result.success) throw new Error(result.error || "SANDBOX_WORKFLOW: goal read failed");
+    const value: unknown = JSON.parse(result.output);
+    if (value !== null && typeof value !== "string") throw new Error("SANDBOX_WORKFLOW: invalid goal file response");
+    return value;
+  }
   const p = getGoalPath(cwd);
-  let data: string;
   try {
-    data = await fs.readFile(p, "utf-8");
+    return await readWorkflowFile(p, cwd);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-  return parseGoalState(data, p);
+}
+
+export async function readGoalState(cwd: string = process.cwd()): Promise<GoalState | null> {
+  const data = await readGoalFile(cwd);
+  return data === null ? null : parseGoalState(data, getGoalPath(cwd));
 }
 
 export async function writeGoalState(state: GoalState, cwd: string = process.cwd()): Promise<void> {
+  if (currentSandboxExecution()) {
+    await writeWorkflowFile(getGoalPath(cwd), JSON.stringify(state, null, 2), cwd);
+    return;
+  }
   const p = getGoalPath(cwd);
   await fs.mkdir(path.dirname(p), { recursive: true });
   const tempPath = `${p}.${randomUUID()}.tmp`;
@@ -235,6 +253,12 @@ export async function writeGoalState(state: GoalState, cwd: string = process.cwd
 }
 
 export async function clearGoalState(cwd: string = process.cwd()): Promise<void> {
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const result = await sandbox.supervisor.call("__workflow", { operation: "clearGoal" }, { cwd, signal: sandbox.signal });
+    if (!result.success) throw new Error(result.error || "SANDBOX_WORKFLOW: goal clear failed");
+    return;
+  }
   const p = getGoalPath(cwd);
   await fs.unlink(p).catch(() => {});
 }

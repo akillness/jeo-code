@@ -4,10 +4,29 @@ import { credentialForCall, effectiveCredentialForProvider, qualifyModelId, reso
 import { resolveModelId } from "../ai/model-registry";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 
+export class DiscordModelSelectionError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Discord model selection failed", { cause });
+    this.name = "DiscordModelSelectionError";
+  }
+}
+
 /** Select only from the account's live catalog; never substitute a static model. */
 export async function selectDiscordModel(
   explicit: string | undefined,
   opts: { config?: Config; signal?: AbortSignal; list?: typeof listProviderModels; credential?: typeof resolveCredential } = {},
+): Promise<string> {
+  try {
+    return await selectDiscordModelFromCatalog(explicit, opts);
+  } catch (error) {
+    if (opts.signal?.aborted) throw error;
+    throw new DiscordModelSelectionError(error);
+  }
+}
+
+async function selectDiscordModelFromCatalog(
+  explicit: string | undefined,
+  opts: { config?: Config; signal?: AbortSignal; list?: typeof listProviderModels; credential?: typeof resolveCredential },
 ): Promise<string> {
   const config = opts.config ?? await readGlobalConfig();
   const requested = explicit?.trim() ? await resolveModelId(explicit.trim(), config) : undefined;
@@ -41,21 +60,27 @@ export async function selectDiscordModel(
     return verified(match);
   }
   const family = provider === "anthropic" ? /sonnet/i : provider === "openai" ? /terra/i : /gemini.*flash/i;
-  const models = [...new Set(result.models.filter(model => family.test(provider === "antigravity" ? (result.displayNames?.[model] ?? model) : model)))];
+  const variant = /(?:^|[^a-z0-9])(?:mini|lite|codex|thinking|image)(?=$|[^a-z0-9])/i;
+  const models = [...new Set(result.models.filter(model => {
+    const name = provider === "antigravity" ? (result.displayNames?.[model] ?? model) : model;
+    return family.test(name) && !variant.test(model) && !variant.test(name);
+  }))];
   if (!models.length) throw new Error(`Discord found no available ${provider} model in the required family`);
   if (models.length === 1) return verified(models[0]!);
   // Antigravity wire aliases can advertise a different version than their IDs.
   // Only the display name from the same live response establishes recency.
   if (provider === "antigravity" && models.some(model => !result.displayNames?.[model])) {
-    throw new Error("Discord cannot determine the newest Antigravity Flash model; configure an explicit model");
+    throw new Error("Discord cannot determine the newest Antigravity Flash model: live catalog is missing display names; configure an explicit model from the live catalog");
   }
   const ranked = models.map(model => {
     const name = provider === "antigravity" ? result.displayNames![model]! : model;
-    const snapshot = provider === "anthropic" ? name.match(/-(\d{8})$/) : null;
+    const snapshot = name.match(/[-_ ](\d{4}-\d{2}-\d{2}|\d{8})$/);
     const versionName = snapshot ? name.slice(0, -snapshot[0].length) : name;
-    return { model, version: (versionName.match(/\d+/g) ?? []).map(Number), snapshot: Number(snapshot?.[1] ?? 0), tier: provider === "antigravity" ? (/\bhigh\b/i.test(name) ? 2 : /\blow\b/i.test(name) ? 1 : 0) : 0 };
+    const tierName = provider === "antigravity" ? name.match(/\((high|medium|low)\)\s*$/i)?.[1]?.toLowerCase() : undefined;
+    const tier = tierName === "high" ? 3 : tierName === "medium" ? 2 : tierName === "low" ? 1 : 0;
+    return { model, version: (versionName.match(/\d+/g) ?? []).map(Number), snapshot: Number(snapshot?.[1]?.replaceAll("-", "") ?? 0), tier, ambiguousVersion: provider === "openai" && /terra.*\d/i.test(versionName) };
   });
-  if (ranked.some(item => !item.version.length)) {
+  if (ranked.some(item => !item.version.length || item.ambiguousVersion)) {
     throw new Error(`Discord cannot determine the newest ${provider} model; configure an explicit model`);
   }
   const compare = (a: number[], b: number[]) => {
@@ -66,6 +91,9 @@ export async function selectDiscordModel(
     return 0;
   };
   ranked.sort((a, b) => compare(a.version, b.version) || b.snapshot - a.snapshot || b.tier - a.tier);
+  if (provider === "antigravity" && ranked.some((item, index) => index > 0 && compare(ranked[0]!.version, item.version) === 0 && ranked[0]!.snapshot === item.snapshot && (!ranked[0]!.tier || !item.tier))) {
+    throw new Error("Discord cannot distinguish the newest antigravity models; configure an explicit model");
+  }
   if (compare(ranked[0]!.version, ranked[1]!.version) === 0 && ranked[0]!.snapshot === ranked[1]!.snapshot && ranked[0]!.tier === ranked[1]!.tier) {
     throw new Error(`Discord cannot distinguish the newest ${provider} models; configure an explicit model`);
   }

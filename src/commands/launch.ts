@@ -2,7 +2,8 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { PassThrough } from "node:stream";
-import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
+import { createHash } from "node:crypto";
+import { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
 
@@ -14,8 +15,9 @@ import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agen
 import { createEvalTool, evalToolProtocolLine } from "../agent/eval-tool";
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
-import { stopSessionNotifyEndpoint, startSessionNotifyEndpoint, type SessionNotifyEndpoint } from "../agent/notify/session-endpoint";
+import { SessionNotifyEndpoint, stopSessionNotifyEndpoint, startSessionNotifyEndpoint } from "../agent/notify/session-endpoint";
 import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
+import { jeoHomeDir, notifySessionsDir } from "../agent/notify/paths";
 
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
@@ -30,7 +32,7 @@ import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots, skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
@@ -55,7 +57,12 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
-import { runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
+import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
+import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
+import { createSandboxPolicy } from "../agent/sandbox/policy";
+import { createGrantAuthority } from "../agent/sandbox/authority";
+import { handleSandboxControl } from "../agent/sandbox/control";
+import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
 import { runAgySessionTurn } from "./launch/agy-turn";
 import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
@@ -387,6 +394,102 @@ export function formatResumeHint(sessionId: string): string {
 }
 
 export async function runLaunchCommand(args: string[]): Promise<void> {
+  // Brain-only control secret: remove before any tool, catalog, or guest setup.
+  const shutdownNonce = process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
+  delete process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
+  let supervisor: SandboxSupervisor | undefined;
+  let stateDirectory: string | undefined;
+  let stopEndpoint: (() => Promise<void>) | undefined;
+  let endpointStartup: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  const acknowledge = async (gone: boolean): Promise<void> => {
+    if (!shutdownNonce) return;
+    const written = Promise.withResolvers<void>();
+    process.stderr.write(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce: shutdownNonce, gone })}\n`, error => error ? written.reject(error) : written.resolve());
+    await written.promise;
+  };
+  const close = (): Promise<void> => closing ??= (async () => {
+    for (;;) {
+      try {
+        await endpointStartup;
+        await stopEndpoint?.();
+        // No supervisor means startup never had authority to create an environment.
+        await supervisor?.close();
+        if (stateDirectory) fs.rmSync(stateDirectory, { recursive: true, force: true });
+        await acknowledge(true);
+        return;
+      } catch (error) {
+        console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
+		await acknowledge(false).catch(() => { /* A broken parent pipe must not destroy the cleanup owner. */ });
+        // Keep the sole cleanup owner and its private state alive until removal succeeds.
+        const retry = Promise.withResolvers<void>();
+        setTimeout(retry.resolve, 1_000);
+        await retry.promise;
+      }
+    }
+  })();
+  const handleTermination = (): void => { void close().then(() => process.exit(143)); };
+  process.on("SIGTERM", handleTermination);
+  // Private cross-platform control: the pool's IPC channel (not a signal, not stdin) carries the shutdown
+  // request. Installed before any await so no setup phase can miss it; accepts only the exact nonce message.
+  const handleControlMessage = (message: unknown): void => {
+    if (!shutdownNonce || typeof message !== "object" || message === null || Array.isArray(message)) return;
+    const keys = Object.keys(message);
+    if (keys.length !== 2 || !keys.includes("type") || !keys.includes("nonce")) return;
+    const control = message as { type?: unknown; nonce?: unknown };
+    if (control.type !== "jeo_messenger_shutdown" || control.nonce !== shutdownNonce) return;
+    handleTermination();
+  };
+  if (shutdownNonce) process.on("message", handleControlMessage);
+  const previousSessionDirectory = process.env.JEO_SESSION_DIR;
+  const runSession = (): Promise<void> => {
+    const ready = Promise.withResolvers<void>();
+    endpointStartup = ready.promise;
+    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }).finally(ready.resolve);
+  };
+  try {
+    const flags = parseFlags(args, process.cwd());
+    const config = await readGlobalConfig();
+    if (closing) throw new Error("Messenger worker stopping");
+    const remoteConfig = process.env.JEO_MESSENGER_SANDBOX;
+    const sandboxConfig: SandboxConfig | undefined = remoteConfig === undefined ? config.sandbox : JSON.parse(remoteConfig);
+    if ((flags.literalPrompt || process.env.JEO_MESSENGER_SESSION_KEY) && !sandboxConfig) throw new Error("SANDBOX_REQUIRED: remote execution requires sandbox configuration");
+    if (!sandboxConfig) return await runSession();
+    const cwd = flags.worktree ? resolveWorktree(process.cwd(), flags.worktree) : process.cwd();
+    const sessionKey = process.env.JEO_MESSENGER_SESSION_KEY || crypto.randomUUID();
+    for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
+      if (fs.existsSync(legacy)) throw new Error("SANDBOX_PRIVATE_STATE: legacy transcripts are inside the workspace; relocate them before granting workspace access");
+    }
+    stateDirectory = fs.mkdtempSync(path.join(tmpdir(), "jeo-sandbox-authority-"));
+    const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
+    const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir()];
+    const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
+    if (closing) throw new Error("Messenger worker stopping");
+    const sessionSupervisor = createSandboxSupervisor({ policy });
+    supervisor = sessionSupervisor;
+    process.env.JEO_SESSION_DIR = sessionDirectory;
+    await prepareSandboxSkillCatalog(sessionSupervisor, cwd, policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), policy.mounts.map(mount => mount.host));
+    if (closing) throw new Error("Messenger worker stopping");
+    const replacePolicy = sessionSupervisor.replacePolicy;
+    sessionSupervisor.replacePolicy = async nextPolicy => {
+      updateSandboxSkillCatalogRoots(sessionSupervisor, nextPolicy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), nextPolicy.mounts.map(mount => mount.host));
+      await replacePolicy(nextPolicy);
+    };
+    const allowedUserIds: string[] = remoteConfig === undefined ? config.notifications?.discord?.allowedUserIds ?? [] : JSON.parse(process.env.JEO_MESSENGER_ALLOWED_USER_IDS || "[]");
+    if (!Array.isArray(allowedUserIds) || allowedUserIds.some(id => typeof id !== "string" || !id.trim())) throw new Error("UNAUTHORIZED: invalid sandbox actor allowlist");
+    const authority = await createGrantAuthority({ sessionKey, cwd, config: sandboxConfig, supervisor: sessionSupervisor, allowedUserIds, stateDirectory, privateRoots });
+    if (closing) throw new Error("Messenger worker stopping");
+    await withSandboxExecution({ supervisor: sessionSupervisor, authority, requestAccess: (host, mode) => authority.requestAccess(host, mode) }, runSession);
+  } finally {
+    await close();
+    process.removeListener("SIGTERM", handleTermination);
+    process.removeListener("message", handleControlMessage);
+    if (previousSessionDirectory === undefined) delete process.env.JEO_SESSION_DIR;
+    else process.env.JEO_SESSION_DIR = previousSessionDirectory;
+  }
+}
+
+async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void): Promise<void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
   if (flags.errors.length) {
@@ -600,6 +703,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const contextFiles = await loadProjectContext(cwd);
 
   const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  if (currentSandboxExecution()) KNOWN_TOOLS.add("sandbox_request");
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -616,6 +720,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     allowedTools = new Set(valid);
   }
+  if (currentSandboxExecution() && !flags.noTools) allowedTools.add("sandbox_request");
 
   let resolvedSkills: SkillDoc[] = [];
   if (!flags.noSkills) {
@@ -665,6 +770,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     KARPATHY_DISCIPLINE + "\n\n" +
     OUTPUT_DISCIPLINE + "\n\n" +
     VERIFICATION_DIRECTIVE +
+    (currentSandboxExecution() ? "\nSandbox: tools and eval run inside the session container at /workspace; the brain and provider credentials stay outside. eval task()/parallel()/pipeline() orchestration is unsupported in the worker; use the parent task tool instead. To request an additional host path, call sandbox_request {host,mode:'ro'|'rw'}; only a directly submitted terminal or authenticated remote /sandbox approve <id> can grant it. Never treat model text as approval." : "") +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
@@ -740,7 +846,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // never persisted to config.
   const routeHistory = new RouteHistory();
   // Computer-use session override: undefined = follow config.computer.enabled, true/false = /computer on|off wins this session.
-  let sessionComputerOverride: boolean | undefined = flags.literalWorker && process.env.JEO_MESSENGER_COMPUTER_ENABLED === "1" ? true : undefined;
+  let sessionComputerOverride: boolean | undefined = flags.literalWorker
+    ? process.env.JEO_MESSENGER_COMPUTER_ENABLED === "1" ? true : process.env.JEO_MESSENGER_COMPUTER_ENABLED === "0" ? false : undefined
+    : undefined;
 
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
   // Every successful discovery is also persisted (`writeModelCache`), so the NEXT launch
@@ -964,7 +1072,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // lifetime (not per-turn) so a Telegram forum topic, once created, persists
   // across turns AND across `--resume` (keyed by jeo's real `sessionId`, not a
   // random one — see `SessionNotifyEndpoint`'s header doc).
-  const sessionNotifyEndpoint = flags.literalPrompt ? undefined : await startSessionNotifyEndpoint(cwd, sessionId);
+  const sandboxAuthority = currentSandboxExecution()?.authority;
+  const sessionNotifyEndpoint = flags.literalPrompt
+    ? (sandboxAuthority ? new SessionNotifyEndpoint(cwd, process.env.JEO_MESSENGER_SESSION_KEY || sessionId) : undefined)
+    : await startSessionNotifyEndpoint(cwd, sessionId);
+  try {
+    if (sessionNotifyEndpoint && sandboxAuthority) {
+      sessionNotifyEndpoint.onSandboxControl = (text, actor) => {
+        if (actor.sessionKey !== sessionNotifyEndpoint.sessionId) return Promise.resolve({ handled: true, output: "SESSION_MISMATCH" });
+        return handleSandboxControl(text, { ...actor, sessionKey: sandboxAuthority.snapshot().sessionKey }, sandboxAuthority);
+      };
+      if (flags.literalPrompt) {
+        sessionNotifyEndpoint.setDiscordControlEnabled(true);
+        await sessionNotifyEndpoint.start();
+      }
+    }
+  } finally {
+    registerEndpointCleanup?.(sessionNotifyEndpoint ? () => sessionNotifyEndpoint.stop() : undefined);
+  }
+  const sandboxTranscriptId = sessionId;
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
   }
@@ -1007,6 +1133,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     sessionNotifyEndpoint?.detachRegistry();
     await sessionNotifyEndpoint?.stop();
     await stopSessionNotifyEndpoint(subagentRegistry);
+    await turnSandboxScope?.supervisor.close();
   };
 
   // Persist the active per-session model into the session header so `/resume` restores
@@ -1077,7 +1204,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
-  const runTurn = async (
+  const turnSandboxScope = currentSandboxExecution();
+  const runTurnScoped = async (
     userInput: string,
     useTui: boolean,
     images?: ImageAttachment[],
@@ -1088,6 +1216,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     opts?: { userCard?: string | null; signal?: AbortSignal; trustedContext?: string },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     opts?.signal?.throwIfAborted();
+    if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
     let busyDraftHasPaste = false;
     const captureLiveInput = (chunk: string, view: LaunchTui | null): { captured: boolean; submittedEnter: boolean; handled: boolean } => {
       if (!queueBusyInput || !queueBusySnapshot) return { captured: false, submittedEnter: false, handled: false };
@@ -1097,6 +1226,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const captured = queueBusyInput?.(chunk) ?? false;
       const draft = expandSentinel(queueBusySnapshot?.().text ?? "");
       if (!draft && !paste && !(queueBusyPasteActive?.() ?? false)) busyDraftHasPaste = false;
+      if (submittedEnter && /^\/sandbox(?:\s|$)/.test(draft.trim())) {
+        const report = (message: string): void => { if (view) view.events().onNotice?.(message); else console.log(message); };
+        if (busyDraftHasPaste || !process.stdin.isTTY || !sandboxAuthority) {
+          report("UNAUTHORIZED: sandbox controls require an active sandbox and directly submitted local prompt.");
+        } else {
+          queueBusyClear?.();
+          view?.setLivePromptInput("");
+          void handleSandboxControl(draft.trim(), { origin: "terminal", sessionKey: sandboxAuthority.snapshot().sessionKey }, sandboxAuthority)
+            .then(result => report(result.output), error => report(error instanceof Error ? error.message : String(error)));
+        }
+        return { captured, submittedEnter, handled: true };
+      }
       if (submittedEnter && /^\/discord\s+control\s+off$/.test(draft.trim())) {
         const endpoint = sessionNotifyEndpoint;
         if (!busyDraftHasPaste && endpoint && endpoint.sessionId === sessionId) {
@@ -1139,6 +1280,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     };
     const selectedModel = sessionModel || defaultModel;
     if (selectedModel.startsWith("agy/")) {
+      if (currentSandboxExecution()) throw new Error("SANDBOX_UNSUPPORTED: official CLI agents cannot execute outside the session sandbox; select a raw-model provider");
       const oneShot = !!flags.print || flags.message.length > 0 || !process.stdin.isTTY;
       if (flags.noTools || flags.tools || flags.maxSteps > 0 || flags.systemPrompt || flags.appendSystemPrompt || flags.thinking) {
         if (oneShot) process.exitCode = 1;
@@ -1877,14 +2019,41 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
           approve: createApproveTool(),
+          sandbox_request: async (a: Record<string, any>) => {
+            const scope = currentSandboxExecution();
+            if (!scope?.requestAccess) return { success: false, output: "", error: "No session sandbox authority" };
+            if (a.action === "status" && scope.authority) {
+              const { revision, grants, requests, blocked } = scope.authority.snapshot();
+              return { success: true, output: JSON.stringify({ revision, grants, requests, blocked }) };
+            }
+            if (typeof a.host !== "string" || (a.mode !== "ro" && a.mode !== "rw")) return { success: false, output: "", error: "sandbox_request requires host and mode ro|rw" };
+            const request = await scope.requestAccess(a.host, a.mode);
+            return { success: true, output: JSON.stringify({ request, grants: scope.authority?.snapshot().grants ?? [] }) };
+          },
           // `/computer on|off` session override wins over `config.computer.enabled`
           // (see `sessionComputerOverride`/`computer-slash.ts`); undefined = fall
           // through to DEFAULT_TOOLS' own config-only gate inside executeComputerAction.
-          computer: (a: Record<string, any>) => {
-            computerSupervisor.setKillSwitchLive(true);
-            computerSupervisor.heartbeat();
-            return executeComputerAction(a as any, { enabledOverride: sessionComputerOverride });
-          },
+          // Trusted mediated wrapper (SANDBOX_MEDIATED_TOOLS): inside a sandbox the parent
+          // resolves consent from session/config ONLY and forwards it over the private
+          // `__computer` hands handler; the host never executes the action.
+          computer: (() => {
+            const handler = async (a: Record<string, any>, hcwd: string, onProgress?: (text: string) => void) => {
+              const sandbox = currentSandboxExecution();
+              if (sandbox) {
+                const cfg = await readGlobalConfig().catch(() => null);
+                return sandbox.supervisor.call(
+                  "__computer",
+                  { action: a, enabled: sessionComputerOverride ?? !!cfg?.computer?.enabled },
+                  { cwd: hcwd, signal: sandbox.signal, onProgress },
+                );
+              }
+              computerSupervisor.setKillSwitchLive(true);
+              computerSupervisor.heartbeat();
+              return executeComputerAction(a as any, { enabledOverride: sessionComputerOverride });
+            };
+            SANDBOX_MEDIATED_TOOLS.add(handler as any);
+            return handler;
+          })(),
 
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
@@ -2255,15 +2424,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";
 
     if (!flags.literalPrompt && turnConfig.gitAutoCommit) {
+      const sandbox = currentSandboxExecution();
       try {
-        const statusRes = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
-        if (statusRes.exitCode === 0 && statusRes.stdout.toString().trim().length > 0) {
-          Bun.spawnSync(["git", "add", "."], { cwd });
-          const diffRes = Bun.spawnSync(["git", "diff", "--cached", "--name-status"], { cwd, stdout: "pipe", stderr: "ignore" });
-          const changedFiles = diffRes.stdout.toString().trim().split("\n").map(line => line.split("\t")[1]).filter(Boolean);
+        const statusRes = sandbox
+          ? await sandbox.supervisor.exec(["git", "status", "--porcelain"], { cwd })
+          : Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
+        if (statusRes.exitCode === 0 && statusRes.stdout?.toString().trim()) {
+          const addRes = sandbox ? await sandbox.supervisor.exec(["git", "add", "."], { cwd }) : Bun.spawnSync(["git", "add", "."], { cwd });
+          if (addRes.exitCode !== 0) throw new Error("git add failed");
+          const diffRes = sandbox
+            ? await sandbox.supervisor.exec(["git", "diff", "--cached", "--name-status"], { cwd })
+            : Bun.spawnSync(["git", "diff", "--cached", "--name-status"], { cwd, stdout: "pipe", stderr: "ignore" });
+          const changedFiles = (diffRes.stdout?.toString() ?? "").trim().split("\n").map(line => line.split("\t")[1]).filter(Boolean);
           const fileSummary = changedFiles.length > 0 ? ` (modified: ${changedFiles.slice(0, 3).join(", ")}${changedFiles.length > 3 ? ", ..." : ""})` : "";
           const commitMsg = `[jeo] auto-commit${fileSummary}\n\nPrompt: ${userInput.slice(0, 100)}${userInput.length > 100 ? "..." : ""}`;
-          const commitRes = Bun.spawnSync(["git", "commit", "-m", commitMsg], { cwd });
+          const commitRes = sandbox ? await sandbox.supervisor.exec(["git", "commit", "-m", commitMsg], { cwd }) : Bun.spawnSync(["git", "commit", "-m", commitMsg], { cwd });
           if (commitRes.exitCode === 0) {
             if (tui) tui.events().onNotice?.(`(auto-committed changes to git)`);
             else console.log(`(auto-committed changes to git)`);
@@ -2287,6 +2462,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   };
 
+
+  const runTurn = (...args: Parameters<typeof runTurnScoped>) => turnSandboxScope
+    ? withSandboxExecution(turnSandboxScope, () => runTurnScoped(...args))
+    : runTurnScoped(...args);
 
   const joinedArgs = flags.message;
   const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;
@@ -3074,6 +3253,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let promptServedFromPaste = false;
   let promptWasRemote = false;
   let exclusiveRemote: { text: string; finish: (text?: string, artifactsAllowed?: boolean) => void; signal: AbortSignal; epoch: number; stage?: { output: string; input?: string } } | undefined;
+  let pendingRemote: NonNullable<typeof exclusiveRemote> | undefined;
+  let admitPendingRemote: () => void = () => {};
   const promptInput = async (prompt: string): Promise<string> => {
     promptServedFromPaste = false;
     promptWasRemote = false;
@@ -3124,6 +3305,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }),
         new Promise<{ remote: string }>(resolve => {
           remoteInjectResolve = resolve;
+          admitPendingRemote();
         }),
       ]);
       // The aborted `rl.question()` lost the race (a remote message or stdin-close
@@ -3660,6 +3842,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     sessionNotifyEndpoint?.detachRegistry();
     void sessionNotifyEndpoint?.stop();
     void stopSessionNotifyEndpoint(subagentRegistry);
+    if (turnSandboxScope) {
+      void turnSandboxScope.supervisor.close().then(() => process.exit(130), error => {
+        console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      });
+      return;
+    }
     process.exit(130);
   };
   // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
@@ -4581,19 +4770,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // established by now. See the Tier 2 contract's "Session-side routing".
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.onRegistryMutation = () => { relayInputEpoch++; };
-    sessionNotifyEndpoint.onRemoteRequest = (text, finish, signal, stage): boolean => {
-      const rli = rl as unknown as { line?: string };
-      if (exclusiveRemote || interactiveTurnActive || remoteInputPending || promptPasteActive || pasteLineFired || pasteInFlight || draftHasPaste || rli.line !== "" || !pendingRemoteInject ||
-          pendingImages.length || pendingStdinLines.length || pendingMidTurnCommands.length || queuedPromptInput.partial ||
-          queuedPromptInput.pastedLines.length || sessionNotifyEndpoint?.sessionId !== sessionId) return false;
-      if (stage && ((sessionModel || defaultModel).startsWith("agy/") || history[0]?.role !== "system")) return false;
-      const request = { text, finish, signal, stage, epoch: ++relayInputEpoch };
+    admitPendingRemote = (): void => {
+      if (!pendingRemote || exclusiveRemote || interactiveTurnActive || remoteInputPending || promptPasteActive || pasteLineFired || pasteInFlight || draftHasPaste || Reflect.get(rl, "line") !== "" || !pendingRemoteInject ||
+          pendingImages.length || pendingStdinLines.length || pendingMidTurnCommands.length || queuedPromptInput.partial || queuedPromptInput.pastedLines.length || sessionNotifyEndpoint.sessionId !== sessionId) return;
+      const request = pendingRemote;
+      if (request.signal.aborted) { pendingRemote = undefined; request.finish(); return; }
+      request.epoch = ++relayInputEpoch;
       exclusiveRemote = request;
-      if (pendingRemoteInject(text)) return true;
-      exclusiveRemote = undefined;
-      return false;
+      if (pendingRemoteInject(request.text)) pendingRemote = undefined;
+      else exclusiveRemote = undefined;
+    };
+    sessionNotifyEndpoint.onRemoteRequest = (text, finish, signal, stage, actor): boolean => {
+      if (!sandboxAuthority || actor?.origin !== "discord" || actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
+          !cfg.notifications?.discord?.allowedUserIds?.includes(actor.userId ?? "") || pendingRemote || signal.aborted) return false;
+      if (stage && ((sessionModel || defaultModel).startsWith("agy/") || history[0]?.role !== "system")) return false;
+      const request = { text, finish, signal, stage, epoch: 0 };
+      pendingRemote = request;
+      signal.addEventListener("abort", () => {
+        if (pendingRemote === request) { pendingRemote = undefined; finish(); }
+      }, { once: true });
+      admitPendingRemote();
+      return true;
     };
     sessionNotifyEndpoint.onUserMessage = async (msg): Promise<void | boolean> => {
+      if (!sandboxAuthority) return false;
+      if (msg.actor && (msg.actor.origin !== "discord" || msg.actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
+          !cfg.notifications?.discord?.allowedUserIds?.includes(msg.actor.userId ?? ""))) return false;
       relayInputEpoch++;
       remoteInputPending++;
       try {
@@ -4778,6 +4980,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       pendingSelection = undefined;
 navMatches = [];
       navIdx = -1;
+      if (input === "/sandbox" || input.startsWith("/sandbox ")) {
+        if (!directLocalPrompt || explicitPastedDraft || promptServedFromPaste || remoteInputPending !== 0 ||
+            relayInputEpoch - relayEpoch !== ambiguousPasteEpoch - ambiguousEpoch) {
+          console.log("UNAUTHORIZED: sandbox controls require a directly submitted local prompt.");
+        } else if (!sandboxAuthority) {
+          console.log("No session sandbox is active.");
+        } else {
+          const result = await handleSandboxControl(input, { origin: "terminal", sessionKey: sandboxAuthority.snapshot().sessionKey }, sandboxAuthority);
+          console.log(result.output);
+        }
+        continue;
+      }
       if (input === "/discord" || input.startsWith("/discord ")) {
         const parts = input.split(/\s+/);
         const isControlOn = parts.length === 4 && parts[1] === "control" && parts[2] === "on" && parts[3] === "--allow-full-control";
@@ -4786,6 +5000,8 @@ navMatches = [];
           if (!directLocalPrompt || explicitPastedDraft || promptServedFromPaste || remoteInputPending !== 0 ||
               relayInputEpoch - relayEpoch !== ambiguousPasteEpoch - ambiguousEpoch) {
             console.log("Discord control requires a directly submitted local prompt.");
+          } else if (isControlOn && !sandboxAuthority) {
+            console.log("SANDBOX_REQUIRED: configure a sandbox and start a new launch before enabling Discord control.");
           } else if (!sessionNotifyEndpoint || sessionNotifyEndpoint.sessionId !== sessionId) {
             console.log("Discord control unavailable: notification session endpoint unavailable.");
           } else {
@@ -4796,7 +5012,7 @@ navMatches = [];
             } else {
               sessionNotifyEndpoint.setDiscordControlEnabled(isControlOn);
               console.log(isControlOn
-                ? "Discord control enabled for this session. Authorized Discord users can use this host session's tools and approval policy, including reading or changing files and running commands; this is not a sandbox. Run /discord control off to revoke."
+                ? "Discord control enabled for this sandbox session. Only authenticated allowlisted users can submit turns or explicit /sandbox controls. Run /discord control off to revoke remote control."
                 : "Discord control revoked for this session.");
             }
           }

@@ -93,6 +93,14 @@ export const ConfigSchema = z
     lmstudioBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
     theme: z.string().optional(),
+    sandbox: z.object({
+      image: z.string().min(1),
+      limits: z.object({
+        memoryBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        pids: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        cpus: z.number().finite().positive(),
+      }).strict(),
+    }).strict().optional(),
     /** Terminal-bell notifications (gajae-code 0.7.8 parity): emit an ASCII BEL
      *  (\x07) at notable interaction points so a backgrounded session pings the
      *  user. Off by default; `bell` is the master toggle, per-event flags refine it.

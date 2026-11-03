@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
-import { browserSession, type BrowserSession } from "./browser-session";
+import type { BrowserSession } from "./browser-session";
 import type { ObservedElement, ExtractFormat } from "./browser-tab";
 import type { ImageAttachment } from "../ai/types";
 import { visionVerify } from "./vision-verify";
@@ -149,6 +149,14 @@ async function runActStep(session: BrowserSession, name: string, step: ActStep):
 export function createBrowserTool(): ToolHandler {
   return async (args: Record<string, any>, _cwd: string): Promise<ToolResult> => {
     const action = String(args.action ?? "").trim().toLowerCase();
+    let browserSession: BrowserSession;
+    try {
+      // Optional platform/image capability: minimal Linux hands images need not include Playwright.
+      // Loading it eagerly would prevent unrelated filesystem tools from starting.
+      ({ browserSession } = await import("./browser-session"));
+    } catch (error) {
+      return err(`Browser runtime unavailable in this execution environment: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     if (action === "open") {
       const name = tabNameOf(args);

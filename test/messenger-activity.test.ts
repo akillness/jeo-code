@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createMessengerActivityEvents } from "../src/messenger/activity";
 import { createMessengerGateway } from "../src/messenger/gateway";
 import type { MessengerAdapter, MessengerConfig, MessengerMessage } from "../src/messenger/types";
+import { selectDiscordModel } from "../src/messenger/model-selection";
 
 const message: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "channel", senderId: "owner", messageId: "1", text: "hello", direct: false, mentioned: true };
 const config: MessengerConfig = { cwd: "/tmp", sessionDir: "/tmp", toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } };
@@ -45,5 +46,24 @@ test("gateway finalizes progress with the actual reply outcome", async () => {
     await gateway.handle(message);
     expect(calls[0]).toEqual(["Starting request", undefined]);
     expect(calls.at(-1)).toEqual([undefined, outcome]);
+  }
+});
+
+test("gateway reports model selection failures actionably without disclosing discovery errors", async () => {
+  for (const scenario of ["unsupported", "discovery", "other"] as const) {
+    const delivered: string[] = [];
+    const adapter: MessengerAdapter = { platform: "discord", start: async () => {}, send: async (_message, text) => { delivered.push(text); } };
+    const gateway = createMessengerGateway(config, [adapter], async () => {
+      if (scenario === "other") throw new Error("secret-other");
+      return selectDiscordModel(undefined, {
+        config: { providers: {}, defaultModel: scenario === "unsupported" ? "gemini-3-flash" : "gpt-5", thinkingLevel: "medium" },
+        list: async () => { throw new Error("secret-discovery"); },
+      });
+    });
+    await gateway.handle(message);
+    expect(delivered).toEqual([scenario === "other"
+      ? "The request could not be completed. Please try again."
+      : "Discord could not verify a model. Ask the operator to configure an explicit Discord model, check provider credentials and live model discovery, then restart the messenger service."]);
+    expect(delivered.join(" ")).not.toContain("secret");
   }
 });

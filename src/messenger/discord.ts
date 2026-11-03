@@ -335,14 +335,15 @@ export function createDiscordAdapter(
 ): MessengerAdapter {
 	const token = resolveMessengerToken(config.tokenEnv, env)?.trim();
 	const clock = deps.clock ?? defaultClock;
-	const createdThreads = new Map<string, { parentChannelId: string; senderId: string }>();
-	const rememberThread = (threadId: string, parentChannelId: string, senderId: string): void => {
-		createdThreads.set(threadId, { parentChannelId, senderId });
+	const createdThreads = new Map<string, { parentChannelId: string }>();
+	const rememberThread = (threadId: string, parentChannelId: string): void => {
+		createdThreads.set(threadId, { parentChannelId });
 		if (createdThreads.size > 10_000) {
 			const oldest = createdThreads.keys().next().value;
 			if (oldest !== undefined) createdThreads.delete(oldest);
 		}
 	};
+	const normalizationTails = new Map<string, Promise<void>>();
 	const activityMessages = new Map<string, string>();
 	const headers = (): Record<string, string> => {
 		if (!token) throw new DiscordConfigurationError("Discord bot token is missing");
@@ -386,57 +387,50 @@ export function createDiscordAdapter(
 						initialUrl = discordGatewayUrl(gateway.url);
 					}
 					const deliver = async (message: MessengerMessage): Promise<void> => {
-						const thread = createdThreads.get(message.channelId);
-						if (thread && thread.senderId === message.senderId) {
-							await onMessage({
-								...message,
-								threadId: message.channelId,
-								parentChannelId: thread.parentChannelId,
-							});
-						} else if (
-							!message.direct &&
-							config.allowedUserIds.includes(message.senderId) &&
-							config.allowedChannelIds &&
-							(!message.mentioned || !config.allowedChannelIds.includes(message.channelId))
-						) {
-							try {
+						const previous = normalizationTails.get(message.channelId) ?? Promise.resolve();
+						const ready = Promise.withResolvers<void>();
+						const tail = previous.then(() => ready.promise);
+						normalizationTails.set(message.channelId, tail);
+						const forward = (destination: MessengerMessage): Promise<void> => {
+							ready.resolve();
+							return onMessage(destination);
+						};
+						await previous;
+						try {
+							if (signal.aborted) return;
+							const thread = createdThreads.get(message.channelId);
+							if (thread && config.allowedUserIds.includes(message.senderId)) {
+								await forward({ ...message, threadId: message.channelId, parentChannelId: thread.parentChannelId });
+							} else if (!message.direct && config.allowedUserIds.includes(message.senderId)) {
 								const channel = await messengerFetchJson(
 									`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
-									{ headers: headers() },
-									signal,
-									deps.fetch,
+									{ headers: headers() }, signal, deps.fetch,
 								);
-								if (
-									isRecord(channel) &&
-									channel.id === message.channelId &&
-									typeof channel.type === "number" &&
-									[10, 11, 12].includes(channel.type) &&
-									typeof channel.parent_id === "string" &&
-									channel.parent_id
-								) {
+								if (!isRecord(channel) || channel.id !== message.channelId) return;
+								if (typeof channel.type === "number" && [10, 11, 12].includes(channel.type)) {
+									if (typeof channel.parent_id !== "string" || !channel.parent_id) return;
 									if (!message.mentioned) {
 										const originalId = typeof channel.name === "string" ? /^Request (\d{1,20})$/.exec(channel.name)?.[1] : undefined;
 										if (channel.owner_id !== accountId || !originalId ||
-											(!config.allowedChannelIds.includes(channel.parent_id) && !config.allowedChannelIds.includes(message.channelId))) return;
+											(config.allowedChannelIds && !config.allowedChannelIds.includes(channel.parent_id) && !config.allowedChannelIds.includes(message.channelId))) return;
 										const original = await messengerFetchJson(
 											`${DISCORD_API}/channels/${encodeURIComponent(channel.parent_id)}/messages/${originalId}`,
 											{ headers: headers() }, signal, deps.fetch,
 										);
 										if (!isRecord(original) || original.id !== originalId || original.channel_id !== channel.parent_id ||
-											!isRecord(original.author) || original.author.id !== message.senderId || original.author.bot === true || original.webhook_id) return;
-										rememberThread(message.channelId, channel.parent_id, message.senderId);
+											!isRecord(original.author) || typeof original.author.id !== "string" || original.author.bot === true || original.webhook_id) return;
 									}
-									await onMessage({
-										...message,
-										threadId: message.channelId,
-										parentChannelId: channel.parent_id,
-									});
+									rememberThread(message.channelId, channel.parent_id);
+									await forward({ ...message, threadId: message.channelId, parentChannelId: channel.parent_id });
+								} else {
+									await forward(message);
 								}
-							} catch {
-								/* ignore thread lookup failure */
+							} else {
+								await forward(message);
 							}
-						} else {
-							await onMessage(message);
+						} finally {
+							ready.resolve();
+							if (normalizationTails.get(message.channelId) === tail) normalizationTails.delete(message.channelId);
 						}
 					};
 					await connectGateway(
@@ -479,7 +473,7 @@ export function createDiscordAdapter(
 		async prepare(message, signal) {
 			if (message.direct) return message;
 			if (message.threadId) {
-				if (message.parentChannelId) rememberThread(message.threadId, message.parentChannelId, message.senderId);
+				if (message.parentChannelId) rememberThread(message.threadId, message.parentChannelId);
 				return message;
 			}
 			const channel = await messengerFetchJson(
@@ -493,7 +487,7 @@ export function createDiscordAdapter(
 			if ([10, 11, 12].includes(channel.type)) {
 				if (typeof channel.parent_id !== "string" || !channel.parent_id)
 					throw new Error("Discord thread parent unavailable");
-				rememberThread(message.channelId, channel.parent_id, message.senderId);
+				rememberThread(message.channelId, channel.parent_id);
 				return { ...message, threadId: message.channelId, parentChannelId: channel.parent_id };
 			}
 			if (channel.type !== 0 && channel.type !== 5) throw new Error("Discord channel cannot host a reply thread");
@@ -505,7 +499,7 @@ export function createDiscordAdapter(
 			);
 			if (!isRecord(thread) || typeof thread.id !== "string" || !thread.id)
 				throw new Error("Discord thread creation returned no ID");
-			rememberThread(thread.id, message.channelId, message.senderId);
+			rememberThread(thread.id, message.channelId);
 			return { ...message, threadId: thread.id };
 		},
 		async status(message, state, signal) {

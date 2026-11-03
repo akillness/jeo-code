@@ -75,7 +75,7 @@ export const GUARD_LIMITS = Object.freeze({
 export const VERIFY_SIGNAL_RE = /^(?:(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?(?:test|tests|typecheck|lint|build|check|spec|tsc|eslint|vitest|jest)(?::[\w-]+)?|(?:npx|bunx)\s+(?:tsc|eslint|vitest|jest|pytest)|(?:tsc|eslint|vitest|jest|pytest)|(?:python(?:3(?:\.\d+)?)?|uv)\s+(?:-m\s+)?pytest|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|(?:make|just)\s+(?:test|check|lint|build|typecheck))(?:\s+[A-Za-z0-9_./:@+*?,=-]+)*$/i;
 const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--co|--show-?config|--init|--dry-run|--no-run|--passWithNoTests|--if-present)(?=$|\s|=)/i;
 const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
-const MUTATING_VERIFY_SCRIPT_RE = /:(?:[^\s]*)(?:fix|update|write|deploy|publish)(?:[^\s]*)/i;
+const MUTATING_VERIFY_SCRIPT_RE = /^(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?[\w-]+:[^\s]*(?:fix|update|write|deploy|publish)[^\s]*/i;
 
 /**
  * True only when the command itself is a recognized verifier invocation. Output

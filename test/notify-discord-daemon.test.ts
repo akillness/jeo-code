@@ -825,54 +825,114 @@ test("bot mentions before commands preserve user and channel authorization", asy
   } finally { f.daemon.stop(); }
 });
 
-test("a bot-created thread accepts only its initiating allowlisted user", async () => {
+test("a bot-created thread reuses its session across allowlisted users but rejects an unauthorized sender", async () => {
   const secondUser = "444444444444444444";
   const f = fixture(["alpha"], {}, { ...CONFIG, allowedUserIds: [USER, secondUser] });
   f.api.channelType = 0;
   try {
     await f.ready();
-    await f.dispatch(f.message("/sessions"));
-    await f.dispatch(f.message("/sessions", { channel_id: "91", author: { id: secondUser, bot: false } }));
-    await f.dispatch(f.message("/sessions", { channel_id: "91" }));
-    expect(f.api.sent.map(message => [message.channel, message.text])).toEqual([["91", "[alpha] /test"], ["91", "[alpha] /test"]]);
+    await f.dispatch(f.message("/send alpha first"));
+    await f.dispatch(f.message("/send alpha denied", { channel_id: "91", author: { id: "untrusted", bot: false } }));
+    await f.dispatch(f.message("/send alpha second", { channel_id: "91", author: { id: secondUser, bot: false } }));
+    await f.dispatch(f.message("/send alpha third", { channel_id: "91" }));
+    expect(f.local.instances[0]!.sent.filter(frame => frame.type === "remote_request").map(frame => [frame.sessionId, frame.text])).toEqual([
+      ["alpha", "first"], ["alpha", "second"], ["alpha", "third"],
+    ]);
+    expect(f.api.sent.map(message => [message.channel, message.text])).toEqual([
+      ["91", "answer: first"], ["91", "answer: second"], ["91", "answer: third"],
+    ]);
   } finally { f.daemon.stop(); }
 });
 
-test("an unknown existing thread is not authorized merely by an allowed parent", async () => {
+test("an existing child thread without owner metadata reuses its session across allowlisted users", async () => {
+  const secondUser = "444444444444444444";
   class ExistingThreadService extends DiscordService {
     override async getChannel(id: string) {
       return id === CHANNEL ? { id, type: 0 } : { id, type: 11, parent_id: CHANNEL };
     }
   }
   const api = new ExistingThreadService();
-  const f = fixture(["alpha"], { api });
+  const f = fixture(["alpha"], { api }, { ...CONFIG, allowedUserIds: [USER, secondUser] });
   try {
     await f.ready();
-    await f.dispatch(f.message("/sessions", { channel_id: "9999" }));
-    expect(api.sent).toEqual([]);
-    expect(f.local.instances[0]!.sent).toEqual([]);
+    await f.dispatch(f.message("/send alpha first", { channel_id: "9999" }));
+    await f.dispatch(f.message("/send alpha denied", { channel_id: "9999", author: { id: "untrusted", bot: false } }));
+    await f.dispatch(f.message("/send alpha second", { channel_id: "9999", author: { id: secondUser, bot: false } }));
+    expect(f.local.instances[0]!.sent.filter(frame => frame.type === "remote_request").map(frame => [frame.sessionId, frame.text])).toEqual([
+      ["alpha", "first"], ["alpha", "second"],
+    ]);
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["9999", "answer: first"], ["9999", "answer: second"]]);
   } finally { f.daemon.stop(); }
 });
 
-test("an existing child thread accepts only its verified allowed human owner", async () => {
+test("an existing child thread is shared by allowlisted users regardless of its owner", async () => {
   const secondUser = "444444444444444444";
   class OwnedThreadService extends DiscordService {
     override async getChannel(id: string) {
-      return id === CHANNEL ? { id, type: 0 } : { id, type: 11, parent_id: CHANNEL, owner_id: USER };
+      return id === CHANNEL ? { id, type: 0 } : { id, type: 11, parent_id: CHANNEL, owner_id: "non-allowlisted-owner" };
     }
   }
   const api = new OwnedThreadService();
   const f = fixture(["alpha"], { api }, { ...CONFIG, allowedUserIds: [USER, secondUser] });
   try {
     await f.ready();
-    await f.dispatch(f.message("/sessions", { channel_id: "9999", author: { id: secondUser, bot: false } }));
-    await f.dispatch(f.message("/sessions", { channel_id: "9999" }));
-    await f.dispatch(f.message("/sessions", { channel_id: "9999", author: { id: secondUser, bot: false } }));
-    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["9999", "[alpha] /test"]]);
+    await f.dispatch(f.message("/send alpha first", { channel_id: "9999", author: { id: secondUser, bot: false } }));
+    await f.dispatch(f.message("/send alpha second", { channel_id: "9999" }));
+    await f.dispatch(f.message("/send alpha denied", { channel_id: "9999", author: { id: "non-allowlisted-owner", bot: false } }));
+    expect(f.local.instances[0]!.sent.filter(frame => frame.type === "remote_request").map(frame => [frame.sessionId, frame.text])).toEqual([
+      ["alpha", "first"], ["alpha", "second"],
+    ]);
+    expect(api.sent.map(message => [message.channel, message.text])).toEqual([["9999", "answer: first"], ["9999", "answer: second"]]);
   } finally { f.daemon.stop(); }
 });
 
-test("replayed event cannot execute twice while child thread ownership lookup is pending", async () => {
+for (const [name, channel] of [
+  ["wrong parent", { type: 11, parent_id: "unconfigured-parent" }],
+  ["missing parent", { type: 11 }],
+  ["non-thread type", { type: 0, parent_id: CHANNEL }],
+] as const) {
+  test(`allowlisted senders cannot dispatch through a child channel with ${name}`, async () => {
+    const secondUser = "444444444444444444";
+    class InvalidThreadService extends DiscordService {
+      override async getChannel(id: string) {
+        return id === CHANNEL ? { id, type: 0 } : { id, ...channel, owner_id: USER };
+      }
+    }
+    const api = new InvalidThreadService();
+    const f = fixture(["alpha"], { api }, { ...CONFIG, allowedUserIds: [USER, secondUser] });
+    try {
+      await f.ready();
+      for (const user of [USER, secondUser]) {
+        await f.dispatch(f.message("/send alpha denied", { channel_id: "9999", author: { id: user, bot: false } }));
+      }
+      expect(api.sent).toEqual([]);
+      expect(f.local.instances[0]!.sent).toEqual([]);
+    } finally { f.daemon.stop(); }
+  });
+}
+
+for (const owner of [undefined, "non-allowlisted-owner"]) {
+  test(`an explicitly configured thread accepts allowlisted users with ${owner === undefined ? "missing" : "non-allowlisted"} owner metadata`, async () => {
+    const secondUser = "444444444444444444";
+    class ConfiguredThreadService extends DiscordService {
+      override async getChannel(id: string) { return { id, type: 11, parent_id: "configured-parent", owner_id: owner }; }
+    }
+    const api = new ConfiguredThreadService();
+    const f = fixture(["alpha"], { api }, { ...CONFIG, allowedUserIds: [USER, secondUser] });
+    try {
+      await f.ready();
+      await f.dispatch(f.message("/send alpha first"));
+      await f.dispatch(f.message("/send alpha second", { author: { id: secondUser, bot: false } }));
+      await f.dispatch(f.message("/send alpha denied", { author: { id: "untrusted", bot: false } }));
+      expect(f.local.instances[0]!.sent.filter(frame => frame.type === "remote_request").map(frame => [frame.sessionId, frame.text])).toEqual([
+        ["alpha", "first"], ["alpha", "second"],
+      ]);
+      expect(api.sent.map(message => [message.channel, message.text])).toEqual([[CHANNEL, "answer: first"], [CHANNEL, "answer: second"]]);
+    } finally { f.daemon.stop(); }
+  });
+}
+
+test("replayed event cannot execute twice while child thread metadata lookup is pending", async () => {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   class SlowLookupService extends DiscordService {

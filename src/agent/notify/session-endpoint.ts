@@ -46,6 +46,7 @@ import { readGlobalConfig } from "../state";
 import { notifySessionEndpointPath, notifySessionsDir } from "./paths";
 import { resolveDiscordArtifactStage, type DiscordArtifactPaths } from "./discord-artifacts";
 import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
+import type { SandboxActor } from "../sandbox/authority";
 
 const SNAPSHOT_POLL_MS = 1_200;
 const MAX_INBOUND_BYTES = 64 * 1024;
@@ -64,6 +65,7 @@ export interface SessionIdentity {
 export interface RemoteUserMessage {
   text: string;
   imagePaths?: string[];
+  actor?: SandboxActor;
 }
 
 /** A parsed `/verbose`, `/lean`, `/verbosity`, or `/redact` in-thread command. */
@@ -94,7 +96,8 @@ export class SessionNotifyEndpoint {
 
   /** Registered by launch.ts; absent or rejected handlers return a failed ACK. */
   onUserMessage: ((msg: RemoteUserMessage) => void | boolean | Promise<void | boolean>) | undefined;
-  onRemoteRequest: ((text: string, finish: (text?: string, artifactsAllowed?: boolean) => void, signal: AbortSignal, stage?: DiscordArtifactPaths) => boolean) | undefined;
+  onRemoteRequest: ((text: string, finish: (text?: string, artifactsAllowed?: boolean) => void, signal: AbortSignal, stage?: DiscordArtifactPaths, actor?: SandboxActor) => boolean) | undefined;
+  onSandboxControl: ((text: string, actor: SandboxActor) => Promise<{ handled: boolean; output: string }>) | undefined;
   onRegistryMutation: (() => void) | undefined;
   onConfigCommand: ((cmd: RemoteConfigCommand) => void) | undefined;
 
@@ -247,11 +250,30 @@ export class SessionNotifyEndpoint {
     }
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
     if (msg.type !== "remote_request" && msg.sessionId !== undefined && msg.sessionId !== this.sessionId) return;
+    const provenance = msg.actor;
+    const actor: SandboxActor | undefined = provenance && typeof provenance === "object" && !Array.isArray(provenance) &&
+      (provenance as Record<string, unknown>).origin === "discord" && (provenance as Record<string, unknown>).sessionKey === this.sessionId &&
+      typeof (provenance as Record<string, unknown>).userId === "string" && !!(provenance as Record<string, unknown>).userId
+      ? { origin: "discord", sessionKey: this.sessionId, userId: (provenance as Record<string, unknown>).userId as string } : undefined;
+    if (msg.type === "sandbox_control") {
+      let ok = false;
+      let output = "UNAUTHORIZED: authenticated Discord sandbox control required";
+      if (this.discordControlEnabled && msg.sessionId === this.sessionId && msg.controlGeneration === this.discordControlGeneration && actor &&
+          typeof msg.reqId === "string" && msg.reqId.length > 0 && msg.reqId.length <= 256 && typeof msg.text === "string" && this.onSandboxControl) {
+        try {
+          const result = await this.onSandboxControl(msg.text, actor);
+          ok = result.handled;
+          output = result.output;
+        } catch (error) { output = error instanceof Error ? error.message : "Sandbox control failed"; }
+      }
+      try { ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok, output })); } catch {}
+      return;
+    }
     if (msg.type === "remote_request") {
       const reqId = msg.reqId;
       let ok = false;
-      const onlyExpectedFields = Object.keys(msg).every(key => ["type", "sessionId", "reqId", "text", "staged", "controlGeneration"].includes(key));
-      if (onlyExpectedFields && this.discordControlEnabled && msg.controlGeneration === this.discordControlGeneration && msg.sessionId === this.sessionId && typeof reqId === "string" && reqId.length > 0 && reqId.length <= 256 &&
+      const onlyExpectedFields = Object.keys(msg).every(key => ["type", "sessionId", "reqId", "text", "staged", "controlGeneration", "actor"].includes(key));
+      if (onlyExpectedFields && actor && this.discordControlEnabled && msg.controlGeneration === this.discordControlGeneration && msg.sessionId === this.sessionId && typeof reqId === "string" && reqId.length > 0 && reqId.length <= 256 &&
           typeof msg.text === "string" && !!msg.text.trim() && !msg.text.includes("\u0003") && !/^[\/!$]/.test(msg.text.trimStart()) && (msg.staged === undefined || msg.staged === true) && this.onRemoteRequest && !this.remoteControllers.has(ws)) {
         let finished = false;
         const controlGeneration = this.discordControlGeneration;
@@ -270,7 +292,7 @@ export class SessionNotifyEndpoint {
         try {
           if (msg.staged === true) stage = await resolveDiscordArtifactStage(this.sessionId, reqId);
           if (this.discordControlEnabled && controlGeneration === this.discordControlGeneration && !controller.signal.aborted && this.sockets.has(ws)) {
-            ok = this.onRemoteRequest(msg.text, finish, controller.signal, stage);
+            ok = this.onRemoteRequest(msg.text, finish, controller.signal, stage, actor);
           }
         } catch {}
         if (!ok && this.remoteControllers.get(ws)?.controller === controller) this.remoteControllers.delete(ws);
@@ -323,7 +345,7 @@ export class SessionNotifyEndpoint {
       if (typeof msg.text === "string" && !msg.text.trimStart().startsWith("/") && !msg.text.trimStart().startsWith("!") && validPaths &&
           (msg.text.trim() || (msg.imagePaths as string[] | undefined)?.length) && this.onUserMessage) {
         try {
-          ok = (await this.onUserMessage({ text: msg.text, imagePaths: msg.imagePaths as string[] | undefined })) !== false;
+          ok = (await this.onUserMessage({ text: msg.text, imagePaths: msg.imagePaths as string[] | undefined, ...(actor ? { actor } : {}) })) !== false;
         } catch {}
       }
       try {

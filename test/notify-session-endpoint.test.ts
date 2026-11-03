@@ -53,6 +53,11 @@ async function readDiscovery(sessionId: string): Promise<Discovery> {
   return JSON.parse(raw) as Discovery;
 }
 
+/** Legitimate authenticated Discord actor for this endpoint's session. */
+function discordActor(sessionId: string, userId = "123456789012345678"): { origin: "discord"; sessionKey: string; userId: string } {
+  return { origin: "discord", sessionKey: sessionId, userId };
+}
+
 function connect(discovery: Discovery, token = discovery.token): WebSocket {
   const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(token)}`);
   sockets.push(ws);
@@ -699,7 +704,7 @@ test("disconnecting the originating socket aborts its accepted remote request, b
   const other = connect(discovery);
   await waitForMessage(other, message => message.type === "snapshot");
   const accepted = waitForMessage(origin, message => message.type === "ack" && message.reqId === "request");
-  origin.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "request", text: "investigate", controlGeneration: 1 }));
+  origin.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "request", text: "investigate", controlGeneration: 1, actor: discordActor(endpoint.sessionId) }));
   expect(await accepted).toEqual({ type: "ack", reqId: "request", ok: true });
   other.close();
   const barrier = waitForMessage(origin, message => message.type === "snapshot");
@@ -728,7 +733,7 @@ test("remote cancellation requires the owning socket and matching request ID", a
   const other = connect(discovery);
   await waitForMessage(other, message => message.type === "snapshot");
   const ack = waitForMessage(owner, message => message.type === "ack" && message.reqId === "owned");
-  owner.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "owned", text: "investigate", controlGeneration: 1 }));
+  owner.send(JSON.stringify({ type: "remote_request", sessionId: endpoint.sessionId, reqId: "owned", text: "investigate", controlGeneration: 1, actor: discordActor(endpoint.sessionId) }));
   expect(await ack).toEqual({ type: "ack", reqId: "owned", ok: true });
   const barrier = async (ws: WebSocket) => {
     const snapshot = waitForMessage(ws, message => message.type === "snapshot");
@@ -758,7 +763,7 @@ test("remote control requires local consent and revocation aborts the active req
   await waitForMessage(ws, message => message.type === "snapshot");
   const request = async (reqId: string, text: string) => {
     const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
-    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, controlGeneration: 1 }));
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, controlGeneration: 1, actor: discordActor(endpoint!.sessionId) }));
     return ack;
   };
   expect(await request("before", "before consent")).toEqual({ type: "ack", reqId: "before", ok: false });
@@ -817,7 +822,7 @@ test("staged remote requests use only the private resolved directory and require
   const stage = await createDiscordArtifactStage(endpoint.sessionId, stageId);
   const send = async (reqId: string, extra: Record<string, unknown> = {}) => {
     const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
-    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text: "  unchanged prompt 🙂  ", controlGeneration: 1, ...extra }));
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text: "  unchanged prompt 🙂  ", controlGeneration: 1, actor: discordActor(endpoint!.sessionId), ...extra }));
     return ack;
   };
   try {
@@ -866,7 +871,7 @@ test("staged requests from a revoked control generation cannot execute after re-
   const stage = await createDiscordArtifactStage(endpoint.sessionId, id);
   const request = async (reqId: string, generation: number, text: string) => {
     const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
-    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, staged: true, controlGeneration: generation }));
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text, staged: true, controlGeneration: generation, actor: discordActor(endpoint!.sessionId) }));
     return ack;
   };
   try {
@@ -883,6 +888,28 @@ test("staged requests from a revoked control generation cannot execute after re-
     expect((await request(id, fresh, "fresh request")).ok).toBe(true);
     expect(received).toEqual(["current request", "fresh request"]);
   } finally { await stage.cleanup(); }
+});
+
+test("remote_request rejects missing, cross-session, and malformed Discord actors even with valid control and generation", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/project");
+  endpoint.setDiscordControlEnabled(true);
+  const received: string[] = [];
+  endpoint.onRemoteRequest = (text) => { received.push(text); return true; };
+  await endpoint.start();
+  const ws = connect(await readDiscovery(endpoint.sessionId));
+  await waitForMessage(ws, message => message.type === "snapshot");
+  const request = async (reqId: string, actor?: unknown) => {
+    const ack = waitForMessage(ws, message => message.type === "ack" && message.reqId === reqId);
+    ws.send(JSON.stringify({ type: "remote_request", sessionId: endpoint!.sessionId, reqId, text: "investigate", controlGeneration: 1, ...(actor === undefined ? {} : { actor }) }));
+    return ack;
+  };
+  expect(await request("missing")).toEqual({ type: "ack", reqId: "missing", ok: false });
+  expect(await request("cross", discordActor("other-session"))).toEqual({ type: "ack", reqId: "cross", ok: false });
+  expect(await request("telegram", { origin: "telegram", sessionKey: endpoint.sessionId, userId: "1" })).toEqual({ type: "ack", reqId: "telegram", ok: false });
+  expect(await request("empty-user", discordActor(endpoint.sessionId, ""))).toEqual({ type: "ack", reqId: "empty-user", ok: false });
+  expect(received).toEqual([]);
+  expect(await request("valid", discordActor(endpoint.sessionId))).toEqual({ type: "ack", reqId: "valid", ok: true });
+  expect(received).toEqual(["investigate"]);
 });
 
 test("relay subscription requires a fresh local grant for the same socket and generation", async () => {

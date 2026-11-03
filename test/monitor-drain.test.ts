@@ -1,11 +1,32 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
-import { watch } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { MonitorRegistry } from "../src/agent/monitor-registry";
 
 const cwd = process.cwd();
+
+async function readChildPid(directory: string): Promise<number> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try { return Number((await fs.readFile(path.join(directory, "child.pid"), "utf8")).trim()); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // The real shell writes this file; fake timers cannot drive another process.
+      await Bun.sleep(10);
+    }
+  }
+  throw new Error("Timed out waiting for child.pid");
+}
+
+async function killChild(directory: string, pid?: number): Promise<void> {
+  if (!pid) {
+    for (const file of ["child.pid", "child.tmp"]) {
+      try { pid = Number((await fs.readFile(path.join(directory, file), "utf8")).trim()); if (pid > 0) break; } catch {}
+    }
+  }
+  if (pid && pid > 0) { try { process.kill(pid, "SIGKILL"); } catch {} }
+}
 
 test("persistent monitor drains normal stdout and stderr", async () => {
   const registry = new MonitorRegistry();
@@ -78,26 +99,65 @@ for (const mode of ["cancel", "one-shot", "linger"] as const) {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-monitor-drain-"));
     const registry = new MonitorRegistry();
     let pid: number | undefined;
-    const ready = Promise.withResolvers<void>();
-    const watcher = watch(dir, (_event, name) => { if (name === "child.pid") ready.resolve(); });
     try {
       const suffix = mode === "cancel" ? "wait" : mode === "one-shot" ? "printf 'first-line\\n'; wait" : "printf 'partial output\\n'; exit 0";
       const monitor = registry.start(`sleep 30 & echo $! > child.tmp; mv child.tmp child.pid; ${suffix}`, dir, mode !== "one-shot");
-      await ready.promise;
-      pid = Number((await fs.readFile(path.join(dir, "child.pid"), "utf8")).trim());
+      pid = await readChildPid(dir);
       expect(pid).toBeGreaterThan(0);
       if (mode === "cancel") registry.cancel([monitor.id]);
-      const [settled] = await registry.awaitIds([monitor.id]);
+      const [settled] = await registry.awaitIds([monitor.id], 2500);
       expect(settled!.status).toBe(mode === "linger" ? "failed" : "killed");
       if (mode === "linger") {
         expect(registry.tail(monitor.id)).toContain("partial output");
         expect(registry.tail(monitor.id)).toMatch(/incomplete/i);
       }
       expect(registry.unobserved().map(record => record.id)).toContain(monitor.id);
+      expect(registry.consumeMutations([monitor.id])).toBe(true);
+      expect(registry.unobserved().map(record => record.id)).not.toContain(monitor.id);
     } finally {
-      watcher.close();
-      if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      registry.cancelAll();
+      await killChild(dir, pid);
       await fs.rm(dir, { recursive: true, force: true });
     }
   }, 5000);
 }
+
+test.skipIf(process.platform === "win32")("incomplete monitor drain terminates descendants before they can mutate", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-monitor-late-"));
+  const registry = new MonitorRegistry();
+  let pid: number | undefined;
+  try {
+    const monitor = registry.start('(sleep 2; echo mutated > late.txt) & echo $! > child.tmp; mv child.tmp child.pid; exit 0', dir, true);
+    pid = await readChildPid(dir);
+    const [result] = await registry.awaitIds([monitor.id], 2500);
+    expect(result!.status).toBe("failed");
+    // This integration test crosses the real subprocess's scheduled write time.
+    await Bun.sleep(2200);
+    expect(await Bun.file(path.join(dir, "late.txt")).exists()).toBe(false);
+  } finally {
+    registry.cancelAll();
+    await killChild(dir, pid);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 6000);
+
+
+test.skipIf(process.platform !== "linux")("escaped monitor pipe holder stays unobserved after group disappears", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-monitor-escaped-"));
+  const registry = new MonitorRegistry();
+  let pid: number | undefined;
+  try {
+    const monitor = registry.start("setsid sh -c 'echo $$ > child.tmp; mv child.tmp child.pid; exec sleep 30' & while [ ! -f child.pid ]; do :; done; exit 0", dir, true);
+    pid = await readChildPid(dir);
+    const [result] = await registry.awaitIds([monitor.id], 2500);
+    expect(result!.status).toBe("failed");
+    registry.consumeMutations([monitor.id]);
+    expect(registry.unobserved().map(record => record.id)).toContain(monitor.id);
+    registry.cancel([monitor.id]);
+    expect(registry.unobserved().map(record => record.id)).toContain(monitor.id);
+  } finally {
+    registry.cancelAll();
+    await killChild(dir, pid);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 5000);

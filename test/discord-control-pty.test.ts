@@ -1,27 +1,59 @@
 import { expect, test } from "bun:test";
-import { watch } from "node:fs";
+import { constants as fsConstants, watch } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
-const AGY = path.resolve(import.meta.dir, "fixtures/agy-fake-cli.ts");
-const GUARDIAN = path.resolve(import.meta.dir, "fixtures/pty-guardian.ts");
+const GUARDIAN = path.resolve(import.meta.dir, "fixtures/sandbox-terminal-guardian.ts");
+const USER = "222222222222222222";
+
+function sse(text: string) {
+  return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+}
 
 for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dropWatchEvents = false] of [[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false], [false, false, true, false, false, false], [true, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false], [false, false, false, false, true, true], [false, false, false, false, false, false, true]] as const) test(`Discord terminal control and relay (no-tui=${noTui}, prior-paste=${priorPaste}, local-turn=${localTurn}, relay-turn=${relayTurn}, cancel-first=${cancelFirst}, paste-abort=${pasteAbort}, drop-watch-events=${dropWatchEvents})`, async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-pty-"));
+  // Sibling workspace/config under one temp root; HOME stays the real one so Docker remains reachable.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-pty-")));
   const config = path.join(root, "config");
+  const workspace = path.join(root, "workspace");
   const sessions = path.join(config, "notifications", "sessions");
-  const bin = path.join(root, "bin");
   await fs.mkdir(sessions, { recursive: true });
-  await fs.mkdir(bin);
-  await fs.symlink(AGY, path.join(bin, "agy"));
-  await fs.writeFile(path.join(config, "config.json"), JSON.stringify({ providers: {}, defaultModel: "agy/gemini-4-argon-low", notifications: { enabled: true } }));
-  const agyFixture = relayTurn ? { stdout: [
-    JSON.stringify({ event: "init", conversation_id: "fixture", init: { model: "gemini-4-argon-low", cwd: root, tools: [], permission_mode: "request-review" } }) + "\n",
-    JSON.stringify({ event: "result", result: { conversation_id: "fixture", status: "SUCCESS", response: "local relay answer", model: "gemini-4-argon-low", num_turns: 1 } }) + "\n",
-  ] } : { readyThenHang: true };
-  await fs.writeFile(path.join(root, "agy-fixture.json"), JSON.stringify(agyFixture));
+  await fs.mkdir(workspace);
+  await fs.chmod(config, 0o700);
+  let binary: string | undefined;
+  if (process.env.JEO_TEST_BINARY) {
+    const source = path.resolve(process.env.JEO_TEST_BINARY);
+    await fs.access(source, fsConstants.X_OK);
+    const binaryDir = path.join(root, "isolated-binary");
+    await fs.mkdir(binaryDir);
+    binary = path.join(binaryDir, "jeo");
+    await fs.copyFile(source, binary);
+    await fs.chmod(binary, 0o700);
+  }
+  // Local fake OpenAI-compatible model. Non-relay turns stay busy until the client aborts or cleanup releases them.
+  const providerReady = Promise.withResolvers<void>();
+  const providerAborted = Promise.withResolvers<void>();
+  const providerRequests: { aborted: boolean; release: () => void }[] = [];
+  const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (request.method !== "POST") return Response.json({ data: [{ id: "pty-model" }] });
+    const body = await request.json() as { stream?: boolean };
+    const entry = { aborted: false, release: () => {} };
+    const released = Promise.withResolvers<void>();
+    entry.release = released.resolve;
+    providerRequests.push(entry);
+    request.signal.addEventListener("abort", () => { entry.aborted = true; providerAborted.resolve(); released.resolve(); });
+    providerReady.resolve();
+    if (!relayTurn) await released.promise;
+    const text = relayTurn ? "local relay answer" : "released";
+    return body.stream ? sse(text) : Response.json({ choices: [{ message: { role: "assistant", content: text }, finish_reason: "stop" }] });
+  } });
+  await fs.writeFile(path.join(config, "config.json"), JSON.stringify({
+    providers: {}, defaultModel: "openai/pty-model", openaiBaseUrl: `http://127.0.0.1:${provider.port}/v1`,
+    sandbox: { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 64, cpus: 1 } },
+    notifications: { enabled: true, discord: { allowedUserIds: [USER] } },
+    routing: { enabled: false }, computer: { enabled: false }, gitAutoCommit: false,
+  }));
 
   let output = "";
   let outputWaiters: (() => void)[] = [];
@@ -31,6 +63,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
   let discoveryScans = 0;
   let discoveryError = "";
   const { promise: deadline, reject: rejectDeadline } = Promise.withResolvers<never>();
+  deadline.catch(() => {});
   const phase = async <T>(label: string, action: () => Promise<T>): Promise<T> => {
     pending.add(label);
     try { return await Promise.race([action(), deadline]); } finally { pending.delete(label); }
@@ -74,19 +107,18 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     discoveryEvents++;
     if (!dropWatchEvents) void scanDiscovery();
   });
-  const env = { HOME: root, PATH: `${bin}:${process.env.PATH ?? ""}`, JEO_CONFIG_DIR: config, JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color" };
-  const command = process.env.JEO_TEST_BINARY ? [path.resolve(process.env.JEO_TEST_BINARY)] : [process.execPath, CLI];
+  // Real HOME is preserved for Docker; only a dummy key for the local fake OpenAI endpoint is passed (no real provider/bot credentials).
+  const env = { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", JEO_CONFIG_DIR: config, OPENAI_API_KEY: "sk-test-fake-local-openai-key",JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) };
   const cliExited = Promise.withResolvers<number>();
   let cliExitCode: number | undefined;
-  const proc = Bun.spawn([process.execPath, GUARDIAN, ...command, "launch", "--no-skills", "--model", "agy/gemini-4-argon-low", ...(noTui ? ["--no-tui"] : [])], {
-    cwd: root, env, terminal, detached: true,
+  const proc = Bun.spawn([process.execPath, GUARDIAN, process.execPath, CLI, "launch", "--no-skills", "--model", "openai/pty-model", ...(noTui ? ["--no-tui"] : [])], {
+    cwd: workspace, env, terminal, detached: true,
     ipc(message) {
       if (message.type === "exit") { cliExitCode = message.exitCode; cliExited.resolve(message.exitCode); }
     },
   });
   void proc.exited.then(code => rejectDeadline(new Error(`PTY guardian exited unexpectedly: ${code}`)));
   let ws: WebSocket | undefined;
-  let childPid: number | undefined;
   let testFailure: unknown;
   try {
     // Real PTY processes cannot use fake time; fail before Bun's timeout so cleanup can run.
@@ -95,7 +127,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
         names => rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; character: ${typedCharacter}; child exit: ${cliExitCode}; discovery events: ${discoveryEvents}; discovery scans: ${discoveryScans}; discovery entries: ${JSON.stringify(names)}; discovery error: ${discoveryError}; output tail: ${JSON.stringify(output.slice(-1000))}`)),
         error => rejectDeadline(new Error(`Discord PTY stalled; pending: ${[...pending].join("; ")}; discovery readdir error: ${String(error)}`)),
       );
-    }, 25_000);
+    }, 55_000);
     try {
     await waitOutput("Type your message");
     // Filesystem watch events can be coalesced or lost; rescan until publication or the test deadline.
@@ -122,6 +154,16 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
       }
     });
     await waitFrame(frame => frame.type === "snapshot");
+    // Process-liveness invariant: CLI has not exited and the authenticated session endpoint still answers.
+    const expectAlive = async () => {
+      expect(cliExitCode).toBeUndefined();
+      expect(proc.exitCode).toBeNull();
+      expect(ws!.readyState).toBe(WebSocket.OPEN);
+      const index = frames.length;
+      ws!.send(JSON.stringify({ type: "list" }));
+      await waitFrame(frame => frame.type === "snapshot", index);
+      expect(cliExitCode).toBeUndefined();
+    };
     if (priorPaste) {
       const beforePaste = output.length;
       terminal.write("\u001b[200~/discord control on --allow-full-control\u001b[201~\r");
@@ -186,33 +228,19 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
       await waitOutput("Type your message", beforeTyped);
       await typed("independent local task");
     } else {
-      ws.send(JSON.stringify({ type: "remote_request", sessionId: discovery.id, reqId, controlGeneration: enabled.generation, text: "long remote task" }));
+      ws.send(JSON.stringify({ type: "remote_request", sessionId: discovery.id, reqId, controlGeneration: enabled.generation, actor: { origin: "discord", sessionKey: discovery.id, userId: USER }, text: "long remote task" }));
       const accepted = await waitFrame(frame => frame.type === "ack" && frame.reqId === reqId);
       expect(accepted.ok).toBe(true);
     }
-    const ready = Promise.withResolvers<void>();
-    const readyWatch = watch(root, async () => {
-      if (await fs.stat(path.join(root, "agy-ready")).then(() => true, () => false)) ready.resolve();
-    });
-    try {
-      if (await fs.stat(path.join(root, "agy-ready")).then(() => true, () => false)) ready.resolve();
-      await phase("provider ready", () => ready.promise);
-    } finally { readyWatch.close(); }
+    await phase("provider ready", () => providerReady.promise);
     if (pasteAbort) {
       const beforePaste = output.length;
       terminal.write("\u001b[200~paste before abort");
       await waitOutput("paste before abort", beforePaste);
     }
     if (cancelFirst) {
-      const terminated = Promise.withResolvers<void>();
-      const signalWatch = watch(root, async () => {
-        if (await fs.stat(path.join(root, "agy-sigterm")).then(() => true, () => false)) terminated.resolve();
-      });
-      try {
-        ws.send(JSON.stringify({ type: "remote_cancel", sessionId: discovery.id, reqId }));
-        if (await fs.stat(path.join(root, "agy-sigterm")).then(() => true, () => false)) terminated.resolve();
-        await phase("provider SIGTERM", () => terminated.promise);
-      } finally { signalWatch.close(); }
+      ws.send(JSON.stringify({ type: "remote_cancel", sessionId: discovery.id, reqId }));
+      await phase("provider request abort", () => providerAborted.promise);
     }
     if (pasteAbort) terminal.write("\u0003\u001b[201~");
     const beforeOff = output.length;
@@ -226,17 +254,19 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
       return;
     }
     if (cancelFirst) {
-      childPid = Number(await fs.readFile(path.join(root, "agy-pid"), "utf8"));
-      expect(childPid).toBeGreaterThan(0);
-      expect(process.kill(childPid, 0)).toBe(true);
+      // The local fake provider replaces the external companion process: the cancelled request was observed and the fixture is still serving.
+      expect(providerRequests.length).toBeGreaterThan(0);
+      expect(providerRequests.some(request => request.aborted)).toBe(true);
+      await expectAlive();
     }
     if (localTurn) {
-      ws.send(JSON.stringify({ type: "remote_request", sessionId: discovery.id, reqId, controlGeneration: enabled.generation, text: "must be denied" }));
+      ws.send(JSON.stringify({ type: "remote_request", sessionId: discovery.id, reqId, controlGeneration: enabled.generation, actor: { origin: "discord", sessionKey: discovery.id, userId: USER }, text: "must be denied" }));
       const rejected = await waitFrame(frame => frame.type === "ack" && frame.reqId === reqId);
       expect(rejected.ok).toBe(false);
-      childPid = Number(await fs.readFile(path.join(root, "agy-pid"), "utf8"));
-      expect(childPid).toBeGreaterThan(0);
-      expect(process.kill(childPid, 0)).toBe(true);
+      // The independent local turn must still be busy: its provider request is in flight and was not aborted.
+      expect(providerRequests.length).toBeGreaterThan(0);
+      expect(providerRequests.every(request => !request.aborted)).toBe(true);
+      await expectAlive();
     } else {
       const final = await waitFrame(frame => frame.type === "remote_final" && frame.reqId === reqId);
       expect(final.ok).toBe(false);
@@ -253,10 +283,11 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
   } finally {
     watcher.close();
     ws?.close();
+    for (const request of providerRequests) request.release();
     let cleanupFailure: unknown;
     const { promise: cleanupDeadline, reject: rejectCleanup } = Promise.withResolvers<never>();
     // This watchdog bounds a real subprocess; fake time cannot stop an OS process.
-    const cleanupTimer = setTimeout(() => rejectCleanup(new Error("PTY guardian did not stop within 2 seconds")), 2_000);
+    const cleanupTimer = setTimeout(() => rejectCleanup(new Error("PTY guardian did not stop within 10 seconds")), 10_000);
     try {
       // IPC queues the stop even if the guardian has not yet begun executing.
       if (proc.exitCode === null) proc.send("stop");
@@ -268,6 +299,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     } finally {
       clearTimeout(cleanupTimer);
       terminal.close();
+      provider.stop(true);
     }
     if (cleanupFailure) {
       if (testFailure) throw new AggregateError([testFailure, cleanupFailure], "PTY test and cleanup failed");
@@ -275,4 +307,4 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     }
     await fs.rm(root, { recursive: true, force: true });
   }
-}, 30000);
+}, 90_000);

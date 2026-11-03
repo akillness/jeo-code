@@ -1,3 +1,24 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { SandboxSupervisor } from "./sandbox/types";
+import type { GrantAuthority } from "./sandbox/authority";
+
+export interface SandboxExecutionScope {
+  supervisor: SandboxSupervisor;
+  authority?: GrantAuthority;
+  signal?: AbortSignal;
+  requestAccess?: (host: string, mode: "ro" | "rw") => Promise<unknown>;
+}
+
+const sandboxExecution = new AsyncLocalStorage<SandboxExecutionScope>();
+
+export function currentSandboxExecution(): SandboxExecutionScope | undefined {
+  return sandboxExecution.getStore();
+}
+
+export function withSandboxExecution<T>(scope: SandboxExecutionScope, run: () => T): T {
+  return sandboxExecution.run(scope, run);
+}
+
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readGlobalConfig } from "./state";
@@ -63,12 +84,25 @@ async function readLocalHooks(localPath: string): Promise<LocalHooks> {
   return result;
 }
 
-export async function loadHooks(cwd: string): Promise<NonNullable<HookConfig["hooks"]>> {
+export async function loadHooks(cwd: string, signal?: AbortSignal): Promise<NonNullable<HookConfig["hooks"]>> {
   const config = await readGlobalConfig();
   if (!config.hooks?.enabled) {
     return [];
   }
 
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const result = await sandbox.supervisor.exec(["bun", "-e", "const file=Bun.file('.jeo/hooks.json');let value={};try{if(await file.exists())value=await file.json()}catch{}process.stdout.write(JSON.stringify(value));"], { cwd, signal: signal ?? sandbox.signal });
+    if (!result.success || result.exitCode !== 0) throw new Error(`Sandbox project hook configuration read failed (exit code ${result.exitCode ?? "unavailable"}): ${result.error || result.output}`);
+    let local: unknown;
+    try { local = JSON.parse(result.stdout ?? result.output); }
+    catch { throw new Error("Malformed sandbox project hook configuration"); }
+    if (local && typeof local === "object") {
+      if ("enabled" in local && local.enabled === false) return [];
+      if ("hooks" in local && Array.isArray(local.hooks)) return local.hooks;
+    }
+    return config.hooks.hooks || [];
+  }
   const local = await readLocalHooks(path.join(cwd, ".jeo", "hooks.json"));
   if (local.kind === "disabled") return [];
   if (local.kind === "hooks") return local.hooks;
@@ -85,6 +119,19 @@ async function runHookCommand(
 ): Promise<HookRunResult> {
   if (signal?.aborted) {
     return { stdout: "", stderr: "", output: "", exitCode: null, timedOut: false, aborted: true };
+  }
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const result = await sandbox.supervisor.exec(["/bin/sh", "-c", runCmd], {
+      cwd, stdin: JSON.stringify(payload), signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    if (result.exitCode === undefined) throw new Error(result.error || "Malformed sandbox hook result: missing exitCode");
+    return {
+      stdout: result.stdout ?? result.output, stderr: result.stderr ?? "", output: result.output,
+      exitCode: result.exitCode, timedOut: result.timedOut === true || timeout.aborted,
+      aborted: result.aborted === true || signal?.aborted === true,
+    };
   }
 
   const proc = Bun.spawn(["bash", "-c", runCmd], {
@@ -154,6 +201,7 @@ async function runHookCommand(
   };
 }
 
+
 /** True when a hook's `match.tool` selects `tool`. Accepts a single name or a
  *  `|`-separated list (`"edit|write"`) — so one post-edit tsc hook can cover
  *  every mutating tool without duplicate entries. No match = all tools. */
@@ -170,7 +218,7 @@ export async function runPreToolHooks(
   onNotice?: (msg: string) => void
 ): Promise<{ vetoed: boolean; error?: string; output?: string }> {
   try {
-    const hooks = await loadHooks(cwd);
+    const hooks = await loadHooks(cwd, signal);
     const preToolHooks = hooks.filter(
       h => h.event === "pre-tool" && hookMatchesTool(h.match?.tool, tool)
     );
@@ -243,7 +291,7 @@ export async function runPostTurnHooksForBatch(
   // "hooks ran clean" (clear a pending failure) differently from "no hook ran".
   let ran = 0;
   try {
-    const hooks = await loadHooks(cwd);
+    const hooks = await loadHooks(cwd, signal);
     const jobs = hooks
       .filter(h => h.event === "post-turn")
       .map(hook => ({ hook, matched: calls.filter(c => hookMatchesTool(hook.match?.tool, c.tool)) }))
@@ -311,7 +359,7 @@ export async function runPostImplementationHooks(
   onNotice?: (msg: string) => void
 ): Promise<{ success: boolean; output: string }> {
   try {
-    const hooks = await loadHooks(cwd);
+    const hooks = await loadHooks(cwd, signal);
     const postImplHooks = hooks.filter(h => h.event === "post-implementation");
     
     let combinedOutput = "";

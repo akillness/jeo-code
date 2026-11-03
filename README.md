@@ -42,7 +42,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Local tools are off by default; explicitly enabling `computer` grants access to the shared host desktop, and enabling `bash` grants shell authority. Neither is sandboxed. See the [messenger guide](docs/integrations/messenger.md).
+**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Discord requires an explicit local Docker sandbox; its configured tools execute in a Linux guest, not on the host desktop or shell. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
 
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
@@ -99,7 +99,7 @@ jeo-code is a **local-first AI coding agent CLI** designed to safely drive entir
 - **Plan critic gate** — a plan cannot skip its architect/critic step: `PlanSchema` rejects plans ending with an unverified mutation (a verifier before the mutation does not count), at `ralplan` draft time and `team`/`approve` execution time. Critic verdicts require observed repository-read/search evidence; that supports reviewability, not independent validation of the workspace.
 - **Safety-boundary automatic model fallback** — an uncategorized safety refusal (a possible classifier false positive, not a genuine content-policy hit) now switches to a genuinely different-provider model instead of backing off forever on the same one — mirrors the existing rate-limit fast-fallback. A `Refusal (<category>)`-shaped deterministic hit is untouched and still hard-fails with zero fallback.
 - **Memory: earned confidence** — a concept's verification date is now written only when a distillation pass is explicitly marked verified, not on every write; `isConceptStale` treats an unverified (or >30-day-stale) concept as needing re-verification instead of trusting a passive timestamp.
-- **Dynamic Workflows (`eval` tool)** — write real JS control flow around subagent dispatch: `task(role, taskText, context?)`, `parallel(thunks)`, `pipeline(items, ...stages)`, and `log(message)`, composing sequential/branching orchestration that `task`'s single-stage `tasks[]` batch can't express. Runs in an isolated Worker thread with a genuinely preemptive timeout (`worker.terminate()`, not a same-process race) — same full-process trust as `bash`, no sandbox pretense, gated by the same interview mutation lock.
+- **Dynamic Workflows (`eval` tool)** — compose JS control flow around subagents with `task(role, taskText, context?)`, `parallel(thunks)`, `pipeline(items, ...stages)`, and `log(message)`. Without a session sandbox this Worker-thread timeout is not a security boundary. With a sandbox, eval executes in the Linux guest; its task/parallel/pipeline delegation helpers are unsupported there, so use the parent `task` tool for delegation.
 - **Quiet exit on a broken output pipe** — piping jeo into a command that stops reading early (`jeo --help | head`, a vanished remote peer) no longer dumps a raw `EPIPE` stack; it exits quietly with the same code (141) a shell reports for any SIGPIPE-killed pipeline producer. A genuine crash is unaffected and still surfaces clearly.
 - **macOS low file-descriptor-limit warning** — a low `ulimit -n` (BSD's 256/1024 default) risks opaque `EMFILE` failures from file watching, the browser tool, or a broad repo scan; jeo now warns once at launch (stderr only, never piped `-p` output) with concrete `ulimit`/`launchctl` guidance. Opt out with `JEO_SKIP_NOFILE_CHECK=1`.
 
@@ -295,6 +295,29 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 Opt-in: one shared daemon watches every live `jeo` session on the machine and pushes a message on each **subagent state edge** (started → completed/failed/cancelled), plus the session identity header, turn start/finish summaries, and the finalized turn text — never repeated "still running" pings. Allowlisted humans can list, send, steer, and cancel from the chat; every control is relayed to the local session and reported as **acknowledged (accepted, not completed)** or **not acknowledged** — the daemon never claims a command ran.
 
+### Discord sessions and sandbox boundaries
+
+One Discord thread keeps one persistent session, irrespective of sender or message. Same-thread requests run FIFO; other sessions can run concurrently. Sessions share the selected workspace: no per-session Git worktree is created, so filesystem edits can conflict.
+
+Set `sandbox` in the messenger config; the same shape in `~/.jeo/config.json` enables terminal session isolation:
+
+```json
+{
+  "sandbox": {
+    "image": "oven/bun:1.3.14",
+    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
+  }
+}
+```
+
+This is the sandbox portion, not a complete messenger profile; keep the existing `platforms` allowlists and credential environment-variable names. The Linux Bun image must already exist in the local Docker daemon. The backend resolves its immutable image ID and uses `--pull=never`: no image pull, dependency installation, remote Docker endpoint, or host-execution fallback. macOS and Windows hosts still run a **Linux guest shell**, not native host shell commands. Network is `none`; `/workspace` is read-write and extra paths require session grants (`ro` or `rw`). Whole-home/private control paths and control sockets cannot be granted. The host operator and Docker daemon remain trusted.
+
+Only directly submitted parent-human controls can decide access: `/sandbox status`, `/sandbox approve <requestId>`, `/sandbox deny <requestId>`, `/sandbox revoke`. The model's `sandbox_request {host, mode:'ro'|'rw'}` is request-only, never self-approval. Decisions require the authenticated actor's own session and current request revision; stale/cross-session requests fail closed. Existing terminal Discord control also requires a sandbox: enable locally with `/discord control on --allow-full-control`, disable with `/discord control off`; remote turns preserve the local input draft.
+
+`independentSessions` is rejected at runtime; explicit `jeo messenger setup` migration removes it. Keep `sessionDir` private, outside and disjoint from the workspace. Old workspace `.jeo/sessions`, `.jeo/messenger-sessions`, or `.jeo/memory/raw` transcript and raw-history storage fails closed with relocation guidance: move it deliberately before restarting; no automatic copy or deletion occurs. Full conversation history stays in the parent-only store; derived project learning remains shared. Existing ECC skills/workflow installation is reused, not globally reinstalled; protected global skill bytes are snapshotted before execution, while workspace/granted documents are read through the guest.
+
+**Verification scope (2026-11-03):** the actual macOS real-Docker verifier (`bun run verify:sandbox`) passed **20 behavior contracts**, and a source standalone build passed. A copied standalone binary passed a narrow qualification covering the actual PTY FIFO, a parent `sandbox_request` with a real Linux guest tool, full-history privacy, a matching parent-generated stderr shutdown nonce ACK, a real worker exit (143), and Docker container absence. Source wrappers preserve the teardown cleanup owner, bounded shutdown waits, human per-session grants, one persistent thread/FIFO, and the shared workspace. This is not a full-suite, cross-platform, or production verification: the full `bun test` run timed out and is **not a pass**, and the general focused suite still has stale-fixture failures being fixed. Native Linux and Windows host verification is unavailable, and no live Discord sends were made. A Linux guest on macOS is not host qualification. `bun run build:hands` builds the worker; `bun run verify:sandbox` runs the real-Docker check without installing prerequisites. Worker/container cleanup must be confirmed; cleanup errors or unconfirmed removal are not success.
+
 Detailed standalone guides:
 - 📖 [Channel Integrations Overview](docs/integrations/README.md) — Feature matrix and architecture overview
 - 📱 [Telegram Integration Guide](docs/integrations/telegram.md) — Built-in background daemon, interactive BotFather pairing, forum topics, and `/steer` commands
@@ -324,7 +347,7 @@ What the words mean, because they are not interchangeable:
 - **Setup** validates bot identity and destination access with the official API (Telegram `getMe`, Discord bot + channel lookup, Slack `auth.test`/`bots.info`/`conversations.info` and a Socket Mode URL) and stores the result in `~/.jeo/config.json` under `notifications.<provider>` — **plaintext**; keep that file private. It does not send a message and does not open a socket.
 - **`initialized`** (`jeo daemon status`) means the daemon process owns its lock and has started its transports; it is not proof of a successful Telegram poll, Discord Gateway handshake, or Slack Socket Mode connection. Use `notify health` / `notify test` for that.
 - **Changing a token or destination** resets the allowlist for Discord and Slack (you must pass `--allowed-user-ids` again) and the per-session topic map for Telegram; re-running setup with the exact same credentials and destination keeps them.
-- **Remote commands are literal text** (`/subagents`, …) authorized to the configured chat/channel and allowlist; Slack additionally accepts the same names as registered slash commands. Discord session control defaults off and requires the host operator to submit `/discord control on --allow-full-control` locally; `/discord control off` revokes it. Authorized users can exercise the host session's tool permissions; this is not a sandbox. See the [Discord guide](docs/integrations/discord.md) for file handling and revocation limits. Never put credentials in chat.
+- **Remote commands are literal text** (`/subagents`, …) authorized to the configured chat/channel and allowlist; Slack additionally accepts the same names as registered slash commands. Discord terminal control defaults off and requires local `/discord control on --allow-full-control` in a sandbox session; `/discord control off` revokes it. The sandbox and human grant rules above apply. Never put credentials in chat.
 - **Retries are bounded per provider**: Telegram honours a 429 `retry_after` cooldown (clamped 1 s–1 h) with separate poll backoff; Discord and Slack retry at most 3 times on 429 using the server's `Retry-After`, and never re-send a POST whose outcome is unknown (the platform may already have it).
 - **Orphan recovery**: if a daemon crashes, its lock becomes `stale`; the next `jeo daemon start` reclaims it. `jeo daemon stop` refuses to signal a recycled PID when the host can report process start times, and says so when it cannot.
 - **Verified so far**: Telegram end to end (real send, polling, clean shutdown). Discord and Slack are implemented behind the same daemon with offline transport/wiring tests and code, security, and type reviews; live connectivity has not been exercised against real bot/app credentials.
@@ -365,7 +388,7 @@ jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval
 jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
 ```
 
-Generates a GitHub Actions workflow (`.github/workflows/<name>.yml`) that installs jeo and runs it headlessly (`jeo "<prompt>" -p`) on `schedule` / `issues` / `pull_request` — always paired with `workflow_dispatch` for a manual test run — on GitHub's own hosted runners. This is jeo's "runs without your laptop" story: no in-process scheduler, no webhook listener, no code-exec sandbox inside jeo itself — GitHub's infrastructure does the triggering, jeo just runs its existing headless mode. Defaults to opening a PR with any changes (`peter-evans/create-pull-request`, a safe no-op when the diff is empty); `--no-pr` commits directly to the triggering branch instead. `--dry-run` prints the YAML without writing it; re-running `jeo routine init` at the same `--out` path refuses to overwrite without `--force`. Set the `ANTHROPIC_API_KEY` (or `--api-key-env <VAR>`) repo secret before the workflow's first real run.
+Generates a GitHub Actions workflow (`.github/workflows/<name>.yml`) that installs jeo and runs it headlessly (`jeo "<prompt>" -p`) on `schedule` / `issues` / `pull_request`, always with `workflow_dispatch` for a manual run, on GitHub-hosted runners. GitHub handles triggering; routines add no in-process scheduler or webhook listener. Session sandboxing is an explicit, separate configuration with the local prerequisites above, not something routine generation installs. Defaults to opening a PR for changes (`peter-evans/create-pull-request`, no-op for an empty diff); `--no-pr` commits to the triggering branch. `--dry-run` prints YAML without writing; an existing `--out` requires `--force`. Set the `ANTHROPIC_API_KEY` (or `--api-key-env <VAR>`) repository secret before the first real run.
 
 ## Local models
 
@@ -378,7 +401,7 @@ jeo doctor && jeo
 ## Configuration
 
 - Global config: `~/.jeo/config.json` (model picks are MRU-persisted)
-- Project state/sessions: `<project>/.jeo/`
+- Project state: `<project>/.jeo/`; sandbox session transcripts stay outside the workspace (see Discord session boundaries above).
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -466,11 +489,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]**
+- **[0.12.15]** (2026-11-03)
 - **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
-- **[0.12.10]** (2026-11-02)
-- **[0.12.11]** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

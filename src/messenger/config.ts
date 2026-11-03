@@ -1,6 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { MessengerConfig, MessengerPlatform, MessengerPlatformConfig } from "./types";
+import { canonicalSandboxPath, sandboxPathContains, validateSandboxConfig } from "../agent/sandbox/policy";
+import type { SandboxConfig } from "../agent/sandbox/types";
+import { notifyDir } from "../agent/notify/paths";
 
 const PLATFORMS: MessengerPlatform[] = ["discord", "telegram", "slack"];
 const TOOLS: Record<string, true> = {
@@ -13,6 +16,7 @@ const TOOLS: Record<string, true> = {
 	edit: true,
 	write: true,
 	computer: true,
+	sandbox_request: true,
 };
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -61,11 +65,25 @@ export function resolveMessengerToken(
 	return undefined;
 }
 
-export const DEFAULT_MESSENGER_TOOLS = ["read", "find", "search", "write", "edit", "bash", "computer"];
+export const DEFAULT_MESSENGER_TOOLS = ["read", "find", "search", "write", "edit", "bash", "computer", "sandbox_request"];
+
+export function parseMessengerSandbox(value: unknown): SandboxConfig {
+	const input = object(value, "sandbox");
+	keys(input, ["image", "limits"], "sandbox");
+	const limits = object(input.limits, "sandbox.limits");
+	keys(limits, ["memoryBytes", "pids", "cpus"], "sandbox.limits");
+	const config: SandboxConfig = {
+		image: string(input.image, "sandbox.image"),
+		limits: { memoryBytes: limits.memoryBytes as number, pids: limits.pids as number, cpus: limits.cpus as number },
+	};
+	validateSandboxConfig(config);
+	return config;
+}
 
 export function parseMessengerConfig(value: unknown, baseDir: string): MessengerConfig {
 	const input = object(value, "Messenger config");
-	keys(input, ["cwd", "sessionDir", "toolNames", "platforms", "independentSessions"], "Messenger config");
+	if (Object.hasOwn(input, "independentSessions")) throw new Error("independentSessions is obsolete; run messenger setup to migrate to persistent conversation sessions");
+	keys(input, ["cwd", "sessionDir", "sandbox", "toolNames", "platforms"], "Messenger config");
 	const platformsInput = object(input.platforms, "platforms");
 	keys(platformsInput, PLATFORMS, "platforms");
 	if (Object.keys(platformsInput).length === 0) throw new Error("At least one messenger platform is required");
@@ -108,17 +126,40 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 	) {
 		throw new Error("toolNames must be a unique list drawn from read, grep, glob, find, search, bash, edit, write, computer");
 	}
-	const independentSessions = input.independentSessions !== undefined ? Boolean(input.independentSessions) : true;
+	const sandbox = input.sandbox !== undefined || platforms.discord ? parseMessengerSandbox(input.sandbox) : undefined;
+	const cwd = path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd"));
+	const sessionDir = input.sessionDir === undefined ? path.join(notifyDir(), "messenger-sessions") : path.resolve(baseDir, string(input.sessionDir, "sessionDir"));
+	if (sandbox && (sandboxPathContains(cwd, sessionDir) || sandboxPathContains(sessionDir, cwd))) {
+		throw new Error("sessionDir must be outside and disjoint from the sandbox workspace");
+	}
 	return {
-		cwd: path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd")),
-		sessionDir: path.resolve(
-			baseDir,
-			input.sessionDir === undefined ? ".jeo/messenger-sessions" : string(input.sessionDir, "sessionDir"),
-		),
+		cwd,
+		sessionDir,
 		toolNames: [...toolNames] as string[],
+		...(sandbox ? { sandbox } : {}),
 		platforms,
-		independentSessions,
 	};
+}
+
+export async function validateMessengerStorage(config: MessengerConfig): Promise<void> {
+	if (!config.sandbox && !config.platforms.discord) return;
+	const [cwd, sessionDir] = await Promise.all([canonicalSandboxPath(config.cwd), canonicalSandboxPath(config.sessionDir, false)]);
+	if (sandboxPathContains(cwd, sessionDir) || sandboxPathContains(sessionDir, cwd)) {
+		throw new Error("sessionDir must be outside and disjoint from the sandbox workspace");
+	}
+	const pending = [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")];
+	while (pending.length) {
+		const directory = pending.pop()!;
+		let entries;
+		try { entries = await fs.readdir(directory, { withFileTypes: true }); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+		for (const entry of entries) {
+			if (/\.(?:jsonl|json)$/i.test(entry.name) || entry.isSymbolicLink()) {
+				throw new Error("Legacy session transcripts or raw history may be exposed in the sandbox workspace; move existing private history outside the workspace before starting the sandbox");
+			}
+			if (entry.isDirectory()) pending.push(path.join(directory, entry.name));
+		}
+	}
 }
 
 export async function loadMessengerConfig(file: string): Promise<MessengerConfig> {
@@ -129,6 +170,7 @@ export async function loadMessengerConfig(file: string): Promise<MessengerConfig
 		throw new Error("Cannot read messenger configuration as JSON");
 	}
 	const config = parseMessengerConfig(value, path.dirname(path.resolve(file)));
+	await validateMessengerStorage(config);
 	const artifactDir = config.platforms.discord?.artifactDir;
 	if (artifactDir) {
 		const stat = await fs.lstat(artifactDir).catch(() => undefined);

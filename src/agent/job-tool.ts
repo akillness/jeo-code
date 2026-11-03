@@ -6,6 +6,10 @@
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 import type { JobRegistry, JobRecord } from "./job-registry";
+import { settlesWithin } from "./shell-lease";
+
+/** Upper bound on pipe-linger, escape detection and notice-queue drain after a cancel. */
+const CANCEL_SETTLE_MS = 3000;
 
 /** One-line protocol description appended to the launch system prompt. */
 export const JOB_TOOL_PROTOCOL_LINE =
@@ -100,13 +104,23 @@ export function createJobTool(registry: JobRegistry, reportMutations = true): To
     }
 
     if (action === "cancel") {
-      const targets = ids.length ? ids : registry.running().map(r => r.id);
+      const cancellable = new Set(registry.cancellable().map(r => r.id));
+      const targets = ids.length ? [...new Set(ids)] : [...cancellable];
       if (targets.length === 0) {
         return { success: true, output: "No running jobs to cancel." };
       }
-      const hadRunning = targets.some(id => registry.get(id)?.status === "running");
+      const unknown = targets.filter(id => !registry.get(id));
+      if (unknown.length > 0) {
+        return { success: false, output: "", error: `No job matches ${unknown.join(", ")}.` };
+      }
+      const attempted = targets.filter(id => cancellable.has(id));
       const recs = registry.cancel(targets);
-      return { success: true, output: `Cancelled ${recs.length} job(s):\n${recs.map(rowLine).join("\n")}`, mutationMayHaveOccurred: hadRunning };
+      // A delivered SIGKILL is only verified once the output pipes close; settlement can still
+      // downgrade `killed` to `failed` (a holder that left the group), so wait before judging.
+      const settled = attempted.length === 0 || await settlesWithin(registry.awaitIds(attempted), CANCEL_SETTLE_MS);
+      const failed = recs.filter(r => cancellable.has(r.id) && (!settled || r.status !== "killed")).length;
+      const head = attempted.length ? `Cancelled ${attempted.length - failed} job(s); ${failed} cancellation(s) failed; ${recs.length - attempted.length} already settled.` : "No running jobs to cancel; requested jobs are already settled.";
+      return { success: failed === 0, output: `${head}\n${recs.map(rowLine).join("\n")}`, mutationMayHaveOccurred: attempted.length > 0 };
     }
 
     return { success: false, output: "", error: `Unknown job action '${action}'. Use start | list | tail | await | cancel.` };
@@ -116,7 +130,8 @@ export function createJobTool(registry: JobRegistry, reportMutations = true): To
     const ids = idsOf(args);
     const targets = action === "list" ? registry.list().map(r => r.id)
       : action === "await" ? (ids.length ? ids : registry.awaiting().map(r => r.id))
-      : action === "tail" || action === "cancel" ? (ids.length ? ids : registry.running().map(r => r.id))
+      : action === "tail" ? (ids.length ? ids : registry.running().map(r => r.id))
+      : action === "cancel" ? (ids.length ? ids : registry.cancellable().map(r => r.id))
       : [];
     const result = await handle(args, cwd);
     if (reportMutations && !result.error && registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;

@@ -3,17 +3,63 @@ import { constants } from "node:fs";
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { loadMessengerConfig, validateMessengerEnvironment } from "../messenger/config";
+import { loadMessengerConfig, parseMessengerSandbox, validateMessengerEnvironment, validateMessengerStorage } from "../messenger/config";
 import { createDiscordAdapter } from "../messenger/discord";
 import { setupDiscordMessenger } from "../messenger/discord-setup";
 import { messengerArtifactPrompt } from "../messenger/artifacts";
-import { createMessengerGateway, messengerSessionRoute, messengerConversationKey } from "../messenger/gateway";
+import { createMessengerGateway, messengerSessionRoute } from "../messenger/gateway";
 import { createMessengerSessionPool } from "../messenger/session-pool";
 import { createSlackAdapter } from "../messenger/slack";
 import { createTelegramAdapter } from "../messenger/telegram";
 import type { MessengerAdapter, MessengerConfig, MessengerReply } from "../messenger/types";
 import { createSession } from "../agent/session";
 import { selectDiscordModel } from "../messenger/model-selection";
+import type { MessengerGatewayOptions } from "../messenger/gateway";
+import { notifySessionEndpointPath } from "../agent/notify/paths";
+import { parseSessionEndpoint } from "../agent/notify/session-discovery";
+
+async function sendSandboxControl(config: MessengerConfig, id: string, userId: string, text: string, signal: AbortSignal): Promise<string> {
+	const file = await fs.open(notifySessionEndpointPath(id), constants.O_RDONLY | constants.O_NOFOLLOW);
+	let raw: string;
+	try {
+		const stat = await file.stat();
+		if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) throw new Error("Sandbox endpoint discovery is not private");
+		raw = await file.readFile("utf8");
+	} finally { await file.close(); }
+	const endpoint = parseSessionEndpoint(raw);
+	if (!endpoint || endpoint.cwd !== config.cwd) throw new Error("Sandbox endpoint session mismatch");
+	if (signal.aborted) throw new Error("Sandbox control aborted");
+	const { promise, resolve, reject } = Promise.withResolvers<string>();
+		const reqId = crypto.randomUUID();
+		const ws = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+		let sent = false;
+		let settled = false;
+		const finish = (error?: Error, output?: string) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			signal.removeEventListener("abort", abort);
+			ws.close();
+			if (error) reject(error); else resolve(output ?? "Sandbox control returned no output");
+		};
+		const abort = () => finish(new Error("Sandbox control aborted"));
+		const timer = setTimeout(() => finish(new Error("Sandbox control timed out; outcome is unconfirmed")), 30_000);
+		signal.addEventListener("abort", abort, { once: true });
+		ws.addEventListener("error", () => finish(new Error("Sandbox control endpoint unavailable")));
+		ws.addEventListener("close", () => finish(new Error("Sandbox control endpoint closed")));
+		ws.addEventListener("message", event => {
+			try {
+				const frame = JSON.parse(String(event.data));
+				if (frame.type === "discord_control" && frame.sessionId === id && !sent) {
+					if (frame.enabled !== true || !Number.isSafeInteger(frame.generation)) return finish(new Error("Discord sandbox control is disabled"));
+					sent = true;
+					ws.send(JSON.stringify({ type: "sandbox_control", sessionId: id, reqId, text, actor: { origin: "discord", sessionKey: id, userId }, controlGeneration: frame.generation }));
+				} else if (frame.type === "ack" && frame.reqId === reqId && typeof frame.output === "string") finish(undefined, frame.output);
+			} catch { finish(new Error("Invalid sandbox control response")); }
+		});
+		if (signal.aborted) abort();
+	return promise;
+}
 
 type Flags = { config?: string; channel: string[]; user: string[]; tools?: string; artifacts: boolean; service: boolean; noDm: boolean };
 
@@ -41,8 +87,10 @@ function parse(args: string[]): { action: "setup" | "check" | "run"; flags: Flag
 function terminalIO() {
 	let muted = false;
 	const output = new Writable({ write(chunk, _encoding, callback) { if (!muted) process.stdout.write(chunk); callback(); } });
-	const rl = createInterface({ input: process.stdin, output, terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY) });
+	const rl = createInterface({ input: process.stdin, output, terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY), historySize: 0 });
 	const controller = new AbortController();
+	const interrupted = new AbortController();
+	rl.on("SIGINT", () => { interrupted.abort(); rl.close(); });
 	rl.on("close", () => controller.abort());
 	const ask = async (question: string, secret = false) => {
 		process.stdout.write(question);
@@ -52,6 +100,7 @@ function terminalIO() {
 	};
 	return {
 		interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+		signal: interrupted.signal,
 		say: (line: string) => process.stdout.write(`${line}\n`),
 		ask: (question: string) => ask(question),
 		askSecret: (question: string) => ask(question, true),
@@ -60,51 +109,29 @@ function terminalIO() {
 }
 
 function routeUuid(config: MessengerConfig, message: Parameters<MessengerReply>[0]): string {
-	if (config.independentSessions) {
-		const hex = new Bun.CryptoHasher("sha256").update(JSON.stringify([config.cwd, messengerConversationKey(message), message.messageId])).digest("hex");
-		return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-	}
 	const hex = messengerSessionRoute(config.cwd, message);
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** Run each conversation in its own reusable agent process. */
-export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel): MessengerReply & { close(): Promise<void> } {
-	const pool = createMessengerSessionPool(spawn);
+export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel): MessengerReply & { close(): Promise<void>; sandboxControl: NonNullable<MessengerGatewayOptions["sandboxControl"]> } {
+	const sandbox = config.sandbox !== undefined || config.platforms.discord ? parseMessengerSandbox(config.sandbox) : undefined;
+	// Launch may inherit a global sandbox even when this platform has no local override.
+	const pool = createMessengerSessionPool(spawn, undefined, undefined, undefined, { requireSandboxCleanup: true });
 	const reply: MessengerReply = async (message, signal, onActivity) => {
 		if (signal.aborted) throw new Error("Messenger request aborted");
+		await validateMessengerStorage(config);
 		const id = routeUuid(config, message);
 		await fs.mkdir(config.sessionDir, { recursive: true, mode: 0o700 });
 		if (signal.aborted) throw new Error("Messenger request aborted");
 		const target = path.join(config.sessionDir, `${id}.jsonl`);
-		const legacy = path.join(config.cwd, ".jeo", "sessions", `${id}.jsonl`);
 		try {
 			await fs.access(target);
 			if (signal.aborted) throw new Error("Messenger request aborted");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			let old;
-			try { old = await fs.open(legacy, constants.O_RDONLY | constants.O_NOFOLLOW); }
-			catch (openError) { if ((openError as NodeJS.ErrnoException).code !== "ENOENT") throw openError; }
-			if (signal.aborted) { await old?.close(); throw new Error("Messenger request aborted"); }
-			try {
-				if (old) {
-					if (!(await old.stat()).isFile()) throw new Error("Invalid legacy messenger session");
-					if (signal.aborted) throw new Error("Messenger request aborted");
-					const contents = await old.readFile();
-					if (signal.aborted) throw new Error("Messenger request aborted");
-					const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-					try {
-						await fs.writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
-						if (signal.aborted) throw new Error("Messenger request aborted");
-						await fs.link(temporary, target);
-					} finally { await fs.unlink(temporary).catch(() => {}); }
-				} else {
-					await createSession(config.cwd, id, undefined, config.sessionDir, true);
-				}
-			} catch (createError) {
-				if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
-			} finally { await old?.close(); }
+			try { await createSession(config.cwd, id, undefined, config.sessionDir, true); }
+			catch (createError) { if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError; }
 		}
 		const artifactPrompt = await messengerArtifactPrompt(config.platforms[message.platform]?.artifactDir, message, signal);
 		if (signal.aborted) throw new Error("Messenger request aborted");
@@ -129,6 +156,14 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !secretNames.has(name))) as Record<string, string>;
 		for (const name of secretNames) env[name] = "";
 		env.JEO_SESSION_DIR = config.sessionDir;
+		delete env.JEO_MESSENGER_SANDBOX;
+		delete env.JEO_MESSENGER_ALLOWED_USER_IDS;
+		delete env.JEO_MESSENGER_SESSION_KEY;
+		if (sandbox) {
+			env.JEO_MESSENGER_SANDBOX = JSON.stringify(sandbox);
+			env.JEO_MESSENGER_ALLOWED_USER_IDS = JSON.stringify(platformConfig?.allowedUserIds ?? []);
+			env.JEO_MESSENGER_SESSION_KEY = id;
+		}
 		// The explicit tool allowlist is the opt-in for this worker only.
 		env.JEO_MESSENGER_COMPUTER_ENABLED = tools.includes("computer") ? "1" : "0";
 		// Never inherit another platform's fallback policy from the gateway environment.
@@ -148,7 +183,13 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const policyKey = message.platform === "discord" ? JSON.stringify([model, env.JEO_MESSENGER_USAGE_FALLBACK_MODEL]) : undefined;
 		return pool.turn(id, command, config.cwd, env, [message.text, artifactPrompt].filter(Boolean).join("\n\n"), signal, onActivity, policyKey);
 	};
-	return Object.assign(reply, { close: pool.close });
+	const sandboxControl: NonNullable<MessengerGatewayOptions["sandboxControl"]> = async (message, signal) => {
+		if (!/^\/sandbox(?:\s|$)/.test(message.text)) return { handled: false, output: "" };
+		if (message.platform !== "discord" || !config.platforms.discord?.allowedUserIds.includes(message.senderId)) return { handled: true, output: "UNAUTHORIZED: Discord sandbox control required" };
+		try { return { handled: true, output: await sendSandboxControl(config, routeUuid(config, message), message.senderId, message.text, signal) }; }
+		catch (error) { return { handled: true, output: error instanceof Error ? error.message : "Sandbox control failed" }; }
+	};
+	return Object.assign(reply, { close: pool.close, sandboxControl });
 }
 
 export async function runMessengerCommand(args: string[]): Promise<void> {
@@ -160,17 +201,17 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 		process.once("SIGINT", stop);
 		process.once("SIGTERM", stop);
 		try {
-			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm }, io, { signal: controller.signal });
+			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm }, io, { signal: AbortSignal.any([controller.signal, io.signal]) });
 			process.stdout.write(`Discord messenger ready: ${result.configPath}\nStart: ${result.runScript}\n`);
 		} finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); io.close(); }
 		return;
 	}
 	let config: MessengerConfig;
 	try { config = await loadMessengerConfig(flags.config!); validateMessengerEnvironment(config); }
-	catch { throw new Error("Messenger configuration or required environment is invalid"); }
+	catch (error) { throw new Error(error instanceof Error ? error.message : "Messenger configuration or required environment is invalid"); }
 	const platforms = Object.keys(config.platforms);
 	if (action === "check") { process.stdout.write(`Messenger configuration valid: ${platforms.join(", ")}; ${config.toolNames.length} tools enabled. No network checks performed.\n`); return; }
-	if (config.toolNames.length) process.stderr.write("Warning: messenger tools grant authorized remote users local machine authority; this is not a sandbox.\n");
+	if (config.sandbox) process.stderr.write("Messenger tools execute in session-specific containers with approved workspace mounts and no network. Sandbox failures do not fall back to host execution.\n");
 	const adapters: MessengerAdapter[] = [];
 	if (config.platforms.discord) adapters.push(createDiscordAdapter(config.platforms.discord));
 	if (config.platforms.telegram) adapters.push(createTelegramAdapter(config.platforms.telegram));
@@ -179,6 +220,6 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop); process.once("SIGTERM", stop);
 	const reply = createMessengerCliReply(config);
-	try { process.stdout.write(`Starting messenger: ${platforms.join(", ")}. Press Ctrl+C to stop.\n`); await createMessengerGateway(config, adapters, reply, { concurrency: 4 }).run(controller.signal); }
+	try { process.stdout.write(`Starting messenger: ${platforms.join(", ")}. Press Ctrl+C to stop.\n`); await createMessengerGateway(config, adapters, reply, { concurrency: 4, sandboxControl: reply.sandboxControl }).run(controller.signal); }
 	finally { controller.abort(); await reply.close(); process.off("SIGINT", stop); process.off("SIGTERM", stop); }
 }

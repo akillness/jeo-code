@@ -40,7 +40,7 @@
 
 - [양방향 메신저 게이트웨이 (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. 로컬 도구는 기본적으로 꺼져 있으며, `computer`를 명시적으로 허용하면 공유 호스트 데스크톱에, `bash`를 허용하면 셸에 접근합니다. 샌드박스가 아닙니다. [메신저 가이드](docs/integrations/messenger.md)를 참고하세요.
+**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. Discord는 명시적인 로컬 Docker 샌드박스가 필수이며, 설정된 도구는 호스트 데스크톱/셸이 아닌 Linux 게스트에서 실행됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
 
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
 
@@ -94,7 +94,7 @@ jeo-code는 단순한 코드 완성을 넘어 실제 엔지니어링 사이클(�
 - **실제로 강제되는 독립 검증자** — 플랜은 이제 architect/critic 단계를 건너뛸 수 없습니다: `PlanSchema`는 미검증 변이로 끝나는 모든 플랜을 거부하며(검증 대상 변이보다 앞에 배치된 검증자도 인정하지 않음), `ralplan` 드래프트 시점과 `team`/`approve` 실행 시점 양쪽 모두에 적용됩니다. 모든 architect/critic 평결도 실제 증거를 제시해야 하며, 관찰된 `read`/`search`/`find`/`ast_grep`/`lsp` 호출이 0건이면 텍스트가 무엇을 주장하든 평결이 차단됩니다.
 - **안전 경계 자동 모델 폴백** — 미분류 안전 거부(실제 콘텐츠 정책 위반이 아니라 분류기의 오탐일 가능성)가 발생하면 이제 같은 모델에서 영원히 물러서는 대신 실제로 다른 프로바이더의 모델로 전환합니다 — 기존 rate-limit 빠른 폴백과 동일한 방식입니다. `Refusal (<category>)` 형태의 결정론적 거부는 영향받지 않고 여전히 폴백 없이 하드 실패합니다.
 - **메모리: 획득한 신뢰** — 개념의 검증 날짜는 이제 모든 쓰기 시점이 아니라 증류 패스가 명시적으로 검증됨으로 표시할 때만 기록됩니다. `isConceptStale`은 수동적인 타임스탬프를 신뢰하는 대신 미검증(또는 30일 초과) 개념을 재검증이 필요한 것으로 처리합니다.
-- **동적 워크플로(`eval` 도구)** — 서브에이전트 디스패치 주변에 실제 JS 제어 흐름을 작성합니다: `task(role, taskText, context?)`, `parallel(thunks)`, `pipeline(items, ...stages)`, `log(message)`로 `task`의 단일 스테이지 `tasks[]` 배치로는 표현할 수 없는 순차/분기 오케스트레이션을 구성합니다. 격리된 Worker 스레드에서 진정한 선점형 타임아웃(같은 프로세스 내 경쟁이 아닌 `worker.terminate()`)으로 실행되며 — `bash`와 동일한 풀프로세스 신뢰 수준으로, 샌드박스인 척하지 않고, 동일한 인터뷰 변이 락으로 게이트됩니다.
+- **동적 워크플로(`eval` 도구)** — `task(role, taskText, context?)`, `parallel(thunks)`, `pipeline(items, ...stages)`, `log(message)`로 JS 흐름을 구성합니다. 세션 샌드박스가 없으면 Worker 스레드의 타임아웃은 보안 경계가 아닙니다. 샌드박스에서는 eval이 Linux 게스트에서 실행되며 task/parallel/pipeline 위임 헬퍼는 지원하지 않으므로 부모 `task` 도구로 위임하세요.
 - **끊긴 출력 파이프에서 조용히 종료** — 읽기를 일찍 멈추는 명령으로 파이프할 때(`jeo --help | head`, 사라진 원격 피어) 더 이상 원시 `EPIPE` 스택을 덤프하지 않습니다 — 셸이 SIGPIPE로 종료된 파이프라인 생산자에게 보고하는 것과 동일한 코드(141)로 조용히 종료됩니다. 실제 크래시는 영향받지 않고 여전히 명확하게 드러납니다.
 - **macOS 낮은 파일 디스크립터 한도 경고** — 낮은 `ulimit -n`(BSD 기본값 256/1024)은 파일 감시, 브라우저 도구, 넓은 리포지토리 스캔에서 불명확한 `EMFILE` 실패를 유발할 수 있습니다 — jeo는 이제 실행 시 한 번(stderr로만, 파이프되는 `-p` 출력은 오염시키지 않음) `ulimit`/`launchctl` 구체적인 안내와 함께 경고합니다. `JEO_SKIP_NOFILE_CHECK=1`로 옵트아웃할 수 있습니다.
 
@@ -292,6 +292,29 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 
 옵트인: 공유 데몬 하나가 머신의 모든 활성 `jeo` 세션을 지켜보다가 **서브에이전트 상태 전환**(시작 → 완료/실패/취소)마다 메시지를 보내고, 세션 식별 헤더, 턴 시작/종료 요약, 확정된 턴 텍스트도 함께 전송합니다 — "여전히 실행 중" 반복 핑은 절대 보내지 않습니다. allowlist에 등록된 사람은 채팅에서 목록 조회·전송·조종·취소를 할 수 있고, 모든 제어는 로컬 세션으로 중계되어 **확인 응답됨(수락됨, 완료 아님)** 또는 **확인 응답 안 됨**으로 보고됩니다 — 데몬은 명령이 실행됐다고 절대 주장하지 않습니다.
 
+### Discord 세션과 샌드박스 경계
+
+Discord 스레드 하나는 발신자·메시지와 무관하게 하나의 영속 세션을 유지합니다. 같은 스레드는 FIFO로 처리하고 다른 세션은 동시에 실행할 수 있습니다. 선택한 워크스페이스를 공유하며 세션별 Git worktree를 만들지 않으므로 파일 수정은 충돌할 수 있습니다.
+
+메신저 설정에 `sandbox`를 지정하세요. `~/.jeo/config.json`에도 같은 형식으로 설정하면 터미널 세션을 격리합니다:
+
+```json
+{
+  "sandbox": {
+    "image": "oven/bun:1.3.14",
+    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
+  }
+}
+```
+
+전체 메신저 프로필이 아닌 샌드박스 부분 예시입니다. 기존 `platforms` 허용 목록과 자격증명 환경변수 이름은 유지하세요. Linux Bun 이미지는 로컬 Docker 데몬에 이미 있어야 합니다. 백엔드는 불변 이미지 ID를 확인하고 `--pull=never`로 실행하며 이미지 pull·의존성 설치·원격 Docker·호스트 실행 폴백을 하지 않습니다. Mac/Windows에서도 호스트 셸이 아닌 **Linux 게스트 셸**입니다. 네트워크는 `none`, `/workspace`는 읽기/쓰기이며 추가 경로는 세션별 `ro`/`rw` 승인이 필요합니다. 전체 홈·비공개 제어 경로·제어 소켓은 허용할 수 없습니다. 호스트 운영자와 Docker 데몬은 신뢰 대상입니다.
+
+접근 결정은 부모에 직접 제출한 사람의 `/sandbox status`, `/sandbox approve <requestId>`, `/sandbox deny <requestId>`, `/sandbox revoke`만 처리합니다. 모델의 `sandbox_request {host, mode:'ro'|'rw'}`는 요청 전용이며 자체 승인할 수 없습니다. 인증된 행위자 자신의 세션과 현재 요청 revision이 필요하며, 오래되거나 다른 세션의 요청은 거부합니다. 기존 터미널 Discord 제어도 샌드박스가 필수입니다. 로컬 `/discord control on --allow-full-control`로 켜고 `/discord control off`로 끄며, 원격 턴은 로컬 입력 초안을 보존합니다.
+
+`independentSessions`는 런타임에서 거부하며 명시적인 `jeo messenger setup` 마이그레이션이 제거합니다. `sessionDir`는 워크스페이스 밖의 서로 겹치지 않는 비공개 경로여야 합니다. 워크스페이스 안의 구형 `.jeo/sessions`·`.jeo/messenger-sessions`·`.jeo/memory/raw` 기록 저장소는 이동 안내와 함께 시작을 차단합니다. 재시작 전 직접 옮겨야 하며 자동 복사·삭제하지 않습니다. 전체 대화 이력은 부모 전용 저장소에만 두고 증류된 프로젝트 학습은 공유합니다. 기존 ECC 스킬/워크플로 설치를 재사용하며 전역 재설치는 하지 않았습니다. 보호된 전역 스킬 내용은 실행 전 스냅샷으로 고정하고 워크스페이스/승인 문서는 게스트를 통해 읽습니다.
+
+**검증 범위(2026-11-03):** 실제 macOS 실제 Docker 검증기(`bun run verify:sandbox`)가 **행동 계약 20개**를 통과했고 소스 단독 빌드도 통과했습니다. 복사한 단독 바이너리는 실제 PTY FIFO, 부모 `sandbox_request`와 실제 Linux 게스트 도구, 전체 이력 비공개, 부모가 생성한 stderr 종료 nonce와 일치하는 ACK, 실제 워커 종료(143), Docker 컨테이너 부재를 다루는 제한된 범위의 검증을 통과했습니다. 현재 소스 래퍼는 teardown 정리 소유자, 제한된 종료 대기, 사람의 세션별 승인, 영속 스레드/FIFO 하나, 공유 워크스페이스를 유지합니다. 이는 전체 테스트 스위트·크로스 플랫폼·프로덕션 검증이 아닙니다. 전체 `bun test`는 시간 초과로 **통과가 아니며**, 일반 집중 스위트에는 낡은 픽스처 실패가 남아 수정 중입니다. 네이티브 Linux·Windows 호스트 검증은 불가능한 상태이며 실제 Discord 전송은 하지 않았습니다. macOS의 Linux 게스트는 호스트 검증이 아닙니다. `bun run build:hands`는 워커 빌드, `bun run verify:sandbox`는 사전 조건을 설치하지 않는 실제 Docker 검사입니다. 워커/컨테이너 정리는 확인되어야 하며 오류·제거 미확인을 성공으로 보고하지 않습니다.
+
 플랫폼별 상세 단독 가이드:
 - 📖 [채널 연동 개요 & 아키텍처](docs/integrations/README.md) — 기능 매트릭스 및 구조 개요
 - 📱 [Telegram 연동 상세 가이드](docs/integrations/telegram.md) — 내장 백그라운드 데몬, BotFather 대화형 페어링, 포럼 토픽, `/steer` 원격 명령
@@ -321,7 +344,7 @@ jeo daemon start|stop|status|reload   # 공유 데몬에는 프로바이더 선�
 - **Setup**은 공식 API로 봇 신원과 목적지 접근을 검증하고(Telegram `getMe`, Discord 봇 + 채널 조회, Slack `auth.test`/`bots.info`/`conversations.info`와 Socket Mode URL) 결과를 `~/.jeo/config.json`의 `notifications.<provider>` 아래에 저장합니다 — **평문**이므로 그 파일은 비공개로 유지하세요. 메시지를 보내지도, 소켓을 열지도 않습니다.
 - **`initialized`**(`jeo daemon status`)는 데몬 프로세스가 락을 소유하고 전송 계층을 시작했다는 뜻이지, Telegram poll·Discord Gateway 핸드셰이크·Slack Socket Mode 연결이 성공했다는 증거가 아닙니다. 그 확인에는 `notify health` / `notify test`를 사용하세요.
 - **토큰이나 목적지를 바꾸면** Discord와 Slack은 allowlist가 초기화되고(`--allowed-user-ids`를 다시 넘겨야 함), Telegram은 세션별 토픽 맵이 초기화됩니다. 정확히 같은 자격증명과 목적지로 setup을 다시 실행하면 그대로 유지됩니다.
-- **원격 명령은 리터럴 텍스트**(`/subagents`, …)이며 설정된 채팅/채널과 allowlist에만 인가됩니다; Slack은 추가로 같은 이름을 등록된 슬래시 명령으로도 받습니다. allowlist에 등록된 운영자는 사실상 로컬 에이전트의 능력을 그대로 쥐게 되므로, 그 목록을 신뢰 경계로 다루세요.
+- **원격 명령은 리터럴 텍스트**(`/subagents`, …)이며 설정된 채팅/채널과 allowlist에만 인가됩니다. Slack은 같은 이름의 등록된 슬래시 명령도 받습니다. Discord 터미널 제어는 기본 꺼짐이며 샌드박스 세션에서 로컬 `/discord control on --allow-full-control`로 켜고 `/discord control off`로 해제합니다. 위의 샌드박스·사람 승인 경계를 따르며 채팅에 자격증명을 넣지 마세요.
 - **재시도는 프로바이더별로 상한이 있습니다**: Telegram은 429의 `retry_after` 쿨다운(1초–1시간으로 클램프)을 poll 백오프와 별도로 지키고, Discord와 Slack은 429에 대해 서버의 `Retry-After`를 따라 최대 3회만 재시도하며, 결과를 알 수 없는 POST는 절대 재전송하지 않습니다(플랫폼이 이미 받았을 수 있음).
 - **고아 복구**: 데몬이 크래시하면 락이 `stale`이 되고, 다음 `jeo daemon start`가 회수합니다. `jeo daemon stop`은 호스트가 프로세스 시작 시각을 보고할 수 있으면 재활용된 PID에 시그널을 보내기를 거부하고, 보고할 수 없으면 그 사실을 알립니다.
 - **지금까지 검증된 범위**: Telegram은 엔드투엔드(실제 전송, 폴링, 깔끔한 종료). Discord와 Slack은 같은 데몬 뒤에 오프라인 전송/배선 테스트와 코드·보안·타입 리뷰로 구현되어 있으며, 실제 봇/앱 자격증명으로 라이브 연결은 아직 실행하지 않았습니다.
@@ -377,7 +400,7 @@ jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval
 jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
 ```
 
-GitHub Actions 워크플로(`.github/workflows/<name>.yml`)를 생성해 jeo를 설치하고 `schedule` / `issues` / `pull_request`에서 헤드리스로 실행합니다(`jeo "<prompt>" -p`) — 수동 테스트 실행을 위해 항상 `workflow_dispatch`와 함께 짝지어집니다 — GitHub 자체 호스팅 러너 위에서. 이것이 jeo의 "노트북 없이 동작"하는 이야기입니다: jeo 자체 내부에 인프로세스 스케줄러도, 웹훅 리스너도, 코드 실행 샌드박스도 없습니다 — GitHub의 인프라가 트리거를 담당하고, jeo는 기존 헤드리스 모드를 그대로 실행할 뿐입니다. 기본적으로 변경사항이 있으면 PR을 엽니다(`peter-evans/create-pull-request`, diff가 비어 있으면 안전하게 no-op); `--no-pr`은 대신 트리거한 브랜치에 직접 커밋합니다. `--dry-run`은 YAML을 작성하지 않고 출력만 합니다; 동일한 `--out` 경로에서 `jeo routine init`을 재실행하면 `--force` 없이는 덮어쓰기를 거부합니다. 워크플로의 첫 실제 실행 전에 저장소 시크릿 `ANTHROPIC_API_KEY`(또는 `--api-key-env <VAR>`)를 설정하세요.
+GitHub Actions 워크플로(`.github/workflows/<name>.yml`)를 생성해 GitHub 호스팅 러너에서 jeo를 설치하고 `schedule` / `issues` / `pull_request`로 헤드리스 실행합니다(`jeo "<prompt>" -p`). 수동 실행용 `workflow_dispatch`도 포함합니다. 트리거는 GitHub가 담당하며 루틴은 인프로세스 스케줄러나 웹훅 리스너를 추가하지 않습니다. 세션 샌드박스는 위 로컬 사전 조건이 필요한 별도 명시적 설정이며 루틴 생성이 설치해 주지 않습니다. 기본값은 변경 PR 생성(`peter-evans/create-pull-request`, 빈 diff는 no-op), `--no-pr`은 트리거 브랜치에 커밋합니다. `--dry-run`은 YAML 출력만 하며 기존 `--out` 덮어쓰기는 `--force`가 필요합니다. 첫 실제 실행 전 저장소 시크릿 `ANTHROPIC_API_KEY`(또는 `--api-key-env <VAR>`)를 설정하세요.
 
 ## 로컬 모델
 
@@ -390,7 +413,7 @@ jeo doctor && jeo
 ## 설정
 
 - 전역 설정: `~/.jeo/config.json` (모델 선택은 MRU 영속)
-- 프로젝트 상태/세션: `<project>/.jeo/`
+- 프로젝트 상태: `<project>/.jeo/`; 샌드박스 대화 기록은 워크스페이스 밖에 보관합니다(위 Discord 세션 경계 참고).
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -477,11 +500,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]**
+- **[0.12.15]** (2026-11-03)
 - **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
 - **[0.12.12]** (2026-11-03)
-- **[0.12.10]** (2026-11-02)
-- **[0.12.11]** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

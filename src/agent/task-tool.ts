@@ -35,6 +35,7 @@ import type { SubagentRegistry } from "./subagent-registry";
 import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
 import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, strongestMidTierCredentialed, type RoutingConfig } from "./prompt-router";
 import { isRateLimitError } from "../util/retry";
+import { currentSandboxExecution, withSandboxExecution, type SandboxExecutionScope } from "./hooks";
 
 /** `runSubagentOnce`/`createTaskTool`'s config requirement: everything
  *  `resolveSubagentModel`/`resolveSubagentMaxSteps`/`resolveSubagentThinking` need
@@ -100,6 +101,7 @@ export interface TaskToolOptions {
    *  one — a detached launch attaches `registry` to THIS instead of starting a
    *  second, competing endpoint (see `ensureSessionNotifyEndpoint`). */
   sessionEndpoint?: SessionNotifyEndpoint;
+  sandbox?: SandboxExecutionScope;
 }
 
 /** Max concurrent subagents in a fan-out batch (both read-only AND the mutating
@@ -281,6 +283,7 @@ export interface RunSubagentOptions {
   detachedId?: string;
   /** SubagentRegistry to report live activity into (e.g. current tool or step). */
   registry?: SubagentRegistry;
+  sandbox?: SandboxExecutionScope;
 }
 
 
@@ -332,6 +335,9 @@ export async function runSubagentOnce(
   cwd: string,
   opts: RunSubagentOptions,
 ): Promise<SubagentRunResult> {
+  if (opts.sandbox && currentSandboxExecution() !== opts.sandbox) {
+    return withSandboxExecution(opts.sandbox, () => runSubagentOnce(role, taskText, context, cwd, opts));
+  }
   const { steer, slot, detachedId, projectContext: preloadedContext, signal } = opts;
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
@@ -616,6 +622,7 @@ export async function runSubagentOnce(
  * handler accepts `{ role?, task | prompt | assignment, context? }`.
  */
 export function createTaskTool(opts: TaskToolOptions): ToolHandler {
+  const sandbox = opts.sandbox ?? currentSandboxExecution();
   /** Run ONE subagent via the shared execution core, binding this tool instance's
    *  config/signal/onEvent (the original single-task path). */
   const runOne = (
@@ -643,6 +650,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   ): Promise<SubagentRunResult> =>
     runSubagentOnce(role, taskText, context, cwd, {
       config: opts.config,
+      sandbox,
       signal: extra.signal ?? opts.signal,
       onEvent: opts.onEvent,
       steer: extra.steer,

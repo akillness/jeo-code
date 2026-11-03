@@ -1,10 +1,10 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 import {
   readWorkflowState,
+  readWorkflowFile,
   readWorkflowStateStrict,
   writeWorkflowState,
   acquireWorkflowRunLock,
@@ -25,6 +25,7 @@ import {
 } from "../agent/subagents";
 import { loadProjectContext } from "../agent/context-files";
 import { categoryBadge } from "../tui/components/category-index";
+import { currentSandboxExecution } from "../agent/hooks";
 
 export type RalphStreamKind = "step" | "complete" | "error" | "warn";
 
@@ -220,7 +221,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
 
   let planContent = "";
   try {
-    planContent = await fs.readFile(planPath, "utf-8");
+    planContent = await readWorkflowFile(planPath, cwd);
   } catch (err: any) {
     log(`[ERROR] Failed to read plan file: ${err.message}`);
     return { ok: false, reason: err.message };
@@ -332,7 +333,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
     // with `git status --porcelain` and report the CONCRETE uncommitted count so
     // the user knows whether real partial work is present before re-running on it.
     if (teamState.current_phase === "failed" && teamState.failed_task) {
-      const dirty = gitDirtyCount(cwd);
+      const dirty = await workflowDirtyCount(cwd);
       const treeNote = dirty === undefined
         ? `The working tree could not be inspected (not a git repo or git unavailable) — review it manually before trusting this re-run.`
         : dirty > 0
@@ -597,9 +598,38 @@ interface ParallelWorktree {
   branch: string;
 }
 
-function runGitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
+async function runGit(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const sandbox = currentSandboxExecution();
+  if (sandbox) {
+    const result = await sandbox.supervisor.exec(["git", ...args], { cwd, signal: sandbox.signal });
+    return { ok: result.success && result.exitCode === 0, stdout: result.stdout ?? result.output, stderr: result.stderr ?? result.error ?? "" };
+  }
   const res = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   return { ok: res.exitCode === 0, stdout: res.stdout.toString(), stderr: res.stderr.toString() };
+}
+
+async function workflowDirtyCount(cwd: string): Promise<number | undefined> {
+  if (!currentSandboxExecution()) return gitDirtyCount(cwd);
+  const result = await runGit(cwd, ["status", "--porcelain"]);
+  if (!result.ok) throw new Error(result.stderr || "Sandbox git status failed");
+  return result.stdout.split("\n").filter(line => line.trim().length > 0).length;
+}
+
+async function workflowWorktree(cwd: string, worktreePath: string): Promise<string> {
+  const sandbox = currentSandboxExecution();
+  if (!sandbox) return resolveWorktree(cwd, worktreePath);
+  // Only cwd is translated by exec; keep git paths relative to that guest cwd.
+  const relativePath = path.relative(cwd, worktreePath).split(path.sep).join("/");
+  const exists = await sandbox.supervisor.exec(["test", "-d", relativePath], { cwd, signal: sandbox.signal });
+  if (exists.success && exists.exitCode === 0) return worktreePath;
+  if (exists.exitCode !== 1) throw new Error(exists.error || exists.stderr || "Sandbox worktree inspection failed");
+  const branch = path.basename(worktreePath).replace(/[^a-zA-Z0-9_-]/g, "-") || "jeo-wt";
+  const created = await runGit(cwd, ["worktree", "add", "-b", branch, "--", relativePath]);
+  if (!created.ok) {
+    const attached = await runGit(cwd, ["worktree", "add", "--", relativePath]);
+    if (!attached.ok) throw new Error(attached.stderr || created.stderr || "Sandbox worktree creation failed");
+  }
+  return worktreePath;
 }
 
 /**
@@ -637,8 +667,9 @@ async function runParallelGroup(
 
   for (const step of group) {
     const worktreePath = path.join(cwd, ".jeo", "team-worktrees", `${slug}-${step.index}`);
-    const resolvedPath = resolveWorktree(cwd, worktreePath);
-    const branchRes = runGitSync(resolvedPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const resolvedPath = await workflowWorktree(cwd, worktreePath);
+    const branchRes = await runGit(resolvedPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (!branchRes.ok) throw new Error(branchRes.stderr || "Failed to resolve worktree branch");
     const branch = branchRes.stdout.trim();
     worktreeByIndex.set(step.index, { path: resolvedPath, branch });
 
@@ -702,13 +733,13 @@ async function runParallelGroup(
     }
     // An empty diff (read-only role, or a no-op) needs no commit — skip it for
     // the merge step below without treating it as an error.
-    if (gitDirtyCount(wt.path)) {
-      const add = runGitSync(wt.path, ["add", "-A"]);
+    if (await workflowDirtyCount(wt.path)) {
+      const add = await runGit(wt.path, ["add", "-A"]);
       if (!add.ok) {
         log(`${categoryBadge("error")} Failed to stage changes in worktree ${wt.path} for step "${step.name}": ${add.stderr.trim()}`);
         return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
       }
-      const commit = runGitSync(wt.path, ["commit", "-m", step.name]);
+      const commit = await runGit(wt.path, ["commit", "-m", step.name]);
       if (!commit.ok) {
         log(`${categoryBadge("error")} Failed to commit changes in worktree ${wt.path} for step "${step.name}": ${commit.stderr.trim()}`);
         return { ok: false, failedTaskName: step.name, ...(registryMutation ? { mutationMayHaveOccurred: true } : {}) };
@@ -721,9 +752,9 @@ async function runParallelGroup(
   // rest of the group's merges.
   for (const step of group) {
     const wt = worktreeByIndex.get(step.index)!;
-    const merge = runGitSync(cwd, ["merge", "--no-ff", wt.branch, "-m", `merge: ${step.name}`]);
+    const merge = await runGit(cwd, ["merge", "--no-ff", wt.branch, "-m", `merge: ${step.name}`]);
     if (!merge.ok) {
-      runGitSync(cwd, ["merge", "--abort"]);
+      await runGit(cwd, ["merge", "--abort"]);
       log(
         `${categoryBadge("error")} Merge conflict merging step "${step.name}"'s branch "${wt.branch}" into the current branch — ` +
         `the merge was aborted automatically (no changes were auto-resolved). Resolve manually: ` +
@@ -738,7 +769,8 @@ async function runParallelGroup(
   // e.g. stray untracked files, is a warning, never a hard failure of the run).
   for (const step of group) {
     const wt = worktreeByIndex.get(step.index)!;
-    const removal = runGitSync(cwd, ["worktree", "remove", wt.path]);
+    const worktreePath = currentSandboxExecution() ? path.relative(cwd, wt.path).split(path.sep).join("/") : wt.path;
+    const removal = await runGit(cwd, ["worktree", "remove", worktreePath]);
     if (!removal.ok) {
       log(`[WARN] Could not remove worktree ${wt.path} for step "${step.name}": ${removal.stderr.trim()}`);
     }

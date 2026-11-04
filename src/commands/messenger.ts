@@ -159,6 +159,8 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		delete env.JEO_MESSENGER_SANDBOX;
 		delete env.JEO_MESSENGER_ALLOWED_USER_IDS;
 		delete env.JEO_MESSENGER_SESSION_KEY;
+		delete env.JEO_MESSENGER_PROFILE_DIR;
+		if (config.profileDir !== undefined) env.JEO_MESSENGER_PROFILE_DIR = config.profileDir;
 		if (sandbox) {
 			env.JEO_MESSENGER_SANDBOX = JSON.stringify(sandbox);
 			env.JEO_MESSENGER_ALLOWED_USER_IDS = JSON.stringify(platformConfig?.allowedUserIds ?? []);

@@ -64,6 +64,18 @@ export function defaultRetryable(err: unknown): boolean {
   if (isRefusalError(err)) {
     return false;
   }
+  // An Antigravity/Gemini 3.x `finishReason=MALFORMED_FUNCTION_CALL` on an otherwise-200
+  // response that already carried partial text/functionCall parts is rejected by
+  // antigravity.ts as "…response incomplete (finishReason=MALFORMED_FUNCTION_CALL)."
+  // (call AND stream). It is an intermittent model fault, not a deterministic classifier
+  // verdict: the adapter throws BEFORE serializing the buffered functionCalls, so a resend
+  // executes no unvalidated call. Retry it within the normal attempt budget. Scoped to this
+  // exact shape — other `response incomplete (…)` reasons (MAX_TOKENS, missing finishReason)
+  // stay non-retryable; the empty-candidate variant ("returned no content (…)") is already
+  // retried below. A stream that has yielded a chunk is never re-run by retryableStream.
+  if (/Antigravity Cloud Code Assist response incomplete \(finishReason=MALFORMED_FUNCTION_CALL\)/i.test(errorMessageOf(err))) {
+    return true;
+  }
   // A pre-response connection failure (refused / unresolved host) — retryable: a
   // local provider that is mid-restart, or a transient DNS blip, can clear within
   // the backoff budget. A provider that is simply never running exhausts the

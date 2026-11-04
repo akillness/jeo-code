@@ -216,7 +216,12 @@ export function messengerSessionRoute(cwd: string, message: MessengerMessage): s
 	return new Bun.CryptoHasher("sha256").update(JSON.stringify([cwd, messengerConversationKey(message)])).digest("hex");
 }
 
-function schedulingKey(message: MessengerMessage, adapter: MessengerAdapter): string {
+/**
+ * Admission lane. A top-level message has no thread yet, so only its raw channel can order it against its
+ * neighbours; anything already resolved is ordered by its own conversation. A lane is held only until the request
+ * is queued, never while it runs, so it cannot serialize requests that end up in different threads.
+ */
+function admissionKey(message: MessengerMessage, adapter: MessengerAdapter): string {
 	if (adapter.prepare && !message.direct && !message.threadId && !message.parentChannelId) {
 		return JSON.stringify([message.platform, message.accountId, message.guildId, message.channelId, message.platform === "discord" ? null : message.senderId]);
 	}
@@ -243,12 +248,15 @@ export function isMessengerMessageAllowed(message: MessengerMessage, config: Mes
 }
 
 interface PendingMessage {
+	/** Prepared destination: replies, deliveries and activity target it. */
 	message: MessengerMessage;
 	adapter: MessengerAdapter;
 	signal: AbortSignal;
 	resolve: () => void;
-	/** Requests sharing a key never run at the same time. */
+	/** Destination conversation key; requests sharing it never run at the same time. */
 	key: string;
+	/** Status reactions on the user's original message. */
+	status: (state: "processing" | "success" | "failure") => void;
 }
 
 export interface MessengerGateway {
@@ -260,8 +268,9 @@ export interface MessengerGatewayOptions {
 	/** Minimum spacing between in-place activity edits for one request. */
 	activityIntervalMs?: number;
 	/**
-	 * Requests processed at once (default 1). Requests of one prepared conversation still answer and deliver in
-	 * order; above 1 the reply implementation must accept concurrent turns for different conversations.
+	 * Requests processed at once (default 1). Requests of one conversation answer and deliver in arrival order and
+	 * wait in the queue, not in a slot, behind their predecessor; above 1 the reply implementation must accept
+	 * concurrent turns for different conversations.
 	 */
 	concurrency?: number;
 	/** Authenticated human controls bypass model queues, including busy sessions. */
@@ -286,23 +295,22 @@ export function createMessengerGateway(
 	const queue: PendingMessage[] = [];
 	const activeKeys = new Set<string>();
 	const turns = new Set<Promise<void>>();
-	/** Settles when the latest request of a prepared conversation has delivered its reply. */
-	const conversationTails = new Map<string, Promise<void>>();
+	/** Orders admission (sandbox control, capacity check, destination preparation) per raw lane. */
 	const admissionTails = new Map<string, Promise<void>>();
+	/** Requests holding a queue slot while the adapter prepares their destination; counted against the queue cap. */
+	let preparing = 0;
 	const lifetime = new AbortController();
 	let running = false;
 	let fatalError: MessengerFatalError | undefined;
 	let statusInFlight = 0;
 
-	async function processRequest(pending: PendingMessage): Promise<void> {
-		const { message, adapter, signal, resolve } = pending;
-		let failed = false;
-		let activity = NO_ACTIVITY;
-		let release = (): void => {};
-		let tail: Promise<void> | undefined;
-		let conversation = "";
+	function createStatusReporter(
+		adapter: MessengerAdapter,
+		message: MessengerMessage,
+		signal: AbortSignal,
+	): (state: "processing" | "success" | "failure") => void {
 		let statusChain = Promise.resolve();
-		const status = (state: "processing" | "success" | "failure"): void => {
+		return state => {
 			if (!adapter.status) return;
 			statusChain = statusChain.then(async () => {
 				if (signal.aborted || statusInFlight >= MAX_STATUS_IN_FLIGHT) return;
@@ -332,22 +340,20 @@ export function createMessengerGateway(
 				}
 			});
 		};
+	}
+
+	async function processRequest(pending: PendingMessage): Promise<void> {
+		const { message, adapter, signal, resolve, status } = pending;
+		let failed = false;
+		let activity = NO_ACTIVITY;
 		try {
 			if (signal.aborted) return;
 			status("processing");
-			const destination = (await adapter.prepare?.(message, signal)) ?? message;
-			conversation = messengerConversationKey(destination);
-			const previous = conversationTails.get(conversation);
-			const done = Promise.withResolvers<void>();
-			release = done.resolve;
-			tail = done.promise;
-			conversationTails.set(conversation, tail);
-			await previous;
-			activity = createActivityReporter(adapter, destination, signal, activityIntervalMs);
+			activity = createActivityReporter(adapter, message, signal, activityIntervalMs);
 			activity.report("Starting request");
 			let text: string;
 			try {
-				text = await reply(destination, signal, activity.report);
+				text = await reply(message, signal, activity.report);
 			} catch (error) {
 				failed = true;
 				if (error instanceof MessengerFatalError) {
@@ -363,7 +369,7 @@ export function createMessengerGateway(
 			}
 			if (!signal.aborted && text.trim()) {
 				// A failed send may already have delivered a chunk: never retry the entire reply.
-				await adapter.send(destination, text, signal);
+				await adapter.send(message, text, signal);
 			}
 			if (!signal.aborted) status(failed ? "failure" : "success");
 		} catch {
@@ -371,8 +377,6 @@ export function createMessengerGateway(
 			if (!signal.aborted) status("failure");
 		} finally {
 			await activity.close(failed ? "failure" : signal.aborted ? "cancelled" : "success");
-			release();
-			if (tail && conversationTails.get(conversation) === tail) conversationTails.delete(conversation);
 			resolve();
 		}
 	}
@@ -407,12 +411,12 @@ export function createMessengerGateway(
 			const oldest = seen.values().next().value;
 			if (oldest !== undefined) seen.delete(oldest);
 		}
-		const key = schedulingKey(message, adapter);
-		const previous = admissionTails.get(key) ?? Promise.resolve();
+		const lane = admissionKey(message, adapter);
+		const previous = admissionTails.get(lane) ?? Promise.resolve();
 		const ready = Promise.withResolvers<void>();
 		const tail = previous.then(() => ready.promise);
-		admissionTails.set(key, tail);
-		void tail.then(() => { if (admissionTails.get(key) === tail) admissionTails.delete(key); });
+		admissionTails.set(lane, tail);
+		void tail.then(() => { if (admissionTails.get(lane) === tail) admissionTails.delete(lane); });
 		try {
 			if (options.sandboxControl) {
 				const control = await options.sandboxControl(message, effectiveSignal);
@@ -422,9 +426,30 @@ export function createMessengerGateway(
 				}
 			}
 			await previous;
-			if (effectiveSignal.aborted || queue.length >= MAX_QUEUED_MESSAGES) return;
+			if (effectiveSignal.aborted) return;
+			const status = createStatusReporter(adapter, message, effectiveSignal);
+			// Capacity is claimed before preparing: a request that cannot be queued must never create a thread.
+			if (queue.length + preparing >= MAX_QUEUED_MESSAGES) {
+				// Never executed, so forget the id: a redelivery is accepted once capacity returns, replaying nothing.
+				seen.delete(id);
+				status("failure");
+				return;
+			}
+			let destination: MessengerMessage;
+			let key: string;
+			preparing++;
+			try {
+				destination = (await adapter.prepare?.(message, effectiveSignal)) ?? message;
+				key = messengerConversationKey(destination);
+			} catch {
+				if (!effectiveSignal.aborted) status("failure");
+				return;
+			} finally {
+				preparing--;
+			}
+			if (effectiveSignal.aborted) return;
 			const { promise, resolve } = Promise.withResolvers<void>();
-			queue.push({ message, adapter, signal: effectiveSignal, resolve, key });
+			queue.push({ message: destination, adapter, signal: effectiveSignal, resolve, key, status });
 			schedule();
 			return promise;
 		} finally { ready.resolve(); }

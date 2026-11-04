@@ -50,6 +50,8 @@ export interface MessengerPlatformConfig {
 }
 
 export interface MessengerConfig {
+	/** Directory holding the loaded messenger.json, token file and run script; set by `loadMessengerConfig`. */
+	profileDir?: string;
 	cwd: string;
 	sessionDir: string;
 	toolNames: string[];

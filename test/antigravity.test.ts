@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
+import { retryableStream } from "../src/ai/model-manager";
 import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
-import { isRefusalError, isProviderStreamError, isRateLimitError, defaultRetryable } from "../src/util/retry";
+import { isRefusalError, isProviderStreamError, isRateLimitError, defaultRetryable, withRetry } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
 
@@ -261,6 +262,135 @@ test("antigravityAdapter.call: an in-band RESOURCE_EXHAUSTED error line classifi
     expect(caught).toBeDefined();
     expect((caught as any).status).toBe(429);
     expect(isRateLimitError(caught)).toBe(true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+const retryMessages = [{ role: "user" as const, content: "hi" }];
+const retryOptions = { model: "antigravity/gemini-3-flash" };
+const immediateRetry = { retries: 3, sleep: async () => {}, random: () => 0 };
+const responseEvents = (...events: unknown[]) => new Response(
+  events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""),
+  { status: 200, headers: { "content-type": "text/event-stream" } },
+);
+const candidate = (parts: unknown[], finishReason?: string) => ({
+  response: { candidates: [{ content: { parts }, ...(finishReason ? { finishReason } : {}) }] },
+});
+
+test("antigravity buffered call retries a malformed function call without returning its partial tool", async () => {
+  const prevFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts++;
+    return attempts === 1
+      ? responseEvents(candidate([{ functionCall: { name: "dangerous", args: { path: "partial" } } }]), candidate([], "MALFORMED_FUNCTION_CALL"))
+      : responseEvents(candidate([{ functionCall: { name: "safe", args: { path: "complete" } } }], "STOP"));
+  }) as typeof fetch;
+  try {
+    const result = await withRetry(() => antigravityAdapter.call(retryMessages, retryOptions, cred), immediateRetry);
+    expect(JSON.parse(result)).toEqual({ tool: "safe", arguments: { path: "complete" } });
+    expect(attempts).toBe(2);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravity buffered call exhausts its retry budget on malformed function calls", async () => {
+  const prevFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts++;
+    return responseEvents(candidate([{ functionCall: { name: "dangerous", args: { path: "partial" } } }], "MALFORMED_FUNCTION_CALL"));
+  }) as typeof fetch;
+  try {
+    await expect(withRetry(() => antigravityAdapter.call(retryMessages, retryOptions, cred), immediateRetry))
+      .rejects.toThrow("MALFORMED_FUNCTION_CALL");
+    expect(attempts).toBe(3);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravity buffered call does not retry an unrelated nonretryable error", async () => {
+  const prevFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts++;
+    return responseEvents(candidate([{ text: "partial" }], "SAFETY"));
+  }) as typeof fetch;
+  try {
+    await expect(withRetry(() => antigravityAdapter.call(retryMessages, retryOptions, cred), immediateRetry))
+      .rejects.toThrow("SAFETY");
+    expect(attempts).toBe(1);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+for (const { name, finishReason, error } of [
+  { name: "output limit", finishReason: "MAX_TOKENS", error: "finishReason=MAX_TOKENS" },
+  { name: "missing finish reason", finishReason: undefined, error: "missing finishReason" },
+]) {
+  test(`antigravity buffered call does not retry ${name}`, async () => {
+    const prevFetch = globalThis.fetch;
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return responseEvents(candidate([{ text: "partial" }], finishReason));
+    }) as typeof fetch;
+    try {
+      await expect(withRetry(() => antigravityAdapter.call(retryMessages, retryOptions, cred), immediateRetry))
+        .rejects.toThrow(error);
+      expect(attempts).toBe(1);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+}
+
+test("antigravity stream retries malformed buffered tool calls before the first yielded chunk", async () => {
+  const prevFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts++;
+    return attempts === 1
+      ? responseEvents(candidate([{ functionCall: { name: "dangerous", args: {} } }], "MALFORMED_FUNCTION_CALL"))
+      : responseEvents(candidate([{ functionCall: { name: "safe", args: { value: 42 } } }], "STOP"));
+  }) as typeof fetch;
+  try {
+    const chunks: string[] = [];
+    for await (const chunk of retryableStream(() => antigravityAdapter.stream!(retryMessages, retryOptions, cred)[Symbol.asyncIterator](), immediateRetry)) {
+      chunks.push(chunk);
+    }
+    expect(chunks.map(chunk => JSON.parse(chunk))).toEqual([{ tool: "safe", arguments: { value: 42 } }]);
+    expect(attempts).toBe(2);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravity stream does not replay after emitting text before a malformed function call", async () => {
+  const prevFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts++;
+    return responseEvents(candidate([{ text: "partial " }]), candidate([{ functionCall: { name: "dangerous", args: {} } }], "MALFORMED_FUNCTION_CALL"));
+  }) as typeof fetch;
+  try {
+    const chunks: string[] = [];
+    let caught: unknown;
+    try {
+      for await (const chunk of retryableStream(() => antigravityAdapter.stream!(retryMessages, retryOptions, cred)[Symbol.asyncIterator](), immediateRetry)) {
+        chunks.push(chunk);
+      }
+    } catch (err) {
+      caught = err;
+    }
+    expect(chunks).toEqual(["partial "]);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("MALFORMED_FUNCTION_CALL");
+    expect(attempts).toBe(1);
   } finally {
     globalThis.fetch = prevFetch;
   }

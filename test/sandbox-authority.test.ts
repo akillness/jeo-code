@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createGrantAuthority } from "../src/agent/sandbox/authority";
+import { loadMessengerConfig, messengerProfilePrivatePaths } from "../src/messenger/config";
 import type { SandboxPolicy, SandboxTermination } from "../src/agent/sandbox/types";
 
 const config = { image: "test-local-image", limits: { memoryBytes: 128 * 1024 * 1024, pids: 32, cpus: 1 } };
@@ -277,5 +278,39 @@ test.skipIf(process.platform === "win32")("authority refuses pre-existing state 
 		await fs.chmod(exposed, 0o755);
 		await expect(createGrantAuthority({ sessionKey: "unsafe", cwd: f.cwd, config, supervisor: f.supervisor, allowedUserIds: ["operator"], stateDirectory: exposed })).rejects.toThrow();
 		expect(f.transitions).toBe(0);
+	} finally { await f.close(); }
+});
+test("profile credentials stay outside approved grants through ancestors and symlink aliases", async () => {
+	const f = await fixture();
+	try {
+		const profileParent = path.join(f.root, "sensitive");
+		const profile = path.join(profileParent, "profile");
+		const alias = path.join(f.root, "profile-alias");
+		await fs.mkdir(profile, { recursive: true });
+		await fs.writeFile(path.join(profile, "credentials.json"), "sentinel credential");
+		await fs.writeFile(path.join(profile, "launch.sh"), "sentinel launcher");
+		const linkedSecret = path.join(f.root, "linked-credential.json");
+		await fs.writeFile(linkedSecret, "linked sentinel");
+		await fs.symlink(linkedSecret, path.join(profile, "linked-credential.json"));
+		await fs.symlink(profile, alias, process.platform === "win32" ? "junction" : "dir");
+		const file = path.join(profile, "messenger.json");
+		await fs.writeFile(file, JSON.stringify({ cwd: f.cwd, sessionDir: path.join(f.root, "messenger-sessions"), sandbox: config, platforms: { discord: { allowedUserIds: ["operator"] } } }));
+		const loaded = await loadMessengerConfig(file);
+		const privateRoots = await messengerProfilePrivatePaths(loaded.profileDir!, loaded.cwd);
+		const authority = await createGrantAuthority({ sessionKey: "profile-session", cwd: loaded.cwd, config, supervisor: f.supervisor, allowedUserIds: ["operator"], stateDirectory: path.join(f.root, "profile-authority"), privateRoots });
+		for (const target of [profile, path.join(profile, "credentials.json"), profileParent, alias, linkedSecret]) {
+			for (const mode of ["ro", "rw"] as const) {
+				await expect(authority.requestAccess(target, mode)).rejects.toThrow("SANDBOX_POLICY");
+			}
+		}
+		expect(authority.snapshot().grants).toEqual([]);
+		const request = await authority.requestAccess(f.resource, "rw");
+		await authority.approve(request.id, { origin: "discord", sessionKey: "profile-session", userId: "operator" });
+		expect(await f.write(path.join(f.resource, "allowed.txt"), "allowed")).toBe(true);
+		for (const target of [profile, path.join(profile, "credentials.json"), profileParent, alias, linkedSecret]) {
+			await expect(authority.requestAccess(target, "ro")).rejects.toThrow("SANDBOX_POLICY");
+		}
+		expect(await f.write(path.join(profile, "credentials.json"), "leaked")).toBe(false);
+		expect(await fs.readFile(path.join(profile, "credentials.json"), "utf8")).toBe("sentinel credential");
 	} finally { await f.close(); }
 });

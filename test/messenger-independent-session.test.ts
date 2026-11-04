@@ -262,6 +262,64 @@ for (const outcome of ["failure", "abort"] as const) test(`gateway runs distinct
 	} finally { workers.completeAll(); await reply.close(); await Promise.allSettled(pending); await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("gateway runs top-level Discord requests in distinct threads concurrently", async () => {
+	const config = sessionConfig("/workspace");
+	const firstStarted = Promise.withResolvers<void>();
+	const releaseFirst = Promise.withResolvers<void>();
+	const delivered: Array<[string, string]> = [];
+	const starts: string[] = [];
+	const adapter: MessengerAdapter = {
+		...recordingAdapter(delivered),
+		prepare: async message => message.threadId ? message : threadMessage(`thread-${message.messageId}`, message.messageId, message.text, message.senderId),
+	};
+	const gateway = createMessengerGateway(config, [adapter], async message => {
+		starts.push(`${message.messageId}:${message.threadId}`);
+		if (message.messageId === "1") { firstStarted.resolve(); await releaseFirst.promise; }
+		return message.text;
+	}, { concurrency: 3 });
+	const pending = [gateway.handle({ ...baseMessage, messageId: "1", text: "first" })];
+	try {
+		await firstStarted.promise;
+		pending.push(gateway.handle({ ...baseMessage, senderId: "user-2", messageId: "2", text: "second" }));
+		// An unrelated thread proves the scheduler progressed while the first reply is held.
+		await gateway.handle(threadMessage("thread-probe", "probe", "probe"));
+		const startedWhileFirstHeld = [...starts];
+		releaseFirst.resolve();
+		await Promise.all(pending);
+		expect(startedWhileFirstHeld).toContain("2:thread-2");
+		expect(delivered.sort(([a], [b]) => a.localeCompare(b))).toEqual([["1", "first"], ["2", "second"], ["probe", "probe"]]);
+	} finally { releaseFirst.resolve(); await Promise.allSettled(pending); }
+});
+
+test("gateway rejects overflow before creating a Discord thread", async () => {
+	const config = sessionConfig("/workspace");
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const created: string[] = [];
+	const delivered: Array<[string, string]> = [];
+	const adapter: MessengerAdapter = {
+		...recordingAdapter(delivered),
+		prepare: async message => {
+			created.push(message.messageId);
+			return threadMessage(`thread-${message.messageId}`, message.messageId, message.text, message.senderId);
+		},
+	};
+	const gateway = createMessengerGateway(config, [adapter], async message => {
+		if (message.messageId === "active") { started.resolve(); await release.promise; }
+		return message.text;
+	}, { concurrency: 1 });
+	const pending = [gateway.handle({ ...baseMessage, messageId: "active", text: "active" })];
+	try {
+		await started.promise;
+		for (let i = 0; i < 100; i++) pending.push(gateway.handle({ ...baseMessage, messageId: `queued-${i}`, text: `queued-${i}` }));
+		await gateway.handle({ ...baseMessage, messageId: "overflow", text: "overflow" });
+		release.resolve();
+		await Promise.all(pending);
+		expect(created).not.toContain("overflow");
+		expect(delivered).toEqual([["active", "active"], ...Array.from({ length: 100 }, (_, i) => [`queued-${i}`, `queued-${i}`])]);
+	} finally { release.resolve(); await Promise.allSettled(pending); }
+});
+
 test("gateway delivers queued follow-ups only after the current reply completes, preserving arrival order", async () => {
 	const config = sessionConfig("/workspace");
 	const deliveryStarted = Promise.withResolvers<void>();

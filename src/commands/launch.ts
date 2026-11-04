@@ -66,6 +66,7 @@ import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
 import { runAgySessionTurn } from "./launch/agy-turn";
 import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
+import { resolveStartupDefaultModel } from "../agent/session-model";
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
@@ -544,7 +545,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     }
   } catch {}
   const cfg = await readGlobalConfig();
-  const defaultModel = cfg.defaultModel;
   let initialSessionModel =
     flags.model ??
     (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
@@ -564,6 +564,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return;
     }
   }
+  // A session always opens on the configured default model, or, when the stored login cannot
+  // serve it, on the first authenticated model (session-local; the saved default is untouched).
+  // An explicit --model/--model-role/--provider pin takes precedence and skips this.
+  const startupModel = initialSessionModel === undefined ? await resolveStartupDefaultModel(cfg) : { model: cfg.defaultModel, notice: undefined };
+  const defaultModel = startupModel.model;
 
   if (flags.tmux) {
     if (!process.env.TMUX && jeoEnv("TMUX_LAUNCHED") !== "1") {
@@ -987,7 +992,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             const { header, messages } = await loadSession(id, cwd);
             for (const m of messages) history.push(m);
             sessionId = id;
-            if (!initialSessionModel && header.model) sessionModel = header.model;
             const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
             console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
             // Reproduce the prior screen exactly (gjc/gajae-code parity): a bare
@@ -1049,9 +1053,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           const { header, messages } = await loadSession(id, cwd);
           for (const m of messages) history.push(m);
           sessionId = id;
-          // Restore the model this session was last using unless the CLI explicitly
-          // pinned one (flags.model/role/provider → initialSessionModel wins).
-          if (!initialSessionModel && header.model) sessionModel = header.model;
           // Restore the unsent input-box draft (gajae-code parity) — see
           // startupDraft's own doc comment for why this path can't feed
           // queuedPromptInput.partial directly yet.
@@ -2497,6 +2498,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   };
 
   if (isOneShot) {
+    if (startupModel.notice) console.error(startupModel.notice);
     // A one-shot run has ~17 exit points below. The session notify endpoint (a
     // listening socket + a discovery file the Telegram daemon polls) is created for
     // the WHOLE launch lifetime up at `startSessionNotifyEndpoint`, but its teardown
@@ -2843,6 +2845,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
     else console.log(renderWelcome(welcomeData).join("\n"));
   }
+  if (startupModel.notice) console.log(chalk.yellow(startupModel.notice));
 
 
 

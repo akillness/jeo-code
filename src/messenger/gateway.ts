@@ -275,6 +275,11 @@ export interface MessengerGatewayOptions {
 	concurrency?: number;
 	/** Authenticated human controls bypass model queues, including busy sessions. */
 	sandboxControl?: (message: MessengerMessage, signal: AbortSignal) => Promise<{ handled: boolean; output: string }>;
+	/**
+	 * Operator log for a request that failed before or during delivery. Users only ever see the generic failure
+	 * text, so this is the one place the cause is observable; it receives the conversation, never message text.
+	 */
+	onRequestError?: (message: MessengerMessage, error: unknown, stage: "prepare" | "reply" | "deliver") => void;
 }
 
 export function createMessengerGateway(
@@ -293,6 +298,9 @@ export function createMessengerGateway(
 	}
 	const seen = new Set<string>();
 	const queue: PendingMessage[] = [];
+	const reportError = (message: MessengerMessage, error: unknown, stage: "prepare" | "reply" | "deliver"): void => {
+		try { options.onRequestError?.(message, error, stage); } catch { /* Operator logging never affects the request. */ }
+	};
 	const activeKeys = new Set<string>();
 	const turns = new Set<Promise<void>>();
 	/** Orders admission (sandbox control, capacity check, destination preparation) per raw lane. */
@@ -363,6 +371,7 @@ export function createMessengerGateway(
 					return;
 				}
 				if (signal.aborted) return;
+				reportError(message, error, "reply");
 				text = error instanceof DiscordModelSelectionError
 					? "Discord could not verify a model. Ask the operator to configure an explicit Discord model, check provider credentials and live model discovery, then restart the messenger service."
 					: "The request could not be completed. Please try again.";
@@ -372,9 +381,9 @@ export function createMessengerGateway(
 				await adapter.send(message, text, signal);
 			}
 			if (!signal.aborted) status(failed ? "failure" : "success");
-		} catch {
+		} catch (error) {
 			failed = true;
-			if (!signal.aborted) status("failure");
+			if (!signal.aborted) { status("failure"); reportError(message, error, "deliver"); }
 		} finally {
 			await activity.close(failed ? "failure" : signal.aborted ? "cancelled" : "success");
 			resolve();
@@ -441,8 +450,8 @@ export function createMessengerGateway(
 			try {
 				destination = (await adapter.prepare?.(message, effectiveSignal)) ?? message;
 				key = messengerConversationKey(destination);
-			} catch {
-				if (!effectiveSignal.aborted) status("failure");
+			} catch (error) {
+				if (!effectiveSignal.aborted) { status("failure"); reportError(message, error, "prepare"); }
 				return;
 			} finally {
 				preparing--;

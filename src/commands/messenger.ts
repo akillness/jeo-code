@@ -113,11 +113,20 @@ function routeUuid(config: MessengerConfig, message: Parameters<MessengerReply>[
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+export interface MessengerCliReplyOptions {
+	/** Operator log line sink (gateway stderr); receives bounded worker diagnostics, never message text or tokens. */
+	log?: (line: string) => void;
+}
+
 /** Run each conversation in its own reusable agent process. */
-export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel): MessengerReply & { close(): Promise<void>; sandboxControl: NonNullable<MessengerGatewayOptions["sandboxControl"]> } {
+export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel, options: MessengerCliReplyOptions = {}): MessengerReply & { close(): Promise<void>; sandboxControl: NonNullable<MessengerGatewayOptions["sandboxControl"]> } {
 	const sandbox = config.sandbox !== undefined || config.platforms.discord ? parseMessengerSandbox(config.sandbox) : undefined;
 	// Launch may inherit a global sandbox even when this platform has no local override.
-	const pool = createMessengerSessionPool(spawn, undefined, undefined, undefined, { requireSandboxCleanup: true });
+	const log = options.log;
+	const pool = createMessengerSessionPool(spawn, undefined, undefined, undefined, {
+		requireSandboxCleanup: true,
+		...(log ? { onDiagnostic: (key: string, line: string) => log(`worker ${key.slice(0, 8)}: ${line}`) } : {}),
+	});
 	const reply: MessengerReply = async (message, signal, onActivity) => {
 		if (signal.aborted) throw new Error("Messenger request aborted");
 		await validateMessengerStorage(config);
@@ -221,7 +230,10 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 	const controller = new AbortController();
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop); process.once("SIGTERM", stop);
-	const reply = createMessengerCliReply(config);
-	try { process.stdout.write(`Starting messenger: ${platforms.join(", ")}. Press Ctrl+C to stop.\n`); await createMessengerGateway(config, adapters, reply, { concurrency: 4, sandboxControl: reply.sandboxControl }).run(controller.signal); }
+	const log = (line: string): void => { process.stderr.write(`[jeo messenger ${new Date().toISOString()}] ${line}\n`); };
+	const reply = createMessengerCliReply(config, undefined, undefined, { log });
+	const onRequestError: NonNullable<MessengerGatewayOptions["onRequestError"]> = (message, error, stage) =>
+		log(`${message.platform} request failed at ${stage} (conversation ${routeUuid(config, message).slice(0, 8)}): ${error instanceof Error ? error.message : String(error)}`);
+	try { process.stdout.write(`Starting messenger: ${platforms.join(", ")}. Press Ctrl+C to stop.\n`); await createMessengerGateway(config, adapters, reply, { concurrency: 4, sandboxControl: reply.sandboxControl, onRequestError }).run(controller.signal); }
 	finally { controller.abort(); await reply.close(); process.off("SIGINT", stop); process.off("SIGTERM", stop); }
 }

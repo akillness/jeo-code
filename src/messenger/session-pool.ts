@@ -32,18 +32,39 @@ interface Worker {
 	cleanupError?: Error;
 	idleTimer?: ReturnType<typeof setTimeout>;
 	exitTimer?: ReturnType<typeof setTimeout>;
+	/** Diagnostic lines already forwarded for this worker. */
+	diagnostics: number;
 }
 
 /** Resident sessions the pool keeps, and the number of turns it runs at once. */
 export const MESSENGER_SESSION_LIMIT = 16;
+/** Operator-visible worker stderr is bounded per worker so a chatty worker cannot flood the gateway log. */
+export const MESSENGER_WORKER_DIAGNOSTIC_LINES = 20;
+const MAX_DIAGNOSTIC_LINE_LENGTH = 300;
 
-export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, limit = MESSENGER_SESSION_LIMIT, idleTimeoutMs = 5 * 60_000, shutdownTimeoutMs = 5_000, options: { requireSandboxCleanup?: boolean } = {}) {
+export interface MessengerSessionPoolOptions {
+	requireSandboxCleanup?: boolean;
+	/**
+	 * Receives bounded, non-protocol worker stderr lines and abnormal exits for the operator log. Worker
+	 * environments carry no platform tokens, and the conversation key is a route digest, never message text.
+	 */
+	onDiagnostic?: (key: string, line: string) => void;
+}
+
+/** One printable, bounded line: control characters collapse to spaces. */
+function diagnosticLine(text: string): string {
+	const line = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim();
+	return line.length > MAX_DIAGNOSTIC_LINE_LENGTH ? `${line.slice(0, MAX_DIAGNOSTIC_LINE_LENGTH - 1)}…` : line;
+}
+
+export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, limit = MESSENGER_SESSION_LIMIT, idleTimeoutMs = 5 * 60_000, shutdownTimeoutMs = 5_000, options: MessengerSessionPoolOptions = {}) {
 	const workers = new Map<string, Worker>();
 	const allWorkers = new Map<Worker, string>();
 	const exits = new Map<Promise<number>, Worker>();
 	const retiring = new Map<string, Promise<number>>();
 	const keyTails = new Map<string, Promise<void>>();
 	const requireSandboxCleanup = options.requireSandboxCleanup === true;
+	const onDiagnostic = options.onDiagnostic;
 	const incomplete = (detail: string) => new Error(`REVOKE_INCOMPLETE: ${detail}`);
 
 	let closed = false;
@@ -191,7 +212,17 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		const spawnOptions = { cwd, env: workerEnv, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cleanupNonce ? { ipc() {}, serialization: "json" } : {}) };
 		const child = spawn(command, spawnOptions as never) as unknown as WorkerProcess;
 		const cleanup = Promise.withResolvers<number>();
-		const worker: Worker = { child, exit: cleanupNonce ? cleanup.promise : child.exited, cleanupNonce, policyKey, lastUsed: ++tick, dead: false };
+		const worker: Worker = { child, exit: cleanupNonce ? cleanup.promise : child.exited, cleanupNonce, policyKey, lastUsed: ++tick, dead: false, diagnostics: 0 };
+		const diagnose = (text: string): void => {
+			if (!onDiagnostic || worker.diagnostics > MESSENGER_WORKER_DIAGNOSTIC_LINES) return;
+			const line = diagnosticLine(text);
+			if (!line) return;
+			worker.diagnostics++;
+			try { onDiagnostic(key, worker.diagnostics > MESSENGER_WORKER_DIAGNOSTIC_LINES ? "further worker output suppressed" : line); }
+			catch { /* The operator log never affects the turn. */ }
+		};
+		// An exit during a turn, or a non-zero exit, explains the user-visible failure; a clean idle exit is routine.
+		void child.exited.then(code => { if (code !== 0 || worker.pending) diagnose(`worker exited with code ${code}${worker.pending ? " during a turn" : ""}`); }, () => {});
 		exits.set(worker.exit, worker);
 		void worker.exit.then(() => {
 			exits.delete(worker.exit);
@@ -227,7 +258,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 				if (activityText) worker.pending?.report?.(activityText);
 			} else if (line === "JEO_MESSENGER_STEP") {
 				worker.pending?.report?.("Working on your request");
-			}
+			} else diagnose(line);
 		}).catch(() => retire(key, worker));
 		if (cleanupNonce) {
 			void Promise.all([child.exited, stderrDone, stdoutDone]).then(([code]) => {

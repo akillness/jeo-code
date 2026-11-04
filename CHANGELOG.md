@@ -9,6 +9,12 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Added
+- **Messenger operator diagnostics** — `jeo messenger run` now logs each failed request to stderr with its stage (`prepare`, `reply`, `deliver`), an 8-character conversation id and the cause, plus bounded worker diagnostics (non-protocol worker stderr lines and abnormal exits). Users still receive only the generic failure text; message content and platform tokens never reach the log. Previously a worker that could not start (for example after the jeo checkout embedded in `run-discord.sh` was moved) produced only `❌ Failed` in Discord and nothing in the service log.
+
+### Verified (live Discord, 2026-11-04)
+- A `#가재들` mention of the `제오코드` bot failed with `The request could not be completed` while the launchd service ran from a deleted checkout (`error: Module not found ".../src/cli.ts"` reproduced locally). Re-running `jeo messenger setup --config ~/.jeo/discord/messenger.json --service --no-dm` from the live checkout regenerated the launcher, restarted `dev.jeo.messenger.discord`, and a follow-up mention returned the exact requested token in a new request thread with ⏳→✅ reactions.
+
 ## [0.12.18] - 2026-11-04
 
 ### Changed

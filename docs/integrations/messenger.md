@@ -69,6 +69,10 @@ jeo messenger run --config /absolute/private/path/messenger.json
 
 Messenger workers run with `--no-skills`, so installing `jeo-skills` is not required and remote messages cannot activate local skill instructions. Restart the messenger service after any configuration change.
 
+The gateway, its generated launcher and every conversation worker run the `jeo` entry that executed `setup` (`run-discord.sh` embeds that path; workers reuse the gateway's own entry). Moving or deleting that checkout, or upgrading to a different install location, breaks every new request even while the gateway stays connected; re-run `jeo messenger setup --config <file> --service` from the new location to regenerate the launcher and restart the service.
+
+Request failures are logged to the gateway's stderr (the service log in the profile directory) as `[jeo messenger <ISO time>] <platform> request failed at prepare|reply|deliver (conversation <8 hex>): <reason>`, followed by bounded worker diagnostics as `worker <8 hex>: <line>`: non-protocol worker stderr lines (control characters collapsed, 300 characters each, at most 20 per worker, then `further worker output suppressed`) and `worker exited with code <n>[ during a turn]` for non-zero or mid-turn exits. Users still receive only the generic failure text; the log carries no message content or platform tokens (worker environments have them blanked).
+
 ## Tools and authority
 
 `toolNames` is a unique list drawn from `read`, `grep`, `glob`, `find`, `search`, `bash`, `edit`, `write`, `computer`, and `sandbox_request` (`grep` maps to `search`, `glob` to `find`). If omitted, the default is `read, find, search, write, edit, bash, computer, sandbox_request`. Every allowlisted user and platform in the same file receives the same tools.

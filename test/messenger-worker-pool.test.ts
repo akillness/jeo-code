@@ -116,6 +116,95 @@ test("conversation workers are reused, isolated, evicted and closed", async () =
   }
 });
 
+test("messenger worker keeps its profile private from grant authority", async () => {
+  const { root, workspace, sessionDir } = await layout("jeo-worker-profile-");
+  const profile = path.join(root, "profile");
+  const resource = path.join(root, "resource");
+  const configDir = path.join(root, "config");
+  await Promise.all([profile, resource, configDir].map(dir => fs.mkdir(dir)));
+  const credential = path.join(profile, "credentials.json");
+  await fs.writeFile(credential, "sentinel credential");
+  await fs.writeFile(path.join(workspace, "work.txt"), "workspace data");
+  const report = path.join(root, "report.json");
+  const preload = path.join(root, "preload.ts");
+  const authorityModule = path.resolve(import.meta.dir, "../src/agent/sandbox/authority.ts");
+  // The child-only preload observes the real authority at its construction boundary and aborts
+  // before provider or Docker access. Dynamic loading is necessary to install the isolated module override.
+  await fs.writeFile(preload, `
+import { mock } from "bun:test";
+import * as fs from "node:fs/promises";
+const name = ${JSON.stringify(authorityModule)};
+const real = await import(name);
+const createRealAuthority = real.createGrantAuthority;
+mock.module(name, () => ({ ...real, createGrantAuthority: async options => {
+  const authority = await createRealAuthority(options);
+  const attempt = async target => {
+    try { await authority.requestAccess(target, "ro"); return "allowed"; }
+    catch (error) { return String(error); }
+  };
+  const privateResult = await attempt(${JSON.stringify(credential)});
+  const safeResult = await attempt(${JSON.stringify(resource)});
+  await fs.writeFile(${JSON.stringify(report)}, JSON.stringify({ privateResult, safeResult }));
+  throw new Error("profile test complete");
+} }));
+`);
+  const config: MessengerConfig = { cwd: workspace, sessionDir, profileDir: profile, sandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
+  const readers: (() => Promise<string>)[] = [];
+  const spawn = ((argv: string[], options: Parameters<typeof Bun.spawn>[1]) => {
+    const env = Object.fromEntries(Object.entries(options?.env ?? {}).filter(([name]) => name.startsWith("JEO_MESSENGER_") || name === "JEO_SESSION_DIR"));
+    const child = Bun.spawn([process.execPath, "--no-env-file", "--preload", preload, path.resolve(import.meta.dir, "../src/cli.ts"), ...argv.slice(argv.indexOf("launch"))], {
+      ...options, env: { ...env, PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir }, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    return captureStderr(child, read => readers.push(read));
+  }) as typeof Bun.spawn;
+  const reply = createMessengerCliReply(config, spawn, selectModel);
+  try {
+    await withDiagnostics(readers, async () => {
+      await expect(reply(message, new AbortController().signal)).rejects.toThrow();
+      const result = JSON.parse(await fs.readFile(report, "utf8"));
+      expect(result.privateResult).toContain("SANDBOX_POLICY");
+      expect(result.safeResult).toBe("allowed");
+      expect(await fs.readFile(credential, "utf8")).toBe("sentinel credential");
+      expect(await fs.readFile(path.join(workspace, "work.txt"), "utf8")).toBe("workspace data");
+    });
+  } finally { await reply.close(); await fs.rm(root, { recursive: true, force: true }); }
+}, 30000);
+
+test("messenger configuration overrides an inherited profile in the worker", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-inherited-profile-"));
+  try {
+    const inheritedProfile = path.join(root, "other-profile");
+    await fs.mkdir(inheritedProfile);
+    // Isolate the inherited environment in a separate runner rather than mutating this test process.
+    const child = Bun.spawn([process.execPath, "test", path.resolve(import.meta.path), "-t", "messenger worker keeps its profile private from grant authority"], {
+      env: { PATH: process.env.PATH ?? "", HOME: root, JEO_MESSENGER_PROFILE_DIR: inheritedProfile },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect({ exit, stderr }).toMatchObject({ exit: 0 });
+    expect(stderr).toContain("1 pass");
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+}, 30000);
+
+test("launch rejects relative and workspace-overlapping messenger profiles", async () => {
+  const { root, workspace, sessionDir } = await layout("jeo-launch-profile-");
+  const configDir = path.join(root, "config");
+  await fs.mkdir(configDir);
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini" }));
+  try {
+    for (const [profile, expected] of [["relative-profile", "invalid messenger profile directory"], [workspace, "sandbox workspace must be disjoint"]]) {
+      const child = Bun.spawn([process.execPath, "--no-env-file", path.resolve(import.meta.dir, "../src/cli.ts"), "launch", "--print", "--no-tui", "--no-skills", "--literal-worker", "--no-tools", "--", "worker"], {
+        cwd: workspace, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+        env: { PATH: process.env.PATH ?? "", HOME: root, JEO_CONFIG_DIR: configDir, JEO_SESSION_DIR: sessionDir, JEO_MESSENGER_SESSION_KEY: "profile-test", JEO_MESSENGER_SANDBOX: JSON.stringify(sandbox), JEO_MESSENGER_PROFILE_DIR: profile! },
+      });
+      const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      expect(exit).not.toBe(0);
+      expect(stderr).toContain("SANDBOX_PRIVATE_STATE");
+      expect(stderr).toContain(expected!);
+    }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+}, 30000);
+
 test("real worker serves multiple turns and isolates conversations", async () => {
   const { root, workspace, sessionDir } = await layout("jeo-real-worker-");
   const configDir = path.join(root, "config");

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { downloadMessengerAttachments, readMessengerArtifacts } from "../src/messenger/artifacts";
-import { parseMessengerConfig, resolveMessengerToken, validateMessengerEnvironment } from "../src/messenger/config";
+import { loadMessengerConfig, parseMessengerConfig, resolveMessengerToken, validateMessengerEnvironment } from "../src/messenger/config";
 import { createMessengerGateway, isMessengerMessageAllowed, messengerConversationKey, messengerSessionRoute } from "../src/messenger/gateway";
 import type { MessengerAdapter, MessengerConfig, MessengerMessage } from "../src/messenger/types";
 import { COMMANDS } from "../src/cli/runner";
@@ -35,6 +35,31 @@ describe("messenger security and configuration", () => {
 		expect(parsed.sessionDir).toBe("/profile/private");
 		expect(() => validateMessengerEnvironment(parsed, {})).toThrow();
 		validateMessengerEnvironment(parsed, { JEO_DISCORD_BOT_TOKEN: "token" });
+	});
+
+	test("Discord profile, its ancestors and descendants cannot be sandbox workspaces, including symlink aliases", async () => {
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-profile-workspace-"))); roots.push(root);
+		const sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-profile-session-"))); roots.push(sessionRoot);
+		const profile = path.join(root, "profile");
+		const workspace = path.join(root, "workspace");
+		const alias = path.join(root, "profile-alias");
+		await Promise.all([fs.mkdir(profile), fs.mkdir(workspace)]);
+		const nested = path.join(profile, "workspace");
+		const nestedAlias = path.join(root, "nested-alias");
+		await fs.mkdir(nested);
+		await fs.symlink(nested, nestedAlias, process.platform === "win32" ? "junction" : "dir");
+		await fs.writeFile(path.join(profile, "credentials.json"), "sentinel credential");
+		await fs.writeFile(path.join(profile, "launch.sh"), "sentinel launcher");
+		await fs.symlink(profile, alias, process.platform === "win32" ? "junction" : "dir");
+		const file = path.join(profile, "messenger.json");
+		const common = { sessionDir: path.join(sessionRoot, "sessions"), sandbox: { image: "test-local-image", limits: { memoryBytes: 134217728, pids: 32, cpus: 1 } }, platforms: { discord: { allowedUserIds: ["owner"] } } };
+		for (const cwd of [undefined, profile, root, alias, nested, nestedAlias]) {
+			await fs.writeFile(file, JSON.stringify({ ...common, ...(cwd === undefined ? {} : { cwd }) }));
+			await expect(loadMessengerConfig(file)).rejects.toThrow("messenger profile directory");
+		}
+		await fs.writeFile(file, JSON.stringify({ ...common, cwd: workspace }));
+		expect((await loadMessengerConfig(file)).cwd).toBe(workspace);
+		expect(await fs.readFile(path.join(profile, "credentials.json"), "utf8")).toBe("sentinel credential");
 	});
 
 	test("supports JEO and JEOPI default credential aliases without exposing values", () => {

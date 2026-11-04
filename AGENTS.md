@@ -15,17 +15,9 @@
 | `README.zh.md` | Brief description of purpose |
 | `analyze_image.py` | Brief description of purpose |
 | `bun.lock` | Lockfile for Bun package dependencies |
-| `describe_character.py` | Brief description of purpose |
 | `install.sh` | Brief description of purpose |
 | `package.json` | Project dependencies, scripts, and publication metadata |
-| `prd.json` | Product Requirements Document |
-| `problem.md` | Brief description of purpose |
-| `progress.txt` | Rolling ledger of completed passes and evolutionary notes |
-| `run-evolution.py` | Scripts to orchestrate evolutionary improvement passes |
-| `run-evolution.sh` | Brief description of purpose |
 | `skills-lock.json` | Brief description of purpose |
-| `test_output.log` | Brief description of purpose |
-| `test_output.txt` | Brief description of purpose |
 | `tsconfig.json` | TypeScript configuration enabling strict types and Bun imports |
 
 ## Subdirectories

@@ -147,6 +147,12 @@ export async function validateMessengerStorage(config: MessengerConfig): Promise
 	if (sandboxPathContains(cwd, sessionDir) || sandboxPathContains(sessionDir, cwd)) {
 		throw new Error("sessionDir must be outside and disjoint from the sandbox workspace");
 	}
+	if (config.profileDir !== undefined) {
+		const profile = await canonicalSandboxPath(config.profileDir);
+		if (sandboxPathContains(cwd, profile) || sandboxPathContains(profile, cwd)) {
+			throw new Error("The sandbox workspace must be disjoint from the messenger profile directory (configuration and credentials); set cwd to a directory outside it");
+		}
+	}
 	const pending = [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")];
 	while (pending.length) {
 		const directory = pending.pop()!;
@@ -162,6 +168,25 @@ export async function validateMessengerStorage(config: MessengerConfig): Promise
 	}
 }
 
+/**
+ * Host paths a sandbox mount or grant must never touch: the whole profile directory (messenger.json, token file,
+ * run script, anything created later) and every direct entry that is a symlink leaving it. Entries are canonicalized,
+ * so a symlink cannot move a secret outside the list. The workspace must be disjoint from the profile in both
+ * directions; any failure to inspect the profile throws instead of returning a shorter list.
+ */
+export async function messengerProfilePrivatePaths(profileDir: string, cwd: string): Promise<string[]> {
+	const [profile, workspace] = await Promise.all([canonicalSandboxPath(profileDir), canonicalSandboxPath(cwd)]);
+	if (sandboxPathContains(workspace, profile) || sandboxPathContains(profile, workspace)) {
+		throw new Error("SANDBOX_PRIVATE_STATE: the sandbox workspace must be disjoint from the messenger profile directory (configuration and credentials)");
+	}
+	const privatePaths = [profile];
+	for (const name of await fs.readdir(profile)) {
+		const entry = await canonicalSandboxPath(path.join(profile, name), false);
+		if (!sandboxPathContains(profile, entry)) privatePaths.push(entry);
+	}
+	return privatePaths;
+}
+
 export async function loadMessengerConfig(file: string): Promise<MessengerConfig> {
 	let value: unknown;
 	try {
@@ -169,7 +194,8 @@ export async function loadMessengerConfig(file: string): Promise<MessengerConfig
 	} catch {
 		throw new Error("Cannot read messenger configuration as JSON");
 	}
-	const config = parseMessengerConfig(value, path.dirname(path.resolve(file)));
+	const profileDir = path.dirname(path.resolve(file));
+	const config: MessengerConfig = { ...parseMessengerConfig(value, profileDir), profileDir };
 	await validateMessengerStorage(config);
 	const artifactDir = config.platforms.discord?.artifactDir;
 	if (artifactDir) {

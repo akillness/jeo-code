@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.16] - 2026-11-04
+
+### Upgrade
+- **Discord messenger:** Existing configurations whose `cwd` overlaps the messenger profile directory now fail closed. Set `cwd` to a directory disjoint from the profile before restarting; re-running setup preserves an explicitly configured `cwd` and does not relocate files. Changing `cwd` starts new sessions for existing threads.
+
+### Fixed
+- **Discord concurrency** — independent threads can progress concurrently, and same-thread follow-ups wait without occupying a worker slot; rejected full-queue requests receive a failure status without creating a thread.
+- **Discord sandbox setup** — create fresh workspaces outside private configuration paths, validate workspace admission before replacing settings, include `sandbox_request` in the default tool list, and keep messenger profile files outside workspace and permission grants.
+- **Antigravity model responses** — retry malformed function-call responses within the existing retry limit without executing incomplete tool calls or replaying already-streamed output.
+- **Windows sandbox** — preserve owner-only ACL protection and serialize authority directory lifecycle.
+
 ## [0.12.15] - 2026-11-03
 
 The GitHub-only 0.12.14 release was not published to npm; its changes (listed under [0.12.14]) are included in this release.
@@ -2671,7 +2682,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.6...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.16...HEAD
+[0.12.16]: https://github.com/akillness/jeo-code/releases/tag/v0.12.16
 [0.12.6]: https://github.com/akillness/jeo-code/releases/tag/v0.12.6
 [0.11.4]: https://github.com/akillness/jeo-code/releases/tag/v0.11.4
 [0.11.3]: https://github.com/akillness/jeo-code/releases/tag/v0.11.3

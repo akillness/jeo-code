@@ -37,6 +37,15 @@
   <a href="README.zh.md">中文</a>
 </p>
 
+## Install
+
+Requires Bun `1.3.14+`.
+
+```bash
+bun install -g jeo-code
+jeo --version
+```
+
 Run `jeo` inside a repository and it reads files, edits them, runs commands, and drives the task to completion — streaming every step live in an inline, scrollback-friendly TUI.
 
 ## Documentation
@@ -104,15 +113,6 @@ jeo-code is a **local-first AI coding agent CLI** designed to safely drive entir
 - **Quiet exit on a broken output pipe** — piping jeo into a command that stops reading early (`jeo --help | head`, a vanished remote peer) no longer dumps a raw `EPIPE` stack; it exits quietly with the same code (141) a shell reports for any SIGPIPE-killed pipeline producer. A genuine crash is unaffected and still surfaces clearly.
 - **macOS low file-descriptor-limit warning** — a low `ulimit -n` (BSD's 256/1024 default) risks opaque `EMFILE` failures from file watching, the browser tool, or a broad repo scan; jeo now warns once at launch (stderr only, never piped `-p` output) with concrete `ulimit`/`launchctl` guidance. Opt out with `JEO_SKIP_NOFILE_CHECK=1`.
 
-
-## Install
-
-Requires Bun `1.3.14+`.
-
-```bash
-bun install -g jeo-code
-jeo --version
-```
 
 
 ## Quick start
@@ -491,10 +491,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.16]** (2026-11-04)
 - **[0.12.15]** (2026-11-03)
 - **[0.12.14]** (2026-11-03)
 - **[0.12.13]** (2026-11-03)
-- **[0.12.12]** (2026-11-03)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

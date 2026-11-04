@@ -75,6 +75,7 @@ import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
 import { messengerUsageFallback } from "../messenger/model-policy";
+import { messengerProfilePrivatePaths } from "../messenger/config";
 
 
 import { listAliases } from "../ai/model-registry";
@@ -463,12 +464,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
       if (fs.existsSync(legacy)) throw new Error("SANDBOX_PRIVATE_STATE: legacy transcripts are inside the workspace; relocate them before granting workspace access");
     }
+    // The messenger profile (config, token file, run script) is private control state wherever it lives, not only under ~/.jeo.
+    const profileDirectory = process.env.JEO_MESSENGER_PROFILE_DIR;
+    if (profileDirectory !== undefined && !path.isAbsolute(profileDirectory)) throw new Error("SANDBOX_PRIVATE_STATE: invalid messenger profile directory");
+    const profilePaths = profileDirectory === undefined ? [] : await messengerProfilePrivatePaths(profileDirectory, cwd);
+    if (closing) throw new Error("Messenger worker stopping");
+    // Publish the candidate before creating it so close() removes it even if owner-only creation or ACL verification fails midway.
     const candidateStateDirectory = path.join(tmpdir(), `jeo-sandbox-authority-${crypto.randomUUID()}`);
     stateDirectory = candidateStateDirectory;
     stateDirectory = await ensurePrivateSandboxDirectory(candidateStateDirectory);
     if (closing) throw new Error("Messenger worker stopping");
     const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
-    const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir()];
+    const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir(), ...profilePaths];
     const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
     if (closing) throw new Error("Messenger worker stopping");
     const sessionSupervisor = createSandboxSupervisor({ policy });

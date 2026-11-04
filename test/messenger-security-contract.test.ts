@@ -54,9 +54,10 @@ function fakeWorker(response: string | ((history: readonly string[]) => string),
 
 for (const independentSessions of [true, false]) test(`Discord setup migrates obsolete independentSessions=${independentSessions} while preserving operator settings`, async () => {
   const root = await directory();
-  const configPath = path.join(root, "messenger.json");
+  const configPath = path.join(root, "profile", "messenger.json");
+  await fs.mkdir(path.dirname(configPath));
   const expected = {
-    cwd: "./shared-workspace", sessionDir: "./private-history", toolNames: ["read", "write"],
+    cwd: "../shared-workspace", sessionDir: "./private-history", toolNames: ["read", "write"],
     sandbox: config.sandbox,
     platforms: {
       discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner", "collaborator"], allowedChannelIds: ["channel"], model: "openai/gpt-6.1-terra", artifactDir: "./artifacts" },
@@ -89,9 +90,103 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
   expect(written).toEqual(expected);
   const migrated = await loadMessengerConfig(configPath);
   expect(migrated.cwd).toBe(path.join(root, "shared-workspace"));
-  expect(migrated.sessionDir).toBe(path.join(root, "private-history"));
+  expect(migrated.sessionDir).toBe(path.join(root, "profile", "private-history"));
   expect(migrated.platforms.discord?.allowedUserIds).toEqual(["owner", "collaborator"]);
   expect(migrated.platforms.telegram?.allowedChannelIds).toEqual(["telegram-room"]);
+});
+
+test("invalid Discord setup tools leave the existing config unchanged", async () => {
+  const root = await directory();
+  const configPath = path.join(root, "messenger.json");
+  const original = JSON.stringify({ cwd: "./workspace", sessionDir: "./sessions", sandbox: config.sandbox, toolNames: ["read"], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } }, null, 2);
+  await fs.writeFile(configPath, original);
+  const responses: Record<string, unknown> = {
+    "/users/@me": { id: "bot", username: "test-bot", bot: true },
+    "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
+    "/users/@me/guilds": [{ id: "guild" }],
+  };
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const route = new URL(typeof input === "string" || input instanceof URL ? input : input.url).pathname.replace("/api/v10", "");
+    if (!Object.hasOwn(responses, route)) throw new Error(`Unexpected setup request: ${route}`);
+    return Response.json(responses[route]);
+  }) as typeof fetch;
+  await expect(setupDiscordMessenger({ configPath, dmTest: false, toolNames: ["bogus"] }, {
+    interactive: false, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
+  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, jeoCommand: ["/opt/jeo"] })).rejects.toThrow("toolNames must be a unique list");
+  expect(await fs.readFile(configPath, "utf8")).toBe(original);
+  expect((await fs.readdir(root)).filter(name => name.endsWith(".tmp"))).toEqual([]);
+});
+
+for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh: "fresh Discord setup creates a workspace accepted by sandbox policy", migration: "Discord setup reports missing-cwd migration to a sandbox-eligible workspace", private: "Discord setup refuses a private configured workspace without replacing the config" }[scenario], async () => {
+  const root = await directory();
+  const script = path.join(root, "setup-check.ts");
+  const setupModule = path.resolve(import.meta.dir, "../src/messenger/discord-setup.ts");
+  const configModule = path.resolve(import.meta.dir, "../src/messenger/config.ts");
+  const policyModule = path.resolve(import.meta.dir, "../src/agent/sandbox/policy.ts");
+  await fs.writeFile(script, `
+    import { setupDiscordMessenger } from ${JSON.stringify(setupModule)};
+    import { loadMessengerConfig } from ${JSON.stringify(configModule)};
+    import { createSandboxPolicy } from ${JSON.stringify(policyModule)};
+    import * as path from "node:path";
+    import * as fs from "node:fs/promises";
+    const configPath = path.join(process.env.JEO_CONFIG_DIR!, "notifications", "messenger.json");
+    let original = "";
+    if (${scenario !== "fresh"}) {
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      original = JSON.stringify({ ...(${scenario === "private"} ? { cwd: path.join(process.env.JEO_CONFIG_DIR!, "private-workspace") } : {}), sandbox: { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } });
+      await fs.writeFile(configPath, original);
+    }
+    const notices: string[] = [];
+    const answers = ["local-test-image", "268435456", "32", "1"];
+    const responses: Record<string, unknown> = {
+      "/users/@me": { id: "bot", username: "test-bot", bot: true },
+      "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
+      "/users/@me/guilds": [{ id: "guild" }],
+      "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
+      "/guilds/guild/members/bot": { roles: [] },
+      "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
+      "/gateway/bot": { url: "wss://gateway.discord.gg" },
+    };
+    const fakeFetch = async (input: string | URL | Request) => {
+      const route = new URL(typeof input === "string" || input instanceof URL ? input : input.url).pathname.replace("/api/v10", "");
+      if (!Object.hasOwn(responses, route)) throw new Error("Unexpected setup request: " + route);
+      return Response.json(responses[route]);
+    };
+    class ReadySocket extends EventTarget {
+      constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) }))); }
+      close() {}
+    }
+    const setup = () => setupDiscordMessenger({ configPath, dmTest: false }, {
+      interactive: true, say(message: string) { notices.push(message); }, ask: async () => { const answer = answers.shift(); if (!answer) throw new Error("Unexpected prompt"); return answer; },
+      askSecret: async () => { throw new Error("Unexpected credential prompt"); },
+    }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fakeFetch as typeof fetch, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"] });
+    if (${scenario === "private"}) {
+      let error: unknown;
+      try { await setup(); } catch (caught) { error = caught; }
+      if (!(error instanceof Error) || !error.message.includes("would be refused at launch")) throw new Error("Private workspace was not refused at launch admission");
+      if (await fs.readFile(configPath, "utf8") !== original) throw new Error("Existing configuration changed after admission failure");
+      if ((await fs.readdir(path.dirname(configPath))).some(name => name.endsWith(".tmp"))) throw new Error("Staged file was not cleaned up");
+    } else {
+      await setup();
+      const config = await loadMessengerConfig(configPath);
+      await createSandboxPolicy({ sessionKey: "setup-test", revision: 1, cwd: config.cwd, config: config.sandbox! });
+      if (${scenario === "migration"} && !notices.some(message => message.includes('had no "cwd"') && message.includes(config.cwd))) throw new Error("Missing workspace migration notice");
+    }
+  `);
+  const drive = process.platform === "win32" ? path.parse(root).root.slice(0, 2) : "";
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "", HOME: root, USERPROFILE: root,
+    HOMEDRIVE: drive, HOMEPATH: drive ? root.slice(drive.length) : root,
+    TMPDIR: root, TEMP: root, TMP: root, JEO_CONFIG_DIR: path.join(root, ".jeo"),
+  };
+  if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
+  if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
+  const child = Bun.spawn([process.execPath, script], {
+    env,
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
 });
 
 test("thread authorization requires both the user and allowed parent channel", () => {

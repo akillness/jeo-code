@@ -1,14 +1,20 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import { loadMessengerConfig, parseMessengerSandbox, resolveMessengerToken, validateMessengerEnvironment } from "./config";
+import { DEFAULT_MESSENGER_TOOLS, loadMessengerConfig, messengerProfilePrivatePaths, parseMessengerSandbox, resolveMessengerToken, validateMessengerEnvironment } from "./config";
 import { DISCORD_API, DISCORD_GATEWAY_INTENTS, discordGatewayUrl } from "./discord";
 import { MessengerHttpError, messengerFetchJson } from "./http";
 import { installMessengerService, messengerServicePlan } from "./service";
 import { isEnoent, isRecord } from "./types";
-import { notifyDir } from "../agent/notify/paths";
+import { jeoHomeDir, notifyDir, notifySessionsDir } from "../agent/notify/paths";
+import { createSandboxPolicy } from "../agent/sandbox/policy";
+import type { SandboxConfig } from "../agent/sandbox/types";
 
 export const DISCORD_TOKEN_ENV = "JEO_DISCORD_BOT_TOKEN";
 const TOKEN_FILE = "discord-token";
+/** Fresh-setup workspace: a jeo-owned directory in the user's home, outside every sandbox-private root. */
+const WORKSPACE_DIR = "jeo-discord-workspace";
+const WORKSPACE_MARKER = ".jeo-workspace";
 const RUN_SCRIPT_POSIX = "run-discord.sh";
 const RUN_SCRIPT_WINDOWS = "run-discord.cmd";
 const MESSAGE_CONTENT = 1 << 18;
@@ -495,11 +501,18 @@ export function discordRunCommand(command: string[], configName: string, tokenEn
 	return `@echo off\r\nsetlocal DisableDelayedExpansion\r\nset /p "${tokenEnv}="<"%~dp0${TOKEN_FILE}"\r\n${command.map(quote).join(" ")} messenger run --config "%~dp0${literal(configName, "config name")}"\r\n`;
 }
 
-async function writePrivate(file: string, content: string, mode: number): Promise<void> {
+/** Stage `content` beside `file`, run `validate` on the staged copy, and only then replace `file`; failure leaves `file` untouched. */
+async function writePrivate(file: string, content: string, mode: number, validate?: (staged: string) => Promise<void>): Promise<void> {
 	const temporary = `${file}.${process.pid}.tmp`;
-	await Bun.write(temporary, content);
-	await fs.chmod(temporary, mode);
-	await fs.rename(temporary, file);
+	try {
+		await Bun.write(temporary, content);
+		await fs.chmod(temporary, mode);
+		await validate?.(temporary);
+		await fs.rename(temporary, file);
+	} catch (error) {
+		await fs.unlink(temporary).catch(() => undefined);
+		throw error;
+	}
 }
 
 async function readExistingConfig(configPath: string): Promise<Record<string, unknown> | undefined> {
@@ -517,6 +530,61 @@ async function readExistingConfig(configPath: string): Promise<Record<string, un
 		// Fall through to the refusal below.
 	}
 	throw new Error(`${configPath} exists but is not a JSON object; fix or move it before setup`);
+}
+
+/**
+ * The policy admission `messenger run` performs before starting the sandbox worker (commands/launch.ts), with the same
+ * private roots: the authority state directory, the session directory, the jeo home, the notify sessions directory and
+ * the profile paths from messengerProfilePrivatePaths, which also refuses a workspace that overlaps the profile. The authority state
+ * directory is a fresh random temp directory at launch, so a representative path under os.tmpdir() stands in for it.
+ * Throws on any refusal, so setup cannot succeed for a workspace that launch would reject.
+ */
+async function admitSandboxWorkspace(sandbox: SandboxConfig, profileDir: string, sessionDir: string, cwd: string): Promise<void> {
+	const profilePaths = await messengerProfilePrivatePaths(profileDir, cwd);
+	await createSandboxPolicy({
+		sessionKey: "setup",
+		revision: 0,
+		cwd,
+		config: sandbox,
+		privatePaths: [path.join(os.tmpdir(), "jeo-sandbox-authority-setup"), sessionDir, jeoHomeDir(), notifySessionsDir(), ...profilePaths],
+	});
+}
+
+/**
+ * Create the default workspace (or reuse one that carries the marker an earlier setup run left), then prove `admit`
+ * accepts it. The marker is a re-run convention, not proof of ownership; reuse is still gated by `admit`, and an
+ * unmarked existing directory is never adopted. Failure cleanup is non-recursive and best-effort: it can only remove
+ * the marker this call wrote and the then-empty directory, so concurrently added data survives.
+ */
+async function createDefaultWorkspace(admit: (workspace: string) => Promise<void>): Promise<string> {
+	const workspace = path.join(os.homedir(), WORKSPACE_DIR);
+	const marker = path.join(workspace, WORKSPACE_MARKER);
+	let created = false;
+	let wroteMarker = false;
+	try {
+		await fs.mkdir(workspace, { mode: 0o700 });
+		created = true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+	try {
+		if (created) {
+			await fs.writeFile(marker, "", { flag: "wx", mode: 0o600 });
+			wroteMarker = true;
+		} else {
+			const [stat, tag] = await Promise.all([fs.lstat(workspace), fs.lstat(marker).catch(() => undefined)]);
+			if (!stat.isDirectory() || !tag?.isFile()) {
+				throw new Error(`${workspace} already exists without the jeo setup marker`);
+			}
+		}
+		await admit(workspace);
+	} catch (error) {
+		if (wroteMarker) await fs.unlink(marker).catch(() => undefined);
+		// rmdir refuses a non-empty directory, so anything added meanwhile is preserved.
+		if (created) await fs.rmdir(workspace).catch(() => undefined);
+		throw new Error(`Default workspace ${workspace} is unusable (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
+	}
+	return workspace;
 }
 
 export function currentJeoCommand(entry = Bun.main, execPath = process.execPath): string[] {
@@ -606,13 +674,22 @@ export async function setupDiscordMessenger(
 
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
 	if (options.artifacts) discord.artifactDir = "./artifacts";
-	const defaultTools = ["read", "find", "search", "write", "edit", "bash", "computer"];
+	const sessionDir = str(existing?.sessionDir) ?? path.join(notifyDir(), "messenger-sessions");
+	let cwd: unknown;
+	if (existing && Object.hasOwn(existing, "cwd")) {
+		// An explicit value is never replaced; an unusable one fails the loader below before the config is touched.
+		cwd = existing.cwd;
+	} else {
+		cwd = await createDefaultWorkspace(workspace => admitSandboxWorkspace(sandbox, directory, path.resolve(directory, sessionDir), workspace));
+		if (existing) io.say(`The existing config had no "cwd"; its sandbox workspace is now ${cwd}. No existing files were moved or deleted.`);
+	}
+	throwIfAborted(deps.signal);
 	const config = {
 		...existing,
-		cwd: str(existing?.cwd) ?? "./workspace",
-		sessionDir: str(existing?.sessionDir) ?? path.join(notifyDir(), "messenger-sessions"),
+		cwd,
+		sessionDir,
 		sandbox,
-		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : defaultTools),
+		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : [...DEFAULT_MESSENGER_TOOLS]),
 		platforms: { ...platforms, discord },
 	};
 	for (const relative of [config.cwd, config.sessionDir, discord.artifactDir]) {
@@ -620,7 +697,16 @@ export async function setupDiscordMessenger(
 			await fs.mkdir(path.resolve(directory, relative), { recursive: true, mode: 0o700 });
 		throwIfAborted(deps.signal);
 	}
-	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+	// The loader `messenger run` uses, then the policy admission it performs, must accept the staged file before it replaces a working config.
+	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600, async staged => {
+		const loaded = await loadMessengerConfig(staged);
+		validateMessengerEnvironment({ ...loaded, platforms: { discord: loaded.platforms.discord } }, { [tokenEnv]: token });
+		try {
+			await admitSandboxWorkspace(sandbox, loaded.profileDir ?? directory, loaded.sessionDir, loaded.cwd);
+		} catch (error) {
+			throw new Error(`Sandbox workspace ${loaded.cwd} would be refused at launch (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
+		}
+	});
 	throwIfAborted(deps.signal);
 	await writePrivate(
 		runScript,
@@ -630,12 +716,6 @@ export async function setupDiscordMessenger(
 		0o700,
 	);
 	throwIfAborted(deps.signal);
-	// The same loader `messenger run` uses must accept what was written.
-	const written = await loadMessengerConfig(configPath);
-	validateMessengerEnvironment(
-		{ ...written, platforms: { discord: written.platforms.discord } },
-		{ [tokenEnv]: token },
-	);
 
 	await probeDiscordGateway(api, token, deps.WebSocket ?? WebSocket, deps.signal);
 	throwIfAborted(deps.signal);

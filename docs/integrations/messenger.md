@@ -34,9 +34,11 @@ Requirements the sandbox enforces (`src/agent/sandbox/docker.ts`):
 - `image` is an already-local Linux image with Bun at `/usr/local/bin/bun`. Pulls are disabled (`--pull=never`); the Docker endpoint must be local (`unix://` or `npipe://`); remote contexts are rejected.
 - The host controller must not run as root.
 - Containers run with `--network none`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, a private `/tmp`, and the configured pids/memory/cpus limits.
-- Only the workspace (`cwd`, mounted at `/workspace`) and approved grants are mounted. `sessionDir` must be outside and disjoint from `cwd`.
+- Only the workspace (`cwd`, mounted at `/workspace`) and approved grants are mounted. `sessionDir` must be outside and disjoint from `cwd`. The workspace must also be disjoint from the profile directory (the directory holding `messenger.json`, the token file and the run script), in both directions. `check`, `run` and setup refuse an overlap. An omitted `cwd` resolves to the config directory itself, which is refused under a sandbox, so set `cwd` explicitly.
 
 `setup` prompts for the image and limits unless the target config already has a valid `sandbox` block. For unattended setup, write that block first.
+
+Fresh setup creates `~/jeo-discord-workspace` when the existing config has no `cwd` key; the directory is mode 0700 and marked with `.jeo-workspace`, and a re-run reuses it only when that marker is present. An unmarked existing directory is never adopted, and an explicit `cwd` is never replaced. Before writing, setup stages the config and runs the loader and the same policy admission `messenger run` performs (with a stand-in for the random authority state directory that launch creates), so an unusable workspace leaves the previous file untouched. A passing setup is not a launch proof.
 
 ## Discord quick setup
 
@@ -48,7 +50,7 @@ jeo messenger setup --config ~/.jeo/discord/messenger.json --service
 
 Setup validates the bot, enables Message Content intent when Discord permits it, discovers a request channel with the required permissions, writes a token file and a platform-native launcher (`run-discord.sh` or Windows `run-discord.cmd`), probes the Gateway, and optionally installs a macOS/Linux user service. On Windows, omit `--service` and run the `.cmd` with your process manager. Ctrl+C cancels an active prompt, invite wait, or Gateway probe.
 
-Non-interactive choices: `--channel ID`, `--user ID`, `--tools LIST`, `--artifacts`, `--no-dm`. When `--tools` is omitted, setup writes `read, find, search, write, edit, bash, computer`. Under a sandbox, omit `computer` unless your image supports the action you want (see Tools) and add `sandbox_request` if the model should be able to request access.
+Non-interactive choices: `--channel ID`, `--user ID`, `--tools LIST`, `--artifacts`, `--no-dm`. When `--tools` is omitted and the config has no `toolNames`, setup writes the default list, `read, find, search, write, edit, bash, computer, sandbox_request`. Under a sandbox, remove `computer` unless your image supports the action you want (see Tools); `sandbox_request` lets the model ask for access (see Sandbox grants and revocation).
 
 The bot needs View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, and Send Messages in Threads.
 
@@ -90,6 +92,7 @@ Example for a sandboxed Telegram file (the `sandbox` block is as shown above):
 - A DM stays in the DM channel with its own per-user session.
 - Messenger conversations are headless `launch --print --literal-worker --resume <id>` processes, one reusable worker per conversation. They do not attach to an interactive `jeo` terminal session.
 - Requests are queued in arrival order. One turn runs per conversation at a time; different conversations run concurrently (the CLI uses concurrency 4). Authenticated `/sandbox` controls bypass the model queue.
+- Ordering is per conversation. A request waiting behind an earlier request of the same conversation stays in the queue and holds no slot. For a Discord top-level message, admission is ordered per channel in arrival order, and the reply thread is created only after the request claims a queue slot. At most 100 requests may be queued or preparing at once; a request beyond that is marked failed and creates no thread, and a later redelivery is accepted once capacity returns.
 
 ## Sandbox grants and revocation
 
@@ -115,6 +118,8 @@ Without an explicit Discord `model`, automatic selection uses the live account c
 
 Discord's platform object may specify `"model": "antigravity/gemini-3.8-flash-medium"` and `"usageFallbackModel": "gpt-6.1-terra"`. This pins that Discord worker independently of global routing; other platforms are unchanged. `usageFallbackModel` requires `model`. The fallback requires its own usable credentials and is attempted only for a persistent usage/quota failure on the first step, before any tool could have run. Transient rate limits, authentication failures and later failures do not trigger it. Restart the messenger service after editing the configuration.
 
+Provider `MALFORMED_FUNCTION_CALL` incomplete responses (Antigravity/Gemini) are classified retryable in `defaultRetryable` (`src/util/retry.ts`) and retried within the provider request's retry budget (`withRetry`, default 3 total attempts unless configured). The adapter throws before it serializes buffered function calls, so a resend runs no unvalidated call, per the source comment. Other `response incomplete` reasons, such as `MAX_TOKENS`, are not retried. This retry is provider-wide, not Discord-specific, and is independent of `usageFallbackModel`.
+
 ## Discord request progress
 
 While a request runs, Discord shows one silently updated progress message in the reply thread or DM. It shows fixed status text, the current step and validated tool names, then marks the request complete, failed or cancelled. Updates are throttled and coalesced, so fast intermediate steps may not appear. Model reasoning, tool arguments, tool output and provider error details are not included in progress messages; the final answer is sent separately.
@@ -123,7 +128,7 @@ While a request runs, Discord shows one silently updated progress message in the
 
 Input accepts at most 10 files, at most 8 MiB each, only over HTTPS from `cdn.discordapp.com` or `media.discordapp.net` under `/attachments/`. Redirects, URL credentials, size mismatches, traversal, and symlinks are rejected. Output requires `artifactDir`, an existing non-symlink directory (`setup --artifacts` creates `./artifacts`); only regular files beneath it are uploaded, with the same 10-file and 8 MiB limits.
 
-Under a sandbox, `artifactDir` must lie inside the workspace (`cwd`) or inside a human-approved grant mount. The worker receives the artifact directory as an absolute host path; the supervisor rewrites absolute host paths under an existing mount to the matching guest path (`guestPath` in `src/agent/sandbox/supervisor.ts`), but only in tool path arguments (`filePath`, `path`, `dirPath`, `dir`, `targetPath`, `cwd`, `subdir`), not inside free-form shell command strings. A directory outside the initial mounts is not reachable from the container and gains no automatic authority; adding it requires an explicit approval through the grant flow above. `setup --artifacts` writes `./artifacts` beside `./workspace`, which is outside the initial mounts, so set `artifactDir` inside the workspace for sandboxed use.
+Under a sandbox, `artifactDir` must lie inside the workspace (`cwd`) or inside a human-approved grant mount. The worker receives the artifact directory as an absolute host path; the supervisor rewrites absolute host paths under an existing mount to the matching guest path (`guestPath` in `src/agent/sandbox/supervisor.ts`), but only in tool path arguments (`filePath`, `path`, `dirPath`, `dir`, `targetPath`, `cwd`, `subdir`), not inside free-form shell command strings. A directory outside the initial mounts is not reachable from the container and gains no automatic authority; adding it requires an explicit approval through the grant flow above. `setup --artifacts` writes `./artifacts` relative to the config directory, which is outside the workspace and the initial mounts, so set `artifactDir` inside the workspace for sandboxed use.
 
 ## Verification status
 

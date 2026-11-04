@@ -19,8 +19,11 @@ export async function prepareHandsBundle(): Promise<string> {
     const temporary = path.join(staging, "hands.js");
     try {
       const output = await fs.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try { await output.writeFile(source); await output.sync(); await output.chmod(0o400); }
-      finally { await output.close(); }
+      try {
+        await output.writeFile(source);
+        await output.sync();
+        if (process.platform !== "win32") await output.chmod(0o400);
+      } finally { await output.close(); }
       try { await fs.link(temporary, file); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     } finally { await fs.rm(staging, { recursive: true, force: true }); }

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createGrantAuthority } from "../src/agent/sandbox/authority";
+import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../src/agent/sandbox/authority";
 import { loadMessengerConfig, messengerProfilePrivatePaths } from "../src/messenger/config";
 import type { SandboxPolicy, SandboxTermination } from "../src/agent/sandbox/types";
 
@@ -270,7 +270,7 @@ test("authority refuses state placed inside its workspace mount", async () => {
 	} finally { await f.close(); }
 });
 
-test.skipIf(process.platform === "win32")("authority refuses pre-existing state readable by another user", async () => {
+test("authority refuses pre-existing state readable by another user", async () => {
 	const f = await fixture();
 	try {
 		const exposed = path.join(f.root, "exposed-state");
@@ -314,3 +314,13 @@ test("profile credentials stay outside approved grants through ancestors and sym
 		expect(await fs.readFile(path.join(profile, "credentials.json"), "utf8")).toBe("sentinel credential");
 	} finally { await f.close(); }
 });
+
+test("ensurePrivateSandboxDirectory serializes concurrent callers and re-verifies existing owner-only state", async () => {
+	const f = await fixture();
+	try {
+		const target = path.join(f.root, "concurrent-private-state");
+		const results = await Promise.all(Array.from({ length: 8 }, () => ensurePrivateSandboxDirectory(target)));
+		expect(new Set(results).size).toBe(1);
+		expect(await ensurePrivateSandboxDirectory(target)).toBe(results[0]!);
+	} finally { await f.close(); }
+}, process.platform === "win32" ? 30_000 : 5000);

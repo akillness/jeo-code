@@ -491,10 +491,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.21]** (2026-11-04)
 - **[0.12.20]** (2026-11-04)
 - **[0.12.19]** (2026-11-04)
 - **[0.12.18]** (2026-11-04)
-- **[0.12.17]** (2026-11-04)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

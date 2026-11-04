@@ -9,6 +9,14 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.21] - 2026-11-04
+
+### Fixed
+- **Completion gate no longer blocks read-only turns** - a `bash` or `computer` call now counts as a workspace mutation only when a host-side snapshot of the session workspace taken right before and after the call differs (`.git`, `.jeo` and `node_modules` excluded; content changes to an already-modified file are detected). Read-only commands such as `date`, `ls -a`, `osascript` or opening a browser tab complete without a test run. A failed or over-cap snapshot still counts as a mutation, and `write`, `edit`, mutating `debug` actions and `job`/`monitor` starts are unchanged.
+- **Wrapped verification commands are recognized** - `cd <dir> && <verifier>`, `VAR=value` and `env -u NAME` prefixes, `timeout N`, `2>&1`, `uv run` / `poetry run` / `pipenv run`, absolute or relative paths to a verifier binary, and the `rtk` / `rtk test` wrappers now count as verification. Pipes, `;`, `||`, other redirections, command substitution and the existing mutating or non-executing flag exclusions are still rejected.
+- **Unverified state no longer leaks across turns** - an earlier turn's unverified mutation blocks completion of later turns only while a `/goal` is active; ordinary turns and messenger thread follow-ups are judged on their own evidence.
+- **Exhausted completions keep the answer** - when the gate rejects `done` after the maximum corrections, the result stays incomplete but shows the model's last answer under an `UNVERIFIED` marker with the gate reason, instead of replacing it. Messenger workers send that marked answer with a failure reaction (new `JEO_MESSENGER_UNVERIFIED` worker line) instead of the generic "The request could not be completed", and keep serving follow-ups. Route fallback, failover hints and the task tool's rate-limit reroute ignore rejected completions.
+
 ## [0.12.20] - 2026-11-04
 
 The GitHub-only 0.12.19 release was not published to npm (its publish run failed a welcome-banner test); its changes, listed under [0.12.19], are included in this release.
@@ -2716,7 +2724,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.20...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.21...HEAD
+[0.12.21]: https://github.com/akillness/jeo-code/releases/tag/v0.12.21
 [0.12.20]: https://github.com/akillness/jeo-code/releases/tag/v0.12.20
 [0.12.19]: https://github.com/akillness/jeo-code/releases/tag/v0.12.19
 [0.12.18]: https://github.com/akillness/jeo-code/releases/tag/v0.12.18

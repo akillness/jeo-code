@@ -34,7 +34,7 @@ async function scenario(mode: "active" | "natural" | "early" = "active"): Promis
   const child = Bun.spawn([process.execPath, "--no-env-file", path.join(import.meta.dir, "fixtures/sandbox-worker-ipc-shutdown.ts"), root, mode], {
     cwd: driver, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     // Real HOME is required for the Docker client; config/workspace/sessions stay in the private root.
-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", JEO_CONFIG_DIR: path.join(root, "config"), JEO_STATIC_MEMORY: "1", NO_COLOR: "1", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) },
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "", USERPROFILE: process.env.USERPROFILE ?? "", APPDATA: process.env.APPDATA ?? "", LOCALAPPDATA: process.env.LOCALAPPDATA ?? "", TEMP: process.env.TEMP ?? "", TMP: process.env.TMP ?? "", PATHEXT: process.env.PATHEXT ?? "" } : {}), JEO_CONFIG_DIR: path.join(root, "config"), JEO_STATIC_MEMORY: "1", NO_COLOR: "1", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) },
   });
   try {
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

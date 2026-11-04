@@ -76,6 +76,14 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
     Bun.spawn([...argv], { env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" }) as unknown as DockerChild);
   const command = (args: readonly string[]) => run([executable, ...args]);
 
+  function normalizeMountSource(value: string): string {
+    if (platform !== "win32") return value;
+    const match = /^\/(?:run\/desktop\/mnt\/host|host_mnt)\/([a-zA-Z])(?:\/(.*))?$/.exec(value.replace(/\\/g, "/"));
+    if (!match) return value;
+    const drive = `${match[1]!.toUpperCase()}:\\`;
+    return match[2] ? path.win32.join(drive, ...match[2].split("/").filter(Boolean)) : drive;
+  }
+
   async function checked(args: readonly string[], context: string): Promise<string> {
     let result: DockerCommandResult;
     try { result = await command(args); }
@@ -158,8 +166,9 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
       if (!labels?.[OWNER] || !labels[SESSION] || !/^\d+$/.test(labels[REVISION] ?? "") || !Array.isArray(record.Mounts)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed ownership or mounts");
       for (const mount of record.Mounts) {
         if (mount.Type === "tmpfs" && mount.Destination === "/tmp") continue;
-        if (mount.Type !== "bind" || typeof mount.Source !== "string" || !path.isAbsolute(mount.Source)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed mount metadata");
-        const source = await canonicalSandboxPath(mount.Source);
+        const normalizedSource = typeof mount.Source === "string" ? normalizeMountSource(mount.Source) : "";
+        if (mount.Type !== "bind" || !normalizedSource || !path.isAbsolute(normalizedSource)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed mount metadata");
+        const source = await canonicalSandboxPath(normalizedSource);
         if (sources.some(candidate => candidate !== source && (sandboxPathContains(candidate, source) || sandboxPathContains(source, candidate)))) {
           throw new Error("SANDBOX_MOUNT_OVERLAP: managed mount roots must be identical or disjoint");
         }
@@ -262,7 +271,8 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
         if (actual.length !== expected.length) throw new Error("SANDBOX_UNAVAILABLE: unexpected container bind mounts");
         for (const mount of expected) {
           const observed = actual.find(candidate => candidate.Destination === mount.guest);
-          if (!observed?.Source || await canonicalSandboxPath(observed.Source) !== mount.source || observed.RW !== mount.writable) throw new Error("SANDBOX_UNAVAILABLE: actual container bind configuration changed");
+          const normalizedObserved = observed?.Source ? normalizeMountSource(observed.Source) : "";
+          if (!normalizedObserved || await canonicalSandboxPath(normalizedObserved) !== mount.source || observed?.RW !== mount.writable) throw new Error("SANDBOX_UNAVAILABLE: actual container bind configuration changed");
         }
         if (record.State?.Running === true) break;
         if (Date.now() >= deadline) throw new Error("SANDBOX_UNAVAILABLE: container did not start");

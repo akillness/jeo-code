@@ -29,6 +29,17 @@ export function sandboxPathContains(parent: string, child: string): boolean {
   return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
+export function windowsSystemRoot(): string {
+  const configured = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
+  if (configured && path.isAbsolute(configured)) return configured;
+  for (const candidate of ["powershell.exe", "cmd.exe"]) {
+    const resolved = Bun.which(candidate);
+    const match = resolved ? /^(.*)[\\/]System32(?:[\\/]|$)/i.exec(resolved) : null;
+    if (match?.[1] && path.isAbsolute(match[1])) return match[1];
+  }
+  throw new Error("SANDBOX_STATE: Windows system directory is unavailable");
+}
+
 let nativeHome: Promise<string> | undefined;
 
 /** Bun userInfo() can inherit startup HOME; query the native account database instead. */
@@ -36,9 +47,9 @@ export function nativeSandboxHome(): Promise<string> {
   nativeHome ??= (async () => {
     let home: string | undefined;
     let argv: string[] | undefined;
+    let systemRoot = "";
     if (process.platform === "win32") {
-      const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-      if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error("SANDBOX_STATE: native Windows system directory unavailable");
+      systemRoot = windowsSystemRoot();
       const script = "$ErrorActionPreference='Stop';[Console]::Out.Write([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))";
       argv = [path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
     } else {
@@ -52,7 +63,7 @@ export function nativeSandboxHome(): Promise<string> {
       }
     }
     if (argv) {
-      const child = Bun.spawn(argv, { env: { SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "" }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const child = Bun.spawn(argv, { env: { SystemRoot: systemRoot }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
       const timer = setTimeout(() => child.kill(), 30_000);
       try {
         const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
@@ -73,7 +84,10 @@ export async function canonicalSandboxPath(value: string, mustExist = true, cwd?
   if (process.platform === "win32" && /^(?:[\\/]{2}|[\\/]\?\?[\\/])/.test(value)) throw new Error("SANDBOX_PATH: Windows network and device paths are forbidden");
   const absolute = cwd === undefined ? path.resolve(value) : path.resolve(cwd, value);
   if (process.platform === "win32" && /^[\\/]{2}/.test(absolute)) throw new Error("SANDBOX_PATH: Windows network and device paths are forbidden");
-  try { return await fs.realpath(absolute); }
+  try {
+    const resolved = await fs.realpath(absolute);
+    return process.platform === "win32" && /^[A-Za-z]:$/.test(resolved) ? `${resolved}\\` : resolved;
+  }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // macOS realpath can reject launchd sockets even though their parent is resolvable.
@@ -81,14 +95,17 @@ export async function canonicalSandboxPath(value: string, mustExist = true, cwd?
     if (!socket && (mustExist || code !== "ENOENT")) throw error;
     const parent = path.dirname(absolute);
     if (parent === absolute) throw error;
-    return path.join(await canonicalSandboxPath(parent, false), path.basename(absolute));
+    const resolvedParent = await canonicalSandboxPath(parent, false);
+    const result = path.join(resolvedParent, path.basename(absolute));
+    return process.platform === "win32" && /^[A-Za-z]:$/.test(result) ? `${result}\\` : result;
   }
 }
 
 /** Deny endpoint ancestors even when their socket has not been created yet. */
 export async function validateSandboxMountSource(host: string, privatePaths: readonly string[], controlPaths: readonly string[] = []): Promise<void> {
   const home = await canonicalSandboxPath(os.homedir());
-  if (host === path.parse(host).root || host === home) throw new Error("SANDBOX_POLICY: host root and whole-home mounts are forbidden");
+  const isRoot = host === path.parse(host).root || (process.platform === "win32" && /^[A-Za-z]:[\\/]?$/.test(host));
+  if (isRoot || host === home) throw new Error("SANDBOX_POLICY: host root and whole-home mounts are forbidden");
   if (privatePaths.some(privatePath => sandboxPathContains(host, privatePath) || sandboxPathContains(privatePath, host))) {
     throw new Error("SANDBOX_POLICY: mount overlaps private control state");
   }

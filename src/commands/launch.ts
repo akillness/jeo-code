@@ -60,7 +60,7 @@ import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
 import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
 import { createSandboxPolicy } from "../agent/sandbox/policy";
-import { createGrantAuthority } from "../agent/sandbox/authority";
+import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
 import { handleSandboxControl } from "../agent/sandbox/control";
 import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
 import { runAgySessionTurn } from "./launch/agy-turn";
@@ -400,6 +400,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let supervisor: SandboxSupervisor | undefined;
   let stateDirectory: string | undefined;
   let stopEndpoint: (() => Promise<void>) | undefined;
+  const setup = Promise.withResolvers<void>();
   let endpointStartup: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   const acknowledge = async (gone: boolean): Promise<void> => {
@@ -411,6 +412,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const close = (): Promise<void> => closing ??= (async () => {
     for (;;) {
       try {
+        await setup.promise;
         await endpointStartup;
         await stopEndpoint?.();
         // No supervisor means startup never had authority to create an environment.
@@ -445,6 +447,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const runSession = (): Promise<void> => {
     const ready = Promise.withResolvers<void>();
     endpointStartup = ready.promise;
+    setup.resolve();
     return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }).finally(ready.resolve);
   };
   try {
@@ -460,7 +463,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
       if (fs.existsSync(legacy)) throw new Error("SANDBOX_PRIVATE_STATE: legacy transcripts are inside the workspace; relocate them before granting workspace access");
     }
-    stateDirectory = fs.mkdtempSync(path.join(tmpdir(), "jeo-sandbox-authority-"));
+    const candidateStateDirectory = path.join(tmpdir(), `jeo-sandbox-authority-${crypto.randomUUID()}`);
+    stateDirectory = candidateStateDirectory;
+    stateDirectory = await ensurePrivateSandboxDirectory(candidateStateDirectory);
+    if (closing) throw new Error("Messenger worker stopping");
     const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
     const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir()];
     const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
@@ -481,6 +487,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (closing) throw new Error("Messenger worker stopping");
     await withSandboxExecution({ supervisor: sessionSupervisor, authority, requestAccess: (host, mode) => authority.requestAccess(host, mode) }, runSession);
   } finally {
+    setup.resolve();
     await close();
     process.removeListener("SIGTERM", handleTermination);
     process.removeListener("message", handleControlMessage);

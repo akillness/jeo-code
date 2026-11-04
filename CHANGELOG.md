@@ -9,6 +9,10 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Changed
+- **Session model follows the login** — a session opens on the configured default model, and only when the stored login can actually serve it (the provider has a live credential and, for built-in providers, the credential serves that specific model; ChatGPT OAuth serves only Codex ids). When it cannot, the session starts on the first authenticated model from recents, then role tiers, and prints a one-line notice naming the provider to log in to. The fallback is session-local; the saved default is never rewritten, and an explicit `--model`/`--model-role`/`--provider` pin still wins.
+- **Resume opens on the default too** — `--resume`, `--resume-interactive` and `/session resume` no longer restore the model saved in the session header; a resumed session opens on the same default as a new one. `/model` and the picker still switch the model for the running session.
+
 ## [0.12.17] - 2026-11-04
 
 ### Fixed

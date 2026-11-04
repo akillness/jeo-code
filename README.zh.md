@@ -445,10 +445,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.18]** (2026-11-04)
 - **[0.12.17]** (2026-11-04)
 - **[0.12.16]** (2026-11-04)
 - **[0.12.15]** (2026-11-03)
-- **[0.12.14]** (2026-11-03)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

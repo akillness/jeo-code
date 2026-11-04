@@ -80,15 +80,28 @@ export async function runConsensusCriticGate(args: {
   // is gated the SAME way: zero observed read/search/find/ast_grep/lsp calls means
   // the [OKAY]/[ITERATE]/[REJECT] text is unevidenced regardless of what it claims.
   let evidenceCalls = 0;
+  let contractCorrections = 0;
   const runOnce = () => runAgentLoop(history, {
     cwd: args.cwd,
     model: activeModel,
     maxSteps,
-    budget: { maxExtensions: 0 },
+    budget: { maxExtensions: 1 },
     signal: args.signal,
     tools: subagentToolset(role),
     rateLimitFallbackAvailable,
     events: {
+      onBeforeDone: reason => {
+        if (evidenceCalls === 0 || contractCorrections >= 1) return null;
+        const check = validateSubagentDoneReason(role, reason);
+        if (!check.ok) {
+          contractCorrections++;
+          return (
+            `Your critic report is missing required section(s): ${check.missing?.join(", ")}. ` +
+            `Call done again starting with [OKAY], [ITERATE], or [REJECT] and include a non-empty 'Justification:' section.`
+          );
+        }
+        return null;
+      },
       onToolResult: (tool, success) => {
         if (success && (tool === "read" || tool === "search" || tool === "find" || tool === "ast_grep" || tool === "lsp")) evidenceCalls++;
       },

@@ -1967,7 +1967,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           if ((pendingMutationVerification || evidence.sawMutation) && !(evidence.sawVerification && !evidence.verificationStale)) {
             return (
               `Cannot finish: a workspace mutation from this session still lacks a successful, non-stale verification. ` +
-              `Run a relevant test/build/typecheck/lint after the last change, then call done again.`
+              `Run a relevant test/build/typecheck/lint after the last change (e.g. 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done again.`
             );
           }
 
@@ -3177,7 +3177,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
   });
-  queueBusyClear = () => { queuedPromptInput.partial = ""; };
+  queueBusyClear = () => {
+    queuedPromptInput.partial = "";
+    const r = rl as unknown as { line?: string; cursor?: number };
+    if (typeof r.line === "string") {
+      r.line = "";
+      r.cursor = 0;
+    }
+  };
   queueBusyCommand = (line: string) => {
     // NO_MIDTURN_DISPATCH=1 keeps the legacy prefill path (tee up, press Enter); the
     // default routes to the immediate-dispatch queue served at the top of the loop.

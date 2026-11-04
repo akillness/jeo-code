@@ -1,4 +1,5 @@
 import { applyBashFixups } from "./bash-fixups";
+import { resolvePosixTool } from "../util/posix-tools";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readWorkflowStateStrict, type WorkflowState } from "./state";
@@ -727,7 +728,7 @@ export async function bashTool(
     const reapBackground = isBackgroundReapEnabled();
     const grouped = reapBackground && process.platform !== "win32";
     if (grouped) ensureBackgroundSweeper();
-    const proc = Bun.spawn(["bash", "-c", command], {
+    const proc = Bun.spawn([resolvePosixTool("bash"), "-c", command], {
       cwd: runCwd,
       // Detach stdin (no inherited TTY): a command that reads stdin (`cat`, `read`,
       // a REPL, an interactive prompt) then gets immediate EOF and exits instead of

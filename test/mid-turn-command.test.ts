@@ -35,3 +35,9 @@ test("a lone sigil (no command name) is empty — never aborts the turn", () => 
   expect(classifyMidTurnLine("$")).toBe("empty");
   expect(classifyMidTurnLine("  /  ")).toBe("empty");
 });
+
+test("file paths and dollar amounts classify as steer — never abort the running turn", () => {
+  expect(classifyMidTurnLine("/Users/jangyoung/orca/src/index.ts 확인해줘")).toBe("steer");
+  expect(classifyMidTurnLine("/tmp/test.log")).toBe("steer");
+  expect(classifyMidTurnLine("$100 budget limit")).toBe("steer");
+});

@@ -21,6 +21,7 @@ export function withSandboxExecution<T>(scope: SandboxExecutionScope, run: () =>
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolvePosixTool } from "../util/posix-tools";
 import { readGlobalConfig } from "./state";
 import type { HookConfig } from "./state";
 
@@ -134,7 +135,7 @@ async function runHookCommand(
     };
   }
 
-  const proc = Bun.spawn(["bash", "-c", runCmd], {
+  const proc = Bun.spawn([resolvePosixTool("bash"), "-c", runCmd], {
     cwd,
     stdin: "pipe",
     stdout: "pipe",

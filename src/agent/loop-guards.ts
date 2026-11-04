@@ -72,20 +72,31 @@ export const GUARD_LIMITS = Object.freeze({
  * Recognized standalone verification commands. Matching the full command prevents
  * filenames, prose, and shell output from impersonating verification evidence.
  */
-export const VERIFY_SIGNAL_RE = /^(?:(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?(?:test|tests|typecheck|lint|build|check|spec|tsc|eslint|vitest|jest)(?::[\w-]+)?|(?:npx|bunx)\s+(?:tsc|eslint|vitest|jest|pytest)|(?:tsc|eslint|vitest|jest|pytest)|(?:python(?:3(?:\.\d+)?)?|uv)\s+(?:-m\s+)?pytest|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|(?:make|just)\s+(?:test|check|lint|build|typecheck))(?:\s+[A-Za-z0-9_./:@+*?,=-]+)*$/i;
+export const VERIFY_SIGNAL_RE = /^(?:(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?(?:test|tests|typecheck|lint|build|check|spec|tsc|eslint|vitest|jest)(?::[\w-]+)?|(?:npx|bunx)\s+(?:tsc|eslint|vitest|jest|pytest)|(?:tsc|eslint|vitest|jest|pytest)|(?:python(?:3(?:\.\d+)?)?|uv)\s+(?:(?:-m\s+)?pytest|-m\s+(?:unittest|py_compile|mypy|flake8|ruff\s+check))|node\s+(?:--test|--check|-c)|deno\s+(?:test|check|lint)|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|(?:make|just)\s+(?:test|check|lint|build|typecheck))(?:\s+[A-Za-z0-9_./:@+*?,=-]+)*$/i;
 const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--co|--show-?config|--init|--dry-run|--no-run|--passWithNoTests|--if-present)(?=$|\s|=)/i;
 const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
 const MUTATING_VERIFY_SCRIPT_RE = /^(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?[\w-]+:[^\s]*(?:fix|update|write|deploy|publish)[^\s]*/i;
 
+function isSingleVerificationSegment(segment: string): boolean {
+  const command = segment.trim();
+  if (!command) return false;
+  const shortNoOp = /^(?:(?:npx|bunx|bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?)?tsc\b.*(?:^|\s)-[vV](?=\s|$)/.test(command)
+    || /^(?:make|just|go)\s+.*(?:^|\s)-n(?=\s|$)/.test(command);
+  return !shortNoOp && !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_SCRIPT_RE.test(command);
+}
+
 /**
- * True only when the command itself is a recognized verifier invocation. Output
+ * True only when the command itself is a recognized verifier invocation (or a
+ * pure `&&` chain where every segment is a recognized verifier invocation). Output
  * is never evidence: arbitrary commands can print words such as "tests passed".
  */
 export function isVerificationSignal(cmd: string): boolean {
   const command = cmd.trim();
-  const shortNoOp = /^(?:(?:npx|bunx|bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?)?tsc\b.*(?:^|\s)-[vV](?=\s|$)/.test(command)
-    || /^(?:make|just|go)\s+.*(?:^|\s)-n(?=\s|$)/.test(command);
-  return !shortNoOp && !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_SCRIPT_RE.test(command);
+  if (!command) return false;
+  const withoutAndChain = command.replace(/&&/g, " ");
+  if (/[;&|<>`$(){}\n\r]/.test(withoutAndChain)) return false;
+  const segments = command.split("&&").map(s => s.trim());
+  return segments.length > 0 && segments.every(isSingleVerificationSegment);
 }
 
 /** Require test-run evidence for Go and Cargo's recognized text output. */
@@ -181,7 +192,7 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
       block: true,
       message:
         "You verified earlier, but then modified files again — your last passing test/build no longer reflects the current tree. " +
-        "Re-run the narrowest verification command against the latest changes, then call done.",
+        "Re-run the narrowest verification command against the latest changes (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done.",
     };
   }
   return {
@@ -189,6 +200,6 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
     block: true,
     message:
       "You modified files this turn but have no passing verification (no test/build/typecheck command succeeded, or the latest recognized verification failed). " +
-      "Run the narrowest command that proves your change works, then call done.",
+      "Run the narrowest command that proves your change works (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done.",
   };
 }

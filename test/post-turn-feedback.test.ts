@@ -179,7 +179,7 @@ test("done after a red hook stays blocked after a read and repeated completion a
 test("a later clean hook run clears the pending failure — done passes first try", async () => {
   const flag = path.join(projectDir, "fixed.flag");
   try { await fs.unlink(flag); } catch {}
-  await setHook({ event: "post-turn", match: { tool: "edit" }, run: `[ -f ${flag} ] || { echo red; exit 1; }` });
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: `[ -f "${flag.replace(/\\/g, "/")}" ] || { echo red; exit 1; }` });
   let calls = 0;
   llm.mockImplementation(async () => {
       calls++;

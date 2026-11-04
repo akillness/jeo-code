@@ -502,10 +502,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.20]** (2026-11-04)
 - **[0.12.19]** (2026-11-04)
 - **[0.12.18]** (2026-11-04)
 - **[0.12.17]** (2026-11-04)
-- **[0.12.16]** (2026-11-04)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

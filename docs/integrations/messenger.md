@@ -69,7 +69,16 @@ jeo messenger run --config /absolute/private/path/messenger.json
 
 Messenger workers run with `--no-skills`, so installing `jeo-skills` is not required and remote messages cannot activate local skill instructions. Restart the messenger service after any configuration change.
 
-The gateway, its generated launcher and every conversation worker run the `jeo` entry that executed `setup` (`run-discord.sh` embeds that path; workers reuse the gateway's own entry). Moving or deleting that checkout, or upgrading to a different install location, breaks every new request even while the gateway stays connected; re-run `jeo messenger setup --config <file> --service` from the new location to regenerate the launcher and restart the service.
+## Runtime and updates
+
+A profile's gateway and every conversation worker run from one runtime recorded in its launcher (`run-discord.sh` / `run-discord.cmd`):
+
+- **Managed runtime** (default when `jeo` itself is an npm/bun package install): setup installs a private copy of the published package under `<profile>/runtime/<version>/node_modules/jeo-code` (`bun install` of the exact version; roughly 80 MB, under a second with a warm cache) and points the launcher at it. The gateway therefore never runs a mutable global install or a source checkout that can move away underneath it. `jeo update` (the default install action) provisions the new version there, rewrites the launcher, restarts the installed service and prunes runtimes other than the new one and its predecessor, which stays for rollback; `jeo update --json` reports `messengersRefreshed` when any profile is registered. `jeo messenger update [--config <file>]` performs the same refresh on demand for every registered profile or one file, pinning it to the jeo that runs the command.
+- **External runtime** (setup run from a git checkout or a compiled binary): the launcher embeds that entry and `jeo update` leaves it alone. Moving or deleting the checkout breaks every new request even while the gateway stays connected (the service log then shows `error: Module not found …`); re-run setup, or `jeo messenger update --config <file>` from the new location, to repoint it. Run setup from an installed `jeo` to switch the profile to a managed runtime.
+
+Setup and `messenger update` register the profile in `~/.jeo/notifications/messenger-profiles.json` (`JEO_CONFIG_DIR` honoured); records whose config file disappeared are dropped on read. Re-running setup without `--service` restarts an already installed service so the rewritten launcher takes effect immediately.
+
+## Operator diagnostics
 
 Request failures are logged to the gateway's stderr (the service log in the profile directory) as `[jeo messenger <ISO time>] <platform> request failed at prepare|reply|deliver (conversation <8 hex>): <reason>`, followed by bounded worker diagnostics as `worker <8 hex>: <line>`: non-protocol worker stderr lines (control characters collapsed, 300 characters each, at most 20 per worker, then `further worker output suppressed`) and `worker exited with code <n>[ during a turn]` for non-zero or mid-turn exits. Users still receive only the generic failure text; the log carries no message content or platform tokens (worker environments have them blanked).
 

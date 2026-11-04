@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import pkg from "../../package.json";
+import { messengerProfilesPath } from "../messenger/runtime";
 
 /**
  * Compares two semver-ish version strings.
@@ -38,6 +40,13 @@ export interface UpdateDeps {
   install: (version?: string) => Promise<{ success: boolean; stdout?: string; stderr?: string }>;
   /** Display release notes after a successful self-update (best-effort, no-op in tests). */
   showWhatsNew?: () => void;
+  /**
+   * Re-pin registered messenger profiles to the freshly installed jeo and restart their services
+   * (`jeo messenger update` of the NEW binary). Returns null when no profile is registered, else whether
+   * every profile was refreshed. `quiet` keeps the child's output off stdout for `--json`. Optional in
+   * tests; failures never fail the update.
+   */
+  refreshMessengers?: (quiet: boolean) => boolean | null;
   /** Version of the `jeo` actually on PATH, read after install to catch a silent no-op
    *  (installed but PATH still points at a different/older binary). Optional in tests. */
   activeVersion?: () => string | null;
@@ -128,6 +137,20 @@ export const defaultDeps: UpdateDeps = {
       Bun.spawnSync(["jeo", "whats-new"], { stdout: "inherit", stderr: "inherit" });
     } catch {
       // Notes are a courtesy; a spawn failure must never fail the update.
+    }
+  },
+  refreshMessengers: quiet => {
+    // Only profiles registered by `jeo messenger setup` have runtimes to move; everyone else sees nothing.
+    if (!existsSync(messengerProfilesPath())) return null;
+    try {
+      if (!quiet) console.log("Refreshing messenger runtimes...");
+      // The NEW binary knows its own launcher format and version, so it performs the refresh.
+      const proc = Bun.spawnSync(["jeo", "messenger", "update"], quiet ? { stdout: "ignore", stderr: "ignore" } : { stdout: "inherit", stderr: "inherit" });
+      if (!proc.success && !quiet) console.error("Messenger runtimes were not all refreshed; run 'jeo messenger update' to retry.");
+      return proc.success;
+    } catch {
+      if (!quiet) console.error("Messenger runtimes were not refreshed; run 'jeo messenger update' to retry.");
+      return false;
     }
   }
 };
@@ -310,11 +333,13 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
           const active = deps.activeVersion?.();
           const stale = !!(active && latest && compareVersions(active, latest) < 0);
           if (hasJson) {
+            const messengersRefreshed = stale ? null : (deps.refreshMessengers?.(true) ?? null);
             console.log(JSON.stringify({
               current,
               latest,
               upToDate: false,
               installed: !stale,
+              ...(messengersRefreshed === null ? {} : { messengersRefreshed }),
               ...(stale ? { activeVersion: active, error: "active jeo still reports an older version" } : {}),
             }));
             if (stale) process.exitCode = 1;
@@ -327,6 +352,7 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
             process.exitCode = 1;
           } else {
             console.log(`Successfully installed jeo-code@${latest}`);
+            deps.refreshMessengers?.(false);
             deps.showWhatsNew?.();
           }
         } else {
@@ -337,15 +363,18 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
           const recovered = deps.activeVersion?.();
           if (recovered && latest && compareVersions(recovered, latest) >= 0) {
             if (hasJson) {
+              const messengersRefreshed = deps.refreshMessengers?.(true) ?? null;
               console.log(JSON.stringify({
                 current,
                 latest,
                 upToDate: false,
                 installed: true,
-                recovered: true
+                recovered: true,
+                ...(messengersRefreshed === null ? {} : { messengersRefreshed })
               }));
             } else {
               console.log(`Successfully installed jeo-code@${latest} (package manager reported an error, but the runtime verified clean).`);
+              deps.refreshMessengers?.(false);
               deps.showWhatsNew?.();
             }
           } else {

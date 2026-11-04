@@ -72,6 +72,44 @@ WantedBy=default.target
 `;
 }
 
+/** Where the user service definition lives on this platform, or undefined where services are unsupported. */
+export function messengerServiceFile(plan: MessengerServicePlan, platform: NodeJS.Platform = process.platform, home: string = os.homedir()): string | undefined {
+	if (platform === "darwin") return path.join(home, "Library", "LaunchAgents", `${plan.label}.plist`);
+	if (platform === "linux") return path.join(home, ".config", "systemd", "user", `${plan.label}.service`);
+	return undefined;
+}
+
+/**
+ * Restart an installed service so it picks up a rewritten launcher. Returns `"not installed"` when no
+ * definition exists; a definition that cannot be restarted is an error, never a silent stale service.
+ */
+export async function restartMessengerService(
+	plan: MessengerServicePlan,
+	platform: NodeJS.Platform = process.platform,
+	home: string = os.homedir(),
+): Promise<"restarted" | "not installed"> {
+	const file = messengerServiceFile(plan, platform, home);
+	if (!file || !(await fs.stat(file).then(stat => stat.isFile(), () => false))) return "not installed";
+	if (platform === "darwin") {
+		const domain = `gui/${process.getuid?.() ?? 0}`;
+		// kickstart -k restarts a loaded job; a definition that is on disk but unloaded is bootstrapped instead.
+		if ((await $`launchctl kickstart -k ${domain}/${plan.label}`.quiet().nothrow()).exitCode !== 0) {
+			if ((await $`launchctl bootstrap ${domain} ${file}`.quiet().nothrow()).exitCode !== 0) throw new Error(`launchctl could not restart ${plan.label}`);
+		}
+		for (let attempt = 0; attempt < 20; attempt++) {
+			const status = await $`launchctl print ${domain}/${plan.label}`.quiet().nothrow();
+			if (status.exitCode === 0 && /\bstate = running\b/.test(status.text())) return "restarted";
+			await Bun.sleep(500);
+		}
+		throw new Error(`launchd job ${plan.label} did not reach the running state; see ${plan.logFile}`);
+	}
+	const unit = `${plan.label}.service`;
+	if ((await $`systemctl --user restart ${unit}`.quiet().nothrow()).exitCode !== 0) throw new Error(`systemctl --user could not restart ${unit}`);
+	const active = await $`systemctl --user is-active ${unit}`.quiet().nothrow();
+	if (active.text().trim() !== "active") throw new Error(`${unit} is not active; see ${plan.logFile}`);
+	return "restarted";
+}
+
 /**
  * Install (or replace) and start the service, then confirm the platform reports it running.
  * Returns a one-line description of where it was installed.
@@ -82,7 +120,7 @@ export async function installMessengerService(
 	home: string = os.homedir(),
 ): Promise<string> {
 	if (platform === "darwin") {
-		const file = path.join(home, "Library", "LaunchAgents", `${plan.label}.plist`);
+		const file = messengerServiceFile(plan, platform, home)!;
 		await Bun.write(file, launchdPlist(plan));
 		const domain = `gui/${process.getuid?.() ?? 0}`;
 		await $`launchctl bootout ${domain} ${file}`.quiet().nothrow();
@@ -103,7 +141,7 @@ export async function installMessengerService(
 	}
 	if (platform === "linux") {
 		const unit = `${plan.label}.service`;
-		const file = path.join(home, ".config", "systemd", "user", unit);
+		const file = messengerServiceFile(plan, platform, home)!;
 		await fs.mkdir(path.dirname(file), { recursive: true });
 		await Bun.write(file, systemdUnit(plan));
 		const reload = await $`systemctl --user daemon-reload`.quiet().nothrow();

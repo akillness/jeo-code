@@ -85,7 +85,7 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
   }
   await setupDiscordMessenger({ configPath, dmTest: false }, {
     interactive: false, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
-  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"] });
+  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"], profilesPath: path.join(root, "messenger-profiles.json") });
   const written = await Bun.file(configPath).json();
   expect(written).toEqual(expected);
   const migrated = await loadMessengerConfig(configPath);

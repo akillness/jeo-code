@@ -6,6 +6,7 @@ import { Writable } from "node:stream";
 import { loadMessengerConfig, parseMessengerSandbox, validateMessengerEnvironment, validateMessengerStorage } from "../messenger/config";
 import { createDiscordAdapter } from "../messenger/discord";
 import { setupDiscordMessenger } from "../messenger/discord-setup";
+import { refreshMessengerProfiles } from "../messenger/runtime";
 import { messengerArtifactPrompt } from "../messenger/artifacts";
 import { createMessengerGateway, messengerSessionRoute } from "../messenger/gateway";
 import { createMessengerSessionPool } from "../messenger/session-pool";
@@ -61,11 +62,12 @@ async function sendSandboxControl(config: MessengerConfig, id: string, userId: s
 	return promise;
 }
 
+type MessengerAction = "setup" | "check" | "run" | "update";
 type Flags = { config?: string; channel: string[]; user: string[]; tools?: string; artifacts: boolean; service: boolean; noDm: boolean };
 
-function parse(args: string[]): { action: "setup" | "check" | "run"; flags: Flags } {
+function parse(args: string[]): { action: MessengerAction; flags: Flags } {
 	const action = args.shift();
-	if (action !== "setup" && action !== "check" && action !== "run") throw new Error("Usage: jeo messenger setup|check|run --config <file>");
+	if (action !== "setup" && action !== "check" && action !== "run" && action !== "update") throw new Error("Usage: jeo messenger setup|check|run --config <file> | jeo messenger update [--config <file>]");
 	const flags: Flags = { channel: [], user: [], artifacts: false, service: false, noDm: false };
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
@@ -80,7 +82,7 @@ function parse(args: string[]): { action: "setup" | "check" | "run"; flags: Flag
 			else flags[arg === "--channel" ? "channel" : "user"].push(...value.split(",").filter(Boolean));
 		} else throw new Error(`Unknown messenger option: ${arg}`);
 	}
-	if (!flags.config) throw new Error("Messenger requires --config <file>");
+	if (!flags.config && action !== "update") throw new Error("Messenger requires --config <file>");
 	return { action, flags };
 }
 
@@ -215,6 +217,12 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm }, io, { signal: AbortSignal.any([controller.signal, io.signal]) });
 			process.stdout.write(`Discord messenger ready: ${result.configPath}\nStart: ${result.runScript}\n`);
 		} finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); io.close(); }
+		return;
+	}
+	if (action === "update") {
+		// Re-pin every registered profile (or the named one) to the jeo running this command, then restart its service.
+		const { failed } = await refreshMessengerProfiles(flags.config ? [flags.config] : undefined, line => process.stdout.write(`${line}\n`));
+		if (failed) process.exitCode = 1;
 		return;
 	}
 	let config: MessengerConfig;

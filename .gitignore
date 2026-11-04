@@ -13,6 +13,13 @@ gen/
 /inspect-chars.ts
 /print-welcome.ts
 
+# Local tool runtime caches & artifacts
+Library/
+__pycache__/
+graphify-out/
+llm-wiki/
+WATCHDOG.yml
+
 # Hidden (dot) files and folders at EVERY level — runtime / tool state such as
 # .jeo, .gjc, .omc, .omx, .omu, .serena, .specify, .autoresearch, .DS_Store …
 # A pattern with no slash matches the basename at any depth, so this covers

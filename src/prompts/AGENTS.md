@@ -23,7 +23,7 @@ Bundled system prompts, role definitions, and workflow skill documentation for t
 - Do not remove existing constraints without explicit reason.
 
 ### Testing Requirements
-- Prompt changes should be verified via end-to-end testing or `bun run run-evolution.sh`.
+- Prompt changes should be verified via end-to-end testing.
 
 ### Common Patterns
 - XML-like tags for structural organization within prompts.

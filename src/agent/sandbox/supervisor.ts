@@ -162,20 +162,29 @@ export function createSandboxSupervisor(options: { policy: SandboxPolicy; backen
     return effect.result.promise;
   }
 
+  /** A Windows host path that matches no mount is not "relative" to the Linux guest; it must never be forwarded. */
   function guestPath(value: string): string {
-    if (!path.isAbsolute(value)) return value;
-    const mount = [...policy.mounts].sort((a, b) => b.host.length - a.host.length).find(item => sandboxPathContains(item.host, value));
-    if (!mount) return value;
-    const relative = path.relative(mount.host, value).split(path.sep).join("/");
-    return relative ? `${mount.guest}/${relative}` : mount.guest;
+    const mount = path.isAbsolute(value) ? [...policy.mounts].sort((a, b) => b.host.length - a.host.length).find(item => sandboxPathContains(item.host, value)) : undefined;
+    if (mount) {
+      const relative = path.relative(mount.host, value).split(path.sep).join("/");
+      return relative ? `${mount.guest}/${relative}` : mount.guest;
+    }
+    if (process.platform === "win32" && /^(?:[A-Za-z]:|[\\/]{2}|\\)/.test(value)) throw new Error("SANDBOX_POLICY: host path is outside approved mounts");
+    return value;
   }
 
   function call(tool: string, args: Record<string, unknown>, callOptions?: SandboxCallOptions): Promise<ToolResult> {
     const mapped = { ...args };
-    for (const key of ["filePath", "path", "dirPath", "dir", "targetPath", "cwd", "subdir"]) {
-      if (typeof mapped[key] === "string") mapped[key] = guestPath(mapped[key]);
+    let cwd: string | undefined;
+    try {
+      for (const key of ["filePath", "path", "dirPath", "dir", "targetPath", "cwd", "subdir"]) {
+        if (typeof mapped[key] === "string") mapped[key] = guestPath(mapped[key]);
+      }
+      if (callOptions?.cwd) cwd = guestPath(callOptions.cwd);
+    } catch (error) {
+      return Promise.resolve({ success: false, output: "", error: error instanceof Error ? error.message : String(error) });
     }
-    return enqueue({ id: crypto.randomUUID(), type: "tool", tool: tool === "approve" ? "__plan_approve" : tool, args: mapped, ...(callOptions?.cwd ? { cwd: guestPath(callOptions.cwd) } : {}) }, callOptions);
+    return enqueue({ id: crypto.randomUUID(), type: "tool", tool: tool === "approve" ? "__plan_approve" : tool, args: mapped, ...(cwd ? { cwd } : {}) }, callOptions);
   }
 
   return {
@@ -184,7 +193,10 @@ export function createSandboxSupervisor(options: { policy: SandboxPolicy; backen
       return Object.fromEntries(names.map(name => [name, (args: Record<string, unknown>, cwd: string, onProgress?: (text: string) => void) => call(name, args, { cwd, onProgress })]));
     },
     exec(argv: readonly string[], execOptions: SandboxExecOptions = {}): Promise<SandboxExecResult> {
-      return enqueue({ id: crypto.randomUUID(), type: "exec", argv: [...argv], ...(execOptions.cwd ? { cwd: guestPath(execOptions.cwd) } : {}), ...(execOptions.env ? { env: execOptions.env } : {}), ...(execOptions.stdin !== undefined ? { stdin: execOptions.stdin } : {}) }, { signal: execOptions.signal });
+      let cwd: string | undefined;
+      try { if (execOptions.cwd) cwd = guestPath(execOptions.cwd); }
+      catch (error) { return Promise.resolve({ success: false, output: "", error: error instanceof Error ? error.message : String(error) }); }
+      return enqueue({ id: crypto.randomUUID(), type: "exec", argv: [...argv], ...(cwd ? { cwd } : {}), ...(execOptions.env ? { env: execOptions.env } : {}), ...(execOptions.stdin !== undefined ? { stdin: execOptions.stdin } : {}) }, { signal: execOptions.signal });
     },
     async replacePolicy(next): Promise<void> {
       if (state === "closed" || state === "changing" || next.sessionKey !== policy.sessionKey || next.revision <= policy.revision) throw new Error("SANDBOX_POLICY: closed, changing or invalid policy revision");

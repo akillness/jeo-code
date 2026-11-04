@@ -439,7 +439,7 @@ export function captureLivePromptInputChunk(
       const plain = start === -1 ? rest : rest.slice(0, start);
       if (start !== -1) state.inPaste = true;
       rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
-      if (feedLivePromptSegment(state, plain)) accepted = true;
+      if (feedLivePromptSegment(state, decodeExtendedKeys(stripMouseReports(plain)))) accepted = true;
     }
   }
   return accepted;
@@ -506,10 +506,17 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
       opts.onBufferedInput?.(raw);
       return;
     }
+    // Strip mouse reports and terminal capability replies (OSC/CSI device attributes)
+    // first so terminal responses arriving mid-turn never leak into the live draft.
+    const stripped = stripMouseReports(raw);
+    if (!stripped && raw.length > 0) {
+      opts.onNoise?.();
+      return;
+    }
     // Kitty/modifyOtherKeys re-encodings → legacy bytes FIRST, so Esc (`CSI 27u`) and
     // Ctrl+C (`CSI 99;5u` / `CSI 27;5;99~`) cancel a live turn on every terminal —
     // previously they fell into the "noise" branch and did NOTHING mid-turn.
-    const text = decodeExtendedKeys(raw);
+    const text = decodeExtendedKeys(stripped);
     if (text === "\u000f") {
       opts.onDetailKey?.();
       return;
@@ -579,7 +586,22 @@ export function classifyMidTurnLine(line: string): "command" | "steer" | "empty"
   // A lone sigil ("/" or "$") has no command name — ignore it instead of aborting the
   // running turn to dispatch an empty command (a stray slash should not interrupt work).
   if (t === "/" || t === "$") return "empty";
-  return /^[/$]/.test(t) ? "command" : "steer";
+  const firstToken = t.split(/\s+/, 1)[0] ?? "";
+  if (firstToken.startsWith("/")) {
+    // A slash command is a single leading token (/model, /help, /?); a token containing
+    // additional slashes (/Users/foo/bar, /tmp/a.ts, //comment) is a path or comment,
+    // never a REPL command that should abort the running turn.
+    const name = firstToken.slice(1);
+    if (!name || name.includes("/")) return "steer";
+    return /^[a-zA-Z?][a-zA-Z0-9_-]*$/.test(name) ? "command" : "steer";
+  }
+  if (firstToken.startsWith("$")) {
+    // A skill invocation starts with a skill identifier ($team, $ralplan), not a
+    // numeric dollar amount ($100) or path ($/foo).
+    const name = firstToken.slice(1);
+    return /^[a-zA-Z][a-zA-Z0-9_:-]*$/.test(name) ? "command" : "steer";
+  }
+  return "steer";
 }
 /** Default window (ms) over which the several delivery paths of ONE physical Ctrl+C
  *  press — readline 'keypress', the rl/process 'SIGINT' event, and the raw \u0003 stdin

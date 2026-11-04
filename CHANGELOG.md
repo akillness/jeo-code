@@ -9,6 +9,24 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.18] - 2026-11-04
+
+### Changed
+- **Session model follows the login** — a session opens on the configured default model, and only when the stored login can actually serve it (the provider has a live credential and, for built-in providers, the credential serves that specific model; ChatGPT OAuth serves only Codex ids). When it cannot, the session starts on the first authenticated model from recents, then role tiers, and prints a one-line notice naming the provider to log in to. The fallback is session-local; the saved default is never rewritten, and an explicit `--model`/`--model-role`/`--provider` pin still wins.
+- **Resume opens on the default too** — `--resume`, `--resume-interactive` and `/session resume` no longer restore the model saved in the session header; a resumed session opens on the same default as a new one. `/model` and the picker still switch the model for the running session.
+
+## [0.12.17] - 2026-11-04
+
+### Fixed
+- **Windows sandbox unmapped host paths** — a host path that matches no approved mount (`C:\…`, drive-relative `C:name`, UNC `\\server\share`, or a leading `\`) was forwarded to the Linux guest unchanged, where it is a *relative* name; a write to it succeeded and created an oddly named file inside the read-write workspace mount instead of being denied. It stayed inside the mount (no host path was written), but it violated the "unmounted paths are denied" contract. The supervisor now rejects such paths (tool arguments, `cwd`, and `exec` cwd) with `SANDBOX_POLICY: host path is outside approved mounts` before anything reaches the guest. POSIX hosts and mounted paths are unchanged. Found by `verify:sandbox` (`unmounted-sentinel`) on a native Windows host.
+- **Windows shell resolution** — the `bash` tool, background jobs/monitors, and post-turn hooks spawned a bare `bash`, which on Windows resolves to WSL's `System32\bash.exe` (no `bun`, Windows paths absent). They now use the existing Git for Windows resolver, so verification commands no longer fail with exit 127 and hooks no longer time out.
+- **Mid-turn premature stop** — plain-text progress narration after tools have run, or while mutations/hooks are pending, now bounces for a JSON tool call instead of ending the turn; a post-verification completion grace step and verification-cycle step-budget extensions keep iterative edit-test-fix loops from being cut off.
+- **Live input** — mouse reports and terminal capability replies are stripped before they can reach the live draft; mid-turn file paths (`/tmp/a.ts`) and dollar amounts (`$100`) are steered to the model rather than treated as commands that abort the turn.
+- **Subagents** — executors, read-only roles, and critics get bounded step-budget extensions, and a subagent whose `done` lacks the required role-contract sections is bounced once to complete them.
+
+### Known issues
+- **Windows `verify:discord`** — 27 of 101 focused Discord tests fail on a native Windows host, both with and without the changes in this release (measured on the pre-change commit; not measured on other platforms), so its authoritative report is `failed` there. At least the attachment-staging check rejects a private directory because Windows reports mode `0o666`; the remainder are not yet triaged.
+
 ## [0.12.16] - 2026-11-04
 
 ### Upgrade
@@ -2682,7 +2700,9 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.16...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.18...HEAD
+[0.12.18]: https://github.com/akillness/jeo-code/releases/tag/v0.12.18
+[0.12.17]: https://github.com/akillness/jeo-code/releases/tag/v0.12.17
 [0.12.16]: https://github.com/akillness/jeo-code/releases/tag/v0.12.16
 [0.12.6]: https://github.com/akillness/jeo-code/releases/tag/v0.12.6
 [0.11.4]: https://github.com/akillness/jeo-code/releases/tag/v0.11.4

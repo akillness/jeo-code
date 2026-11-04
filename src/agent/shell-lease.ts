@@ -33,6 +33,7 @@
  */
 import * as cp from "node:child_process";
 import * as fs from "node:fs";
+import { resolvePosixTool } from "../util/posix-tools";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
@@ -96,7 +97,7 @@ export function spawnLeasedShell(command: string, cwd: string): LeasedShell {
 }
 
 function spawnDirect(command: string, cwd: string): LeasedShell {
-  const proc = Bun.spawn(["bash", "-c", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([resolvePosixTool("bash"), "-c", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const stdout = proc.stdout.getReader();
   const stderr = proc.stderr.getReader();
   const reaped = proc.exited.then(() => undefined);

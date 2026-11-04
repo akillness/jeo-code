@@ -94,3 +94,25 @@ test("runAgentLoop: onUsage event reports cumulative tokens after each call", as
   expect(seen[1]).toEqual({ inputTokens: 200, outputTokens: 20 });
   expect(result.usage).toEqual({ inputTokens: 200, outputTokens: 20 });
 });
+
+test("runAgentLoop: mid-turn plain-text progress reply after a tool call bounces instead of prematurely finishing", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "a.ts" } });
+      if (turn === 2) return "원인을 확인했습니다. 이제 src/a.ts 파일을 수정하겠습니다.";
+      return JSON.stringify({ tool: "done", arguments: { reason: "completed after bounce" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "user" as const, content: "fix a.ts" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 6,
+    tools: { read: async () => ({ success: true, output: "code" }) },
+  });
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("completed after bounce");
+  expect(turn).toBe(3);
+});

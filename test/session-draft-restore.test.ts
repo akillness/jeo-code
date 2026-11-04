@@ -104,3 +104,31 @@ test("/session resume omits `draft` from the result when the session had none", 
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("/session resume does not restore the model saved in the session header", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-draft-"));
+  try {
+    const { id } = await createSession(tempDir, undefined, "gpt-4o");
+    expect((await loadSession(id, tempDir)).header.model).toBe("gpt-4o");
+
+    const result = await runSessionSlash(`/session resume ${id}`, {
+      cwd: tempDir,
+      history: [{ role: "user", content: "seed" } as any],
+      noSession: false,
+      sessionId: undefined,
+      sessionModel: undefined,
+      rl: { history: [] },
+      advanceSessionBoxColor: () => {},
+      disarmPreview: () => {},
+      clearScreen: () => "",
+      freshWelcomeLines: () => [],
+      logLines: () => {},
+      runSelectPicker: async () => {},
+    });
+
+    expect(result.sessionId).toBe(id);
+    expect(result.sessionModel).toBeUndefined();
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

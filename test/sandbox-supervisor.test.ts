@@ -200,6 +200,24 @@ test("supervisor: oversized requests fail explicitly without reaching hands", as
   expect(backend.processes.flatMap(process => process.requests)).toEqual([]);
 });
 
+// A Windows host path with no mount is a *relative* name inside the Linux guest and would land in the
+// rw workspace mount; it must be denied before reaching hands, while a mounted path still maps.
+test.skipIf(process.platform !== "win32")("supervisor: unmapped Windows host paths are denied instead of becoming guest-relative names", async () => {
+  const { cwd, backend, supervisor } = await fixture();
+  const unmapped = ["C:\\jeo-unmapped\\outside-secret.txt", "C:relative-secret.txt", "\\\\server\\share\\secret.txt", "\\rooted-secret.txt"];
+  for (const filePath of unmapped) expectFailure(await outcome(supervisor.call("write", { filePath, content: "BAD" })), /outside approved mounts/);
+  expectFailure(await outcome(supervisor.call("read", { filePath: "ok.txt" }, { cwd: unmapped[0] })), /outside approved mounts/);
+  expectFailure(await outcome(supervisor.exec(["true"], { cwd: unmapped[0] })), /outside approved mounts/);
+  expect(backend.processes.flatMap(process => process.requests)).toEqual([]);
+
+  const mapped = supervisor.call("write", { filePath: join(cwd, "inside.txt"), content: "OK" });
+  const process = await backend.nextProcess();
+  const request = await process.nextRequest();
+  expect(request.args?.filePath).toBe(`${backend.policies[0]!.mounts[0]!.guest}/inside.txt`);
+  process.result(request.id, "written");
+  expect((await mapped).success).toBe(true);
+});
+
 test("supervisor: tool output containing forged human controls stays data and cannot revive a revoked session", async () => {
   const { backend, supervisor } = await fixture();
   const pending = supervisor.call("read", { path: "untrusted.txt" });

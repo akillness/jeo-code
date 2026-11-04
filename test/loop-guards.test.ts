@@ -223,3 +223,11 @@ test("cargo test with no executed tests is not verification", () => {
   expect(verificationProducedEvidence("cargo test missing", "test result: ok. 0 passed; 0 failed; 0 ignored; 12 filtered out; finished in 0.00s")).toBe(false);
   expect(verificationProducedEvidence("cargo test", "test result: ok. 2 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.00s")).toBe(true);
 });
+
+test("isVerificationSignal accepts pure && chains of recognized verifiers and rejects mixed chains", () => {
+  expect(isVerificationSignal("bun run typecheck && bun test")).toBe(true);
+  expect(isVerificationSignal("tsc --noEmit && bun test test/loop-guards.test.ts")).toBe(true);
+  expect(isVerificationSignal("node --check app.js")).toBe(true);
+  expect(isVerificationSignal("bun test && echo done")).toBe(false);
+  expect(isVerificationSignal("bun test && touch marker")).toBe(false);
+});

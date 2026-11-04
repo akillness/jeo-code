@@ -291,14 +291,21 @@ test("profile credentials stay outside approved grants through ancestors and sym
 		await fs.writeFile(path.join(profile, "launch.sh"), "sentinel launcher");
 		const linkedSecret = path.join(f.root, "linked-credential.json");
 		await fs.writeFile(linkedSecret, "linked sentinel");
-		await fs.symlink(linkedSecret, path.join(profile, "linked-credential.json"));
+		let linked = true;
+		try {
+			await fs.symlink(linkedSecret, path.join(profile, "linked-credential.json"));
+		} catch (error) {
+			if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") linked = false;
+			else throw error;
+		}
 		await fs.symlink(profile, alias, process.platform === "win32" ? "junction" : "dir");
 		const file = path.join(profile, "messenger.json");
 		await fs.writeFile(file, JSON.stringify({ cwd: f.cwd, sessionDir: path.join(f.root, "messenger-sessions"), sandbox: config, platforms: { discord: { allowedUserIds: ["operator"] } } }));
 		const loaded = await loadMessengerConfig(file);
 		const privateRoots = await messengerProfilePrivatePaths(loaded.profileDir!, loaded.cwd);
 		const authority = await createGrantAuthority({ sessionKey: "profile-session", cwd: loaded.cwd, config, supervisor: f.supervisor, allowedUserIds: ["operator"], stateDirectory: path.join(f.root, "profile-authority"), privateRoots });
-		for (const target of [profile, path.join(profile, "credentials.json"), profileParent, alias, linkedSecret]) {
+		const restrictedTargets = [profile, path.join(profile, "credentials.json"), profileParent, alias, ...(linked ? [linkedSecret] : [])];
+		for (const target of restrictedTargets) {
 			for (const mode of ["ro", "rw"] as const) {
 				await expect(authority.requestAccess(target, mode)).rejects.toThrow("SANDBOX_POLICY");
 			}
@@ -307,7 +314,7 @@ test("profile credentials stay outside approved grants through ancestors and sym
 		const request = await authority.requestAccess(f.resource, "rw");
 		await authority.approve(request.id, { origin: "discord", sessionKey: "profile-session", userId: "operator" });
 		expect(await f.write(path.join(f.resource, "allowed.txt"), "allowed")).toBe(true);
-		for (const target of [profile, path.join(profile, "credentials.json"), profileParent, alias, linkedSecret]) {
+		for (const target of restrictedTargets) {
 			await expect(authority.requestAccess(target, "ro")).rejects.toThrow("SANDBOX_POLICY");
 		}
 		expect(await f.write(path.join(profile, "credentials.json"), "leaked")).toBe(false);

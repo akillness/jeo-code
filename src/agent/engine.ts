@@ -35,6 +35,13 @@ import { jeoEnv } from "../util/env";
 import { GUARD_LIMITS, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate } from "./loop-guards";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
 
+const MID_TASK_PROSE_RE =
+  /\b(?:i\s+will\s+now|i'll\s+now|let\s+me\s+(?:now\s+)?(?:read|check|inspect|search|find|edit|write|run|verify|update|fix|implement|create|test)|next,?\s+i\s+(?:will|need\s+to)|now\s+i\s+(?:will|need\s+to))\b|(?:이제|다음으로|먼저|이어서)\s+[^\n]{0,80}(?:수정|작성|실행|확인|구현|검증|진행|추가|변경|점검)(?:하겠|할게|해\s*보겠)/i;
+
+export function looksLikeMidTaskProse(text: string): boolean {
+  return MID_TASK_PROSE_RE.test(text.trim());
+}
+
 
 async function invokeCallLlm(history: Message[], options: {
   jsonMode: boolean;
@@ -653,6 +660,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let mutVerSeq = 0;
   let lastMutationSeq = 0;
   let lastVerificationSeq = 0;
+  let verificationCycles = 0;
+  let completionGraceUsed = false;
   let doneCorrections = 0;
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
   // diagnostics the model saw but has not yet resolved (a later clean hook run
@@ -715,12 +724,17 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     if (step > budget.limit()) {
       const decision = budget.tryExtend();
       if (!decision.extend) {
-        budgetStopReason = decision.reason;
-        break;
+        if (!completionGraceUsed && sawMutation && sawVerification && lastMutationSeq < lastVerificationSeq && !pendingHookFailure) {
+          completionGraceUsed = true;
+        } else {
+          budgetStopReason = decision.reason;
+          break;
+        }
+      } else {
+        // One surface per sink: budget-aware consumers get onBudget; others the notice.
+        if (ev.onBudget) ev.onBudget(decision.limit, decision.reason);
+        else ev.onNotice?.(decision.reason);
       }
-      // One surface per sink: budget-aware consumers get onBudget; others the notice.
-      if (ev.onBudget) ev.onBudget(decision.limit, decision.reason);
-      else ev.onNotice?.(decision.reason);
     }
     if (opts.signal?.aborted) {
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
@@ -1043,11 +1057,45 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     } catch (err) {
       // Preserve chat-style final answers, but subject them to the same completion
       // gates as explicit done calls rather than treating prose as proof of success.
+      // Mid-turn prose (after tools have already run, while mutations/hooks are
+      // pending, or when the text narrates an upcoming action) must bounce for a
+      // JSON tool call first instead of prematurely terminating the turn on step 1.
       const trimmed = responseText.trim();
       parseFailures++;
-      if (trimmed && (!trimmed.includes("{") || parseFailures > MAX_PARSE_BOUNCES)) {
+      const hasTools = Object.keys(tools).length > 0;
+      const midTurnInProgress =
+        (step > 1 && hasTools) ||
+        sawMutation ||
+        pendingHookFailure !== null ||
+        (hasTools && looksLikeMidTaskProse(trimmed));
+      if (trimmed && (parseFailures > MAX_PARSE_BOUNCES || (!trimmed.includes("{") && !midTurnInProgress))) {
+        const candidateReason = stripLeakedReasoningTags(trimmed) || trimmed;
+        if (parseFailures <= MAX_PARSE_BOUNCES && ev.onBeforeDone) {
+          const preCheck = await ev.onBeforeDone(candidateReason, {
+            sawMutation,
+            sawVerification,
+            verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
+          });
+          if (preCheck) {
+            if (doneCorrections >= GUARD_LIMITS.MAX_DONE_CORRECTIONS) {
+              return finish({ done: false, steps: step, doneReason: `Stopped: completion rejected after ${doneCorrections} corrections. ${preCheck}` });
+            }
+            doneCorrections++;
+            ev.onNotice?.(`done deferred — completion correction ${doneCorrections}/${GUARD_LIMITS.MAX_DONE_CORRECTIONS}`);
+            ev.onAssistant?.(responseText, null);
+            pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
+            history.push({
+              role: "user",
+              content:
+                `Your last reply was plain text instead of a JSON tool call, and completion cannot finish yet (${preCheck}). ` +
+                `Do NOT apologize. Reply with ONLY the next JSON tool call: {"tool":"<name>","arguments":{...}}.`,
+            });
+            step++;
+            continue;
+          }
+        }
         salvagedAnswer = true;
-        invocation = { tool: "done", arguments: { reason: stripLeakedReasoningTags(trimmed) || trimmed } };
+        invocation = { tool: "done", arguments: { reason: candidateReason } };
       } else {
         ev.onAssistant?.(responseText, null);
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
@@ -1187,8 +1235,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // coarse target" and let `budget.record` fall back to the exact-args signature
     // instead (unchanged legacy novelty for tools this helper doesn't specifically know).
     const callTargets = toolCalls.map(c => {
+      if ((c.tool || "").toLowerCase() === "task") return undefined;
       const t = toolTarget(c.tool, c.arguments);
-      return t.toLowerCase() === (c.tool || "").toLowerCase() ? undefined : t;
+      if (t.toLowerCase() === (c.tool || "").toLowerCase()) return undefined;
+      return verificationCycles > 0 ? `${t}@v${verificationCycles}` : t;
     });
 
 
@@ -1484,9 +1534,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       const command = String(toolCalls[i].arguments?.command ?? toolCalls[i].arguments?.cmd ?? "");
       const verificationCall = t === "bash" && isVerificationSignal(command);
       if (verificationCall) {
+        if (sawMutation && verificationCycles < 4) verificationCycles++;
         if (results[i].success && verificationProducedEvidence(command, String(results[i].output ?? ""))) {
           sawVerification = true;
           lastVerificationSeq = ++mutVerSeq;
+          if (!pendingHookFailure) doneCorrections = 0;
         } else {
           sawVerification = false;
           if (results[i].mutationMayHaveOccurred === true) {
@@ -1495,6 +1547,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
         }
         continue;
+      }
+      if (t === "todo" && results[i].success && doneCorrections > 0 && (!sawMutation || (sawVerification && lastMutationSeq < lastVerificationSeq)) && !pendingHookFailure) {
+        doneCorrections = 0;
       }
 
       const output = String(results[i].output ?? "").trim();

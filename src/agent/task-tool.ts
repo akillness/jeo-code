@@ -467,6 +467,7 @@ export async function runSubagentOnce(
   const failoverEnabled = !!opts.config.routing?.enabled;
   let activeModel = initialModel;
   emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model: activeModel });
+  let contractCorrections = 0;
   const runOnce = () => {
     return runAgentLoop(history, {
       cwd,
@@ -474,14 +475,27 @@ export async function runSubagentOnce(
       maxSteps,
       maxTokens: resolveMaxOutputTokens(activeModel, thinking),
       sessionKey,
-      // Bounded delegation: a subagent's step contract stays exact — the parent
-      // owns any retry/extension decision, so the gjc retry flow is disabled here.
-      budget: { maxExtensions: 0 },
+      // Allow bounded step-budget extensions when a subagent is actively making
+      // progress so multi-file edits + test verification do not get cut off mid-run.
+      budget: { maxExtensions: role.readOnly ? 1 : 2 },
       signal,
       steer,
       tools: subagentToolset(role),
       ...(failoverEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
       events: {
+        onBeforeDone: reason => {
+          const hasToolActivity = fileMutations > 0 || bashRuns > 0 || readOnlyEvidenceCalls > 0;
+          if (!hasToolActivity || contractCorrections >= 1) return null;
+          const check = validateSubagentDoneReason(role, reason);
+          if (!check.ok) {
+            contractCorrections++;
+            return (
+              `Your done.reason is missing required section(s) for ${role.title}: ${check.missing?.join(", ")}. ` +
+              `Call done again with non-empty content under every required section header.`
+            );
+          }
+          return null;
+        },
         onEvidence: evidence => {
           if (evidence.sawMutation) mutationMayHaveOccurred = true;
         },

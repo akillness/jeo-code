@@ -188,8 +188,6 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         history.length = 1;
         for (const m of messages) history.push(m);
         sessionId = rid;
-        // Restore the model this session was last using (per-session model).
-        if (header.model) { sessionModel = header.model; sessionModelChanged = true; }
         // Restore the unsent input-box draft left over at last save, if any.
         if (header.draft) draft = header.draft;
 

@@ -1229,7 +1229,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // injected SKILL.md is NOT user-authored and the [skill] card already names it,
     // gjc-style); a string → show that compact label instead of the raw input.
     opts?: { userCard?: string | null; signal?: AbortSignal; trustedContext?: string },
-  ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
+  ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string; unverified: boolean }> => {
     opts?.signal?.throwIfAborted();
     if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
     let busyDraftHasPaste = false;
@@ -1370,7 +1370,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         sessionNotifyEndpoint?.sendTurnStream(notifyRedact ? "[redacted]" : reply);
         cliTui?.events().onStep?.(result.steps);
         cliTui?.finish(reply);
-        return { done: true, steps: result.steps, reply, rendered: !!cliTui, usage };
+        return { done: true, steps: result.steps, reply, rendered: !!cliTui, usage, unverified: false };
       } catch (error) {
         if (oneShot) {
           process.exitCode = error instanceof AgyCliError
@@ -1883,13 +1883,24 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
         // because nothing ever forced the model to update item statuses).
         let turnTodos: { title: string; status: string }[] = [];
+        // Evidence from earlier engine runs of THIS turn always counts; an earlier turn's
+        // unverified mutation counts only while a goal is active (valid or corrupt goal file).
+        let turnPendingMutation = false;
+        try {
+          turnPendingMutation = (await readGoalState(cwd)) !== null && pendingMutationVerification;
+        } catch (error) {
+          if (!(error instanceof GoalStateCorruptError)) throw error;
+          turnPendingMutation = pendingMutationVerification;
+        }
         const onEvidence = async (
           evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean },
         ): Promise<void> => {
           if (evidence.sawVerification && !evidence.verificationStale) {
             pendingMutationVerification = false;
+            turnPendingMutation = false;
           } else if (evidence.sawMutation) {
             pendingMutationVerification = true;
+            turnPendingMutation = true;
           }
 
           let goalState: GoalState | null;
@@ -1965,7 +1976,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             }
             throw error;
           }
-          if ((pendingMutationVerification || evidence.sawMutation) && !(evidence.sawVerification && !evidence.verificationStale)) {
+          const carriedPending = turnPendingMutation || (goalState !== null && pendingMutationVerification);
+          if ((carriedPending || evidence.sawMutation) && !(evidence.sawVerification && !evidence.verificationStale)) {
             return (
               `Cannot finish: a workspace mutation from this session still lacks a successful, non-stale verification. ` +
               `Run a relevant test/build/typecheck/lint after the last change (e.g. 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done again.`
@@ -2261,8 +2273,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
           // A loop guard is a local safety boundary, not a provider failure. A
           // fresh loop on an equivalent model loses the guard state and could
-          // re-execute a previously skipped mutation.
-          const routedFailureReason = !result.done && !result.stopClass
+          // re-execute a previously skipped mutation. A rejected completion carries
+          // the model's own answer in doneReason, which must not be read as a provider error.
+          const routedFailureReason = !result.done && !result.stopClass && !result.completionRejected
             ? routeFailureReason(result.doneReason)
             : null;
           if (!routedFailureReason) break;
@@ -2361,7 +2374,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         : `(reached the ${result.steps}-step limit without signaling done)`);
     // Routing off = the model is fixed and nothing fails over. When the turn died on
     // an account-level limit, say so and name the one switch that re-enables failover.
-    const failoverHint = !routingEnabled && !result.done && (() => {
+    const failoverHint = !routingEnabled && !result.done && !result.completionRejected && (() => {
       const failure = new Error(result.doneReason ?? "");
       return isRateLimitError(failure) || isUsageLimitError(failure);
     })()
@@ -2469,7 +2482,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     }
 
     lastActiveModel = activeModel;
-    return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
+    return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage, unverified: result.completionRejected === true };
     } finally {
       preflightHarness?.dispose();
       interactiveTurnActive = false;
@@ -2514,9 +2527,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             try {
               const message = JSON.parse(line);
               if (typeof message !== "string" || !message.trim()) throw new Error("Invalid messenger request");
-              const { done, reply } = await runTurn(message, false);
-              if (!done) throw new Error("Messenger agent turn did not complete");
-              console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+              const { done, reply, unverified } = await runTurn(message, false);
+              if (done) console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+              // The turn ended in a controlled state with an UNVERIFIED-marked answer:
+              // deliver it as a failure and keep serving this conversation's follow-ups.
+              else if (unverified && reply.trim()) console.log(`JEO_MESSENGER_UNVERIFIED ${JSON.stringify(reply)}`);
+              else throw new Error("Messenger agent turn did not complete");
             } catch {
               console.log("JEO_MESSENGER_ERROR");
               break;
@@ -2752,10 +2768,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         return;
       }
       try {
-        const { done, reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
+        const { done, reply, rendered, usage, unverified } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
         if (flags.literalPrompt) {
-          if (!done) throw new Error("Messenger agent turn did not complete");
-          console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+          if (done) console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
+          else if (unverified && reply.trim()) {
+            console.log(`JEO_MESSENGER_UNVERIFIED ${JSON.stringify(reply)}`);
+            process.exitCode = 1;
+          } else throw new Error("Messenger agent turn did not complete");
         } else if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
         else if (usage) console.log(usage.trim());
       } catch (err) {

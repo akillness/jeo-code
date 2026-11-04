@@ -3,7 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as loop from "../src/agent/loop";
-import { runAgentLoop } from "../src/agent/engine";
+import { DEFAULT_TOOLS, runAgentLoop } from "../src/agent/engine";
+import { snapshotWorkspace, WORKSPACE_SNAPSHOT_LIMITS } from "../src/agent/workspace-snapshot";
+import type { Message } from "../src/ai/types";
 
 let cwd: string;
 beforeEach(async () => {
@@ -90,7 +92,10 @@ test("runAgentLoop: successful bash workspace mutation requires later passing ve
   const result = await runAgentLoop([{ role: "user", content: "change the workspace" }], {
     cwd, maxSteps: 12, budget: { maxExtensions: 0 },
     tools: {
-      bash: async () => ({ success: true, output: "created mutation-marker" }),
+      bash: async () => {
+        await fs.writeFile(path.join(cwd, "mutation-marker"), "");
+        return { success: true, output: "created mutation-marker" };
+      },
     },
   });
 
@@ -149,9 +154,11 @@ test("runAgentLoop: bash mutation requires an invoked passing verifier before do
   const result = await runAgentLoop([{ role: "user", content: "change and verify" }], {
     cwd, maxSteps: 12, budget: { maxExtensions: 0 },
     tools: {
-      bash: async ({ command }) => command === "bun test passing.test.ts"
-        ? { success: true, output: "1 pass\n0 fail" }
-        : { success: true, output: "created mutation-marker" },
+      bash: async ({ command }) => {
+        if (command === "bun test passing.test.ts") return { success: true, output: "1 pass\n0 fail" };
+        await fs.writeFile(path.join(cwd, "mutation-marker"), "");
+        return { success: true, output: "created mutation-marker" };
+      },
     },
   });
 
@@ -160,7 +167,7 @@ test("runAgentLoop: bash mutation requires an invoked passing verifier before do
   expect(calls).toBe(4);
 });
 
-test("runAgentLoop: successful computer action invalidates earlier verification before done", async () => {
+test("runAgentLoop: computer action that changes a workspace file invalidates earlier verification before done", async () => {
   const steps = [pass, { tool: "computer", arguments: { action: "click", x: 10, y: 20 } }, done, pass, done];
   const calls: string[] = [];
   let llmCalls = 0;
@@ -168,7 +175,11 @@ test("runAgentLoop: successful computer action invalidates earlier verification 
   const result = await runAgentLoop([{ role: "user", content: "click and verify" }], {
     cwd, maxSteps: 12, budget: { maxExtensions: 0 },
     tools: {
-      computer: async () => { calls.push("computer"); return { success: true, output: "clicked" }; },
+      computer: async () => {
+        calls.push("computer");
+        await fs.writeFile(path.join(cwd, "ui-output.txt"), "clicked");
+        return { success: true, output: "clicked" };
+      },
       bash: async () => { calls.push("verifier"); return { success: true, output: "1 pass\n0 fail" }; },
     },
   });
@@ -343,4 +354,254 @@ test("runAgentLoop: a rejected edit does not invent a successful mutation", asyn
   expect(result.done).toBe(true);
   expect(result.doneReason).toBe("verified");
   expect(calls).toBe(2);
+});
+
+// --- Workspace-snapshot mutation authority for bash/computer (plan section 1.5, 4.1-4.2) ---
+
+const UNVERIFIED_TEXT = "You modified files this turn but have no passing verification";
+const STALE_TEXT = "You verified earlier, but then modified files again";
+const userSaid = (history: Message[], text: string): boolean =>
+  history.some(m => m.role === "user" && m.content.includes(text));
+
+test("runAgentLoop: read-only bash commands complete without verification (AC-1)", async () => {
+  const steps = [
+    { tool: "bash", arguments: { command: "date" } },
+    { tool: "bash", arguments: { command: "ls -a" } },
+    done,
+  ];
+  let calls = 0;
+  const notices: string[] = [];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop([{ role: "user", content: "run date and ls -a" }], {
+    cwd, maxSteps: 8, budget: { maxExtensions: 0 },
+    tools: { bash: DEFAULT_TOOLS.bash },
+    events: { onNotice: msg => { notices.push(msg); } },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(result.completionRejected).toBeUndefined();
+  expect(calls).toBe(3);
+  expect(notices.some(n => /done deferred/.test(n))).toBe(false);
+});
+
+test("runAgentLoop: bash that creates a workspace file needs a passing verification (AC-2)", async () => {
+  const steps = [{ tool: "bash", arguments: { command: "touch created.txt" } }, done, pass, done];
+  let calls = 0;
+  const history: Message[] = [{ role: "user", content: "create a file and verify" }];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop(history, {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: {
+      bash: async ({ command }) => {
+        if (command === "bun test passing.test.ts") return { success: true, output: "1 pass\n0 fail" };
+        await fs.writeFile(path.join(cwd, "created.txt"), "");
+        return { success: true, output: "" };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(userSaid(history, UNVERIFIED_TEXT)).toBe(true);
+  expect(calls).toBe(4);
+});
+
+test("runAgentLoop: re-modifying an already-changed file is detected (AC-3)", async () => {
+  const writeA = { tool: "bash", arguments: { command: "write-a" } };
+  const writeB = { tool: "bash", arguments: { command: "write-b" } };
+  const steps = [writeA, pass, writeB, done, pass, done];
+  let calls = 0;
+  const history: Message[] = [{ role: "user", content: "rewrite a.txt twice" }];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop(history, {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: {
+      bash: async ({ command }) => {
+        if (command === "bun test passing.test.ts") return { success: true, output: "1 pass\n0 fail" };
+        // Same size on purpose: only content changes between the two writes.
+        await fs.writeFile(path.join(cwd, "a.txt"), command === "write-a" ? "aaaa" : "bbbb");
+        return { success: true, output: "" };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(userSaid(history, STALE_TEXT)).toBe(true);
+  expect(calls).toBe(6);
+});
+
+test("runAgentLoop: bash writes only under .jeo, .git or node_modules are not mutations (AC-4)", async () => {
+  // Every non-excluded parent exists before the turn, so only excluded directories appear.
+  await fs.mkdir(path.join(cwd, "sub"));
+  await fs.mkdir(path.join(cwd, ".git"));
+  const steps = [{ tool: "bash", arguments: { command: "write-excluded" } }, done];
+  let calls = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop([{ role: "user", content: "touch harness state only" }], {
+    cwd, maxSteps: 8, budget: { maxExtensions: 0 },
+    tools: {
+      bash: async () => {
+        await fs.mkdir(path.join(cwd, ".jeo", "state"), { recursive: true });
+        await fs.writeFile(path.join(cwd, ".jeo", "state", "x.json"), "{}");
+        await fs.writeFile(path.join(cwd, ".git", "index.lock"), "");
+        await fs.mkdir(path.join(cwd, "node_modules", "pkg"), { recursive: true });
+        await fs.writeFile(path.join(cwd, "node_modules", "pkg", "index.js"), "");
+        await fs.mkdir(path.join(cwd, "sub", "node_modules"), { recursive: true });
+        await fs.writeFile(path.join(cwd, "sub", "node_modules", "y.js"), "");
+        return { success: true, output: "" };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(calls).toBe(2);
+});
+
+for (const failure of [
+  { name: "snapshot failure counts bash as a mutation (AC-5a)", snapshot: async () => { throw new Error("boom"); } },
+  { name: "snapshot error result counts bash as a mutation (AC-5a)", snapshot: async () => ({ ok: false as const, reason: "error" as const, detail: "x" }) },
+]) {
+  test(`runAgentLoop: ${failure.name}`, async () => {
+    const steps = [{ tool: "bash", arguments: { command: "ls" } }];
+    let calls = 0;
+    spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+    const result = await runAgentLoop([{ role: "user", content: "list files" }], {
+      cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+      workspaceSnapshot: failure.snapshot,
+      tools: { bash: async () => ({ success: true, output: "a.txt" }) },
+    });
+
+    expect(result.done).toBe(false);
+    expect(result.completionRejected).toBe(true);
+    expect(result.doneReason).toMatch(/verif/i);
+    expect(result.doneReason).toContain("UNVERIFIED");
+  });
+}
+
+test("runAgentLoop: over-cap snapshot counts bash as a mutation and stops re-walking (AC-5a)", async () => {
+  await fs.writeFile(path.join(cwd, "one.txt"), "1");
+  await fs.writeFile(path.join(cwd, "two.txt"), "2");
+  const steps = [{ tool: "bash", arguments: { command: "ls" } }, { tool: "bash", arguments: { command: "pwd" } }];
+  let calls = 0;
+  let snapCalls = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop([{ role: "user", content: "list files" }], {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: (c, since) => {
+      snapCalls++;
+      return snapshotWorkspace(c, { ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 }, since);
+    },
+    tools: { bash: async () => ({ success: true, output: "one.txt two.txt" }) },
+  });
+
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(result.doneReason).toMatch(/verif/i);
+  expect(result.doneReason).toContain("UNVERIFIED");
+  expect(snapCalls).toBe(1);
+});
+
+test("runAgentLoop: a computer click that changes no workspace file completes without verification (AC-6)", async () => {
+  const steps = [{ tool: "computer", arguments: { action: "click", x: 10, y: 20 } }, done];
+  let calls = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop([{ role: "user", content: "click the button" }], {
+    cwd, maxSteps: 8, budget: { maxExtensions: 0 },
+    tools: {
+      // Mirrors computer.ts: the audit log lives under the excluded .jeo/ directory.
+      computer: async () => {
+        await fs.appendFile(path.join(cwd, ".jeo", "computer-audit.jsonl"), `${JSON.stringify({ action: "click" })}\n`);
+        return { success: true, output: "clicked" };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(calls).toBe(2);
+});
+
+test("runAgentLoop: a computer action that writes a workspace file bounces done (AC-6)", async () => {
+  const steps = [{ tool: "computer", arguments: { action: "click", x: 10, y: 20 } }, done, pass, done];
+  let calls = 0;
+  const history: Message[] = [{ role: "user", content: "export from the app" }];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop(history, {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: {
+      computer: async () => {
+        await fs.writeFile(path.join(cwd, "exported.txt"), "export");
+        return { success: true, output: "clicked export" };
+      },
+      bash: async () => ({ success: true, output: "1 pass\n0 fail" }),
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(userSaid(history, UNVERIFIED_TEXT)).toBe(true);
+  expect(calls).toBe(4);
+});
+
+test("runAgentLoop: write still bounces done without verification (AC-7)", async () => {
+  const steps = [{ tool: "write", arguments: { filePath: "a.ts", content: "updated" } }, done];
+  let calls = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop([{ role: "user", content: "change the workspace" }], {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    // The fake never touches the filesystem: write counts by tool name, not by snapshot.
+    tools: { write: async () => ({ success: true, output: "wrote a.ts" }) },
+  });
+
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(result.doneReason).toContain(UNVERIFIED_TEXT);
+  expect(result.doneReason).toContain("UNVERIFIED");
+});
+
+for (const debug of [
+  { action: "launch", accepted: false },
+  { action: "stack_trace", accepted: true },
+]) {
+  test(`runAgentLoop: mutating debug actions still require verification (AC-7, ${debug.action})`, async () => {
+    const steps = [{ tool: "debug", arguments: { action: debug.action } }, done];
+    let calls = 0;
+    spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+    const result = await runAgentLoop([{ role: "user", content: "debug the program" }], {
+      cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+      tools: { debug: async () => ({ success: true, output: "ok" }) },
+    });
+
+    expect(result.done).toBe(debug.accepted);
+    if (debug.accepted) expect(result.doneReason).toBe("verified");
+    else expect(result.doneReason).toContain(UNVERIFIED_TEXT);
+  });
+}
+
+test("runAgentLoop: exhausted completion keeps the last candidate answer under UNVERIFIED (AC-9)", async () => {
+  const answer = { tool: "done", arguments: { reason: "Here is the answer: 42" } };
+  const steps = [{ tool: "bash", arguments: { command: "echo x > made.txt" } }, answer, answer, answer, answer];
+  let calls = 0;
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? answer));
+  const result = await runAgentLoop([{ role: "user", content: "answer and record it" }], {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: {
+      bash: async () => {
+        await fs.writeFile(path.join(cwd, "made.txt"), "x\n");
+        return { success: true, output: "" };
+      },
+    },
+  });
+
+  expect(await fs.readFile(path.join(cwd, "made.txt"), "utf8")).toBe("x\n");
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(result.doneReason).toContain("Here is the answer: 42");
+  expect(result.doneReason).toContain("UNVERIFIED");
+  expect(result.doneReason).toContain("completion rejected after 3 corrections");
+  expect(result.doneReason).toContain("You modified files this turn");
+  expect(calls).toBe(5);
 });

@@ -77,38 +77,118 @@ const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--l
 const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--write|--update|-u|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
 const MUTATING_VERIFY_SCRIPT_RE = /^(?:bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?[\w-]+:[^\s]*(?:fix|update|write|deploy|publish)[^\s]*/i;
 
-function isSingleVerificationSegment(segment: string): boolean {
-  const command = segment.trim();
-  if (!command) return false;
-  const shortNoOp = /^(?:(?:npx|bunx|bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?)?tsc\b.*(?:^|\s)-[vV](?=\s|$)/.test(command)
-    || /^(?:make|just|go)\s+.*(?:^|\s)-n(?=\s|$)/.test(command);
-  return !shortNoOp && !/[;&|<>`$(){}\n\r]/.test(command) && VERIFY_SIGNAL_RE.test(command) && !NONEXECUTING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_FLAG_RE.test(command) && !MUTATING_VERIFY_SCRIPT_RE.test(command);
+// ── Verifier command grammar ──────────────────────────────────────────────────
+// command    := segment ( "&&" segment )*   after removing every standalone `2>&1` token
+// segment[0] := cdSeg | verifierSeg         cdSeg only as the first segment, and only when >=1 segment follows
+// segment[i] := verifierSeg                 (i >= 1)
+// verifierSeg:= prefix* core                prefixes: `NAME=VALUE`, `env [-u NAME]... [NAME=VALUE]...`,
+//                                           `timeout N[s|m]`, `uv|poetry|pipenv run`, `rtk [test]`
+// core       := first `/`-bearing token replaced by its basename, then VERIFY_SIGNAL_RE with no
+//               non-executing / mutating flag, no mutating script, and no short no-op form.
+// Only plain tokens are accepted: `$`, backticks, quotes and parentheses never match the token classes
+// and are rejected by the global metacharacter check. Every prefix propagates the verifier's exit code.
+const STDERR_MERGE_RE = /(^|\s)2>&1(?=\s|$)/g;
+const ASSIGN_PREFIX_RE = /^([A-Za-z_][A-Za-z0-9_]*)=[A-Za-z0-9_./:@+,=%-]*\s+/;
+const ENV_PREFIX_RE = /^env(?:\s+-u\s+[A-Za-z_][A-Za-z0-9_]*)*(?:\s+([A-Za-z_][A-Za-z0-9_]*)=[A-Za-z0-9_./:@+,=%-]*)*\s+/;
+const TIMEOUT_PREFIX_RE = /^timeout\s+\d+[sm]?\s+/;
+const RUNNER_PREFIX_RE = /^(?:uv|poetry|pipenv)\s+run\s+/;
+const RTK_PREFIX_RE = /^rtk\s+(?:test\s+)?/;
+const CD_SEGMENT_RE = /^cd\s+[A-Za-z0-9_./:@+,=~-]+$/;
+const BINARY_PATH_RE = /^([A-Za-z0-9_.@+-]*\/[A-Za-z0-9_./@+-]*)(?=\s|$)/;
+/** Env names that are the env-form of an update/snapshot flag (parity with MUTATING_VERIFY_FLAG_RE). */
+const MUTATING_VERIFY_ENV_RE = /UPDATE|SNAPSHOT|GOLDEN/i;
+const ENV_ASSIGNMENT_NAME_RE = /([A-Za-z_][A-Za-z0-9_]*)=/g;
+
+/**
+ * Normalized verifier invocations (cores) of a command, or null when the command is not a
+ * pure recognized verification. Wrapper prefixes and a leading `cd <path> &&` are stripped,
+ * so flag/script exclusions are judged on the verifier itself, never on the wrappers.
+ */
+export function verifierCores(cmd: string): string[] | null {
+  const command = cmd.trim().replace(STDERR_MERGE_RE, "$1").trim();
+  if (!command) return null;
+  // Pipes, `;`, `||`, redirections, substitution, grouping and multi-line scripts.
+  if (/[;&|<>`$(){}\n\r]/.test(command.replace(/&&/g, " "))) return null;
+  const segments = command.split("&&").map(s => s.trim());
+  if (segments.some(s => !s)) return null;
+  const start = segments.length > 1 && CD_SEGMENT_RE.test(segments[0]) ? 1 : 0;
+  const cores: string[] = [];
+  for (const segment of segments.slice(start)) {
+    const core = verifierCore(segment);
+    if (!core) return null;
+    cores.push(core);
+  }
+  return cores.length ? cores : null;
+}
+
+function verifierCore(segment: string): string | null {
+  let rest = segment;
+  for (;;) { // terminates: every successful match strictly shortens `rest`
+    const assign = ASSIGN_PREFIX_RE.exec(rest);
+    if (assign) {
+      if (MUTATING_VERIFY_ENV_RE.test(assign[1])) return null;
+      rest = rest.slice(assign[0].length);
+      continue;
+    }
+    const env = ENV_PREFIX_RE.exec(rest);
+    if (env) {
+      if ([...env[0].matchAll(ENV_ASSIGNMENT_NAME_RE)].some(m => MUTATING_VERIFY_ENV_RE.test(m[1]))) return null;
+      rest = rest.slice(env[0].length);
+      continue;
+    }
+    const other = TIMEOUT_PREFIX_RE.exec(rest) ?? RUNNER_PREFIX_RE.exec(rest) ?? RTK_PREFIX_RE.exec(rest);
+    if (other) {
+      rest = rest.slice(other[0].length);
+      continue;
+    }
+    break;
+  }
+  const bin = BINARY_PATH_RE.exec(rest);
+  if (bin) rest = bin[1].slice(bin[1].lastIndexOf("/") + 1) + rest.slice(bin[1].length);
+  const shortNoOp = /^(?:(?:npx|bunx|bun|npm|pnpm|yarn)\s+(?:(?:run|exec|x|dlx)\s+)?)?tsc\b.*(?:^|\s)-[vV](?=\s|$)/.test(rest)
+    || /^(?:make|just|go)\s+.*(?:^|\s)-n(?=\s|$)/.test(rest);
+  return !shortNoOp && VERIFY_SIGNAL_RE.test(rest) && !NONEXECUTING_VERIFY_FLAG_RE.test(rest)
+    && !MUTATING_VERIFY_FLAG_RE.test(rest) && !MUTATING_VERIFY_SCRIPT_RE.test(rest) ? rest : null;
 }
 
 /**
- * True only when the command itself is a recognized verifier invocation (or a
- * pure `&&` chain where every segment is a recognized verifier invocation). Output
- * is never evidence: arbitrary commands can print words such as "tests passed".
+ * True only when the command itself is a recognized verifier invocation (or a pure `&&`
+ * chain of them, optionally led by `cd <path> &&` and wrapped in exit-code-propagating
+ * prefixes — see {@link verifierCores}). Output is never evidence: arbitrary commands can
+ * print words such as "tests passed".
  */
 export function isVerificationSignal(cmd: string): boolean {
-  const command = cmd.trim();
-  if (!command) return false;
-  const withoutAndChain = command.replace(/&&/g, " ");
-  if (/[;&|<>`$(){}\n\r]/.test(withoutAndChain)) return false;
-  const segments = command.split("&&").map(s => s.trim());
-  return segments.length > 0 && segments.every(isSingleVerificationSegment);
+  return verifierCores(cmd) !== null;
 }
 
-/** Require test-run evidence for Go and Cargo's recognized text output. */
+/**
+ * Require test-run evidence for Go and Cargo's recognized text output. Judged on the
+ * verifier cores, so a wrapped `timeout 60 go test ./...` or `cd x && cargo test` still
+ * needs real test evidence.
+ */
 export function verificationProducedEvidence(cmd: string, output: string): boolean {
-  if (/^go\s+test(?:\s|$)/.test(cmd.trim())) {
+  const cores = verifierCores(cmd) ?? [cmd.trim()];
+  if (cores.some(c => /^go\s+test(?:\s|$)/.test(c))) {
     const summaries = output.split(/\r?\n/).filter(line => /^(?:ok|\?)\s+/.test(line));
-    return summaries.some(line => !/\[no tests to run\]|\[no test files\]/i.test(line));
+    if (!summaries.some(line => !/\[no tests to run\]|\[no test files\]/i.test(line))) return false;
   }
-  if (/^cargo\s+test(?:\s|$)/.test(cmd.trim())) {
-    return [...output.matchAll(/test result: ok\.\s+(\d+) passed/g)].some(match => Number(match[1]) > 0);
-  }
+  if (cores.some(c => /^cargo\s+test(?:\s|$)/.test(c))
+    && ![...output.matchAll(/test result: ok\.\s+(\d+) passed/g)].some(match => Number(match[1]) > 0)) return false;
   return true;
+}
+
+/** Marker that prefixes a candidate answer the completion gate never accepted. */
+export const UNVERIFIED_MARKER = "UNVERIFIED";
+
+/**
+ * Result text when completion was rejected GUARD_LIMITS.MAX_DONE_CORRECTIONS times. Keeps the
+ * model's last candidate answer, never presents it as accepted, and keeps the gate reason.
+ */
+export function formatRejectedCompletion(candidate: string, corrections: number, rejection: string): string {
+  const stop = `Stopped: completion rejected after ${corrections} corrections. ${rejection}`;
+  const answer = candidate.trim();
+  if (!answer) return stop;
+  return `${UNVERIFIED_MARKER} - the completion gate did not accept this answer; treat it as unconfirmed.\n\n${answer}\n\n${stop}`;
 }
 
 /**

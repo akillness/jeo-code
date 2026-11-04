@@ -623,6 +623,51 @@ test("createTaskTool: executor's 429 with NO fallback available (single-provider
   expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
 });
 
+test("createTaskTool: an exhausted completion mentioning 429 is not rerouted as a rate limit", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  const notices: string[] = [];
+  let call = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { model?: string }) => {
+      modelsCalled.push(options.model);
+      // A real workspace write, then a done whose candidate text merely mentions a 429:
+      // the engine's completion gate rejects it until corrections are exhausted.
+      if (call++ === 0) return JSON.stringify({ tool: "bash", arguments: { command: "printf changed > made.txt" } });
+      return JSON.stringify({
+        tool: "done",
+        arguments: { reason: "Summary: the upstream API answered HTTP 429 rate limit\nChanged Files: made.txt\nVerification: none" },
+      });
+    },
+  }));
+
+  // Imported after mock.module (the module-loading boundary this file relies on): a static
+  // import would bind task-tool's engine to the real ../src/agent/loop before the mock exists.
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      // Same routing setup as the reroute test above: a different-credential-scope fallback exists.
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      subagents: { executor: { model: "claude-sonnet-4-6" } },
+      routing: { enabled: true },
+    },
+    onEvent: ev => { if (ev.kind === "step" && ev.detail) notices.push(ev.detail); },
+  });
+  const cwd = await tmpDir();
+  await fs.mkdir(path.join(cwd, ".jeo"));
+  await fs.writeFile(path.join(cwd, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+
+  const res = await tool({ role: "executor", task: "record the API status" }, cwd);
+
+  expect(await fs.readFile(path.join(cwd, "made.txt"), "utf8")).toBe("changed");
+  expect(res.success).toBe(false);
+  expect(res.output).toContain("UNVERIFIED");
+  // One bash step plus four rejected done calls, all on the primary model.
+  expect(modelsCalled).toEqual(Array(5).fill("claude-sonnet-4-6"));
+  expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
+});
+
 // --- Safety-boundary automatic model fallback for subagents (mirrors the
 // rate-limit fast-fallback block above, and launch.ts's main-turn equivalent —
 // see engine.ts's AgentLoopOptions.safetyFallbackAvailable doc comment): an

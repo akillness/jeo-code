@@ -8,6 +8,7 @@ import { selectDiscordModel } from "../src/messenger/model-selection";
 import { createMessengerSessionPool, MESSENGER_WORKER_DIAGNOSTIC_LINES } from "../src/messenger/session-pool";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerAdapter, MessengerConfig, MessengerMessage } from "../src/messenger/types";
+import { MessengerUnverifiedReplyError } from "../src/messenger/types";
 
 const encoder = new TextEncoder();
 const signal = new AbortController().signal;
@@ -170,6 +171,75 @@ test("gateway does not report a reply that failed because the request was aborte
 	expect(errors).toEqual([]);
 	expect(delivered).toEqual([]);
 	expect(states).not.toContain("failure");
+});
+
+/** Worker output of an exhausted completion gate, in the format of formatRejectedCompletion. */
+const unverifiedAnswer = "UNVERIFIED - the completion gate did not accept this answer; treat it as unconfirmed.\n\nCandidate: made the change\n\nStopped: completion rejected after 3 corrections. You modified files this turn but have no passing verification.";
+
+/** Turn 1 ends UNVERIFIED, every later turn succeeds; `workers` holds each process that served a turn. */
+function unverifiedThenResultSpawn() {
+	const workers = new Set<FakeWorker>();
+	let turns = 0;
+	const spawn = fakeSpawn(worker => {
+		workers.add(worker);
+		worker.stdout(++turns === 1 ? `JEO_MESSENGER_UNVERIFIED ${JSON.stringify(unverifiedAnswer)}` : 'JEO_MESSENGER_RESULT "follow-up"');
+	});
+	return { spawn, workers };
+}
+
+test("pool rejects an UNVERIFIED worker line with the marked answer and keeps the worker (AC-10)", async () => {
+	const { spawn, workers } = unverifiedThenResultSpawn();
+	const diagnostics: string[] = [];
+	const pool = createMessengerSessionPool(spawn, undefined, undefined, undefined, { onDiagnostic: (_key, line) => diagnostics.push(line) });
+	try {
+		const error = await pool.turn("conversation", ["worker"], "/tmp", {}, "make a change", signal).then(() => undefined, (rejection: unknown) => rejection);
+		expect(error).toBeInstanceOf(MessengerUnverifiedReplyError);
+		expect((error as MessengerUnverifiedReplyError).reply).toBe(unverifiedAnswer);
+		// The operator-visible message is content-free: the candidate only travels in `reply`.
+		expect((error as Error).message).toBe("Messenger agent turn ended without verified completion");
+		expect(await pool.turn("conversation", ["worker"], "/tmp", {}, "follow-up", signal)).toBe("follow-up");
+		expect(workers.size).toBe(1);
+		expect(diagnostics).toEqual([]);
+	} finally { await pool.close(); }
+});
+
+for (const payload of ['""', '"   "', '{"text":"x"}', "not json"]) test(`pool retires the worker on a malformed UNVERIFIED payload ${payload}`, async () => {
+	const workers = new Set<FakeWorker>();
+	const spawn = fakeSpawn(worker => {
+		workers.add(worker);
+		worker.stdout(workers.size === 1 ? `JEO_MESSENGER_UNVERIFIED ${payload}` : 'JEO_MESSENGER_RESULT "fresh"');
+	});
+	const pool = createMessengerSessionPool(spawn);
+	try {
+		await expect(pool.turn("conversation", ["worker"], "/tmp", {}, "hello", signal)).rejects.toThrow("Messenger worker stopped");
+		expect(await pool.turn("conversation", ["worker"], "/tmp", {}, "again", signal)).toBe("fresh");
+		expect(workers.size).toBe(2);
+	} finally { await pool.close(); }
+});
+
+test("gateway delivers an unverified answer with a failure reaction, not the generic text (AC-10)", async () => {
+	const { spawn } = unverifiedThenResultSpawn();
+	const pool = createMessengerSessionPool(spawn);
+	const { adapter, delivered, states, settled } = fakeAdapter();
+	const errors: RequestError[] = [];
+	try {
+		const gateway = createMessengerGateway(gatewayConfig, [adapter], (m, s) => pool.turn("c", ["worker"], "/tmp", {}, m.text, s), {
+			onRequestError: (...args) => { errors.push(args); },
+		});
+		await gateway.handle(gatewayMessage);
+		await settled;
+		expect(delivered).toEqual([unverifiedAnswer]);
+		expect(delivered[0]).toContain("UNVERIFIED");
+		expect(delivered[0]).toContain("Candidate: made the change");
+		expect(delivered).not.toContain("The request could not be completed. Please try again.");
+		expect(states).toEqual(["processing", "failure"]);
+		expect(errors).toHaveLength(1);
+		const [reported, error, stage] = errors[0]!;
+		expect(reported).toEqual(gatewayMessage);
+		expect(stage).toBe("reply");
+		expect(error).toBeInstanceOf(MessengerUnverifiedReplyError);
+		expect((error as Error).message).not.toContain("Candidate");
+	} finally { await pool.close(); }
 });
 
 // Fixtures mirror test/messenger-worker-pool.test.ts: a Discord profile requires the sandbox section, and the

@@ -233,6 +233,47 @@ test("literal worker can use explicitly enabled computer and file tools", async 
   } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 120000);
 
+test("literal worker delivers an exhausted unverified turn and keeps serving follow-ups (AC-10/AC-11)", async () => {
+  const dirs = await layout("jeo-worker-unverified-");
+  const { root, workspace, configDir } = dirs;
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini" }));
+  const requests: string[] = [];
+  const replies = [
+    // A real guest write through the rw bind mount: the host workspace snapshot must see it.
+    JSON.stringify({ tool: "bash", arguments: { command: "printf changed > made.txt" } }),
+    ...Array.from({ length: 4 }, () => JSON.stringify({ tool: "done", arguments: { reason: "Candidate: made the change" } })),
+    JSON.stringify({ tool: "done", arguments: { reason: "follow-up answer" } }),
+  ];
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    if (request.method !== "POST") return Response.json({ data: [] });
+    const body = await request.text();
+    requests.push(body);
+    const content = replies[requests.length - 1] ?? "unexpected additional request";
+    if (!JSON.parse(body).stream) return Response.json({ choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }] });
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    const child = Bun.spawn([process.execPath, cli, "launch", "--print", "--no-tui", "--no-skills", "--tools", "bash", "--literal-worker", "--model", "openai/gpt-4o-mini", "--", "worker"], {
+      cwd: workspace, env: launchEnv(dirs, server.port!, workerEnv()), stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    child.stdin.write('"make a change"\n"follow-up"\n'); child.stdin.end();
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const protocol = stdout.split("\n").filter(line => line.startsWith("JEO_MESSENGER_"));
+    expect({ code, stderr, protocolLines: protocol.length }).toMatchObject({ code: 0, protocolLines: 2 });
+    expect(protocol[0]!.startsWith("JEO_MESSENGER_UNVERIFIED ")).toBe(true);
+    const marked: unknown = JSON.parse(protocol[0]!.slice("JEO_MESSENGER_UNVERIFIED ".length));
+    expect(typeof marked).toBe("string");
+    expect(marked).toContain("UNVERIFIED");
+    expect(marked).toContain("Candidate: made the change");
+    expect(marked).toContain("completion rejected after 3 corrections");
+    // The same worker served the follow-up turn: no restart, no generic error line.
+    expect(protocol[1]).toBe(`JEO_MESSENGER_RESULT ${JSON.stringify("follow-up answer")}`);
+    expect(stdout).not.toContain("JEO_MESSENGER_ERROR");
+    expect(await fs.readFile(path.join(workspace, "made.txt"), "utf8")).toBe("changed");
+    expect(requests).toHaveLength(6);
+  } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
+}, 120000);
+
 test("literal worker computer tool stays disabled in the real sandbox without explicit consent", async () => {
   const dirs = await layout("jeo-worker-computer-off-");
   const { root, workspace, configDir } = dirs;

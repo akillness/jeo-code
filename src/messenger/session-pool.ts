@@ -1,4 +1,5 @@
 import type { MessengerActivityReporter } from "./types";
+import { MessengerUnverifiedReplyError } from "./types";
 
 interface WorkerProcess {
 	stdin: { write(data: string): unknown; flush(): unknown; end(): unknown };
@@ -15,6 +16,8 @@ interface Pending {
 	reject(error: Error): void;
 	report?: MessengerActivityReporter;
 	result?: string;
+	/** The result is an UNVERIFIED-marked answer: the turn rejects with it while the worker keeps serving. */
+	unverified?: boolean;
 	written?: boolean;
 }
 
@@ -159,7 +162,8 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			worker.idleTimer = setTimeout(() => retire(key, worker), idleTimeoutMs);
 			worker.idleTimer.unref();
 		}
-		pending.resolve(pending.result);
+		if (pending.unverified) pending.reject(new MessengerUnverifiedReplyError(pending.result));
+		else pending.resolve(pending.result);
 	}
 
 	async function readLines(stream: ReadableStream<Uint8Array>, handle: (line: string) => void) {
@@ -234,6 +238,17 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			const pending = worker.pending;
 			if (!pending) return;
 			if (line === "JEO_MESSENGER_ERROR") { retire(key, worker); return; }
+			// An exhausted completion gate is a controlled turn end: deliver the marked answer, keep the worker.
+			if (line.startsWith("JEO_MESSENGER_UNVERIFIED ")) {
+				try {
+					const text: unknown = JSON.parse(line.slice("JEO_MESSENGER_UNVERIFIED ".length));
+					if (typeof text !== "string" || !text.trim()) throw new Error("Invalid response");
+					pending.result = text;
+					pending.unverified = true;
+					finishTurn(key, worker, pending);
+				} catch { retire(key, worker); }
+				return;
+			}
 			if (!line.startsWith("JEO_MESSENGER_RESULT ")) return;
 			try {
 				const text: unknown = JSON.parse(line.slice("JEO_MESSENGER_RESULT ".length));

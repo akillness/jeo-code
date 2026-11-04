@@ -570,7 +570,10 @@ export async function runSubagentOnce(
   // `routing.enabled` off = the model is FIXED: no failover reroute at all (the
   // engine bail predicates above are withheld too, so a 429 rides its normal
   // backoff ladder instead of bailing early with nowhere to go).
-  for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {    const rateLimited = !result.done && isRateLimitError(new Error(result.doneReason ?? ""));
+  for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {
+    // An exhausted completion gate puts the model's own candidate answer in doneReason;
+    // its text (e.g. "HTTP 429") is not a provider failure and must never reroute.
+    const rateLimited = !result.done && !result.completionRejected && isRateLimitError(new Error(result.doneReason ?? ""));
     const safetyBail = !result.done && !rateLimited && isSafetyFallbackBail(result.doneReason);
     if (!rateLimited && !safetyBail) break;
     const previousModel = activeModel;

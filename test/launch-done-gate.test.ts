@@ -1,6 +1,7 @@
 import { getGoalPath, readGoalState, writeGoalState } from "../src/agent/goal-verifier";
 import { test, expect, mock, beforeEach, afterEach, afterAll, spyOn } from "bun:test";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
+import type { Message } from "../src/agent/loop";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -505,3 +506,86 @@ test("corrupt persisted goal state blocks done until clear and fresh verificatio
     await fs.rm(workdir, { recursive: true, force: true });
   }
 });
+
+for (const goal of [false, true]) {
+  test(`launch carry-over across turns (goal: ${goal}) (AC-11)`, async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-carry-over-config-"));
+    const workdir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-carry-over-cwd-"));
+    const previousConfigDir = process.env.JEO_CONFIG_DIR;
+    const previousNoMemory = process.env.JEO_NO_MEMORY;
+    const previousCwd = process.cwd();
+    const previousIsTTY = process.stdin.isTTY;
+    const noEvidence = { sawMutation: false, sawVerification: false, verificationStale: false };
+    const followUpHistory: Message[] = [{ role: "user", content: "follow up" }];
+    let turns = 0;
+    let engineCalls = 0;
+    let turnOneBlock: string | null | undefined;
+    let followUp: AgentLoopResult | undefined;
+    const llm = spyOn(loop, "callLlm").mockImplementation(async messages => {
+      const systemPrompt = messages.find(message => message.role === "system")?.content ?? "";
+      if (systemPrompt.includes("independent Goal Verifier")) return JSON.stringify({ verdict: "MET", reason: "the transcript says complete" });
+      if (!messages.some(message => message.role === "user" && message.content === "follow up")) {
+        throw new Error("unexpected model call outside the follow-up engine run");
+      }
+      return ++engineCalls === 1
+        ? JSON.stringify({ tool: "bash", arguments: { command: "date" } })
+        : JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    });
+    runAgentLoopDelegate = async (_history, opts) => {
+      const onEvidence = opts.events?.onEvidence;
+      const onBeforeDone = opts.events?.onBeforeDone;
+      if (!onEvidence || !onBeforeDone) throw new Error("launch did not provide its evidence and completion gates");
+      if (++turns === 1) {
+        // Turn N: a real mutation that is never verified; this turn's own evidence still blocks.
+        await onEvidence({ sawMutation: true, sawVerification: false, verificationStale: false });
+        turnOneBlock = await onBeforeDone("finished", noEvidence);
+        return { done: false, steps: 1, doneReason: "Stopped: unverified" };
+      }
+      // Turn N+1: read-only work (`date` changes no workspace file) and no verification.
+      followUp = await realEngine.runAgentLoop(followUpHistory, { ...opts, maxSteps: 6, budget: { maxExtensions: 0 } });
+      return followUp;
+    };
+
+    try {
+      process.chdir(workdir);
+      process.env.JEO_CONFIG_DIR = configDir;
+      process.env.JEO_NO_MEMORY = "1";
+      process.stdin.isTTY = true;
+      await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({
+        providers: {},
+        defaultModel: "ollama/qwen2.5:0.5b",
+      }));
+      if (goal) await writeGoalState({ condition: "verify everything", setAt: Date.now(), verdicts: [] }, workdir);
+      mockQuestions = ["mutate without verifying", "read-only follow-up", "/exit"];
+
+      // Dynamic import is required because the mocked engine/readline modules must be installed before launch captures them.
+      const { runLaunchCommand } = await import("../src/commands/launch");
+      await runLaunchCommand(["--no-tui", "--no-session"]);
+
+      expect(turns).toBe(2);
+      expect(turnOneBlock).toContain("workspace mutation from this session still lacks a successful, non-stale verification");
+      if (goal) {
+        expect(followUp?.done).toBe(false);
+        expect(followUp?.completionRejected).toBe(true);
+        expect(followUp?.doneReason).toContain("workspace mutation from this session still lacks a successful, non-stale verification");
+        expect(followUp?.doneReason).toContain("UNVERIFIED");
+        expect((await readGoalState(workdir))?.pendingMutationVerification).toBe(true);
+        expect(followUpHistory.some(message => message.role === "user" && message.content.includes("Cannot finish"))).toBe(true);
+      } else {
+        expect(followUp).toMatchObject({ done: true, doneReason: "finished" });
+        expect(engineCalls).toBe(2);
+        expect(followUpHistory.some(message => message.role === "user" && message.content.includes("Cannot finish"))).toBe(false);
+      }
+    } finally {
+      process.stdin.isTTY = previousIsTTY;
+      process.chdir(previousCwd);
+      if (previousConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+      else process.env.JEO_CONFIG_DIR = previousConfigDir;
+      if (previousNoMemory === undefined) delete process.env.JEO_NO_MEMORY;
+      else process.env.JEO_NO_MEMORY = previousNoMemory;
+      await fs.rm(configDir, { recursive: true, force: true });
+      await fs.rm(workdir, { recursive: true, force: true });
+      llm.mockRestore();
+    }
+  });
+}

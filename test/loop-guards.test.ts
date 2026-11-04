@@ -1,9 +1,12 @@
 import { test, expect } from "bun:test";
 import {
   VERIFY_SIGNAL_RE,
+  UNVERIFIED_MARKER,
+  formatRejectedCompletion,
   isVerificationSignal,
   repeatHint,
   classifyDoneGate,
+  verifierCores,
 } from "../src/agent/loop-guards";
 import { verificationProducedEvidence } from "../src/agent/loop-guards";
 
@@ -230,4 +233,97 @@ test("isVerificationSignal accepts pure && chains of recognized verifiers and re
   expect(isVerificationSignal("node --check app.js")).toBe(true);
   expect(isVerificationSignal("bun test && echo done")).toBe(false);
   expect(isVerificationSignal("bun test && touch marker")).toBe(false);
+});
+
+const AC8_POSITIVES = [
+  "cd sub && bun test",
+  "JEO_X=1 bun test",
+  "env -u OPENAI_BASE_URL bun test",
+  "timeout 120 bun test",
+  "bun test 2>&1",
+  "uv run pytest",
+  "poetry run pytest",
+  "pipenv run pytest",
+  "/Library/Frameworks/Python.framework/Versions/3.11/bin/pytest",
+  "./node_modules/.bin/tsc --noEmit",
+  "rtk test bun test",
+  "rtk bun test",
+];
+
+const AC8_NEGATIVES = [
+  "bun test | tail -5",
+  "bun test; true",
+  "bun test || true",
+  "cd sub && rm -rf x",
+  "FOO=$(evil) bun test",
+  "timeout 120 rm -rf x",
+  "env bun test --update-snapshots",
+  "bun test > out.txt",
+];
+
+test("isVerificationSignal accepts wrapped verifier forms (AC-8)", () => {
+  const accepted = AC8_POSITIVES.filter(command => isVerificationSignal(command));
+  expect(accepted).toEqual(AC8_POSITIVES);
+});
+
+test("isVerificationSignal rejects unsafe wrapper forms (AC-8)", () => {
+  const accepted = AC8_NEGATIVES.filter(command => isVerificationSignal(command));
+  expect(accepted).toEqual([]);
+});
+
+test("verifierCores strips wrappers down to the verifier invocation", () => {
+  expect(verifierCores("cd sub && bun test")).toEqual(["bun test"]);
+  expect(verifierCores("env -u OPENAI_BASE_URL JEO_X=1 timeout 60s bun test 2>&1")).toEqual(["bun test"]);
+  expect(verifierCores("/Library/Frameworks/Python.framework/Versions/3.11/bin/pytest -q")).toEqual(["pytest -q"]);
+  expect(verifierCores("./node_modules/.bin/tsc --noEmit && rtk test bun test test/a.test.ts")).toEqual(["tsc --noEmit", "bun test test/a.test.ts"]);
+  expect(verifierCores("ls -a")).toBeNull();
+  expect(verifierCores("")).toBeNull();
+});
+
+test("wrapper prefixes never hide mutating flags, env updates, or unsafe chains", () => {
+  for (const command of [
+    "UPDATE_SNAPSHOTS=1 bun test",
+    "env JEST_UPDATE=1 bun test",
+    "env -u X bun test -u",
+    "timeout 60 bun test --update-snapshots",
+    "uv run pytest --co",
+    "rtk tsc -v",
+    "cd sub",
+    "cd sub && cd x && bun test",
+    "cd $HOME && bun test",
+    "bun test && cd sub",
+    "./run.sh",
+    "bun test 2>out.txt",
+    "bun test 2>&1 | tail",
+    'JEO_X="1" bun test',
+    "rtk test false",
+  ]) expect(isVerificationSignal(command)).toBe(false);
+  // The env `-u NAME` option is a wrapper, not Jest's update flag.
+  expect(isVerificationSignal("env -u OPENAI_BASE_URL -u ANTHROPIC_BASE_URL JEO_SKIP_BROWSER_TESTS=1 bun test")).toBe(true);
+  expect(isVerificationSignal("bun test 2>&1 && bun run typecheck 2>&1")).toBe(true);
+});
+
+test("wrapped go and cargo verifiers still require real test evidence", () => {
+  expect(verificationProducedEvidence("timeout 60 go test ./...", "? p [no test files]")).toBe(false);
+  expect(verificationProducedEvidence("timeout 60 go test ./...", "ok p 0.01s")).toBe(true);
+  expect(verificationProducedEvidence("cd x && cargo test", "test result: ok. 0 passed")).toBe(false);
+  expect(verificationProducedEvidence("cd x && cargo test", "test result: ok. 3 passed; 0 failed")).toBe(true);
+  expect(verificationProducedEvidence("cd x && bun test", "1 pass")).toBe(true);
+});
+
+test("formatRejectedCompletion keeps the candidate answer under the UNVERIFIED marker", () => {
+  const rejection = "You modified files this turn but have no passing verification.";
+  const text = formatRejectedCompletion("  Here is the answer: 42\n", 3, rejection);
+  expect(UNVERIFIED_MARKER).toBe("UNVERIFIED");
+  expect(text.startsWith(`${UNVERIFIED_MARKER} - the completion gate did not accept this answer; treat it as unconfirmed.`)).toBe(true);
+  expect(text).toContain("\n\nHere is the answer: 42\n\n");
+  expect(text).toContain(`Stopped: completion rejected after 3 corrections. ${rejection}`);
+  expect(text.endsWith(`Stopped: completion rejected after 3 corrections. ${rejection}`)).toBe(true);
+  expect(/^[\x20-\x7e\n]*$/.test(text)).toBe(true);
+});
+
+test("formatRejectedCompletion without a candidate returns the plain stop text", () => {
+  for (const candidate of ["", "   \n\t "]) {
+    expect(formatRejectedCompletion(candidate, 3, "reason here")).toBe("Stopped: completion rejected after 3 corrections. reason here");
+  }
 });

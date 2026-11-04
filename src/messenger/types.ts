@@ -78,6 +78,14 @@ export class MessengerFatalError extends Error {
 	}
 }
 
+/** The agent turn ended without verified completion; `reply` is the UNVERIFIED-marked answer for the user. */
+export class MessengerUnverifiedReplyError extends Error {
+	constructor(readonly reply: string) {
+		super("Messenger agent turn ended without verified completion");
+		this.name = "MessengerUnverifiedReplyError";
+	}
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

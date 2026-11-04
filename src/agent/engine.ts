@@ -32,7 +32,8 @@ import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSigna
 
 import { historyTokens, trimToolResultsInPlace, stripReasoningArtifactsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
-import { GUARD_LIMITS, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate } from "./loop-guards";
+import { GUARD_LIMITS, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate, formatRejectedCompletion } from "./loop-guards";
+import { defaultWorkspaceSnapshotter, workspaceSnapshotChanged, type WorkspaceSnapshot, type WorkspaceSnapshotter } from "./workspace-snapshot";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
 
 const MID_TASK_PROSE_RE =
@@ -407,6 +408,9 @@ export interface AgentLoopOptions {
    *  just the max-token ceiling. When unset the model-manager falls back to the global config. */
   reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
   tools?: Record<string, ToolHandler>;
+  /** Host-side workspace fingerprint used to decide whether a bash/computer call mutated the
+   *  workspace. Defaults to defaultWorkspaceSnapshotter; tests inject fakes. */
+  workspaceSnapshot?: WorkspaceSnapshotter;
   signal?: AbortSignal;
   events?: AgentLoopEvents;
   /** Step-budget overrides (gjc-style retry flow). `{ maxExtensions: 0 }` restores the
@@ -461,6 +465,9 @@ export interface AgentLoopResult {
    *  recover from (repeated/cycled/consecutively-failing calls). Lets the caller
    *  capture the stall into failure memory; `undefined` for done/budget/cancelled. */
   stopClass?: "consecutive_failure" | "cycle" | "repeat";
+  /** True when the turn ended because completion was rejected MAX_DONE_CORRECTIONS times; doneReason then
+   *  carries the last candidate answer under the UNVERIFIED marker. Never set together with done:true. */
+  completionRejected?: boolean;
 }
 
 
@@ -538,6 +545,25 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     history.unshift({ role: "system", content: opts.systemPrompt });
   }
   const tools = opts.tools ?? DEFAULT_TOOLS;
+  const snapshotter: WorkspaceSnapshotter = opts.workspaceSnapshot ?? defaultWorkspaceSnapshotter;
+  // Turn-scoped memo: once the workspace is over the snapshot cap, gated calls count as
+  // mutations without re-walking a tree that is known to be too large.
+  let snapshotCapped = false;
+  const takeSnapshot = async (racySinceMs?: number): Promise<WorkspaceSnapshot> => {
+    if (snapshotCapped) return { ok: false, reason: "cap", detail: "workspace exceeded the snapshot cap earlier this turn" };
+    try {
+      const snap = await snapshotter(cwd, racySinceMs);
+      if (!snap.ok && snap.reason === "cap") snapshotCapped = true;
+      return snap;
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  // bash/computer calls whose mutation status is decided by a workspace diff. Recognized
+  // verifiers are never mutations, and observe-only computer actions are read-only.
+  const snapshotGated = (tool: string, args: Record<string, any> | undefined): boolean =>
+    (tool === "bash" && !isVerificationSignal(String(args?.command ?? args?.cmd ?? ""))) ||
+    (tool === "computer" && computerActionMayAffectState(args));
   const sandbox = currentSandboxExecution();
   const parentTools: Record<string, true> = { task: true, subagent: true, irc: true, todo: true, sandbox_request: true };
   const maxSteps = opts.maxSteps ?? 15;
@@ -663,6 +689,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let verificationCycles = 0;
   let completionGraceUsed = false;
   let doneCorrections = 0;
+  // Most recent non-empty completion candidate, kept so an exhausted gate still shows it.
+  let lastCompletionCandidate = "";
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
   // diagnostics the model saw but has not yet resolved (a later clean hook run
   // clears it). The done guard treats this as "verification missing" — the hook
@@ -1070,6 +1098,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         (hasTools && looksLikeMidTaskProse(trimmed));
       if (trimmed && (parseFailures > MAX_PARSE_BOUNCES || (!trimmed.includes("{") && !midTurnInProgress))) {
         const candidateReason = stripLeakedReasoningTags(trimmed) || trimmed;
+        if (candidateReason.trim()) lastCompletionCandidate = candidateReason;
         if (parseFailures <= MAX_PARSE_BOUNCES && ev.onBeforeDone) {
           const preCheck = await ev.onBeforeDone(candidateReason, {
             sawMutation,
@@ -1078,7 +1107,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           });
           if (preCheck) {
             if (doneCorrections >= GUARD_LIMITS.MAX_DONE_CORRECTIONS) {
-              return finish({ done: false, steps: step, doneReason: `Stopped: completion rejected after ${doneCorrections} corrections. ${preCheck}` });
+              return finish({
+                done: false,
+                steps: step,
+                completionRejected: true,
+                doneReason: formatRejectedCompletion(lastCompletionCandidate, doneCorrections, preCheck),
+              });
             }
             doneCorrections++;
             ev.onNotice?.(`done deferred — completion correction ${doneCorrections}/${GUARD_LIMITS.MAX_DONE_CORRECTIONS}`);
@@ -1169,12 +1203,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         sawVerification,
         verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
       };
+      const candidate = stripLeakedReasoningTags(String(toolCalls[0].arguments?.reason ?? ""));
+      if (candidate.trim()) lastCompletionCandidate = candidate;
       const doneGate = classifyDoneGate({ ...evidence, pendingHookFailure });
       const nudge = await ev.onBeforeDone?.((toolCalls[0].arguments?.reason as string) ?? "", evidence);
       const rejection = [doneGate.block ? doneGate.message : "", nudge].filter(Boolean).join("\n\n");
       if (rejection) {
         if (doneCorrections >= GUARD_LIMITS.MAX_DONE_CORRECTIONS) {
-          return finish({ done: false, steps: step, doneReason: `Stopped: completion rejected after ${doneCorrections} corrections. ${rejection}` });
+          return finish({
+            done: false,
+            steps: step,
+            completionRejected: true,
+            doneReason: formatRejectedCompletion(lastCompletionCandidate, doneCorrections, rejection),
+          });
         }
         doneCorrections++;
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
@@ -1338,6 +1379,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             success = false;
             output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
           } else {
+            // Taken after pre-tool hooks so hook writes are never attributed to the call.
+            const before = snapshotGated(tool, args) ? await takeSnapshot() : undefined;
             try {
               const onProgress = ev.onToolProgress ? (partial: string) => ev.onToolProgress!(tool, partial) : undefined;
               const sandboxedHandler = sandbox && !Object.hasOwn(parentTools, tool) && !SANDBOX_MEDIATED_TOOLS.has(handler)
@@ -1361,6 +1404,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 (tool === "computer" && computerActionMayAffectState(args)) ||
                 ((tool === "monitor" || tool === "job") && String(args?.action ?? "").trim().toLowerCase() === "start");
               if (explicitSignal || knownMutatingCall) mutationMayHaveOccurred = true;
+            }
+            if (before) {
+              // bash/computer: the workspace diff is the sole mutation authority (overrides
+              // handler flags and the catch heuristic). Both sides share one racy anchor so
+              // an unchanged recently-modified file is hashed on both sides or neither.
+              mutationMayHaveOccurred = before.ok ? workspaceSnapshotChanged(before, await takeSnapshot(before.startedAtMs)) : true;
             }
           }
         }
@@ -1528,6 +1577,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // mutation evidence before it, but anything after that verification remains
     // stale. Verification commands are shell calls, so do not let a wrapper's
     // mutationMayHaveOccurred flag turn the verifier itself into a later mutation.
+    // Non-verifier bash and state-changing computer calls carry an explicit
+    // mutationMayHaveOccurred from the workspace snapshot bracket in executeTool,
+    // which flows through the structured-mutation branch below.
     for (let i = 0; i < toolCalls.length; i++) {
       if (!results[i].executed) continue;
       const t = toolCalls[i].tool;
@@ -1573,10 +1625,6 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       } else if (t === "debug" && MUTATING_DEBUG_ACTIONS[String(toolCalls[i].arguments?.action ?? "")] === true) {
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
-      } else if (t === "computer" && computerActionMayAffectState(toolCalls[i].arguments)) {
-        // Failed UI actions may have partially changed external state.
-        sawMutation = true;
-        lastMutationSeq = ++mutVerSeq;
       } else if (t === "monitor" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
         // Starting a background monitor can mutate the workspace asynchronously;
         // read-only monitor controls (list/tail/await/cancel) do not invalidate verification.
@@ -1585,10 +1633,6 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       } else if (t === "job" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
         // Starting a background shell may mutate the workspace asynchronously;
         // read-only job controls (list/tail/await/cancel) do not invalidate verification.
-        sawMutation = true;
-        lastMutationSeq = ++mutVerSeq;
-      } else if (t === "bash") {
-        // Even simple commands can run shell startup hooks or inherited functions.
         sawMutation = true;
         lastMutationSeq = ++mutVerSeq;
       }

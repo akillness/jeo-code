@@ -7,7 +7,7 @@ import type {
 	MessengerMessage,
 	MessengerReply,
 } from "./types";
-import { MessengerFatalError } from "./types";
+import { MessengerFatalError, MessengerUnverifiedReplyError } from "./types";
 
 const MAX_MESSAGE_LENGTH = 32_000;
 const MAX_QUEUED_MESSAGES = 100;
@@ -276,8 +276,9 @@ export interface MessengerGatewayOptions {
 	/** Authenticated human controls bypass model queues, including busy sessions. */
 	sandboxControl?: (message: MessengerMessage, signal: AbortSignal) => Promise<{ handled: boolean; output: string }>;
 	/**
-	 * Operator log for a request that failed before or during delivery. Users only ever see the generic failure
-	 * text, so this is the one place the cause is observable; it receives the conversation, never message text.
+	 * Operator log for a request that failed before or during delivery. Users see the generic failure text, except
+	 * an unverified completion, whose marked answer is delivered; this is the one place the cause is observable,
+	 * and it receives the conversation, never message text.
 	 */
 	onRequestError?: (message: MessengerMessage, error: unknown, stage: "prepare" | "reply" | "deliver") => void;
 }
@@ -372,9 +373,11 @@ export function createMessengerGateway(
 				}
 				if (signal.aborted) return;
 				reportError(message, error, "reply");
-				text = error instanceof DiscordModelSelectionError
-					? "Discord could not verify a model. Ask the operator to configure an explicit Discord model, check provider credentials and live model discovery, then restart the messenger service."
-					: "The request could not be completed. Please try again.";
+				text = error instanceof MessengerUnverifiedReplyError
+					? error.reply
+					: error instanceof DiscordModelSelectionError
+						? "Discord could not verify a model. Ask the operator to configure an explicit Discord model, check provider credentials and live model discovery, then restart the messenger service."
+						: "The request could not be completed. Please try again.";
 			}
 			if (!signal.aborted && text.trim()) {
 				// A failed send may already have delivered a chunk: never retry the entire reply.

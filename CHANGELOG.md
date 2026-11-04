@@ -9,7 +9,10 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.19] - 2026-11-04
+
 ### Added
+- **Managed messenger runtime** — a Discord messenger profile no longer runs whatever `jeo` entry happened to execute setup. When `jeo` is a package install, `jeo messenger setup` pins a private copy of the published package under `<profile>/runtime/<version>` (jeopi's `runtime-<version>` layout) and points the launcher at it; `jeo update` provisions the new version there, rewrites the launcher, restarts the installed service and prunes runtimes older than the predecessor kept for rollback. `jeo messenger update [--config <file>]` performs the same refresh on demand, and `jeo update --json` reports `messengersRefreshed` when any profile is registered. Setup run from a source checkout or compiled binary keeps an external launcher that updates leave alone, and says so. Re-running setup without `--service` now restarts an already installed service so the new launcher takes effect.
 - **Messenger operator diagnostics** — `jeo messenger run` now logs each failed request to stderr with its stage (`prepare`, `reply`, `deliver`), an 8-character conversation id and the cause, plus bounded worker diagnostics (non-protocol worker stderr lines and abnormal exits). Users still receive only the generic failure text; message content and platform tokens never reach the log. Previously a worker that could not start (for example after the jeo checkout embedded in `run-discord.sh` was moved) produced only `❌ Failed` in Discord and nothing in the service log.
 
 ### Verified (live Discord, 2026-11-04)
@@ -2706,7 +2709,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.18...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.19...HEAD
+[0.12.19]: https://github.com/akillness/jeo-code/releases/tag/v0.12.19
 [0.12.18]: https://github.com/akillness/jeo-code/releases/tag/v0.12.18
 [0.12.17]: https://github.com/akillness/jeo-code/releases/tag/v0.12.17
 [0.12.16]: https://github.com/akillness/jeo-code/releases/tag/v0.12.16

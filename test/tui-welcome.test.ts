@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { renderWelcome } from "../src/tui/components/welcome";
+import { visibleWidth } from "../src/tui/components/color";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -83,13 +84,15 @@ test("banner width tracks cols across a resize (re-render fits the new width, no
   // Simulate: launch at 80, then the terminal is resized to 120 and the banner
   // re-renders (the /clear & /resume path). The fresh render must fill the NEW
   // width (cols-1), never snap back to the launch-time width.
+  // Rows are padded by display width (the renderer's own measure): a wide character in a
+  // changelog item occupies two cells but one UTF-16 unit, so `.length` is not the invariant.
   for (const cols of [80, 120, 60]) {
     const lines = renderWelcome({ ...base, cols });
     const W = cols - 1;
-    expect(stripAnsi(lines[0]!).length).toBe(W);
-    expect(stripAnsi(lines[lines.length - 1]!).length).toBe(W);
+    expect(visibleWidth(lines[0]!)).toBe(W);
+    expect(visibleWidth(lines[lines.length - 1]!)).toBe(W);
     // Every body row is padded to the same width — proves no row keeps an older geometry.
-    for (const line of lines) expect(stripAnsi(line).length).toBe(W);
+    for (const line of lines) expect(visibleWidth(line)).toBe(W);
   }
 });
 

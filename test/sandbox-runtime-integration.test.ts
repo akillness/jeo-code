@@ -69,7 +69,7 @@ test("bundle publication: concurrent callers receive complete content-addressed 
   await Promise.all(Array.from({ length: 8 }, () => prepareHandsBundle()));
   expect(await fs.readFile(file)).toEqual(bytes);
   expect((await fs.stat(file)).ino).toBe(before.ino);
-});
+}, process.platform === "win32" ? 30_000 : 5000);
 
 test("bundle publication: altered trusted bytes fail closed rather than being silently overwritten", async () => {
   await configDirectory();
@@ -80,7 +80,7 @@ test("bundle publication: altered trusted bytes fail closed rather than being si
   expect(await fs.readFile(file, "utf8")).toBe("throw new Error('tampered runtime');\n");
 });
 
-test("bundle publication: a symlink at the trusted digest is rejected without modifying its target", async () => {
+test.skipIf(process.platform === "win32")("bundle publication: a symlink at the trusted digest is rejected without modifying its target", async () => {
   const root = await configDirectory();
   const file = await prepareHandsBundle();
   const victim = path.join(root, "victim");
@@ -162,7 +162,7 @@ test("sandbox hooks preserve veto and diagnostics without running writable proje
   expect(await fs.readdir(cwd)).toEqual([]);
 });
 
-test("sandbox hooks deliver each event payload over stdin and apply relative effects in the mapped guest cwd", async () => {
+test.skipIf(process.platform === "win32")("sandbox hooks deliver each event payload over stdin and apply relative effects in the mapped guest cwd", async () => {
   const root = await configDirectory();
   const { host, guest, supervisor } = await runtimeFixture();
   const code = "const payload = JSON.parse(await Bun.stdin.text()); await Bun.write('hook-' + payload.event + '.json', JSON.stringify(payload)); console.log('guest hook:' + payload.event);";

@@ -2,50 +2,111 @@
   "$schema": "https://github.com/akillness/jeo-code/blob/main/docs/verification/discord-authoritative/release-report.schema.json",
   "schemaVersion": 1,
   "kind": "jeo-code-discord-authoritative-verification",
-  "authoritativeRepository": "/Users/jangyoung/.superset/projects/jeo-code",
-  "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
+  "authoritativeRepository": "C:/Users/bangg/jeo-code",
+  "commitSha": "72b536994aa622a6c48ac748c7086f1acb5c8c88",
   "workingTree": {
     "dirty": true,
     "status": [
-      " M CHANGELOG.md",
-      " M docs/integrations/discord.md",
-      " M package.json",
-      " M src/agent/notify/discord-attachments.ts",
-      " M src/agent/notify/discord-daemon.ts",
-      " M src/agent/session.ts",
-      " M src/commands/launch.ts",
-      " M src/commands/launch/flags.ts",
-      " M src/commands/messenger.ts",
-      " M src/commands/notify.ts",
-      " M src/messenger/discord-setup.ts",
-      " M src/messenger/discord.ts",
-      " M src/messenger/gateway.ts",
-      "AM src/messenger/session-pool.ts",
-      " M src/messenger/types.ts",
-      " M test/notify-command.test.ts",
-      " M test/notify-discord-attachments.test.ts",
-      " M test/notify-discord-daemon.test.ts",
-      "?? docs/integrations/discord-attachment-policy.md",
-      "?? scripts/validate-discord-release-report.ts",
-      "?? scripts/verify-discord-integration.ts",
-      "?? test/discord-jeopi-parity-spec.test.ts",
-      "?? test/fixtures/discord-jeopi-parity.json",
-      "?? test/messenger-discord-recovery.test.ts",
-      "?? test/messenger-literal-launch.test.ts",
-      "?? test/messenger-security-contract.test.ts",
-      "?? test/messenger-session-identity.test.ts",
-      "?? test/messenger-worker-pool.test.ts"
+      " M README.ja.md",
+      " M README.ko.md",
+      " M README.md",
+      " M README.zh.md",
+      " M src/agent/sandbox/hands-source.text",
+      " M test/sandbox-docker.test.ts",
+      " M test/sandbox-runtime-integration.test.ts",
+      "?? .specify/constitution.md",
+      "?? .specify/specification.md",
+      "?? __pycache__/",
+      "?? collect_omj_data.py",
+      "?? ddg_search.py",
+      "?? ddg_search2.py",
+      "?? ddg_search3.py",
+      "?? ddg_search_linkedin.py",
+      "?? fetch_data.py",
+      "?? fetch_jeo_data.py",
+      "?? fetch_jobs.py",
+      "?? fetch_jobs2.py",
+      "?? fetch_jobs3.py",
+      "?? fetch_jobs4.py",
+      "?? fetch_jobs_v2.py",
+      "?? fetch_jobs_v3.py",
+      "?? fetch_news.py",
+      "?? fetch_news2.py",
+      "?? fetch_news_repos.py",
+      "?? fetch_omj_data.py",
+      "?? get_international_news.py",
+      "?? get_jumpit_jobs.py",
+      "?? get_kr_news_rss.py",
+      "?? get_more_hn.py",
+      "?? get_news.py",
+      "?? get_news_rss.py",
+      "?? get_rp_jobs.py",
+      "?? google_drive_parsing_guide.md",
+      "?? google_drive_parsing_guide_2025.md",
+      "?? hermes_architecture.html",
+      "?? hermes_architecture.png",
+      "?? hn_jobs.py",
+      "?? hn_jobs2.py",
+      "?? international_news.json",
+      "?? jeo-code-0.12.16-workflow-and-windows-fix.patch",
+      "?? jobs.json",
+      "?? jobs_result.json",
+      "?? jumpit.json",
+      "?? jumpit_search.py",
+      "?? news_results.json",
+      "?? omj_ai_agent_interface_design_2026.md",
+      "?? omj_cocoindex_rag_optimization.md",
+      "?? omj_fetch.py",
+      "?? omj_game_audio_ai_guide.md",
+      "?? ops/",
+      "?? patch.cjs",
+      "?? patch.ts",
+      "?? results.json",
+      "?? saramin.html",
+      "?? saramin2.html",
+      "?? scrape_jumpit.py",
+      "?? scrape_jumpit_details.py",
+      "?? scrape_rp.py",
+      "?? scrape_wanted.py",
+      "?? scrape_wanted_debug.py",
+      "?? scrape_wanted_screenshot.py",
+      "?? scripts/record-evolution.ts",
+      "?? search.json",
+      "?? search_data.py",
+      "?? search_en_news.py",
+      "?? search_jobs.py",
+      "?? search_jobs2.py",
+      "?? search_jobs_ddg.py",
+      "?? search_news.py",
+      "?? search_news_more.py",
+      "?? src/util/posix-tools.ts",
+      "?? src/util/slack.ts",
+      "?? test-analysis.ts",
+      "?? test-gjc.ts",
+      "?? test.txt",
+      "?? test/slack-util.test.ts",
+      "?? test_ddg.py",
+      "?? test_file.txt",
+      "?? test_jumpit.py",
+      "?? test_tg.ts",
+      "?? test_wanted.py",
+      "?? undefined/",
+      "?? wanted.json",
+      "?? wanted.png",
+      "?? wanted2.json",
+      "?? windows-sandbox-acl-fix.patch",
+      "?? workflows.sqlite"
     ],
     "contentDigestAlgorithm": "sha256(git-diff-binary-HEAD plus sorted untracked path-and-content; evidence directory excluded)",
-    "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef"
+    "contentDigest": "fb668d8f07a5a6c6d6c373b8b52c962ce3a9f2cb13bb083dcf831f1cfa268a3b"
   },
   "environment": {
-    "bun": "1.4.4",
-    "platform": "darwin",
-    "architecture": "arm64"
+    "bun": "1.4.0",
+    "platform": "win32",
+    "architecture": "x64"
   },
-  "startedAt": "2026-11-02T01:41:57.997Z",
-  "completedAt": "2026-11-02T01:41:58.261Z",
+  "startedAt": "2026-11-04T04:18:17.020Z",
+  "completedAt": "2026-11-04T04:18:53.812Z",
   "commands": [
     {
       "argv": [
@@ -59,10 +120,10 @@
         "test/notify-discord-daemon.test.ts",
         "test/notify-discord-attachments.test.ts"
       ],
-      "cwd": "/Users/jangyoung/.superset/projects/jeo-code",
-      "exitCode": 0,
-      "startedAt": "2026-11-02T01:41:57.997Z",
-      "completedAt": "2026-11-02T01:41:58.261Z",
+      "cwd": "C:/Users/bangg/jeo-code",
+      "exitCode": 1,
+      "startedAt": "2026-11-04T04:18:17.020Z",
+      "completedAt": "2026-11-04T04:18:53.812Z",
       "evidencePath": "docs/verification/discord-authoritative/focused-tests.log"
     },
     {
@@ -71,99 +132,80 @@
         "run",
         "build"
       ],
-      "cwd": "/Users/jangyoung/.superset/projects/jeo-code",
-      "exitCode": 0,
-      "startedAt": "2026-11-02T01:41:58.261Z",
-      "completedAt": "2026-11-02T01:41:58.840Z",
+      "cwd": "C:/Users/bangg/jeo-code",
+      "exitCode": -1,
+      "startedAt": "2026-11-04T04:18:53.827Z",
+      "completedAt": "2026-11-04T04:18:53.827Z",
       "evidencePath": "docs/verification/discord-authoritative/build.log"
     }
   ],
   "testTotals": {
-    "passed": 82,
-    "failed": 0,
-    "assertions": 521,
-    "tests": 82,
+    "passed": 69,
+    "failed": 27,
+    "assertions": 514,
+    "tests": 96,
     "files": 7
   },
   "parityContractPath": "test/fixtures/discord-jeopi-parity.json",
   "reportSchemaPath": "docs/verification/discord-authoritative/release-report.schema.json",
   "package": {
     "name": "jeo-code",
-    "version": "0.12.7"
+    "version": "0.12.15"
   },
   "buildContract": {
-    "packageDirectory": "/Users/jangyoung/.superset/projects/jeo-code",
+    "packageDirectory": "C:/Users/bangg/jeo-code",
     "packageMetadataPath": "package.json",
-    "packageMetadataSha256": "a927db0c93ee2adbf2a156c1ba6b244956bee74bc731e996819d63ee36874abb",
+    "packageMetadataSha256": "07c2450aff0f45cbf1501131e01707d20ee4041d946541d39e7ff13c2b4ed08a",
     "configuredPackageManager": "pnpm@10.33.4+sha512.1c67b3b359b2d408119ba1ed289f34b8fc3c6873412bec6fd264fbdc82489e510fcbecb9ce9d22dae7f3b76269d8441046014bdca53b9979cd7a561ad631b800",
-    "executionRuntime": "bun@1.4.4",
+    "executionRuntime": "bun@1.4.0",
     "scriptName": "build",
-    "configuredScript": "bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
+    "configuredScript": "bun scripts/build-sandbox-worker.ts && bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
     "exactCommand": [
       "bun",
       "run",
       "build"
     ],
     "packageName": "jeo-code",
-    "packageVersion": "0.12.7",
+    "packageVersion": "0.12.15",
     "versionSource": "package.json#/version",
     "expectedOutputPaths": [
       "dist/jeo"
     ],
     "identityBinding": {
-      "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
-      "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef",
+      "commitSha": "72b536994aa622a6c48ac748c7086f1acb5c8c88",
+      "contentDigest": "fb668d8f07a5a6c6d6c373b8b52c962ce3a9f2cb13bb083dcf831f1cfa268a3b",
       "rule": "Artifacts are produced by the recorded package.json build script in the authoritative package directory, then hashed and tagged with the pre-build commit and dirty-tree content digest."
     },
-    "artifacts": [
-      {
-        "path": "dist/jeo",
-        "type": "compiled executable",
-        "sizeBytes": 113465570,
-        "sha256": "d192b5dc97e41fb173547274f066c14dbc80902327b8635cfb019cf8e7d04967",
-        "executable": true,
-        "packageName": "jeo-code",
-        "packageVersion": "0.12.7",
-        "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88",
-        "contentDigest": "fd0985b554e0ba846f424dea59206bc7e5e9a7e5eb02f5297bbbd5f9b050faef"
-      }
-    ],
-    "status": "succeeded"
+    "artifacts": [],
+    "status": "failed"
   },
   "releaseState": {
     "credentialCheck": {
-      "status": "failed",
-      "startedAt": "2026-11-02T01:41:58.909Z",
-      "completedAt": "2026-11-02T01:42:00.117Z",
-      "reason": "One or more direct git/npm credential probes failed; no release action was attempted.",
-      "evidence": {
-        "gitRemoteConfigured": true,
-        "gitRemoteReachable": true,
-        "npmAuthenticated": false,
-        "remoteUrl": "https://github.com/akillness/jeo-code.git",
-        "registry": "https://registry.npmjs.org/"
-      }
+      "status": "skipped",
+      "startedAt": "2026-11-04T04:18:53.828Z",
+      "completedAt": "2026-11-04T04:18:53.828Z",
+      "reason": "Authoritative verification and build did not succeed.",
+      "evidence": {}
     },
     "gitPush": {
       "status": "skipped",
-      "startedAt": "2026-11-02T01:42:00.118Z",
-      "completedAt": "2026-11-02T01:42:00.118Z",
+      "startedAt": "2026-11-04T04:18:53.828Z",
+      "completedAt": "2026-11-04T04:18:53.828Z",
       "reason": "The authoritative worktree is dirty, so no commit exactly represents the verified content digest.",
       "evidence": {
-        "remoteUrl": "https://github.com/akillness/jeo-code.git",
         "ref": "main",
-        "commitSha": "b21f1ff2fcaaa391989cc7db540338df7cfdcd88"
+        "commitSha": "72b536994aa622a6c48ac748c7086f1acb5c8c88"
       }
     },
     "npmPublication": {
       "status": "skipped",
-      "startedAt": "2026-11-02T01:42:00.136Z",
-      "completedAt": "2026-11-02T01:42:00.136Z",
+      "startedAt": "2026-11-04T04:18:54.024Z",
+      "completedAt": "2026-11-04T04:18:54.024Z",
       "reason": "The authoritative worktree is dirty, so the package cannot be bound to a releasable commit.",
       "evidence": {
         "registry": "https://registry.npmjs.org/",
         "packageName": "jeo-code",
-        "version": "0.12.7"
+        "version": "0.12.15"
       }
     },
     "correspondenceRule": "A successful push must remotely resolve the recorded ref to commitSha. A successful publication must be found by registry lookup and record a correspondence value derived from the verified artifact SHA-256, commit SHA, and dirty-tree content digest."
@@ -174,5 +216,5 @@
     "docs/verification/discord-authoritative/focused-tests.log",
     "docs/verification/discord-authoritative/build.log"
   ],
-  "status": "succeeded"
+  "status": "failed"
 }

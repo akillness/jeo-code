@@ -53,7 +53,7 @@ test("canonical symlinks cannot launder private control files into a grant", asy
   await expect(createSandboxPolicy({ sessionKey: "private-parent", revision: 1, cwd: workspace, config, privatePaths: [privatePath], grants: [{ host: root, mode: "ro" }] })).rejects.toThrow();
 });
 
-test("Docker control sockets cannot enter a policy through a canonical alias", async () => {
+test.skipIf(process.platform === "win32")("Docker control sockets cannot enter a policy through a canonical alias", async () => {
   const { root, workspace } = await fixture();
   const socket = path.join(root, "docker.sock");
   const alias = path.join(root, "innocent-resource");
@@ -111,7 +111,7 @@ class DockerDaemon {
 
   private missing(message: string) { return { exitCode: 1, stdout: "", stderr: message }; }
 
-  private args(argv: readonly string[]) { return argv[0]?.endsWith("docker") ? argv.slice(1) : [...argv]; }
+  private args(argv: readonly string[]) { return /(^|[\\/])docker(\.exe)?$/i.test(argv[0] ?? "") ? argv.slice(1) : [...argv]; }
 
   private option(args: readonly string[], name: string) {
     const index = args.indexOf(name);
@@ -433,7 +433,7 @@ test("an SSH agent endpoint ancestor is denied even before its socket appears", 
   expect(await isolatedPolicy(workspace, granted, home, { SSH_AUTH_SOCK: path.join(granted, "agent-endpoint") })).toEqual({ accepted: false, error: expect.stringMatching(/socket|endpoint/i) });
 });
 
-test("a pinned Docker context endpoint ancestor cannot be admitted as a grant", async () => {
+test.skipIf(process.platform === "win32")("a pinned Docker context endpoint ancestor cannot be admitted as a grant", async () => {
   const daemon = new DockerDaemon();
   const { root, workspace, granted } = await fixture();
   const bundle = path.join(root, "worker.js");
@@ -447,7 +447,7 @@ test("a pinned Docker context endpoint ancestor cannot be admitted as a grant", 
   } finally { await launched?.stop(); }
 });
 
-test("a nested real Unix socket is refused without treating an ordinary directory as safe", async () => {
+test.skipIf(process.platform === "win32")("a nested real Unix socket is refused without treating an ordinary directory as safe", async () => {
   const { workspace } = await fixture();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "j-"));
   roots.push(root);

@@ -1,0 +1,382 @@
+diff --git a/src/agent/sandbox/authority.ts b/src/agent/sandbox/authority.ts
+--- a/src/agent/sandbox/authority.ts
++++ b/src/agent/sandbox/authority.ts
+@@ -1,7 +1,7 @@
+ import { randomUUID } from "node:crypto";
+ import * as fs from "node:fs/promises";
+ import * as path from "node:path";
+-import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "./policy";
++import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains, windowsSystemRoot } from "./policy";
+ import type { SandboxConfig, SandboxMount, SandboxSupervisor, SandboxTermination } from "./types";
+ 
+ /** Constructed by trusted parent entry points, never from model/tool arguments. */
+@@ -50,61 +50,124 @@
+ 
+ type DecisionWaiter = { resolve(value: GrantRequest): void; reject(reason: Error): void };
+ 
++const pendingPrivateDirectories = new Map<string, Promise<string>>();
++
+ /** Create app-private state, or verify existing state without widening its ACL. */
+ export async function ensurePrivateSandboxDirectory(directory: string): Promise<string> {
+   const canonical = await canonicalSandboxPath(directory, false);
+-  if (process.platform === "win32") {
+-    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+-    if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error("SANDBOX_STATE: Windows system directory is unavailable");
+-    await fs.mkdir(path.dirname(canonical), { recursive: true });
+-    // Fixed parent-owned program; paths are data, never interpolated into code.
+-    // Windows PowerShell 5.1 provides .NET Framework's atomic ACL creation API.
+-    const script = `
++  const key = process.platform === "win32" ? canonical.toLowerCase() : canonical;
++  const active = pendingPrivateDirectories.get(key);
++  if (active) return active;
++  const operation = (async (): Promise<string> => {
++    if (process.platform === "win32") {
++      const systemRoot = windowsSystemRoot();
++      await fs.mkdir(path.dirname(canonical), { recursive: true });
++      // Fixed parent-owned program; paths are data, never interpolated into code.
++      // Windows PowerShell 5.1 provides .NET Framework's ACL creation and SetAccessControl APIs.
++      // Note: Win32 CreateDirectoryW applies explicit ACEs from SECURITY_ATTRIBUTES but strips
++      // SE_DACL_PROTECTED unless SetAccessControl (SetNamedSecurityInfoW) is called afterwards.
++      const script = `
+ $ErrorActionPreference = 'Stop'
++$mutex = New-Object System.Threading.Mutex($false, 'Local\\jeo-sandbox-private-directory')
++$locked = $false
+ try {
++  try { $locked = $mutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
++  if (-not $locked) { throw 'mutex timeout' }
+   $directory = $env:JEO_SANDBOX_PRIVATE_DIRECTORY
+-  $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
++  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
++  $sid = $identity.User
++  $tokenOwner = $identity.Owner
+   $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
++  $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')
++  $daclSecurity = New-Object System.Security.AccessControl.DirectorySecurity
++  $daclSecurity.SetAccessRuleProtection($true, $false)
++  $daclSecurity.AddAccessRule($accessRule)
++  $created = $false
+   if (-not [System.IO.Directory]::Exists($directory)) {
+-    $security = New-Object System.Security.AccessControl.DirectorySecurity
+-    $security.SetAccessRuleProtection($true, $false)
+-    $security.SetOwner($sid)
+-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')
+-    $security.AddAccessRule($rule)
+-    [void][System.IO.Directory]::CreateDirectory($directory, $security)
+-  }
+-  if (([System.IO.File]::GetAttributes($directory) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse point' }
+-  $actual = [System.IO.Directory]::GetAccessControl($directory)
+-  if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner or inheritance' }
+-  $rules = $actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+-  if ($rules.Count -ne 1) { throw 'unexpected access rules' }
+-  $rule = $rules[0]
+-  if ($rule.IdentityReference.Value -ne $sid.Value -or $rule.IsInherited -or $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl' -or $rule.InheritanceFlags -ne $inherit -or $rule.PropagationFlags -ne 'None') { throw 'non-private rule' }
++    $createSecurity = New-Object System.Security.AccessControl.DirectorySecurity
++    $createSecurity.SetAccessRuleProtection($true, $false)
++    $createSecurity.SetOwner($sid)
++    $createSecurity.AddAccessRule($accessRule)
++    [void][System.IO.Directory]::CreateDirectory($directory, $createSecurity)
++    $created = $true
++  }
++  try {
++    if (([System.IO.File]::GetAttributes($directory) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse point' }
++    if ($created) {
++      [System.IO.Directory]::SetAccessControl($directory, $daclSecurity)
++      $currentOwner = [System.IO.Directory]::GetAccessControl($directory).GetOwner([System.Security.Principal.SecurityIdentifier])
++      if ($currentOwner.Value -ne $sid.Value) {
++        $ownerSecurity = [System.IO.Directory]::GetAccessControl($directory)
++        $ownerSecurity.SetAccessRuleProtection($true, $false)
++        $ownerSecurity.SetOwner($sid)
++        [System.IO.Directory]::SetAccessControl($directory, $ownerSecurity)
++      }
++    } else {
++      $existing = [System.IO.Directory]::GetAccessControl($directory)
++      $existingOwner = $existing.GetOwner([System.Security.Principal.SecurityIdentifier])
++      $existingRules = $existing.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
++      if ($existingRules.Count -eq 1) {
++        $existingRule = $existingRules[0]
++        $ownerMatchesToken = ($existingOwner.Value -eq $sid.Value) -or ($null -ne $tokenOwner -and $existingOwner.Value -eq $tokenOwner.Value)
++        if ($ownerMatchesToken -and $existingRule.IdentityReference.Value -eq $sid.Value -and -not $existingRule.IsInherited -and $existingRule.AccessControlType -eq 'Allow' -and $existingRule.FileSystemRights -eq 'FullControl' -and $existingRule.InheritanceFlags -eq $inherit -and $existingRule.PropagationFlags -eq 'None') {
++          if (-not $existing.AreAccessRulesProtected) {
++            [System.IO.Directory]::SetAccessControl($directory, $daclSecurity)
++          }
++          if ($existingOwner.Value -ne $sid.Value) {
++            $ownerSecurity = [System.IO.Directory]::GetAccessControl($directory)
++            $ownerSecurity.SetAccessRuleProtection($true, $false)
++            $ownerSecurity.SetOwner($sid)
++            [System.IO.Directory]::SetAccessControl($directory, $ownerSecurity)
++          }
++        }
++      }
++    }
++    $actual = [System.IO.Directory]::GetAccessControl($directory)
++    if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner or inheritance' }
++    $rules = $actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
++    if ($rules.Count -ne 1) { throw 'unexpected access rules' }
++    $rule = $rules[0]
++    if ($rule.IdentityReference.Value -ne $sid.Value -or $rule.IsInherited -or $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl' -or $rule.InheritanceFlags -ne $inherit -or $rule.PropagationFlags -ne 'None') { throw 'non-private rule' }
++  } catch {
++    if ($created) { try { [System.IO.Directory]::Delete($directory, $false) } catch {} }
++    throw
++  }
+   [Console]::Out.Write('JEO_PRIVATE_DIRECTORY_VERIFIED')
+   exit 0
+ } catch { exit 1 }
++finally {
++  if ($locked) { try { $mutex.ReleaseMutex() } catch {} }
++  $mutex.Dispose()
++}
+ `;
+-    const executable = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+-    const child = Bun.spawn([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+-      env: { SystemRoot: systemRoot, JEO_SANDBOX_PRIVATE_DIRECTORY: canonical },
+-      stdin: "ignore", stdout: "pipe", stderr: "ignore",
+-    });
+-    const timer = setTimeout(() => child.kill(), 30_000);
+-    try {
+-      const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+-      if (exitCode !== 0 || output !== "JEO_PRIVATE_DIRECTORY_VERIFIED") {
+-        throw new Error("SANDBOX_STATE: private Windows owner-only ACL could not be verified");
+-      }
+-    } finally { clearTimeout(timer); }
+-  } else {
+-    await fs.mkdir(canonical, { recursive: true, mode: 0o700 });
+-  }
+-  const stat = await fs.lstat(canonical);
+-  if (!stat.isDirectory() || stat.isSymbolicLink() ||
+-      (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()))) {
+-    throw new Error("SANDBOX_STATE: authority state must be a private owner-only directory");
+-  }
+-  return canonical;
++      const executable = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
++      const child = Bun.spawn([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
++        env: { SystemRoot: systemRoot, JEO_SANDBOX_PRIVATE_DIRECTORY: canonical },
++        stdin: "ignore", stdout: "pipe", stderr: "ignore",
++      });
++      const timer = setTimeout(() => child.kill(), 30_000);
++      try {
++        const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
++        if (exitCode !== 0 || output !== "JEO_PRIVATE_DIRECTORY_VERIFIED") {
++          throw new Error("SANDBOX_STATE: private Windows owner-only ACL could not be verified");
++        }
++      } finally { clearTimeout(timer); }
++    } else {
++      await fs.mkdir(canonical, { recursive: true, mode: 0o700 });
++    }
++    const stat = await fs.lstat(canonical);
++    if (!stat.isDirectory() || stat.isSymbolicLink() ||
++        (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()))) {
++      throw new Error("SANDBOX_STATE: authority state must be a private owner-only directory");
++    }
++    return canonical;
++  })();
++  pendingPrivateDirectories.set(key, operation);
++  try {
++    return await operation;
++  } finally {
++    if (pendingPrivateDirectories.get(key) === operation) pendingPrivateDirectories.delete(key);
++  }
+ }
+ 
+ /** All mutable authority remains in this parent closure, outside worker mounts. */
+diff --git a/src/agent/sandbox/bundle.ts b/src/agent/sandbox/bundle.ts
+--- a/src/agent/sandbox/bundle.ts
++++ b/src/agent/sandbox/bundle.ts
+@@ -19,8 +19,11 @@
+     const temporary = path.join(staging, "hands.js");
+     try {
+       const output = await fs.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+-      try { await output.writeFile(source); await output.sync(); await output.chmod(0o400); }
+-      finally { await output.close(); }
++      try {
++        await output.writeFile(source);
++        await output.sync();
++        if (process.platform !== "win32") await output.chmod(0o400);
++      } finally { await output.close(); }
+       try { await fs.link(temporary, file); }
+       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+     } finally { await fs.rm(staging, { recursive: true, force: true }); }
+diff --git a/src/agent/sandbox/docker.ts b/src/agent/sandbox/docker.ts
+--- a/src/agent/sandbox/docker.ts
++++ b/src/agent/sandbox/docker.ts
+@@ -75,6 +75,14 @@
+   const spawn = options.spawn ?? ((argv: readonly string[]): DockerChild =>
+     Bun.spawn([...argv], { env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" }) as unknown as DockerChild);
+   const command = (args: readonly string[]) => run([executable, ...args]);
++
++  function normalizeMountSource(value: string): string {
++    if (platform !== "win32") return value;
++    const match = /^\/(?:run\/desktop\/mnt\/host|host_mnt)\/([a-zA-Z])(?:\/(.*))?$/.exec(value.replace(/\\/g, "/"));
++    if (!match) return value;
++    const drive = `${match[1]!.toUpperCase()}:\\`;
++    return match[2] ? path.win32.join(drive, ...match[2].split("/").filter(Boolean)) : drive;
++  }
+ 
+   async function checked(args: readonly string[], context: string): Promise<string> {
+     let result: DockerCommandResult;
+@@ -158,8 +166,9 @@
+       if (!labels?.[OWNER] || !labels[SESSION] || !/^\d+$/.test(labels[REVISION] ?? "") || !Array.isArray(record.Mounts)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed ownership or mounts");
+       for (const mount of record.Mounts) {
+         if (mount.Type === "tmpfs" && mount.Destination === "/tmp") continue;
+-        if (mount.Type !== "bind" || typeof mount.Source !== "string" || !path.isAbsolute(mount.Source)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed mount metadata");
+-        const source = await canonicalSandboxPath(mount.Source);
++        const normalizedSource = typeof mount.Source === "string" ? normalizeMountSource(mount.Source) : "";
++        if (mount.Type !== "bind" || !normalizedSource || !path.isAbsolute(normalizedSource)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed mount metadata");
++        const source = await canonicalSandboxPath(normalizedSource);
+         if (sources.some(candidate => candidate !== source && (sandboxPathContains(candidate, source) || sandboxPathContains(source, candidate)))) {
+           throw new Error("SANDBOX_MOUNT_OVERLAP: managed mount roots must be identical or disjoint");
+         }
+@@ -262,7 +271,8 @@
+         if (actual.length !== expected.length) throw new Error("SANDBOX_UNAVAILABLE: unexpected container bind mounts");
+         for (const mount of expected) {
+           const observed = actual.find(candidate => candidate.Destination === mount.guest);
+-          if (!observed?.Source || await canonicalSandboxPath(observed.Source) !== mount.source || observed.RW !== mount.writable) throw new Error("SANDBOX_UNAVAILABLE: actual container bind configuration changed");
++          const normalizedObserved = observed?.Source ? normalizeMountSource(observed.Source) : "";
++          if (!normalizedObserved || await canonicalSandboxPath(normalizedObserved) !== mount.source || observed?.RW !== mount.writable) throw new Error("SANDBOX_UNAVAILABLE: actual container bind configuration changed");
+         }
+         if (record.State?.Running === true) break;
+         if (Date.now() >= deadline) throw new Error("SANDBOX_UNAVAILABLE: container did not start");
+diff --git a/src/agent/sandbox/policy.ts b/src/agent/sandbox/policy.ts
+--- a/src/agent/sandbox/policy.ts
++++ b/src/agent/sandbox/policy.ts
+@@ -29,6 +29,17 @@
+   return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+ }
+ 
++export function windowsSystemRoot(): string {
++  const configured = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
++  if (configured && path.isAbsolute(configured)) return configured;
++  for (const candidate of ["powershell.exe", "cmd.exe"]) {
++    const resolved = Bun.which(candidate);
++    const match = resolved ? /^(.*)[\\/]System32(?:[\\/]|$)/i.exec(resolved) : null;
++    if (match?.[1] && path.isAbsolute(match[1])) return match[1];
++  }
++  throw new Error("SANDBOX_STATE: Windows system directory is unavailable");
++}
++
+ let nativeHome: Promise<string> | undefined;
+ 
+ /** Bun userInfo() can inherit startup HOME; query the native account database instead. */
+@@ -36,9 +47,9 @@
+   nativeHome ??= (async () => {
+     let home: string | undefined;
+     let argv: string[] | undefined;
++    let systemRoot = "";
+     if (process.platform === "win32") {
+-      const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+-      if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error("SANDBOX_STATE: native Windows system directory unavailable");
++      systemRoot = windowsSystemRoot();
+       const script = "$ErrorActionPreference='Stop';[Console]::Out.Write([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))";
+       argv = [path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+     } else {
+@@ -52,7 +63,7 @@
+       }
+     }
+     if (argv) {
+-      const child = Bun.spawn(argv, { env: { SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "" }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
++      const child = Bun.spawn(argv, { env: { SystemRoot: systemRoot }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+       const timer = setTimeout(() => child.kill(), 30_000);
+       try {
+         const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+diff --git a/src/commands/launch.ts b/src/commands/launch.ts
+--- a/src/commands/launch.ts
++++ b/src/commands/launch.ts
+@@ -60,7 +60,7 @@
+ import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
+ import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
+ import { createSandboxPolicy } from "../agent/sandbox/policy";
+-import { createGrantAuthority } from "../agent/sandbox/authority";
++import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
+ import { handleSandboxControl } from "../agent/sandbox/control";
+ import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
+ import { runAgySessionTurn } from "./launch/agy-turn";
+@@ -400,6 +400,7 @@
+   let supervisor: SandboxSupervisor | undefined;
+   let stateDirectory: string | undefined;
+   let stopEndpoint: (() => Promise<void>) | undefined;
++  const setup = Promise.withResolvers<void>();
+   let endpointStartup: Promise<void> | undefined;
+   let closing: Promise<void> | undefined;
+   const acknowledge = async (gone: boolean): Promise<void> => {
+@@ -411,6 +412,7 @@
+   const close = (): Promise<void> => closing ??= (async () => {
+     for (;;) {
+       try {
++        await setup.promise;
+         await endpointStartup;
+         await stopEndpoint?.();
+         // No supervisor means startup never had authority to create an environment.
+@@ -445,6 +447,7 @@
+   const runSession = (): Promise<void> => {
+     const ready = Promise.withResolvers<void>();
+     endpointStartup = ready.promise;
++    setup.resolve();
+     return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }).finally(ready.resolve);
+   };
+   try {
+@@ -460,7 +463,10 @@
+     for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
+       if (fs.existsSync(legacy)) throw new Error("SANDBOX_PRIVATE_STATE: legacy transcripts are inside the workspace; relocate them before granting workspace access");
+     }
+-    stateDirectory = fs.mkdtempSync(path.join(tmpdir(), "jeo-sandbox-authority-"));
++    const candidateStateDirectory = path.join(tmpdir(), `jeo-sandbox-authority-${crypto.randomUUID()}`);
++    stateDirectory = candidateStateDirectory;
++    stateDirectory = await ensurePrivateSandboxDirectory(candidateStateDirectory);
++    if (closing) throw new Error("Messenger worker stopping");
+     const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
+     const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir()];
+     const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
+@@ -481,6 +487,7 @@
+     if (closing) throw new Error("Messenger worker stopping");
+     await withSandboxExecution({ supervisor: sessionSupervisor, authority, requestAccess: (host, mode) => authority.requestAccess(host, mode) }, runSession);
+   } finally {
++    setup.resolve();
+     await close();
+     process.removeListener("SIGTERM", handleTermination);
+     process.removeListener("message", handleControlMessage);
+diff --git a/test/sandbox-authority.test.ts b/test/sandbox-authority.test.ts
+--- a/test/sandbox-authority.test.ts
++++ b/test/sandbox-authority.test.ts
+@@ -2,7 +2,7 @@
+ import * as fs from "node:fs/promises";
+ import * as os from "node:os";
+ import * as path from "node:path";
+-import { createGrantAuthority } from "../src/agent/sandbox/authority";
++import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../src/agent/sandbox/authority";
+ import type { SandboxPolicy, SandboxTermination } from "../src/agent/sandbox/types";
+ 
+ const config = { image: "test-local-image", limits: { memoryBytes: 128 * 1024 * 1024, pids: 32, cpus: 1 } };
+@@ -269,7 +269,7 @@
+ 	} finally { await f.close(); }
+ });
+ 
+-test.skipIf(process.platform === "win32")("authority refuses pre-existing state readable by another user", async () => {
++test("authority refuses pre-existing state readable by another user", async () => {
+ 	const f = await fixture();
+ 	try {
+ 		const exposed = path.join(f.root, "exposed-state");
+@@ -279,3 +279,13 @@
+ 		expect(f.transitions).toBe(0);
+ 	} finally { await f.close(); }
+ });
++
++test("ensurePrivateSandboxDirectory serializes concurrent callers and re-verifies existing owner-only state", async () => {
++	const f = await fixture();
++	try {
++		const target = path.join(f.root, "concurrent-private-state");
++		const results = await Promise.all(Array.from({ length: 8 }, () => ensurePrivateSandboxDirectory(target)));
++		expect(new Set(results).size).toBe(1);
++		expect(await ensurePrivateSandboxDirectory(target)).toBe(results[0]!);
++	} finally { await f.close(); }
++});
+diff --git a/test/sandbox-worker-ipc-shutdown.test.ts b/test/sandbox-worker-ipc-shutdown.test.ts
+--- a/test/sandbox-worker-ipc-shutdown.test.ts
++++ b/test/sandbox-worker-ipc-shutdown.test.ts
+@@ -34,7 +34,7 @@
+   const child = Bun.spawn([process.execPath, "--no-env-file", path.join(import.meta.dir, "fixtures/sandbox-worker-ipc-shutdown.ts"), root, mode], {
+     cwd: driver, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+     // Real HOME is required for the Docker client; config/workspace/sessions stay in the private root.
+-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", JEO_CONFIG_DIR: path.join(root, "config"), JEO_STATIC_MEMORY: "1", NO_COLOR: "1", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) },
++    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "", USERPROFILE: process.env.USERPROFILE ?? "", APPDATA: process.env.APPDATA ?? "", LOCALAPPDATA: process.env.LOCALAPPDATA ?? "", TEMP: process.env.TEMP ?? "", TMP: process.env.TMP ?? "", PATHEXT: process.env.PATHEXT ?? "" } : {}), JEO_CONFIG_DIR: path.join(root, "config"), JEO_STATIC_MEMORY: "1", NO_COLOR: "1", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) },
+   });
+   try {
+     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

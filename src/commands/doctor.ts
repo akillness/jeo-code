@@ -14,6 +14,9 @@ import { visibleWidth, truncateToWidth } from "../tui/components/width";
 import chalk from "chalk";
 import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
 import { resolveTierModel, tierModelPool, cheapestCredentialed } from "../agent/prompt-router";
+import { DEFAULT_SIZE_CAP_MS, collectSharedInstallReport, type SharedInstallReport } from "../util/shared-install-report";
+import { formatBytes } from "../tui/components/session-picker";
+import { compareVersions } from "./update";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -219,7 +222,93 @@ function providerTableLines(
   return renderMarkdownTables(md, { unicode, maxColWidth: detailBudget }).split("\n");
 }
 
-export async function runDoctorCommand(args: string[] = []): Promise<void> {
+export interface DoctorDeps {
+  /** Produces the shared bun global report; tests inject it, the default scans the real machine (memoized). */
+  sharedInstall?: () => SharedInstallReport | Promise<SharedInstallReport>;
+}
+
+const SHARED_INSTALL_TTL_MS = 30_000;
+let sharedInstallMemo: { key: string; at: number; report: SharedInstallReport } | undefined;
+
+/** The real scan, memoized for 30 s per environment so repeated doctor runs in one process walk the global dir once. */
+function defaultSharedInstall(): SharedInstallReport {
+  const key = [process.env.HOME, process.env.BUN_INSTALL, process.env.BUN_INSTALL_GLOBAL_DIR, process.env.XDG_CONFIG_HOME, process.env.PATH, process.platform].join("|");
+  if (sharedInstallMemo?.key === key && Date.now() - sharedInstallMemo.at < SHARED_INSTALL_TTL_MS) return sharedInstallMemo.report;
+  const report = collectSharedInstallReport();
+  sharedInstallMemo = { key, at: Date.now(), report };
+  return report;
+}
+
+const ORPHAN_KIND_NOTE: Record<"directory" | "symlink" | "dangling-symlink", string> = {
+  directory: "possible orphan",
+  symlink: "possible orphan, symlink",
+  "dangling-symlink": "possible orphan, dangling symlink",
+};
+
+/** Human text for the shared install section. Warnings are yellow, an ok lockfile green; paths are never truncated. */
+function sharedInstallLines(report: SharedInstallReport): string[] {
+  const lines: string[] = [];
+  const { manifest, lockfile, leftovers, sizes } = report;
+  if (report.skipped !== null) {
+    lines.push(`Shared install: no usable bun global (${report.skipped}); lockfile, leftover and size checks skipped.`);
+  } else {
+    lines.push(`Shared install (${report.globalDir ?? "unknown"}):`);
+  }
+  if (manifest !== null) lines.push(`  packages:  ${manifest.dependencies} in manifest (${manifest.external} besides jeo-code)`);
+  if (lockfile !== null) {
+    if (lockfile.status === "ok") {
+      const total = manifest?.external ?? lockfile.uncovered.length;
+      lines.push(chalk.green(`  bun.lock:  ok (${total - lockfile.uncovered.length} of ${total} covered)`));
+    } else if (lockfile.status === "not-required") {
+      lines.push("  bun.lock:  not required (jeo-code is the only package)");
+    } else if (lockfile.status === "missing") {
+      lines.push(chalk.yellow("  bun.lock:  MISSING - jeo update will refuse until it is restored (or pass --allow-unlocked-global)"));
+    } else if (lockfile.status === "incomplete") {
+      lines.push(chalk.yellow(`  bun.lock:  INCOMPLETE - no resolved entry for: ${lockfile.uncovered.join(", ")}`));
+    } else {
+      lines.push(chalk.yellow(`  bun.lock:  UNREADABLE${lockfile.detail ? ` (${lockfile.detail})` : ""}`));
+    }
+  }
+  if (report.jeoOnPath.length === 0) {
+    lines.push("  jeo on PATH: none found");
+  } else {
+    const activeVersion = report.jeoOnPath.find(entry => entry.active)?.version ?? null;
+    lines.push("  jeo on PATH (first = active):");
+    for (const entry of report.jeoOnPath) {
+      const marker = entry.active ? "*" : " ";
+      const text = `    ${marker} ${entry.path}  ${entry.version ?? "(version unknown)"}${entry.active ? " (active)" : ""}`;
+      if (entry.stale && entry.version !== null && activeVersion !== null) {
+        const direction = compareVersions(entry.version, activeVersion) < 0 ? "older" : "newer";
+        lines.push(chalk.yellow(`${text} [stale: ${direction} than active ${activeVersion}]`));
+      } else {
+        lines.push(text);
+      }
+    }
+  }
+  if (leftovers !== null) {
+    if (leftovers.backupFiles.length === 0 && leftovers.possibleOrphans.length === 0 && leftovers.orphanScanComplete) {
+      lines.push("  leftovers: none");
+    } else {
+      lines.push("  leftovers (not touched):");
+      for (const file of leftovers.backupFiles) lines.push(chalk.yellow(`    file    ${file}`));
+      for (const orphan of leftovers.possibleOrphans) lines.push(chalk.yellow(`    orphan  ${orphan.name} (${ORPHAN_KIND_NOTE[orphan.kind]})`));
+      if (!leftovers.orphanScanComplete) lines.push(chalk.yellow("    orphan scan stopped at its cap; no orphans reported"));
+    }
+  }
+  if (sizes !== null) {
+    const top = `top ${sizes.top.length}: ${sizes.top.map(p => `${p.name} ${formatBytes(p.bytes)}`).join(", ")}`;
+    if (sizes.capped === null) {
+      lines.push(`  size: ${formatBytes(sizes.totalBytes)} total${sizes.top.length > 0 ? `; ${top}` : ""}`);
+    } else {
+      const cap = sizes.capped === "time" ? `time cap (${DEFAULT_SIZE_CAP_MS} ms)` : `entry cap (${sizes.scannedEntries} entries)`;
+      lines.push(chalk.yellow(`  size scan stopped at the ${cap}; figures are lower bounds`));
+      lines.push(`    at least ${formatBytes(sizes.totalBytes)} scanned${sizes.top.length > 0 ? `; ${top}` : ""}`);
+    }
+  }
+  return lines;
+}
+
+export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {}): Promise<void> {
   const strict = args.includes("--strict");
   const json = args.includes("--json");
   const config = await readGlobalConfig();
@@ -379,6 +468,14 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
     ? defaultProbe?.result.status === "skipped"
     : defaultProbe?.result.status === "ok";
 
+  // Shared bun global diagnostics: read-only, never affects `ready` or the exit code.
+  let sharedInstall: SharedInstallReport | { error: string };
+  try {
+    sharedInstall = await (deps.sharedInstall ?? defaultSharedInstall)();
+  } catch (err) {
+    sharedInstall = { error: err instanceof Error ? err.message : String(err) };
+  }
+
   // --- JSON output mode (CI / scripting) ---
   if (json) {
     const report = {
@@ -402,6 +499,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       oauth: oauthHealth,
       ready,
       ...(routingEnabled ? { routing: { enabled: true, smolConfigured, preview: routingPreview, ...(routingNotes.length ? { notes: routingNotes } : {}) } } : {}),
+      sharedInstall,
 
     };
     console.log(JSON.stringify(report, null, 2));
@@ -489,6 +587,13 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
 
     console.log("");
   }
+
+  if ("error" in sharedInstall) {
+    console.log(chalk.yellow(`Shared install: check failed (${sharedInstall.error})`));
+  } else {
+    for (const line of sharedInstallLines(sharedInstall)) console.log(line);
+  }
+  console.log("");
 
   // Final verdict
   if (ready) {

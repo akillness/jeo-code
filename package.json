@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.12.21",
+  "version": "0.12.22",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
 
@@ -57,6 +57,7 @@
     "verify:sandbox": "bun scripts/verify-sandbox-isolation.ts",
     "verify:browser": "bun scripts/verify-browser.ts",
     "verify:discord": "bun scripts/verify-discord-integration.ts",
+    "verify:shared-global": "bun scripts/verify-shared-global-isolation.ts",
     "verify:tmux": "bash scripts/tmux-verify.sh",
     "dev:link": "bun scripts/dev-link.ts link",
     "dev:doctor": "bun scripts/dev-link.ts doctor"

@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.22] - 2026-11-04
+
+### Fixed
+- **`jeo update` never changes other packages in the shared bun global** - before running any installer it checks the shared bun global (`$BUN_INSTALL` or `~/.bun`, `install/global`): if its `package.json` lists dependencies other than `jeo-code` and `bun.lock` is missing or does not cover all of them, the update is refused with exit 1, no file is changed, and the uncovered dependencies are named (`--json`: `installed:false` and an `error` mentioning the lockfile). After the install it compares the installed version of every other top-level dependency with the pre-install state; any difference fails the update and prints `name old -> new` plus the exact `bun install -g name@old` commands (never run). A clean update prints `shared global unchanged: N packages (...)`. `--json` gains `externalChanges` and `preflight` only when a shared global with other packages was inspected.
+- **`--allow-unlocked-global`** - skips only the lockfile refusal; the postflight comparison still runs.
+- **The npm fallback no longer creates stale second copies** - `npm install -g` is a fallback only when the active `jeo` lies under npm's global root; for a bun-global or unknown install a failed update ends with manual commands instead.
+
+### Added
+- **`jeo doctor` shared install section** (human and `--json` `sharedInstall`, read-only, warnings only): `bun.lock` status (missing, incomplete with the uncovered dependencies, or ok), every `jeo` on PATH in PATH order with its version and a stale flag, leftovers (`package.json.*backup*` files and possible orphan packages), and the five largest packages plus the total size within a time and entry cap.
+- **`bun run verify:shared-global`** - replays both updaters against an isolated copy of the real global: `jeo update` leaves every other package untouched, `jeopi update` leaves `jeo-code` untouched, and losing `bun.lock` is refused without a single package-manager call.
+
 ## [0.12.21] - 2026-11-04
 
 ### Fixed
@@ -2724,7 +2735,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.21...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.22...HEAD
+[0.12.22]: https://github.com/akillness/jeo-code/compare/v0.12.21...v0.12.22
 [0.12.21]: https://github.com/akillness/jeo-code/releases/tag/v0.12.21
 [0.12.20]: https://github.com/akillness/jeo-code/releases/tag/v0.12.20
 [0.12.19]: https://github.com/akillness/jeo-code/releases/tag/v0.12.19

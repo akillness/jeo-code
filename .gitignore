@@ -26,9 +26,7 @@ WATCHDOG.yml
 # both repo-root and nested dotfiles/dirs.
 .*
 
-# …except these intentional dot-entries, which stay tracked:
+# …except these intentional dot-entries, which stay tracked (CI needs .github):
 !.gitignore
 !.github/
 !.github/**
-!.specify/
-!.specify/**

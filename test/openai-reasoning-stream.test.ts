@@ -1,7 +1,15 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "bun:test";
 import { openaiAdapter, reasoningDeltaOf, openaiRequest } from "../src/ai/providers/openai";
 
 const cred = { kind: "api_key", provider: "openai", token: "k" } as const;
+
+// An ambient OPENAI_BASE_URL flips the OpenAI backend into keyless-local mode
+// (custom-endpoint semantics) and raises the local token budget (cloud 4000 → local
+// 16000). Tests here assert the CLOUD default (4000) and the explicit local override, so
+// the host env must not leak in between.
+const prevOpenAiBaseUrl = process.env.OPENAI_BASE_URL;
+beforeAll(() => { delete process.env.OPENAI_BASE_URL; });
+afterAll(() => { if (prevOpenAiBaseUrl === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = prevOpenAiBaseUrl; });
 
 function sseResponse(chunks: object[]): Response {
   const body = [...chunks, { choices: [{ delta: {}, finish_reason: "stop" }] }].map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n";

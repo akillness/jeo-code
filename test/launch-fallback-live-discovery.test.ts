@@ -67,6 +67,19 @@ mock.module("../src/ai", () => ({
 
 let originalIsTTY: boolean | undefined;
 
+// Provider credential + base-url env must not leak into these turns: an ambient
+// OPENAI_BASE_URL would make an uncredentialed pinned openai model appear keyless-local
+// (custom-endpoint readiness flips on) and silently defeat the pre-call credential veto /
+// on-demand warm-up fallback paths this file exercises. Save + clear around each test, restore after.
+const PROVIDER_ENV_KEYS = [
+  "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_OAUTH_TOKEN",
+  "GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_OAUTH_TOKEN",
+  "XAI_API_KEY", "XAI_BASE_URL",
+  "LMSTUDIO_BASE_URL",
+];
+const savedProviderEnv: Record<string, string | undefined> = {};
+
 beforeEach(() => {
   originalIsTTY = process.stdin.isTTY;
   process.stdin.isTTY = true;
@@ -78,10 +91,18 @@ beforeEach(() => {
   discoverModelsShouldThrow = false;
   resetPromptRouterWarnings();
   resetLiveProviderModels();
+  for (const k of PROVIDER_ENV_KEYS) {
+    savedProviderEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
   process.stdin.isTTY = originalIsTTY as boolean;
+  for (const [k, v] of Object.entries(savedProviderEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
 });
 
 afterAll(() => {

@@ -9,6 +9,8 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.27] - 2026-11-06
+
 ### Fixed
 - **A stale managed container no longer blocks every sandbox launch** - `validateManagedRoots` inspects every labelled container, including exited ones, and canonicalized each bind source. A leaked container whose temp workspace had been deleted made `realpath` throw `ENOENT`, so every later launch failed with that opaque error. A vanished source (`ENOENT`, `ENOTDIR`) now resolves through its nearest existing ancestor (lexically for `ENOTDIR`) for the overlap check, which stays enforced; `EACCES`, `ELOOP` and invalid metadata still fail closed.
 - **An unlistable directory or an unhashable fresh file no longer makes the whole workspace snapshot inconclusive** - a non-root directory that cannot be listed is recorded as `u:<rel>:<mode>:<ctimeNs>:<ino>` and its children skipped (a `chmod` or any entry change in it still flips the digest); a fresh file over the racy byte caps, unopenable or changed while read is recorded by its stat fingerprint plus `:x`. Both count in the new `degraded` field. An unreadable root and the entry and time caps still fail the snapshot. Residual risk, documented in the header: rewriting an existing child's content inside a write-only directory with no `chmod` and no entry change is not detected.

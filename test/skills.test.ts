@@ -144,6 +144,59 @@ test("skillsPromptSection includes configured skills and respects budget limits"
   expect(truncated.split("\n").length).toBeLessThanOrEqual(41);
 });
 
+const filler = (count: number) => Array.from({ length: count }, (_, i) => ({
+  name: `filler-${String(i).padStart(2, "0")}`,
+  command: `/skill filler-${i}`,
+  summary: `Unrelated helper number ${i}`,
+  whenToUse: "",
+  details: "",
+}));
+/** Entries under "Configured skills:" only (the bundled workflow skills are listed above it). */
+const configuredLines = (section: string): string[] => {
+  const lines = section.split("\n");
+  return lines.slice(lines.indexOf("Configured skills:") + 1).filter(line => line.startsWith("- ") && !line.includes("omitted for brevity"));
+};
+
+test("skillsPromptSection ranks a skill whose description matches the task into the visible budget", () => {
+  const target = { name: "catalog-router", command: "/skill catalog-router", summary: "Browse and install skills by category", whenToUse: "", details: "" };
+  // 80 fillers come first in input order; without ranking the target is past the 40-line budget.
+  const unranked = skillsPromptSection([...SKILLS, ...filler(80), target]);
+  expect(unranked).not.toContain("catalog-router");
+  const ranked = skillsPromptSection([...SKILLS, ...filler(80), target], "install skills by category");
+  expect(ranked).toContain("catalog-router");
+  expect(ranked.split("\n").length).toBeLessThanOrEqual(41);
+});
+
+test("skillsPromptSection ranks Korean tasks, which the ASCII-only tokenizer ignored", () => {
+  const korean = { name: "installer", command: "/skill installer", summary: "스킬을 카테고리별로 골라 설치합니다", whenToUse: "", details: "" };
+  expect(skillsPromptSection([...SKILLS, ...filler(80), korean])).not.toContain("installer");
+  // Inflected task word ("설치해줘") contains the description word ("설치합니다" shares stem "설치").
+  const ranked = skillsPromptSection([...SKILLS, ...filler(80), korean], "스킬 카테고리 설치해줘");
+  expect(ranked).toContain("installer");
+});
+
+test("skillsPromptSection: an explicit name outranks any number of description matches", () => {
+  const chatty = Array.from({ length: 12 }, (_, i) => ({
+    name: `chatty-${i}`,
+    command: `/skill chatty-${i}`,
+    summary: "deploy release rollback migrate database schema backup restore monitor alert",
+    whenToUse: "deploy release rollback migrate database schema backup restore monitor alert",
+    details: "",
+  }));
+  const named = { name: "zeta-tool", command: "/skill zeta-tool", summary: "Does something else", whenToUse: "", details: "" };
+  const section = skillsPromptSection([...SKILLS, ...chatty, ...filler(40), named], "use zeta-tool to deploy release rollback migrate database schema backup restore monitor alert");
+  const lines = configuredLines(section);
+  expect(lines[0]).toContain("zeta-tool");
+});
+
+test("skillsPromptSection: ties keep input order, and no task keeps the original order", () => {
+  const skills = filler(10);
+  const none = configuredLines(skillsPromptSection([...SKILLS, ...skills]));
+  const tied = configuredLines(skillsPromptSection([...SKILLS, ...skills], "zzz qqq unmatched words"));
+  expect(tied).toEqual(none);
+  expect(none.filter(l => l.startsWith("- filler-")).map(l => l.slice(2, 11))).toEqual(skills.map(s => s.name));
+});
+
 test("parseSkillInvocation matches only the $name entrypoint", () => {
   const spec = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\n\nUse spec-kit.");
   const skills = [...SKILLS, spec];

@@ -117,6 +117,36 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
         : "Carry out this skill's workflow now. If it needs a concrete target you weren't given, make a reasonable assumption or ask the user via done."),
   ].join("\n");
 }
+const TASK_STOPWORDS: Record<string, true> = {
+  the: true, and: true, for: true, with: true, use: true, this: true, that: true, from: true, into: true,
+  you: true, your: true, can: true, please: true, make: true,
+};
+const isAscii = (text: string): boolean => /^[\x00-\x7f]+$/.test(text);
+
+/** Words of any script (Korean, Japanese, Chinese included), lowercased; ASCII needs 3+ chars, others 2+. */
+function relevanceTokens(text: string): Set<string> {
+  const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}._-]*/gu) ?? [];
+  return new Set(words.filter(w => w.length >= (isAscii(w) ? 3 : 2) && TASK_STOPWORDS[w] !== true));
+}
+
+/**
+ * How well a skill fits a task. An exact name (+20) or a name part (+10) match always outranks
+ * description matches, which add at most +8 so a chatty description cannot beat an explicit name.
+ * Non-ASCII words carry no spaces or inflection boundaries ("설치해줘"), so they match a description
+ * as a substring either way round.
+ */
+function skillRelevance(skill: SkillDoc, task: Set<string>): number {
+  const name = skill.name.toLowerCase();
+  const score = (task.has(name) ? 20 : 0) + (name.split(/[._-]/).some(part => task.has(part)) ? 10 : 0);
+  const description = `${skill.summary} ${skill.whenToUse}`.toLowerCase();
+  const words = relevanceTokens(description);
+  let hits = 0;
+  for (const token of task) {
+    if (isAscii(token) ? words.has(token) : description.includes(token) || [...words].some(w => !isAscii(w) && token.includes(w))) hits++;
+  }
+  return score + Math.min(hits, 8);
+}
+
 export function skillsPromptSection(skills: SkillDoc[] = SKILLS, currentTask?: string): string {
   const bundleSkills: SkillDoc[] = [];
   let configuredSkills: SkillDoc[] = [];
@@ -130,18 +160,13 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS, currentTask?: s
     }
   }
 
-  // When a task is provided and skills exceed budget, sort configured skills by relevance
+  // When a task is provided and skills exceed budget, rank configured skills by relevance (stable for ties).
   if (currentTask && currentTask.trim().length > 0 && configuredSkills.length > 5) {
-    const qTokens = new Set(
-      currentTask.toLowerCase().match(/[a-z0-9._-]{3,}/g) ?? []
-    );
-    configuredSkills = [...configuredSkills].sort((a, b) => {
-      const aScore = (a.name.toLowerCase().split(/[._-]/).some(t => qTokens.has(t)) ? 10 : 0) +
-        (qTokens.has(a.name.toLowerCase()) ? 20 : 0);
-      const bScore = (b.name.toLowerCase().split(/[._-]/).some(t => qTokens.has(t)) ? 10 : 0) +
-        (qTokens.has(b.name.toLowerCase()) ? 20 : 0);
-      return bScore - aScore;
-    });
+    const task = relevanceTokens(currentTask);
+    configuredSkills = configuredSkills
+      .map((skill, index) => ({ skill, index, score: skillRelevance(skill, task) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map(entry => entry.skill);
   }
 
   const lines: string[] = [];

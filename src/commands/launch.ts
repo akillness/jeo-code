@@ -812,7 +812,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
     "- Before writing code or files in a domain a loaded skill covers, read that SKILL.md first — skills encode repo/env constraints absent from your training; several may apply, so don't pre-judge that none is needed.\n" +
     "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +
-    skillsPromptSection(workflowSkills));
+    skillsPromptSection(workflowSkills, flags.message || undefined));
 
   // Re-assemble the system prompt for a given memory block. The OKF memory block is
   // recomputed per turn (with that turn's query) so failure-first ranking actually

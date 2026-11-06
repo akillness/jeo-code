@@ -168,7 +168,21 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
         if (mount.Type === "tmpfs" && mount.Destination === "/tmp") continue;
         const normalizedSource = typeof mount.Source === "string" ? normalizeMountSource(mount.Source) : "";
         if (mount.Type !== "bind" || !normalizedSource || !path.isAbsolute(normalizedSource)) throw new Error("SANDBOX_UNAVAILABLE: unknown managed mount metadata");
-        const source = await canonicalSandboxPath(normalizedSource);
+        let source: string;
+        try { source = await canonicalSandboxPath(normalizedSource); }
+        catch (error) {
+          // A leaked/exited managed container whose temp workspace was deleted must not wedge every later launch.
+          // Still guard identical-or-disjoint overlap: resolve its nearest existing ancestor (so aliases such as
+          // macOS /var -> /private/var compare equal to canonical candidates), and compare lexically when even that
+          // cannot resolve (ENOTDIR). Every other failure (EACCES, loops, invalid metadata) still fails closed.
+          const lost = (value: unknown): boolean => { const code = (value as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; };
+          if (!lost(error)) throw error;
+          try { source = await canonicalSandboxPath(normalizedSource, false); }
+          catch (inner) {
+            if (!lost(inner)) throw inner;
+            source = path.resolve(normalizedSource);
+          }
+        }
         if (sources.some(candidate => candidate !== source && (sandboxPathContains(candidate, source) || sandboxPathContains(source, candidate)))) {
           throw new Error("SANDBOX_MOUNT_OVERLAP: managed mount roots must be identical or disjoint");
         }

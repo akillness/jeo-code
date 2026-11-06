@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createDockerBackend } from "../src/agent/sandbox/docker";
 import { createSandboxPolicy } from "../src/agent/sandbox/policy";
 import { createServer } from "node:net";
-import type { SandboxProcess } from "../src/agent/sandbox/types";
+import type { SandboxPolicy, SandboxProcess } from "../src/agent/sandbox/types";
 
 const config = {
   image: "fixture/bun:qualified",
@@ -597,3 +597,134 @@ try{const policy=await createSandboxPolicy(input.policy);session=await backend.l
     await Promise.all(controllers.map((controller) => controller.child.exited));
   }
 }, 45_000);
+
+// A leaked EXITED managed container can record a bind Source that no longer canonicalizes (its temp workspace was
+// deleted). ENOENT/ENOTDIR must be judged lexically so one vanished path cannot wedge every later launch; any other
+// canonicalization failure must keep failing closed, and the overlap guard must still bind the lexical path.
+const LEAKED = "leaked-exited-container";
+
+function leakExitedContainer(daemon: DockerDaemon, source: string): void {
+  daemon.containers.set(LEAKED, {
+    name: LEAKED,
+    image: imageB,
+    running: false,
+    labels: { "dev.jeo.sandbox.owner": "other-controller", "dev.jeo.sandbox.session": "stale", "dev.jeo.sandbox.revision": "1" },
+    mounts: [{ Type: "bind", Source: source, Destination: "/workspace", RW: true }],
+  });
+}
+
+async function leakFixture(sessionKey: string) {
+  const { root, workspace } = await fixture();
+  const bundle = path.join(root, "worker.js");
+  await fs.writeFile(bundle, "process.stdin.resume();");
+  const policy = await createSandboxPolicy({ sessionKey, revision: 1, cwd: workspace, config });
+  return { root, workspace: await fs.realpath(workspace), bundle, policy };
+}
+
+async function expectLeakedLaunchAdmitted(daemon: DockerDaemon, policy: SandboxPolicy, bundle: string) {
+  const launched = await daemon.backend().launch(policy, bundle);
+  try {
+    expect(daemon.mutations).toEqual(["create"]);
+    expect(daemon.containers.get(launched.name)?.running).toBe(true);
+    expect(daemon.containers.get(LEAKED)?.running).toBe(false);
+  } finally { await launched.stop(); }
+  // Only the freshly launched container was revoked; the leaked one is never touched.
+  expect(daemon.mutations).toEqual(["create", "rm"]);
+  expect(daemon.containers.has(LEAKED)).toBe(true);
+}
+
+async function expectLeakedLaunchRejected(daemon: DockerDaemon, policy: SandboxPolicy, bundle: string, pattern: RegExp) {
+  let launched: SandboxProcess | undefined;
+  try {
+    await expect((async () => { launched = await daemon.backend().launch(policy, bundle); })()).rejects.toThrow(pattern);
+    expect(daemon.mutations).toEqual([]);
+    expect(daemon.containers.get(LEAKED)?.running).toBe(false);
+  } finally { await launched?.stop(); }
+}
+
+test("a leaked exited managed container whose bind source vanished does not block a disjoint launch", async () => {
+  const daemon = new DockerDaemon();
+  const { policy, bundle } = await leakFixture("leaked-vanished-disjoint");
+  const gone = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "jeo-compiled-worker-GONE-"));
+  await fs.rm(gone, { recursive: true, force: true });
+  leakExitedContainer(daemon, path.join(gone, "workspace"));
+  await expectLeakedLaunchAdmitted(daemon, policy, bundle);
+});
+
+test("a vanished leaked bind source lexically inside the candidate workspace still trips the overlap guard", async () => {
+  const daemon = new DockerDaemon();
+  const { workspace, bundle, policy } = await leakFixture("leaked-vanished-child");
+  const vanished = path.join(workspace, "vanished-child");
+  await expect(fs.lstat(vanished)).rejects.toMatchObject({ code: "ENOENT" });
+  leakExitedContainer(daemon, vanished);
+  await expectLeakedLaunchRejected(daemon, policy, bundle, /SANDBOX_MOUNT_OVERLAP/);
+});
+
+test("a leaked bind source beneath the hands bundle file (ENOTDIR) still trips the overlap guard", async () => {
+  // A vanished path cannot lexically contain an existing candidate (every ancestor of a real path exists), so the
+  // reachable "containing" overlap is the converse shape: an ENOTDIR source nested under the candidate bundle file.
+  const daemon = new DockerDaemon();
+  const { bundle, policy } = await leakFixture("leaked-under-bundle");
+  leakExitedContainer(daemon, path.join(bundle, "x"));
+  await expectLeakedLaunchRejected(daemon, policy, bundle, /SANDBOX_MOUNT_OVERLAP/);
+});
+
+test("a leaked bind source under an unrelated regular file (ENOTDIR) does not block a disjoint launch", async () => {
+  const daemon = new DockerDaemon();
+  const { root, bundle, policy } = await leakFixture("leaked-under-file");
+  const regular = path.join(root, "unrelated-file.txt");
+  await fs.writeFile(regular, "not a directory");
+  leakExitedContainer(daemon, path.join(regular, "x"));
+  await expectLeakedLaunchAdmitted(daemon, policy, bundle);
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("an unreadable leaked bind source (EACCES) fails closed instead of falling back lexically", async () => {
+  const daemon = new DockerDaemon();
+  const { root, bundle, policy } = await leakFixture("leaked-eacces");
+  const locked = path.join(root, "locked");
+  await fs.mkdir(locked);
+  leakExitedContainer(daemon, path.join(locked, "child"));
+  await fs.chmod(locked, 0o000);
+  try { await expectLeakedLaunchRejected(daemon, policy, bundle, /EACCES|permission/i); }
+  finally { await fs.chmod(locked, 0o700); }
+});
+
+test.skipIf(process.platform === "win32")("a symlink-loop leaked bind source (ELOOP) fails closed instead of falling back lexically", async () => {
+  const daemon = new DockerDaemon();
+  const { root, bundle, policy } = await leakFixture("leaked-eloop");
+  const a = path.join(root, "loop-a");
+  const b = path.join(root, "loop-b");
+  await fs.symlink(b, a);
+  await fs.symlink(a, b);
+  leakExitedContainer(daemon, a);
+  await expectLeakedLaunchRejected(daemon, policy, bundle, /ELOOP|too many/i);
+});
+
+// macOS aliases /var -> /private/var. A vanished source recorded through the alias must resolve through its nearest
+// existing ancestor, or a lexical compare against the canonical (/private/var/...) candidate misses a real overlap.
+const macVarAlias = process.platform === "darwin" && (await fs.realpath("/var").catch(() => "")) === "/private/var";
+const viaVarAlias = (canonical: string): string => canonical.replace(/^\/private(?=\/var\/)/, "");
+
+test.skipIf(!macVarAlias)("a vanished leaked bind source recorded through the /var alias inside the candidate workspace still trips the overlap guard", async () => {
+  const daemon = new DockerDaemon();
+  const { workspace, bundle, policy } = await leakFixture("leaked-alias-inside");
+  expect(workspace.startsWith("/private/var/")).toBe(true);
+  const aliasWorkspace = viaVarAlias(workspace);
+  expect(aliasWorkspace).not.toBe(workspace);
+  expect(await fs.realpath(aliasWorkspace)).toBe(workspace);
+  const vanished = path.join(aliasWorkspace, "gone-parent", "gone-child");
+  await expect(fs.lstat(vanished)).rejects.toMatchObject({ code: "ENOENT" });
+  leakExitedContainer(daemon, vanished);
+  await expectLeakedLaunchRejected(daemon, policy, bundle, /SANDBOX_MOUNT_OVERLAP/);
+});
+
+test.skipIf(!macVarAlias)("a vanished leaked bind source recorded through the /var alias outside the candidate does not block a disjoint launch", async () => {
+  const daemon = new DockerDaemon();
+  const { root, bundle, policy } = await leakFixture("leaked-alias-disjoint");
+  const aliasRoot = viaVarAlias(root);
+  expect(aliasRoot).not.toBe(root);
+  const vanished = path.join(aliasRoot, "jeo-gone-alias", "workspace");
+  await expect(fs.lstat(vanished)).rejects.toMatchObject({ code: "ENOENT" });
+  leakExitedContainer(daemon, vanished);
+  await expectLeakedLaunchAdmitted(daemon, policy, bundle);
+});

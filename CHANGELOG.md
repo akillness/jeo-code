@@ -9,6 +9,8 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.25] - 2026-11-06
+
 ### Changed
 - **`jeo update` no longer special-cases another tool** - the `shared global unchanged: N packages (...)` line used to list `jeopi-cli` first; it now lists every other package in plain ascending order, at most three shown.
 
@@ -2760,7 +2762,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.24...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.25...HEAD
+[0.12.25]: https://github.com/akillness/jeo-code/releases/tag/v0.12.25
 [0.12.24]: https://github.com/akillness/jeo-code/releases/tag/v0.12.24
 [0.12.23]: https://github.com/akillness/jeo-code/releases/tag/v0.12.23
 [0.12.22]: https://github.com/akillness/jeo-code/compare/v0.12.21...v0.12.22

@@ -37,6 +37,7 @@ import {
   defaultWorkspaceSnapshotter, formatSnapshotChange, isSharedScratchRoot, snapshotChangedPaths, workspaceSnapshotChanged,
   type WorkspaceSnapshot, type WorkspaceSnapshotter,
 } from "./workspace-snapshot";
+import { describeSnapshotTarget, snapshotTarget, snapshotTargetLabel } from "./snapshot-target";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
 
 const MID_TASK_PROSE_RE =
@@ -552,9 +553,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   }
   const tools = opts.tools ?? DEFAULT_TOOLS;
   const snapshotter: WorkspaceSnapshotter = opts.workspaceSnapshot ?? defaultWorkspaceSnapshotter;
-  // Turn-scoped memo: once the workspace is over the snapshot cap, gated calls count as
-  // mutations without re-walking a tree that is known to be too large.
-  let snapshotCapped = false;
+  // Turn-scoped memo, keyed per bracketed directory, so one oversized directory never poisons the measurement of the
+  // cwd or of another target. For the cwd any cap is remembered (gated calls count as mutations without re-walking a
+  // tree known to be too large). For a NESTED target only a cap seen on the BEFORE side is remembered: that directory
+  // was already unmeasurable before the call ran, so nothing in it is attributable. An AFTER-side cap is never
+  // remembered, because it may have been this very call's files that pushed the tree over the cap — a later small
+  // write in the same directory must still be judged on its own, not skipped by that memo.
+  const cappedDirs = new Set<string>();
   // Why a bash/computer bracket could not be measured (cap or error), when one failed. The call still
   // counts as a possible mutation, but the user and the done gate are told the real reason instead of
   // only "files were modified" — a busy or oversized cwd (e.g. $HOME, /tmp) looks identical otherwise.
@@ -569,29 +574,49 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
     return snap;
   };
-  const takeSnapshot = async (racySinceMs?: number): Promise<WorkspaceSnapshot> => {
-    if (snapshotCapped) return { ok: false, reason: "cap", detail: "workspace exceeded the snapshot cap earlier this turn" };
+  // A BEFORE-side failure on a NESTED target is returned as-is (not noted as unmeasured): the bracket then fails open
+  // for it, because before nested targeting those calls were skipped as scratch, and a read-only `cd ~/.cache && ls`
+  // must not start counting as a mutation just because that directory is big or busy. An AFTER-side failure is noted
+  // like the cwd's: the directory WAS measurable a moment ago, so files appeared during the call (fail-safe).
+  // Exception: a directory this turn already made unmeasurable (`grownDirs`, an after-side failure with a good before)
+  // never fails open again — it was this session's own writes that inflated it, so a later call there (even after a
+  // passing verification) must not be waved through just because the tree is now too big to measure.
+  const grownDirs = new Set<string>();
+  const takeSnapshot = async (dir: string, side: "before" | "after", racySinceMs?: number): Promise<WorkspaceSnapshot> => {
+    const nested = dir !== cwd;
+    const failOpen = nested && side === "before" && !grownDirs.has(dir);
+    const memoApplies = !nested || side === "before";
+    if (memoApplies && cappedDirs.has(dir)) {
+      const memo: WorkspaceSnapshot = { ok: false, reason: "cap", detail: "workspace exceeded the snapshot cap earlier this turn" };
+      return nested && !failOpen ? noteUnmeasured(memo) : memo;
+    }
     try {
-      const snap = await snapshotter(cwd, racySinceMs);
-      if (!snap.ok && snap.reason === "cap") snapshotCapped = true;
-      return noteUnmeasured(snap);
+      const snap = await snapshotter(dir, racySinceMs);
+      if (memoApplies && !snap.ok && snap.reason === "cap") cappedDirs.add(dir);
+      return failOpen ? snap : noteUnmeasured(snap);
     } catch (err) {
-      return noteUnmeasured({ ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) });
+      const failure: WorkspaceSnapshot = { ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) };
+      return failOpen ? failure : noteUnmeasured(failure);
     }
   };
+  const unmeasurableNested = new Set<string>();
   // bash/computer calls whose mutation status is decided by a workspace diff. Recognized
   // verifiers are never mutations, and observe-only computer actions are read-only.
   // A shared scratch root ($HOME, /, the system temp dir) is written by unrelated processes (daemon heartbeats,
   // logs, other agents) and holds no project verifier, so a snapshot diff there cannot be attributed to one shell
   // call: bash and computer calls are not bracketed (a built-in write/edit still counts as a definite mutation).
-  // A project directory nested inside a scratch root stays gated.
+  // The one exception is a bash call whose literal target (`cd ~/work/app && …`, a `cwd`/`subdir` argument) is a
+  // project (it, or an ancestor below the scratch root, holds a marker such as `.git`/`package.json`) nested under
+  // the scratch cwd: `snapshotTarget` names the outermost such project root and the bracket measures THAT directory,
+  // so an edit made through a scratch cwd (even from a subdirectory, `cd app/pkg && echo X > ../src/a.ts`) is not
+  // invisible. If that root was already unmeasurable BEFORE the call it is skipped like scratch (fail open); one that
+  // becomes unmeasurable DURING the call counts as a mutation. A project directory used as cwd stays gated as
+  // before, and there an unmeasurable bracket counts as a mutation.
   const scratchCwd = isSharedScratchRoot(cwd, opts.scratchRoots);
   let scratchNoted = false;
   const snapshotCandidate = (tool: string, args: Record<string, any> | undefined): boolean =>
     (tool === "bash" && !isVerificationSignal(String(args?.command ?? args?.cmd ?? ""))) ||
     (tool === "computer" && computerActionMayAffectState(args));
-  const snapshotGated = (tool: string, args: Record<string, any> | undefined): boolean =>
-    !scratchCwd && snapshotCandidate(tool, args);
   // Mutation evidence that came ONLY from a shell/computer snapshot bracket, kept apart from definite mutators
   // (write/edit/eval/…): an unrelated writer in the cwd is indistinguishable from the command's own writes, so a
   // shell-only block gets one correction (naming the paths) instead of the full budget.
@@ -1430,15 +1455,23 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             success = false;
             output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
           } else {
-            if (scratchCwd && snapshotCandidate(tool, args)) {
-              workspace = { mutation: false, skipped: "scratch" };
-              if (!scratchNoted) {
-                scratchNoted = true;
-                ev.onNotice?.(`cwd ${cwd} is a shared scratch directory: shell and computer calls here are not checked for file changes`);
+            // Which directory this call's bracket measures. Undefined = skip: a scratch cwd with no resolvable
+            // nested project target (`snapshotTarget` returns `cwd` itself exactly when it found none).
+            let bracketDir: string | undefined;
+            if (snapshotCandidate(tool, args)) {
+              const dir = scratchCwd ? snapshotTarget(cwd, tool, args, opts.scratchRoots) : cwd;
+              if (scratchCwd && dir === cwd) {
+                workspace = { mutation: false, skipped: "scratch" };
+                if (!scratchNoted) {
+                  scratchNoted = true;
+                  ev.onNotice?.(`cwd ${cwd} is a shared scratch directory: shell and computer calls here are not checked for file changes`);
+                }
+              } else {
+                bracketDir = dir;
               }
             }
             // Taken after pre-tool hooks so hook writes are never attributed to the call.
-            const before = snapshotGated(tool, args) ? await takeSnapshot() : undefined;
+            const before = bracketDir !== undefined ? await takeSnapshot(bracketDir, "before") : undefined;
             try {
               const onProgress = ev.onToolProgress ? (partial: string) => ev.onToolProgress!(tool, partial) : undefined;
               const sandboxedHandler = sandbox && !Object.hasOwn(parentTools, tool) && !SANDBOX_MEDIATED_TOOLS.has(handler)
@@ -1463,20 +1496,36 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 ((tool === "monitor" || tool === "job") && String(args?.action ?? "").trim().toLowerCase() === "start");
               if (explicitSignal || knownMutatingCall) mutationMayHaveOccurred = true;
             }
-            if (before) {
+            if (before && bracketDir !== undefined) {
               // bash/computer: the workspace diff is the sole mutation authority (overrides
               // handler flags and the catch heuristic). Both sides share one racy anchor so
               // an unchanged recently-modified file is hashed on both sides or neither.
-              const after = before.ok ? await takeSnapshot(before.startedAtMs) : undefined;
-              mutationMayHaveOccurred = after ? workspaceSnapshotChanged(before, after) : true;
-              bracketed = true;
+              const after = before.ok ? await takeSnapshot(bracketDir, "after", before.startedAtMs) : undefined;
               const failed = !before.ok ? before : after && !after.ok ? after : undefined;
-              const change = after ? snapshotChangedPaths(before, after) : null;
-              workspace = {
-                mutation: mutationMayHaveOccurred,
-                ...(mutationMayHaveOccurred && change ? { changed: formatSnapshotChange(change) } : {}),
-                ...(failed && !failed.ok ? { inconclusive: `${failed.reason}: ${failed.detail}` } : {}),
-              };
+              const nested = bracketDir !== cwd;
+              if (nested && after && !after.ok) grownDirs.add(bracketDir);
+              if (nested && !before.ok && !grownDirs.has(bracketDir)) {
+                // Fail open ONLY when the nested target was already unmeasurable BEFORE the call (cap, time cap,
+                // error): nothing in it is attributable, and it behaves like today's scratch skip so a big read-only
+                // directory cannot block a finished answer. A failing AFTER snapshot (before was ok) falls through
+                // below and counts as a mutation: files appeared during the call.
+                workspace = { mutation: false, skipped: "scratch", target: describeSnapshotTarget(cwd, bracketDir) };
+                if (!unmeasurableNested.has(bracketDir)) {
+                  unmeasurableNested.add(bracketDir);
+                  ev.onNotice?.(`nested target ${snapshotTargetLabel(cwd, bracketDir)} could not be measured; treated as scratch`);
+                }
+              } else {
+                mutationMayHaveOccurred = after ? workspaceSnapshotChanged(before, after) : true;
+                bracketed = true;
+                const change = after ? snapshotChangedPaths(before, after) : null;
+                workspace = {
+                  mutation: mutationMayHaveOccurred,
+                  // Paths stay relative to the bracketed directory; `target` says which directory that was.
+                  ...(mutationMayHaveOccurred && change ? { changed: formatSnapshotChange(change) } : {}),
+                  ...(failed && !failed.ok ? { inconclusive: `${failed.reason}: ${failed.detail}` } : {}),
+                  ...(nested ? { target: describeSnapshotTarget(cwd, bracketDir) } : {}),
+                };
+              }
             }
             // A pre-tool hook's structured `additionalContext` rides along with the result
             // so the model sees it next to the output it concerns.
@@ -1699,7 +1748,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           sawMutation = true;
           lastMutationSeq = ++mutVerSeq;
           if (results[i].bracketed !== true) definiteMutation = true;
-          else if (results[i].workspace?.changed) shellChanges.push(results[i].workspace!.changed!);
+          else if (results[i].workspace?.changed) {
+            const w = results[i].workspace!;
+            // A nested bracket's paths are relative to that directory, so the gate message names it.
+            shellChanges.push(w.target ? `${w.changed} (in ${w.target})` : w.changed!);
+          }
         }
       } else if (t === "debug" && MUTATING_DEBUG_ACTIONS[String(toolCalls[i].arguments?.action ?? "")] === true) {
         sawMutation = true;

@@ -86,9 +86,13 @@ export interface ToolResultRecord {
    * the transcript so a completion-gate rejection can be audited afterwards. `mutation` is whether the
    * snapshot bracket counted the call as a possible file change, `changed` names the paths that differed,
    * and `inconclusive` is why the bracket could not measure (cap or error; counted as a change). `skipped: "scratch"`
-   * means the cwd is a shared scratch root, where calls are deliberately not bracketed (nothing was measured).
+   * means nothing was measured: the cwd is a shared scratch root where calls are deliberately not bracketed, or (with
+   * `target`) a nested project root was already unmeasurable BEFORE the call and failed open.
+   * `target` is set only when the bracket aimed at a nested project root instead of the cwd (a bash call from a
+   * scratch cwd; the outermost marker directory above the call's target): relative to the cwd when inside it, else
+   * the fixed token `<outside cwd>`; `changed` paths are relative to that directory.
    */
-  workspace?: { mutation: boolean; changed?: string; inconclusive?: string; skipped?: "scratch" };
+  workspace?: { mutation: boolean; changed?: string; inconclusive?: string; skipped?: "scratch"; target?: string };
 }
 
 export interface Usage {

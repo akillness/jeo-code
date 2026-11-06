@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -14,10 +14,13 @@ import {
   workspaceSnapshotChanged,
   type SnapshotPathChange,
   type WorkspaceSnapshot,
+  type WorkspaceSnapshotLimits,
 } from "../src/agent/workspace-snapshot";
 
 let dir: string;
 let outside: string;
+/** Directories chmod'ed by `deny`, restored (in reverse) by afterEach so the temp tree can be deleted. */
+const lockedPaths: string[] = [];
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-workspace-snapshot-"));
@@ -26,7 +29,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setSystemTime();
-  await fs.chmod(path.join(dir, "locked"), 0o700).catch(() => {});
+  // Reverse order: an outer directory must be listable again before the inner one can be reached.
+  for (const target of lockedPaths.splice(0).reverse()) await fs.chmod(target, 0o700).catch(() => {});
   await fs.rm(dir, { recursive: true, force: true });
   await fs.rm(outside, { recursive: true, force: true });
 });
@@ -46,6 +50,91 @@ const write = async (rel: string, content: string): Promise<void> => {
 
 /** Sets mtime/atime of a workspace file to `ms` (epoch milliseconds). */
 const setMtime = (rel: string, ms: number): Promise<void> => fs.utimes(path.join(dir, rel), ms / 1000, ms / 1000);
+
+// ---- helpers for the degraded-snapshot tests ----------------------------------------------------
+
+const DIGEST_MASK = 0xffff_ffff_ffff_ffffn;
+/** chmod-based cases cannot work on Windows, and root ignores mode bits. */
+const noChmod = process.platform === "win32" || process.getuid?.() === 0;
+
+/** Per-entry fingerprint exactly as the walk records it, for pinning `d:` markers. */
+const entryHash = (entry: string): bigint => BigInt(Bun.hash.wyhash(entry));
+
+/** The `u:` marker the walk records for an unlistable directory: the directory's own lstat identity. Call it with the
+ *  directory in the state the snapshot saw (it lstats the live path). */
+async function unreadableHash(rel: string): Promise<bigint> {
+  const stat = await fs.lstat(path.join(dir, rel), { bigint: true });
+  return entryHash(`u:${rel}:${stat.mode}:${stat.ctimeNs}:${stat.ino}`);
+}
+
+/** The digest is the masked sum of the per-path map; a marker that stacked on its `d:` entry would break it. */
+function pathSum(snapshot: OkSnapshot): bigint {
+  if (!snapshot.paths) throw new Error("ok snapshot has no per-path map");
+  let sum = 0n;
+  for (const hash of snapshot.paths.values()) sum = (sum + hash) & DIGEST_MASK;
+  return sum;
+}
+
+/** Like `snap`, with some limits overridden. */
+async function snapWith(limits: Partial<WorkspaceSnapshotLimits>, since?: number): Promise<OkSnapshot> {
+  const result = await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, ...limits }, since);
+  if (!result.ok) throw new Error(`snapshot failed: ${result.reason}: ${result.detail}`);
+  return result;
+}
+
+/** chmod 000. Recorded BEFORE the chmod so afterEach restores it even if the test throws; deny an inner path before its parent. */
+async function deny(target: string): Promise<void> {
+  lockedPaths.push(target);
+  await fs.chmod(target, 0o000);
+}
+
+/** Freezes the clock. Files stamped just before it are inside the racy window with no wall-clock dependence. */
+function freeze(): number {
+  const base = Date.now();
+  setSystemTime(base);
+  return base;
+}
+const writeFresh = async (rel: string, content: string, base: number): Promise<void> => {
+  await write(rel, content);
+  await setMtime(rel, base - 100);
+};
+/** A file a minute old: outside the racy window, so it is stat-fingerprinted only. */
+const writeOld = async (rel: string, content: string): Promise<void> => {
+  await write(rel, content);
+  await setMtime(rel, Date.now() - 60_000);
+};
+
+/** Runs `body` with `fs.open` intercepted: `beforeOpen` runs once, right before the real open of `target`, i.e. after
+ *  the walk's lstat saw the file. That window is where every racy-hash failure mode lives. */
+async function interceptOpen<T>(target: string, beforeOpen: () => Promise<void>, body: () => Promise<T>): Promise<T> {
+  const realOpen = fs.open as unknown as (...args: unknown[]) => Promise<unknown>;
+  let fired = false;
+  const spy = spyOn(fs, "open").mockImplementation((async (file: Parameters<typeof fs.open>[0], ...rest: unknown[]) => {
+    if (!fired && String(file) === target) { fired = true; await beforeOpen(); }
+    return realOpen(file, ...rest);
+  }) as unknown as typeof fs.open);
+  try {
+    const result = await body();
+    expect(fired).toBe(true); // a silent no-op hook would make the test below vacuous
+    return result;
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/** Runs `body` with `fs[method]` of exactly `target` failing with an errno `code`; every other path reaches the real call. */
+async function failFs<T>(method: "readdir" | "lstat", target: string, code: string, body: () => Promise<T>): Promise<T> {
+  const real = fs[method] as unknown as (...args: unknown[]) => Promise<unknown>;
+  const spy = spyOn(fs as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>, method).mockImplementation(async (file, ...rest) => {
+    if (String(file) === target) throw Object.assign(new Error(`${code}: injected ${method} failure`), { code });
+    return real(file, ...rest);
+  });
+  try {
+    return await body();
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 test("same-size rewrite in the same tick changes the snapshot", async () => {
   await write("a.txt", "aaaa");
@@ -95,6 +184,7 @@ test("an untouched workspace snapshots identically, and renames, deletes and emp
   expect(workspaceSnapshotChanged(first, second)).toBe(false);
   expect(second.entries).toBe(first.entries);
   expect(first.entries).toBe(5); // src, src/a.ts, src/deep, src/deep/b.ts, empty
+  expect(first.degraded).toBe(0); // always set on an ok snapshot, 0 when nothing degraded
 
   await fs.rename(path.join(dir, "src/a.ts"), path.join(dir, "src/c.ts"));
   const renamed = await snap(first.startedAtMs);
@@ -215,17 +305,31 @@ test("over-cap returns reason cap", async () => {
   expect(atCap).toMatchObject({ ok: true, entries: 2 });
 });
 
-test("a fresh file over the racy byte caps returns reason error; an old one is stat-only", async () => {
-  await write("big.bin", "x".repeat(64));
-  const tooBig = await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, racyMaxFileBytes: 16 });
-  expect(tooBig).toMatchObject({ ok: false, reason: "error" });
-  await write("big2.bin", "y".repeat(64));
-  const tooMuch = await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, racyMaxTotalBytes: 100 });
-  expect(tooMuch).toMatchObject({ ok: false, reason: "error" });
-  await setMtime("big.bin", Date.now() - 60_000);
-  await setMtime("big2.bin", Date.now() - 60_000);
-  const old = await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, racyMaxFileBytes: 16, racyMaxTotalBytes: 16 });
-  expect(old).toMatchObject({ ok: true, entries: 2 });
+test("a fresh file over the racy byte caps degrades to a stat-only entry; an old one is stat-only regardless", async () => {
+  const base = freeze();
+  await writeFresh("a.bin", "x".repeat(64), base);
+  await writeFresh("b.bin", "y".repeat(64), base);
+  const hashed = await snap();
+  expect(hashed).toMatchObject({ degraded: 0, entries: 2 });
+
+  // Per-file cap: both files exceed 16 bytes. The snapshot survives and the entries lose their content hash.
+  const perFile = await snapWith({ racyMaxFileBytes: 16 });
+  expect(perFile).toMatchObject({ ok: true, degraded: 2, entries: 2 });
+  expect(perFile.paths?.get("a.bin")).not.toBe(hashed.paths?.get("a.bin"));
+  expect(perFile.paths?.get("b.bin")).not.toBe(hashed.paths?.get("b.bin"));
+
+  // Total cap, first-fit in path order: a.bin (64) fits under 100, b.bin would reach 128 and degrades.
+  const total = await snapWith({ racyMaxTotalBytes: 100 });
+  expect(total).toMatchObject({ ok: true, degraded: 1, entries: 2 });
+  expect(total.paths?.get("a.bin")).toBe(hashed.paths?.get("a.bin"));
+  expect(total.paths?.get("b.bin")).not.toBe(hashed.paths?.get("b.bin"));
+
+  // Old files are never racy: the caps do not touch them at all.
+  await setMtime("a.bin", base - 60_000);
+  await setMtime("b.bin", base - 60_000);
+  const old = await snapWith({ racyMaxFileBytes: 16, racyMaxTotalBytes: 16 });
+  expect(old).toMatchObject({ ok: true, degraded: 0, entries: 2 });
+  expect(old.digest).toBe((await snap()).digest);
 });
 
 test("missing root returns reason error", async () => {
@@ -234,10 +338,326 @@ test("missing root returns reason error", async () => {
   expect(await snapshotWorkspace(path.join(dir, "plain.txt"))).toMatchObject({ ok: false, reason: "error" });
 });
 
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("an unreadable subdirectory returns reason error", async () => {
-  await write("locked/secret.txt", "secret");
-  await fs.chmod(path.join(dir, "locked"), 0o000);
-  expect(await snapshotWorkspace(dir)).toMatchObject({ ok: false, reason: "error" });
+// ---------------------------------------------------------------------------------------------
+// Degraded snapshots: an unlistable directory or an unhashable racy file costs fidelity for that one
+// entry; the snapshot stays ok:true and `degraded` counts it. Roots, caps and unknown errors still fail.
+// ---------------------------------------------------------------------------------------------
+
+test.skipIf(noChmod)("an unreadable subdirectory degrades to a u: marker instead of failing the snapshot", async () => {
+  await writeOld("locked/secret.txt", "secret");
+  await writeOld("open.txt", "open");
+  const listable = await snap();
+  expect(listable).toMatchObject({ degraded: 0, entries: 3 });
+  expect(listable.paths?.get("locked")).toBe(entryHash("d:locked"));
+
+  await deny(path.join(dir, "locked"));
+  const result = await snap();
+  expect(result).toMatchObject({ ok: true, degraded: 1, entries: 2 });
+  expect(pathKeys(result)).toEqual(["locked", "open.txt"]); // the children are skipped, not listed
+  expect(result.paths?.get("locked")).toBe(await unreadableHash("locked"));
+  expect(result.paths?.get("locked")).not.toBe(listable.paths?.get("locked"));
+  // The marker REPLACED the `d:` entry: digest stays the plain sum of the map instead of counting both.
+  expect(result.digest).toBe(pathSum(result));
+  expect(listable.digest).toBe(pathSum(listable));
+});
+
+test.skipIf(noChmod)("an unreadable directory is stable between snapshots; becoming listable and then gaining a child each flip it", async () => {
+  await writeOld("locked/secret.txt", "secret");
+  const locked = path.join(dir, "locked");
+  await deny(locked);
+  const first = await snap();
+  const second = await snap(first.startedAtMs);
+  expect(first.degraded).toBe(1);
+  expect(second.degraded).toBe(1);
+  expect(workspaceSnapshotChanged(first, second)).toBe(false);
+  expect(snapshotChangedPaths(first, second)).toEqual({ added: [], removed: [], modified: [] });
+
+  await fs.chmod(locked, 0o755);
+  const listable = await snap(first.startedAtMs);
+  expect(listable.degraded).toBe(0);
+  expect(workspaceSnapshotChanged(first, listable)).toBe(true);
+  expect(snapshotChangedPaths(first, listable)).toEqual({ added: ["locked/secret.txt"], removed: [], modified: ["locked"] });
+
+  await writeOld("locked/new.txt", "new");
+  const grown = await snap(first.startedAtMs);
+  expect(workspaceSnapshotChanged(listable, grown)).toBe(true);
+  expect(snapshotChangedPaths(listable, grown)).toEqual({ added: ["locked/new.txt"], removed: [], modified: [] });
+});
+
+test.skipIf(noChmod)("an unreadable ROOT still fails the snapshot, though the same directory degrades as a child", async () => {
+  await writeOld("sub/file.txt", "file");
+  const sub = path.join(dir, "sub");
+  await deny(sub);
+  expect(await snapshotWorkspace(sub)).toMatchObject({ ok: false, reason: "error" });
+  expect(await snapshotWorkspace(dir)).toMatchObject({ ok: true, degraded: 1 });
+
+  await fs.chmod(sub, 0o755); // control: the failure above was the mode bits, nothing else
+  expect(await snapshotWorkspace(sub)).toMatchObject({ ok: true, degraded: 0, entries: 1 });
+});
+
+test.skipIf(noChmod)("nested unreadable directories degrade once, at the outermost one, and are stable", async () => {
+  await writeOld("a/top.txt", "top");
+  await writeOld("a/b/inner/x.txt", "x");
+  await writeOld("a/b/c/deep.txt", "deep");
+  await deny(path.join(dir, "a/b/c")); // inner first: once `a/b` is denied `a/b/c` cannot be reached
+  await deny(path.join(dir, "a/b"));
+  const first = await snap();
+  expect(first).toMatchObject({ ok: true, degraded: 1, entries: 3 });
+  expect(pathKeys(first)).toEqual(["a", "a/b", "a/top.txt"]); // the walk never reaches c, inner or deep.txt
+  expect(first.paths?.get("a/b")).toBe(await unreadableHash("a/b"));
+  const second = await snap(first.startedAtMs);
+  expect(second.degraded).toBe(1);
+  expect(workspaceSnapshotChanged(first, second)).toBe(false);
+
+  // Unlocking the outer directory exposes the inner one: still exactly one degraded entry, one level down.
+  await fs.chmod(path.join(dir, "a/b"), 0o755);
+  const deeper = await snap(first.startedAtMs);
+  expect(deeper.degraded).toBe(1);
+  expect(workspaceSnapshotChanged(first, deeper)).toBe(true);
+  expect(pathKeys(deeper)).toEqual(["a", "a/b", "a/b/c", "a/b/inner", "a/b/inner/x.txt", "a/top.txt"]);
+  expect(deeper.paths?.get("a/b")).toBe(entryHash("d:a/b"));
+  expect(deeper.paths?.get("a/b/c")).toBe(await unreadableHash("a/b/c"));
+});
+
+// Guards the same-user bypass: chmod open, write, chmod shut leaves the mode EXACTLY as it was, so only
+// the directory's own ctime in the marker can tell. The snapshot must flip and name the directory.
+test.skipIf(noChmod)("chmod-open, write, chmod-shut inside an unreadable directory flips the snapshot and names the directory", async () => {
+  await writeOld("locked/old.txt", "old");
+  await writeOld("keep.txt", "keep");
+  const locked = path.join(dir, "locked");
+  await deny(locked);
+  const modeBefore = (await fs.lstat(locked)).mode;
+  const before = await snap();
+  const control = await snap(before.startedAtMs);
+  expect(workspaceSnapshotChanged(before, control)).toBe(false); // untouched: stable
+
+  await fs.chmod(locked, 0o700);
+  await fs.writeFile(path.join(locked, "new.ts"), "X");
+  await fs.chmod(locked, 0o000);
+  expect((await fs.lstat(locked)).mode).toBe(modeBefore); // the mode alone cannot show it
+  const after = await snap(before.startedAtMs);
+  expect(after).toMatchObject({ ok: true, degraded: 1, entries: 2 });
+  expect(workspaceSnapshotChanged(before, after)).toBe(true);
+  expect(snapshotChangedPaths(before, after)).toEqual({ added: [], removed: [], modified: ["locked"] });
+});
+
+// Guards the timestamp half of the marker on its own: a write+execute-only directory takes entries with no
+// chmod at all, and creating or removing one updates the directory's ctime.
+test.skipIf(noChmod)("creating and removing a child in a write+execute-only directory flips the marker without any chmod", async () => {
+  const wx = path.join(dir, "wx");
+  await fs.mkdir(wx);
+  lockedPaths.push(wx);
+  await fs.chmod(wx, 0o300);
+  const before = await snap();
+  expect(before).toMatchObject({ degraded: 1, entries: 1 });
+
+  await fs.writeFile(path.join(wx, "new.ts"), "X");
+  const created = await snap(before.startedAtMs);
+  expect(created.degraded).toBe(1);
+  expect(snapshotChangedPaths(before, created)).toEqual({ added: [], removed: [], modified: ["wx"] });
+
+  await fs.rm(path.join(wx, "new.ts"));
+  const removed = await snap(before.startedAtMs);
+  expect(workspaceSnapshotChanged(created, removed)).toBe(true);
+  expect(snapshotChangedPaths(created, removed)).toEqual({ added: [], removed: [], modified: ["wx"] });
+});
+
+// Guards the readdir error taxonomy without depending on mode bits (so it also runs as root and on
+// Windows): permission codes degrade, vanished-directory codes skip, anything else fails the snapshot.
+const READDIR_FAILURES = [
+  { code: "EACCES", outcome: "degrades to a u: marker" },
+  { code: "EPERM", outcome: "degrades to a u: marker" },
+  { code: "ENOENT", outcome: "is skipped as a vanished directory" },
+  { code: "ENOTDIR", outcome: "is skipped as a vanished directory" },
+  { code: "EIO", outcome: "fails the snapshot" },
+  { code: "ELOOP", outcome: "fails the snapshot" },
+  { code: "EMFILE", outcome: "fails the snapshot" },
+] as const;
+
+for (const { code, outcome } of READDIR_FAILURES) {
+  test(`readdir ${code} on a subdirectory ${outcome}`, async () => {
+    await writeOld("sub/inner.txt", "inner");
+    await writeOld("other.txt", "other");
+    const result = await failFs("readdir", path.join(dir, "sub"), code, () => snapshotWorkspace(dir));
+    if (outcome === "fails the snapshot") {
+      expect(result).toMatchObject({ ok: false, reason: "error" });
+      return;
+    }
+    if (!result.ok) throw new Error(`snapshot failed: ${result.reason}: ${result.detail}`);
+    expect(pathKeys(result)).toEqual(["other.txt", "sub"]); // sub/inner.txt is never listed
+    if (outcome === "degrades to a u: marker") {
+      expect(result.degraded).toBe(1);
+      expect(result.paths?.get("sub")).toBe(await unreadableHash("sub"));
+    } else {
+      expect(result.degraded).toBe(0);
+      expect(result.paths?.get("sub")).toBe(entryHash("d:sub")); // a vanished dir stays recorded: a real deletion must still show
+    }
+  });
+}
+
+// Guards the marker's own lstat, which runs only after a permission-denied listing (injected too, so these
+// need no mode bits): a directory that vanished in between is skipped; any other lstat error is a failure.
+const MARKER_LSTAT_FAILURES = [
+  { code: "ENOENT", skips: true },
+  { code: "ENOTDIR", skips: true },
+  { code: "EACCES", skips: false },
+  { code: "EPERM", skips: false },
+  { code: "EIO", skips: false },
+  { code: "EMFILE", skips: false },
+] as const;
+
+for (const { code, skips } of MARKER_LSTAT_FAILURES) {
+  test(`lstat ${code} on a directory whose listing was denied ${skips ? "skips the directory" : "fails the snapshot"}`, async () => {
+    await writeOld("sub/inner.txt", "inner");
+    await writeOld("other.txt", "other");
+    const sub = path.join(dir, "sub");
+    const result = await failFs("readdir", sub, "EACCES", () => failFs("lstat", sub, code, () => snapshotWorkspace(dir)));
+    if (!skips) {
+      expect(result).toMatchObject({ ok: false, reason: "error" });
+      return;
+    }
+    if (!result.ok) throw new Error(`snapshot failed: ${result.reason}: ${result.detail}`);
+    expect(result.degraded).toBe(0); // nothing was recorded for it, so nothing degraded
+    expect(pathKeys(result)).toEqual(["other.txt", "sub"]);
+    expect(result.paths?.get("sub")).toBe(entryHash("d:sub")); // the parent's listing entry stays: a real deletion must still show
+  });
+}
+
+test("a fresh file over the default byte caps degrades instead of failing, and an append is still attributed", async () => {
+  const base = freeze();
+  await writeFresh("big.bin", "x".repeat(2 * 1024 * 1024), base);
+  await writeFresh("small.txt", "small", base);
+  const before = await snap();
+  expect(before).toMatchObject({ ok: true, degraded: 1, entries: 2 }); // only big.bin: small.txt is within the caps
+  const again = await snap(before.startedAtMs);
+  expect(again.degraded).toBe(1);
+  expect(again.digest).toBe(before.digest);
+  expect(workspaceSnapshotChanged(before, again)).toBe(false);
+
+  await fs.appendFile(path.join(dir, "big.bin"), "y");
+  const after = await snap(before.startedAtMs);
+  expect(workspaceSnapshotChanged(before, after)).toBe(true);
+  expect(snapshotChangedPaths(before, after)).toEqual({ added: [], removed: [], modified: ["big.bin"] });
+});
+
+test("racy total-budget first-fit hashes the same files on every snapshot of an unchanged tree", async () => {
+  const base = freeze();
+  const sizes = { "a.txt": 10, "b.txt": 20, "c.txt": 5, "d.txt": 20, "e.txt": 5 };
+  for (const [rel, size] of Object.entries(sizes)) await writeFresh(rel, "x".repeat(size), base);
+  const full = await snap();
+  expect(full.degraded).toBe(0);
+
+  // Budget 25, path order, first-fit: a(10) fits; b would reach 30 and degrades; c reaches 15 and e 20 and fit; d would reach 40
+  // and degrades. A stop-at-first-miss budget would also degrade c and e (4 degraded), so this pins first-fit.
+  const limits = { racyMaxTotalBytes: 25 };
+  const first = await snapWith(limits);
+  expect(first.degraded).toBe(2);
+  for (const rel of ["a.txt", "c.txt", "e.txt"]) expect(first.paths?.get(rel)).toBe(full.paths?.get(rel));
+  for (const rel of ["b.txt", "d.txt"]) expect(first.paths?.get(rel)).not.toBe(full.paths?.get(rel));
+  for (let i = 0; i < 5; i++) {
+    const again = await snapWith(limits, first.startedAtMs);
+    expect(again.degraded).toBe(2);
+    expect(again.digest).toBe(first.digest);
+    expect(workspaceSnapshotChanged(first, again)).toBe(false);
+  }
+});
+
+test.skipIf(noChmod)("a fresh file that cannot be opened degrades only that file and stays stable", async () => {
+  const base = freeze();
+  await writeFresh("open.txt", "readable", base);
+  await writeFresh("secret.txt", "unreadable", base);
+  const secret = path.join(dir, "secret.txt");
+  await deny(secret);
+  const first = await snap();
+  expect(first).toMatchObject({ ok: true, degraded: 1, entries: 2 }); // open.txt is still hashed
+  const second = await snap(first.startedAtMs);
+  expect(second.degraded).toBe(1);
+  expect(second.digest).toBe(first.digest);
+  expect(workspaceSnapshotChanged(first, second)).toBe(false);
+
+  await fs.chmod(secret, 0o644); // ctime moves and the file is hashable again: only it shows as modified
+  const readable = await snap(first.startedAtMs);
+  expect(readable.degraded).toBe(0);
+  expect(snapshotChangedPaths(first, readable)).toEqual({ added: [], removed: [], modified: ["secret.txt"] });
+});
+
+// Racy-hash failure modes that happen between the walk's lstat and the open/read. Injected by running
+// the mutation inside an fs.open hook, so each one is deterministic.
+test("a racy file that vanishes before it is opened is dropped, not degraded", async () => {
+  const base = freeze();
+  await writeFresh("keep.txt", "keep", base);
+  await writeFresh("vanish.txt", "vanish", base);
+  const target = path.join(dir, "vanish.txt");
+  const during = await interceptOpen(target, () => fs.unlink(target), () => snap());
+  expect(during).toMatchObject({ ok: true, degraded: 0, entries: 1 });
+  expect(pathKeys(during)).toEqual(["keep.txt"]);
+  expect(workspaceSnapshotChanged(during, await snap(during.startedAtMs))).toBe(false);
+});
+
+const RACY_SWAPS: { name: string; swap: (target: string) => Promise<void> }[] = [
+  { name: "grows between lstat and read", swap: target => fs.appendFile(target, " and more") },
+  {
+    name: "is replaced by another inode between lstat and open",
+    swap: async target => {
+      // Same size as the original, so only the inode check can notice (a size mismatch would trip the growth check).
+      // Created while the original still exists, so the inode numbers cannot be recycled into a match.
+      const replacement = path.join(outside, "replacement.txt");
+      await fs.writeFile(replacement, "z".repeat((await fs.stat(target)).size));
+      await fs.rename(replacement, target);
+    },
+  },
+];
+
+for (const { name, swap } of RACY_SWAPS) {
+  test(`a racy file that ${name} degrades to a stat-only entry without failing the snapshot`, async () => {
+    const base = freeze();
+    await writeFresh("keep.txt", "keep", base);
+    await writeFresh("moving.txt", "moving", base);
+    const target = path.join(dir, "moving.txt");
+    const result = await interceptOpen(target, () => swap(target), () => snap());
+    expect(result).toMatchObject({ ok: true, degraded: 1, entries: 2 });
+  });
+}
+
+test("degraded entries never mask a cap failure", async () => {
+  const base = freeze();
+  await writeFresh("big.bin", "x".repeat(64), base);
+  await write("one.txt", "1");
+  await write("two.txt", "2");
+  const limits = { racyMaxFileBytes: 16 };
+  expect(await snapWith({ ...limits, maxEntries: 3 })).toMatchObject({ degraded: 1, entries: 3 }); // at the cap: still ok
+  expect(await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, ...limits, maxEntries: 2 })).toMatchObject({ ok: false, reason: "cap" });
+  expect(await snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, ...limits, maxMs: -1 })).toMatchObject({ ok: false, reason: "cap" });
+});
+
+// Guards: the time budget also bounds the post-walk hashing pass. performance.now is shifted inside the
+// open hook (after the walk and the pre-hash cap check passed), so no wall-clock waiting is involved.
+test("the time cap is enforced while racy files are being hashed", async () => {
+  const base = freeze();
+  await writeFresh("fresh.txt", "fresh", base);
+  const target = path.join(dir, "fresh.txt");
+  let shiftMs = 0;
+  const realNow = performance.now.bind(performance);
+  const clock = spyOn(performance, "now").mockImplementation(() => realNow() + shiftMs);
+  try {
+    const result = await interceptOpen(target, async () => { shiftMs = 60_000; }, () => snapshotWorkspace(dir));
+    expect(result).toMatchObject({ ok: false, reason: "cap" });
+  } finally {
+    clock.mockRestore();
+  }
+  expect(await snap()).toMatchObject({ ok: true, degraded: 0, entries: 1 }); // control: the same tree is fine on the real clock
+});
+
+test("a deleted non-racy file changes the snapshot and is attributed as removed", async () => {
+  await writeOld("keep.txt", "keep");
+  await writeOld("gone.txt", "gone");
+  const before = await snap();
+  expect(before).toMatchObject({ degraded: 0, entries: 2 });
+  await fs.rm(path.join(dir, "gone.txt"));
+  const after = await snap(before.startedAtMs);
+  expect(after).toMatchObject({ degraded: 0, entries: 1 });
+  expect(workspaceSnapshotChanged(before, after)).toBe(true);
+  expect(snapshotChangedPaths(before, after)).toEqual({ added: [], removed: ["gone.txt"], modified: [] });
 });
 
 test("workspaceSnapshotChanged is true when either side failed", () => {

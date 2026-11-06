@@ -1499,3 +1499,612 @@ test("runAgentLoop: prose answers after a shell-only block reach the same single
   expect(userSaid(history, "added heartbeat.json")).toBe(true);
   expect(countUserMessages(history, MUTATION_NUDGE_PREFIX)).toBe(0);
 });
+
+// --- A bash call from a shared scratch cwd brackets the nested project it is aimed at ---
+
+/** A snapshotter that records WHICH directory each bracket measured, optionally with per-directory limits. */
+const recordingSnapshotter = (
+  measured: string[],
+  limitsFor: (dir: string) => typeof WORKSPACE_SNAPSHOT_LIMITS = () => WORKSPACE_SNAPSHOT_LIMITS,
+): WorkspaceSnapshotter => (dir, since) => {
+  measured.push(dir);
+  return snapshotWorkspace(dir, limitsFor(dir), since);
+};
+
+/**
+ * A shell stand-in that REALLY performs the one shape these tests need, `[cd DIR &&] printf x > FILE`, from the
+ * directory the real bash tool would use (`args.cwd` / `args.subdir` resolved against the engine cwd). Anything
+ * else is a read-only no-op, so the only filesystem effect is the one the test asked for.
+ */
+const nestedShell = async (args: Record<string, unknown>, dir: string) => {
+  const base = typeof args.cwd === "string" ? path.resolve(dir, args.cwd)
+    : typeof args.subdir === "string" ? path.resolve(dir, args.subdir)
+    : dir;
+  const m = /^(?:cd\s+('[^']*'|\S+)\s*&&\s*)?printf x > (\S+)$/.exec(String(args.command ?? ""));
+  if (!m) return { success: true, output: "ok" };
+  const runDir = m[1] ? path.resolve(base, m[1].replace(/^'|'$/g, "")) : base;
+  await fs.writeFile(path.join(runDir, m[2]), "x");
+  return { success: true, output: "" };
+};
+
+/** A directory under `parent` that is a project (holds a package.json), so a bash call aimed at it gets bracketed. */
+async function projectDir(parent: string, ...parts: string[]): Promise<string> {
+  const dir = path.join(parent, ...parts);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "package.json"), "{}");
+  return dir;
+}
+
+const SCRATCH_NOTICE = "shared scratch directory";
+
+for (const row of [
+  { name: "a leading cd", args: { command: "cd app && printf x > f" }, wrote: "app", target: "app", changed: "f" },
+  { name: "args.subdir", args: { command: "printf x > f", subdir: "app" }, wrote: "app", target: "app", changed: "f" },
+  { name: "args.cwd", args: { command: "printf x > f", cwd: "app" }, wrote: "app", target: "app", changed: "f" },
+  // The call ran in app/inner, but the project is `app` (the marker is there): the bracket covers all of it, so the
+  // gate names the path relative to the bracketed root, not to the deepest directory.
+  { name: "args.cwd plus a cd inside the command", args: { command: "cd inner && printf x > f", cwd: "app" }, wrote: path.join("app", "inner"), target: "app", changed: path.join("inner", "f") },
+  { name: "a cd into a subdirectory of a project (the marker is on the ancestor)", args: { command: "cd app/inner && printf x > f" }, wrote: path.join("app", "inner"), target: "app", changed: path.join("inner", "f") },
+]) {
+  test(`runAgentLoop: a bash write reached through ${row.name} from a scratch cwd blocks done and names the project root`, async () => {
+    // Fails against the earlier engine: a scratch cwd was never bracketed, so the write was invisible and `done` passed.
+    const root = await scratchRoot();
+    await projectDir(root, "app");
+    await fs.mkdir(path.join(root, "app", "inner"));
+    const measured: string[] = [];
+    const notices: string[] = [];
+    const llm = scripted([{ tool: "bash", arguments: row.args }, ...repeatStep(FULL_BUDGET + 1, done)]);
+    const history: Message[] = [{ role: "user", content: "create f in the app" }];
+    const result = await runAgentLoop(history, {
+      cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+      events: { onNotice: msg => { notices.push(msg); } },
+      workspaceSnapshot: recordingSnapshotter(measured),
+      tools: { bash: nestedShell },
+    });
+
+    const nested = path.join(root, row.wrote);
+    const bracketed = path.join(root, row.target);
+    expect(await fs.readFile(path.join(nested, "f"), "utf8")).toBe("x"); // premise: the write really happened there
+    await expect(fs.stat(path.join(root, "f"))).rejects.toThrow(); // and not in the scratch cwd itself
+    // The first done is rejected naming the path AND the directory it is relative to, then the shell-only cap stops it.
+    expect(result.done).toBe(false);
+    expect(result.completionRejected).toBe(true);
+    expect(result.doneReason).toContain("completion rejected after 1 correction.");
+    expect(countUserMessages(history, UNVERIFIED_TEXT)).toBe(1);
+    expect(userSaid(history, `added ${row.changed} (in ${row.target})`)).toBe(true);
+    expect(llm.calls()).toBe(3);
+    // One before/after pair, and it measured the PROJECT ROOT - never the scratch cwd, and not a deeper directory.
+    expect(measured).toEqual([bracketed, bracketed]);
+    expect(notices.some(n => n.includes(SCRATCH_NOTICE))).toBe(false);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: true, changed: `added ${row.changed}`, target: row.target });
+  });
+}
+
+for (const row of [
+  { name: "a read-only command", command: "pwd" },
+  { name: "a write straight into the scratch cwd", command: "printf x > f" },
+  { name: "a cd into a directory that does not exist", command: "cd ghost && ls" },
+  { name: "a cd whose target is a variable", command: "cd $APP && ls" },
+  { name: "a cd into a directory with no project marker", command: "cd plain && printf x > f" },
+]) {
+  test(`runAgentLoop: from a scratch cwd, ${row.name} has no nested target: skipped as scratch and done is accepted`, async () => {
+    const root = await scratchRoot();
+    await projectDir(root, "app");
+    await fs.mkdir(path.join(root, "plain"));
+    const measured: string[] = [];
+    const notices: string[] = [];
+    const llm = scripted([{ tool: "bash", arguments: { command: row.command } }, done]);
+    const history: Message[] = [{ role: "user", content: "look around" }];
+    const result = await runAgentLoop(history, {
+      cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+      events: { onNotice: msg => { notices.push(msg); } },
+      workspaceSnapshot: recordingSnapshotter(measured),
+      tools: { bash: nestedShell },
+    });
+
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("verified");
+    expect(llm.calls()).toBe(2);
+    expect(measured).toEqual([]);
+    expect(notices.filter(n => n.includes(SCRATCH_NOTICE))).toHaveLength(1);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch" });
+  });
+}
+
+test("runAgentLoop: a cd into another scratch root is skipped, not bracketed", async () => {
+  const root = await scratchRoot();
+  const inner = path.join(root, "inner");
+  await projectDir(root, "inner"); // a project in every other respect: only the scratch-root guard can skip it
+  expect(isSharedScratchRoot(inner, [root, inner])).toBe(true); // premise: the target is itself scratch
+  const measured: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "cd inner && printf x > f" } }, done]);
+  const history: Message[] = [{ role: "user", content: "write f" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root, inner], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(inner, "f"), "utf8")).toBe("x"); // premise: the write really happened
+  expect(result.done).toBe(true);
+  expect(measured).toEqual([]);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch" });
+});
+
+test("runAgentLoop: a cd up into an ancestor of the scratch cwd is skipped, not bracketed", async () => {
+  // The ancestor CONTAINS the scratch root: bracketing it would walk the tree that made the root unmeasurable.
+  const outer = await scratchRoot();
+  const scratch = path.join(outer, "scratch");
+  await fs.mkdir(path.join(scratch, ".jeo"), { recursive: true });
+  await fs.writeFile(path.join(scratch, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+  const measured: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "cd .. && printf x > f" } }, done]);
+  const history: Message[] = [{ role: "user", content: "write f" }];
+  const result = await runAgentLoop(history, {
+    cwd: scratch, scratchRoots: [scratch], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(outer, "f"), "utf8")).toBe("x"); // premise: the write landed in the ancestor
+  expect(result.done).toBe(true);
+  expect(measured).toEqual([]);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch" });
+});
+
+test("runAgentLoop: the persisted workspace target is relative to the cwd inside it and a fixed token outside it", async () => {
+  const root = await scratchRoot();
+  await projectDir(root, "app");
+  const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-nested-outside-")));
+  scratchDirs.push(outside);
+  await fs.writeFile(path.join(outside, "package.json"), "{}");
+  const llm = scripted([
+    { tool: "bash", arguments: { command: "cd app && ls" } },
+    { tool: "bash", arguments: { command: `cd '${outside}' && printf x > f` } },
+    ...repeatStep(FULL_BUDGET + 1, done),
+  ]);
+  const history: Message[] = [{ role: "user", content: "inspect app, then write f elsewhere" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(outside, "f"), "utf8")).toBe("x");
+  expect(llm.calls()).toBe(4);
+  const [inside, outwards] = toolResultsOf(history).map(r => r.workspace);
+  // Inside the cwd: relative, and a clean bracket still says which tree it measured.
+  expect(inside).toStrictEqual({ mutation: false, target: "app" });
+  // Outside the cwd: a fixed token, never the absolute path; the changed paths are relative to THAT directory.
+  expect(outwards).toStrictEqual({ mutation: true, changed: "added f", target: "<outside cwd>" });
+  expect(result.done).toBe(false);
+  expect(userSaid(history, "added f (in <outside cwd>)")).toBe(true);
+  expect(userSaid(history, outside)).toBe(false);
+});
+
+test("runAgentLoop: with a non-scratch cwd the bracket stays on the cwd and ignores a cd outside it", async () => {
+  // Unchanged behavior: a project cwd is measured as before; a write elsewhere is neither followed nor blamed.
+  const elsewhere = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-nested-elsewhere-")));
+  scratchDirs.push(elsewhere);
+  const measured: string[] = [];
+  const llm = scripted([{ tool: "bash", arguments: { command: `cd '${elsewhere}' && printf x > f` } }, done]);
+  const history: Message[] = [{ role: "user", content: "write f elsewhere" }];
+  const result = await runAgentLoop(history, {
+    cwd, scratchRoots: [], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(elsewhere, "f"), "utf8")).toBe("x"); // premise: it wrote outside the project
+  expect(measured).toEqual([cwd, cwd]);
+  // Measured, clean, and no `target` key: the evidence record is byte-identical to the pre-feature shape.
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false });
+  expect(result.done).toBe(true);
+  expect(llm.calls()).toBe(2);
+});
+
+for (const row of [
+  { name: "a cd into a subdirectory", args: { command: "cd sub && printf x > f" } },
+  { name: "args.subdir", args: { command: "printf x > f", subdir: "sub" } },
+]) {
+  test(`runAgentLoop: with a non-scratch cwd ${row.name} is reported relative to the cwd with no target`, async () => {
+    await fs.mkdir(path.join(cwd, "sub"));
+    const measured: string[] = [];
+    const llm = scripted([{ tool: "bash", arguments: row.args }, ...repeatStep(FULL_BUDGET + 1, done)]);
+    const history: Message[] = [{ role: "user", content: "write f in sub" }];
+    const result = await runAgentLoop(history, {
+      cwd, scratchRoots: [], maxSteps: 12, budget: { maxExtensions: 0 },
+      workspaceSnapshot: recordingSnapshotter(measured),
+      tools: { bash: nestedShell },
+    });
+
+    expect(result.done).toBe(false);
+    expect(llm.calls()).toBe(3);
+    expect(measured).toEqual([cwd, cwd]);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: true, changed: `added ${path.join("sub", "f")}` });
+    expect(userSaid(history, `added ${path.join("sub", "f")}`)).toBe(true);
+    expect(history.some(m => m.role === "user" && m.content.includes("(in "))).toBe(false);
+  });
+}
+
+test("runAgentLoop: a capped nested target fails open and the memo is per directory, so another target is still measured", async () => {
+  // Fails with a single turn-wide flag: after app1 hit the cap, the app2 bracket was short-circuited as "capped"
+  // and the write there was never attributed. Fails if the cap counts as a mutation again: app1 would block done.
+  const root = await scratchRoot();
+  const app1 = await projectDir(root, "app1");
+  const app2 = await projectDir(root, "app2");
+  await fs.writeFile(path.join(app1, "one.txt"), "1");
+  await fs.writeFile(path.join(app1, "two.txt"), "2");
+  const measured: string[] = [];
+  const notices: string[] = [];
+  const llm = scripted([
+    { tool: "bash", arguments: { command: "cd app1 && ls" } },
+    { tool: "bash", arguments: { command: "cd app1 && ls -a" } },
+    { tool: "bash", arguments: { command: "cd app2 && printf x > f" } },
+    ...repeatStep(FULL_BUDGET + 1, done),
+  ]);
+  const history: Message[] = [{ role: "user", content: "list app1 twice, then write f in app2" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    // Only app1 is over the cap; app2 is small enough to measure.
+    workspaceSnapshot: recordingSnapshotter(measured, dir => dir === app1 ? { ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 } : WORKSPACE_SNAPSHOT_LIMITS),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(app2, "f"), "utf8")).toBe("x"); // premise: the write really happened
+  // app1 is walked once (the repeat is answered from the per-directory memo); app2 is walked before and after its call.
+  expect(measured).toEqual([app1, app2, app2]);
+  const [first, repeat, written] = toolResultsOf(history).map(r => r.workspace);
+  expect(first).toStrictEqual({ mutation: false, skipped: "scratch", target: "app1" });
+  expect(repeat).toStrictEqual({ mutation: false, skipped: "scratch", target: "app1" });
+  expect(written).toStrictEqual({ mutation: true, changed: "added f", target: "app2" });
+  // One concise notice for the unmeasurable tree, and no "inconclusive / counted as a change" wording anywhere.
+  expect(notices.filter(n => n.includes("could not be measured"))).toHaveLength(1);
+  expect(notices.find(n => n.includes("could not be measured"))).toContain("app1");
+  expect(notices.some(n => n.includes("workspace snapshot inconclusive"))).toBe(false);
+  // Only the measured write blocks done; the unmeasurable listing is not blamed.
+  expect(userSaid(history, "added f (in app2)")).toBe(true);
+  expect(userSaid(history, "could not measure")).toBe(false);
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(llm.calls()).toBe(5);
+});
+
+// --- A nested bracket that cannot be measured fails open; only a measured write blocks done ---
+
+for (const row of [
+  { name: "an entry cap hit before the call", snapshotter: (): WorkspaceSnapshotter => async () => ({ ok: false, reason: "cap", detail: "workspace has more than 1 entries" }) },
+  { name: "a time cap hit before the call", snapshotter: (): WorkspaceSnapshotter => async () => ({ ok: false, reason: "cap", detail: "workspace snapshot exceeded 2000 ms" }) },
+  { name: "a snapshot error before the call", snapshotter: (): WorkspaceSnapshotter => async () => ({ ok: false, reason: "error", detail: "cannot read directory locked: EACCES" }) },
+  { name: "a snapshotter that throws", snapshotter: (): WorkspaceSnapshotter => async () => { throw new Error("boom"); } },
+]) {
+  test(`runAgentLoop: ${row.name} on a nested project fails open: skipped, one notice, done accepted`, async () => {
+    // Before nested targeting these calls were skipped as scratch; an unmeasurable big directory must not start
+    // counting as a mutation (and must not tell the model the host "could not measure" a call it never gated).
+    const root = await scratchRoot();
+    await projectDir(root, "app");
+    const notices: string[] = [];
+    const llm = scripted([{ tool: "bash", arguments: { command: "cd app && printf x > f" } }, done]);
+    const history: Message[] = [{ role: "user", content: "write f in app" }];
+    const result = await runAgentLoop(history, {
+      cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+      events: { onNotice: msg => { notices.push(msg); } },
+      workspaceSnapshot: row.snapshotter(),
+      tools: { bash: nestedShell },
+    });
+
+    expect(await fs.readFile(path.join(root, "app", "f"), "utf8")).toBe("x"); // premise: the call really wrote
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("verified");
+    expect(llm.calls()).toBe(2);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch", target: "app" });
+    expect(notices.filter(n => n.includes("could not be measured"))).toHaveLength(1);
+    expect(notices.some(n => n.includes("workspace snapshot inconclusive"))).toBe(false);
+  });
+}
+
+test("runAgentLoop: a capped nested project is skipped once and a second call to it is not measured again", async () => {
+  const root = await scratchRoot();
+  const app = await projectDir(root, "app");
+  await fs.writeFile(path.join(app, "one.txt"), "1");
+  await fs.writeFile(path.join(app, "two.txt"), "2");
+  const measured: string[] = [];
+  const notices: string[] = [];
+  const llm = scripted([
+    { tool: "bash", arguments: { command: "cd app && ls" } },
+    { tool: "bash", arguments: { command: "cd app && ls -a" } },
+    done,
+  ]);
+  const history: Message[] = [{ role: "user", content: "list app twice" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: recordingSnapshotter(measured, () => ({ ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 })),
+    tools: { bash: nestedShell },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("verified");
+  expect(llm.calls()).toBe(3);
+  expect(measured).toEqual([app]); // the second call is answered from the memo, not by walking the tree again
+  expect(toolResultsOf(history).map(r => r.workspace)).toStrictEqual([
+    { mutation: false, skipped: "scratch", target: "app" },
+    { mutation: false, skipped: "scratch", target: "app" },
+  ]);
+  expect(notices.filter(n => n.includes("could not be measured"))).toHaveLength(1);
+});
+
+test("runAgentLoop: an unmeasurable nested target outside the cwd is named by basename in the notice, never by absolute path", async () => {
+  const root = await scratchRoot();
+  const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-nested-secret-project-")));
+  scratchDirs.push(outside);
+  await fs.writeFile(path.join(outside, "package.json"), "{}");
+  const notices: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: `cd '${outside}' && ls` } }, done]);
+  const history: Message[] = [{ role: "user", content: "list the project" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: async () => ({ ok: false as const, reason: "cap" as const, detail: "workspace has more than 1 entries" }),
+    tools: { bash: nestedShell },
+  });
+
+  expect(result.done).toBe(true);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch", target: "<outside cwd>" });
+  const unmeasured = notices.filter(n => n.includes("could not be measured"));
+  expect(unmeasured).toHaveLength(1);
+  expect(unmeasured[0]).toContain(path.basename(outside));
+  expect(unmeasured[0]).not.toContain(outside);
+});
+
+test("runAgentLoop: with a non-scratch cwd an unmeasurable bracket is still a counted mutation", async () => {
+  // The fail-open is for nested targets only: a project cwd keeps the old rule (cap => possible change, with the reason).
+  await fs.writeFile(path.join(cwd, "one.txt"), "1");
+  await fs.writeFile(path.join(cwd, "two.txt"), "2");
+  const measured: string[] = [];
+  const notices: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "ls" } }, ...repeatStep(FULL_BUDGET + 1, done)]);
+  const history: Message[] = [{ role: "user", content: "list files" }];
+  const result = await runAgentLoop(history, {
+    cwd, scratchRoots: [], maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: recordingSnapshotter(measured, () => ({ ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 })),
+    tools: { bash: nestedShell },
+  });
+
+  expect(measured).toEqual([cwd]);
+  const workspace = toolResultsOf(history)[0].workspace;
+  expect(workspace).toMatchObject({ mutation: true });
+  expect(workspace?.inconclusive).toMatch(/^cap: /);
+  expect("target" in (workspace ?? {})).toBe(false);
+  expect("skipped" in (workspace ?? {})).toBe(false);
+  expect(notices.filter(n => n.includes("workspace snapshot inconclusive"))).toHaveLength(1);
+  expect(notices.some(n => n.includes("could not be measured"))).toBe(false);
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(result.doneReason).toContain("UNVERIFIED");
+});
+
+// --- Bracketed directory = the OUTERMOST marker root; an AFTER-side failure counts as a mutation ---
+
+/** `nestedShell` plus a passing verifier, so a test can clear an earlier mutation with a recognized `bun test`. */
+const verifyingShell = async (args: Record<string, unknown>, dir: string) =>
+  args.command === "bun test passing.test.ts" ? { success: true, output: "1 pass\n0 fail" } : nestedShell(args, dir);
+
+for (const row of [
+  { name: "a leading cd", args: { command: "cd proj/pkg && printf x > ../src/a.ts" } },
+  { name: "args.cwd", args: { command: "printf x > ../src/a.ts", cwd: "proj/pkg" } },
+]) {
+  test(`runAgentLoop: ${row.name} into proj/pkg writing ../src/a.ts, with a marker only at proj, is rejected naming src/a.ts relative to proj`, async () => {
+    // Fails if the bracket is the deepest directory: proj/pkg cannot see proj/src, so the write would be invisible.
+    const root = await scratchRoot();
+    const proj = await projectDir(root, "proj");
+    await fs.mkdir(path.join(proj, "pkg"));
+    await fs.mkdir(path.join(proj, "src"));
+    const measured: string[] = [];
+    const llm = scripted([{ tool: "bash", arguments: row.args }, ...repeatStep(FULL_BUDGET + 1, done)]);
+    const history: Message[] = [{ role: "user", content: "write src/a.ts from the package" }];
+    const result = await runAgentLoop(history, {
+      cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+      workspaceSnapshot: recordingSnapshotter(measured),
+      tools: { bash: nestedShell },
+    });
+
+    expect(await fs.readFile(path.join(proj, "src", "a.ts"), "utf8")).toBe("x"); // premise: it landed beside pkg, not in it
+    expect(measured).toEqual([proj, proj]);
+    expect(result.done).toBe(false);
+    expect(result.completionRejected).toBe(true);
+    expect(llm.calls()).toBe(3);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: true, changed: `added ${path.join("src", "a.ts")}`, target: "proj" });
+    expect(userSaid(history, `added ${path.join("src", "a.ts")} (in proj)`)).toBe(true);
+  });
+}
+
+test("runAgentLoop: when both proj and proj/pkg have a marker the outermost one (proj) is bracketed", async () => {
+  const root = await scratchRoot();
+  const proj = await projectDir(root, "proj");
+  await projectDir(proj, "pkg");
+  await fs.mkdir(path.join(proj, "src"));
+  const measured: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "cd proj/pkg && printf x > ../src/a.ts" } }, ...repeatStep(FULL_BUDGET + 1, done)]);
+  const history: Message[] = [{ role: "user", content: "write src/a.ts from the package" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  // The nearest marker (pkg) would miss the write beside it; the outermost one sees it.
+  expect(measured).toEqual([proj, proj]);
+  expect(result.done).toBe(false);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: true, changed: `added ${path.join("src", "a.ts")}`, target: "proj" });
+});
+
+test("runAgentLoop: a marker only at a scratch root does not make its bare subdirectory a project: skipped", async () => {
+  const root = await scratchRoot();
+  const inner = await projectDir(root, "inner"); // a registered scratch root that happens to hold a package.json
+  await fs.mkdir(path.join(inner, "sub"));
+  const measured: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "cd inner/sub && printf x > f" } }, done]);
+  const history: Message[] = [{ role: "user", content: "write f" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root, inner], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(inner, "sub", "f"), "utf8")).toBe("x"); // premise: the write really happened
+  expect(result.done).toBe(true);
+  expect(measured).toEqual([]);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch" });
+});
+
+test("runAgentLoop: a project whose outermost marker root contains the scratch cwd is skipped", async () => {
+  // scratchRoot() puts a .jeo marker in `outer`, so the outermost marker root of outer/sib is `outer` itself, which
+  // contains the scratch cwd: bracketing it would walk the tree that made the cwd unmeasurable.
+  const outer = await scratchRoot();
+  const scratch = path.join(outer, "scratch");
+  await fs.mkdir(path.join(scratch, ".jeo"), { recursive: true });
+  await fs.writeFile(path.join(scratch, ".jeo", "hooks.json"), JSON.stringify({ enabled: false }));
+  const sib = await projectDir(outer, "sib");
+  const measured: string[] = [];
+  scripted([{ tool: "bash", arguments: { command: "cd ../sib && printf x > f" } }, done]);
+  const history: Message[] = [{ role: "user", content: "write f in sib" }];
+  const result = await runAgentLoop(history, {
+    cwd: scratch, scratchRoots: [scratch], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(sib, "f"), "utf8")).toBe("x"); // premise: the write really happened
+  expect(result.done).toBe(true);
+  expect(measured).toEqual([]);
+  expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: false, skipped: "scratch" });
+});
+
+const AFTER_SIDE_FAILURES = [
+  { name: "an entry cap", reason: "cap" as const, detail: "workspace has more than 3 entries", throws: false },
+  { name: "a time cap", reason: "cap" as const, detail: "workspace snapshot exceeded 2000 ms", throws: false },
+  { name: "a read error", reason: "error" as const, detail: "cannot read directory locked: EACCES", throws: false },
+  { name: "a snapshotter that throws", reason: "error" as const, detail: "boom", throws: true },
+];
+
+for (const row of AFTER_SIDE_FAILURES) {
+  test(`runAgentLoop: a nested project that was measurable before the call but hit ${row.name} after it counts as a mutation`, async () => {
+    // The before snapshot was fine, so the directory grew DURING the call: that is evidence, not "nothing attributable".
+    const root = await scratchRoot();
+    await projectDir(root, "app");
+    const notices: string[] = [];
+    let snaps = 0;
+    const afterFails: WorkspaceSnapshotter = async (dir, since) => {
+      if (++snaps === 1) return snapshotWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, since);
+      if (row.throws) throw new Error(row.detail);
+      return { ok: false, reason: row.reason, detail: row.detail };
+    };
+    const llm = scripted([{ tool: "bash", arguments: { command: "cd app && printf x > f" } }, ...repeatStep(FULL_BUDGET + 1, done)]);
+    const history: Message[] = [{ role: "user", content: "write f in app" }];
+    const result = await runAgentLoop(history, {
+      cwd: root, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+      events: { onNotice: msg => { notices.push(msg); } },
+      workspaceSnapshot: afterFails,
+      tools: { bash: nestedShell },
+    });
+
+    expect(await fs.readFile(path.join(root, "app", "f"), "utf8")).toBe("x"); // premise: the call really wrote
+    expect(snaps).toBe(2);
+    expect(toolResultsOf(history)[0].workspace).toStrictEqual({ mutation: true, inconclusive: `${row.reason}: ${row.detail}`, target: "app" });
+    expect(result.done).toBe(false);
+    expect(result.completionRejected).toBe(true);
+    expect(result.doneReason).toContain("completion rejected after 1 correction.");
+    expect(llm.calls()).toBe(3);
+    // Told once, with the real reason; and NOT the fail-open wording, which is only for a before-side failure.
+    expect(notices.filter(n => n.includes("workspace snapshot inconclusive"))).toHaveLength(1);
+    expect(notices.find(n => n.includes("workspace snapshot inconclusive"))).toContain(row.detail);
+    expect(notices.some(n => n.includes("could not be measured"))).toBe(false);
+    expect(userSaid(history, row.detail)).toBe(true);
+  });
+}
+
+test("runAgentLoop: an after-side cap is never memoized as a skip: a later small write in the same project is still measured and rejected", async () => {
+  // The poison scenario. Call 1's after snapshot is unmeasurable (its own files overflowed the cap), a passing
+  // verification clears it, then call 3 writes one small file to the same project. Memoizing call 1's after-side
+  // cap would answer call 3's before snapshot from the memo, so `g` would be neither measured nor named.
+  const root = await scratchRoot();
+  const app = await projectDir(root, "app");
+  const measured: string[] = [];
+  let snaps = 0;
+  const transient: WorkspaceSnapshotter = (dir, since) => {
+    measured.push(dir);
+    return ++snaps === 2
+      ? Promise.resolve({ ok: false as const, reason: "cap" as const, detail: "workspace snapshot exceeded 2000 ms" })
+      : snapshotWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, since);
+  };
+  const llm = scripted([
+    { tool: "bash", arguments: { command: "cd app && printf x > big" } },
+    pass,
+    { tool: "bash", arguments: { command: "cd app && printf x > g" } },
+    ...repeatStep(FULL_BUDGET + 1, done),
+  ]);
+  const history: Message[] = [{ role: "user", content: "write big, verify, then write g" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 14, budget: { maxExtensions: 0 },
+    workspaceSnapshot: transient,
+    tools: { bash: verifyingShell },
+  });
+
+  expect(await fs.readFile(path.join(app, "g"), "utf8")).toBe("x"); // premise: the small write happened
+  // Every bracket was really taken: nothing was answered from a memo.
+  expect(measured).toEqual([app, app, app, app]);
+  const [big, verify, small] = toolResultsOf(history).map(r => r.workspace);
+  expect(big).toStrictEqual({ mutation: true, inconclusive: "cap: workspace snapshot exceeded 2000 ms", target: "app" });
+  expect(verify).toBeUndefined();
+  expect(small).toStrictEqual({ mutation: true, changed: "added g", target: "app" });
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(userSaid(history, "added g (in app)")).toBe(true);
+  expect(llm.calls()).toBe(5);
+});
+
+test("runAgentLoop: after a call overflows the cap, a later small write to the same project cannot fail open", async () => {
+  // Real cap, no injected transient: the tree is now genuinely too big, so call 3's BEFORE snapshot caps too. That
+  // directory was made unmeasurable by this session's own writes, so it must count (inconclusive), not be skipped
+  // as ambient scratch and let a finished-looking answer through after a passing verification.
+  const root = await scratchRoot();
+  const app = await projectDir(root, "app"); // package.json only: one entry, under the cap of 3
+  const notices: string[] = [];
+  const llm = scripted([
+    { tool: "bash", arguments: { command: "cd app && fill" } },
+    pass,
+    { tool: "bash", arguments: { command: "cd app && printf x > g" } },
+    ...repeatStep(FULL_BUDGET + 1, done),
+  ]);
+  const history: Message[] = [{ role: "user", content: "fill app, verify, then write g" }];
+  const result = await runAgentLoop(history, {
+    cwd: root, scratchRoots: [root], maxSteps: 14, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: (dir, since) => snapshotWorkspace(dir, { ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 3 }, since),
+    tools: {
+      bash: async (args, dir) => {
+        if (args.command !== "cd app && fill") return verifyingShell(args, dir);
+        for (const name of ["a", "b", "c"]) await fs.writeFile(path.join(dir, "app", name), "x");
+        return { success: true, output: "" };
+      },
+    },
+  });
+
+  expect(await fs.readFile(path.join(app, "g"), "utf8")).toBe("x"); // premise: the small write happened
+  const [big, verify, small] = toolResultsOf(history).map(r => r.workspace);
+  expect(big).toMatchObject({ mutation: true, target: "app" });
+  expect(big?.inconclusive).toMatch(/^cap: /);
+  expect(verify).toBeUndefined();
+  expect(small).toMatchObject({ mutation: true, target: "app" });
+  expect(small?.inconclusive).toMatch(/^cap: /);
+  expect(result.done).toBe(false);
+  expect(result.completionRejected).toBe(true);
+  expect(llm.calls()).toBe(5);
+  expect(notices.some(n => n.includes("could not be measured"))).toBe(false);
+  // The passing verification cleared call 1's note; call 3's own before-side failure must set it again, so the model
+  // is told the host could not measure (not silently waved through as scratch).
+  expect(userSaid(history, "could not measure")).toBe(true);
+  expect(userSaid(history, "workspace has more than 3 entries")).toBe(true);
+});

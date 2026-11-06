@@ -1,7 +1,8 @@
 /**
  * Host-side workspace fingerprint. The engine brackets bash/computer calls with two snapshots and
- * counts the call as a mutation only when they differ (workspaceSnapshotChanged). Failures and caps
- * are reported as `ok:false`, which always counts as a mutation (safe side).
+ * counts the call as a mutation only when they differ (workspaceSnapshotChanged). A snapshot that
+ * cannot be taken is `ok:false` and always counts as a mutation (safe side): an unreadable ROOT, the
+ * entry/time caps, and any readdir/lstat/readlink error not listed under "degraded" below.
  *
  * Entry strings folded into an order-independent digest:
  * - directory: `d:<rel>` (presence only; directory mtimes are ignored so creating an excluded
@@ -11,6 +12,25 @@
  *   - regular file with mtime >= anchor - racyWindowMs: `:h<wyhash(content)>` (racy-clean guard
  *     against coarse timestamps; the after-snapshot reuses the before-snapshot's anchor)
  *   - FIFO/socket/device: stat only, never opened
+ *
+ * Degraded entries keep the snapshot `ok:true`; `degraded` counts them. Both cases lose nothing
+ * attributable to a command, so they must not make every bash call look mutating:
+ * - a NON-root directory whose listing is denied (EACCES/EPERM): it is keyed
+ *   `u:<rel>:<mode>:<ctimeNs>:<ino>` (lstat of the directory itself) instead of `d:<rel>` (replacing
+ *   it in the digest and the path map) and its children are skipped. A same-user process CAN change
+ *   such a directory (chmod it open, write, chmod it shut), but every entry creation/removal/rename
+ *   inside it and every chmod updates the directory's own ctime, and the mode is recorded, so the
+ *   marker flips; so does becoming listable. ENOENT/ENOTDIR (vanished) is skipped as before; any
+ *   other readdir code stays a failure. Residual, verified only for the cases above: a change that
+ *   leaves mode, ctime and inode identical (e.g. a rewrite of an existing child's CONTENT inside a
+ *   `-wx` directory does not touch the directory's ctime) is not seen.
+ * - a racy regular file that is over racyMaxFileBytes, would push the hashed total over
+ *   racyMaxTotalBytes, cannot be opened/read, or changes while being read: stat-only fingerprint plus
+ *   `:x` (unhashed). Racy files are hashed after the walk in path order, first-fit against the total
+ *   budget, so the before and after snapshots of an unchanged workspace hash the same files.
+ *   Residual risk: a same-size rewrite of such a file inside one timestamp tick of the bracket anchor
+ *   goes unseen. Nanosecond mtime/ctime (APFS, ext4) make that negligible; files within the caps are
+ *   still content-hashed.
  */
 import * as fs from "node:fs/promises";
 import { constants, realpathSync } from "node:fs";
@@ -26,7 +46,8 @@ export interface WorkspaceSnapshotLimits {
   maxMs: number;
   /** Files with mtime within this window of the snapshot start are content-hashed too. */
   racyWindowMs: number;
-  /** Per-file and per-snapshot byte caps for racy content hashing. */
+  /** Per-file and per-snapshot byte caps for racy content hashing. A file over either cap is not
+   *  hashed: it degrades to a stat-only `:x` entry (the total bounds hashing work, first-fit). */
   racyMaxFileBytes: number;
   racyMaxTotalBytes: number;
 }
@@ -45,6 +66,8 @@ export const WORKSPACE_SNAPSHOT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([".
 export type WorkspaceSnapshot =
   | {
       ok: true; digest: bigint; entries: number; elapsedMs: number; startedAtMs: number;
+      /** Entries recorded without full fidelity (unlistable directory, unhashed racy file). */
+      degraded?: number;
       /** Relative path -> entry fingerprint, so a mismatch can name WHICH paths changed
        *  (`snapshotChangedPaths`). Optional so hand-built snapshots and mocks stay valid. */
       paths?: ReadonlyMap<string, bigint>;
@@ -81,6 +104,8 @@ async function chunked<T>(items: readonly T[], run: (item: T) => Promise<void>):
 
 interface Dir { rel: string; abs: string }
 interface Leaf extends Dir { dirent: Dirent }
+/** A racy file waiting for the post-walk hashing pass. */
+interface RacyCandidate { leaf: Leaf; stat: BigIntStats; entry: string; hashable: boolean }
 
 export async function snapshotWorkspace(
   cwd: string,
@@ -93,12 +118,14 @@ export async function snapshotWorkspace(
   const racyThresholdNs = BigInt(Math.floor(anchorMs - limits.racyWindowMs)) * 1_000_000n;
   let digest = 0n;
   let entries = 0;
-  let racyBytes = 0;
+  let degraded = 0;
 
   const paths = new Map<string, bigint>();
   const record = (entry: string, rel: string): void => {
     const hash = BigInt(Bun.hash.wyhash(entry));
-    digest = (digest + hash) & DIGEST_MASK;
+    // A path recorded twice (the `u:` marker over its directory's `d:` entry) replaces the first, so
+    // digest stays the sum of the path map. BigInt `&` on a negative value wraps as two's complement.
+    digest = (digest - (paths.get(rel) ?? 0n) + hash) & DIGEST_MASK;
     paths.set(rel, hash);
   };
   const checkCaps = (): void => {
@@ -106,18 +133,16 @@ export async function snapshotWorkspace(
     if (performance.now() - startedAt > limits.maxMs) stop("cap", `workspace snapshot exceeded ${limits.maxMs} ms`);
   };
 
-  /** Bounded read of a regular file's content; `null` when it vanished before it could be read. */
-  const racyHash = async (leaf: Leaf, stat: BigIntStats): Promise<bigint | null> => {
+  /** Bounded content hash of a regular file. `"gone"`: vanished before it could be opened. `"unhashed"`:
+   *  any other failure (permissions, swapped inode, grew or errored while read); the caller degrades. */
+  const racyHash = async (leaf: Leaf, stat: BigIntStats): Promise<bigint | "gone" | "unhashed"> => {
     const size = Number(stat.size);
-    if (size > limits.racyMaxFileBytes) stop("error", `racy file too large: ${leaf.rel} (${size} bytes)`);
-    racyBytes += size;
-    if (racyBytes > limits.racyMaxTotalBytes) stop("error", `racy files too large: more than ${limits.racyMaxTotalBytes} bytes`);
     let handle: FileHandle;
     try { handle = await fs.open(leaf.abs, RACY_OPEN_FLAGS); }
-    catch (error) { if (vanished(error)) return null; return stop("error", `cannot open ${leaf.rel}: ${errorMessage(error)}`); }
+    catch (error) { return vanished(error) ? "gone" : "unhashed"; }
     try {
       const opened = await handle.stat({ bigint: true });
-      if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev) stop("error", `file changed during workspace snapshot: ${leaf.rel}`);
+      if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev) return "unhashed";
       // One spare byte detects growth after lstat without reading past the cap.
       const buffer = new Uint8Array(size + 1);
       let read = 0;
@@ -125,12 +150,37 @@ export async function snapshotWorkspace(
         const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
         if (bytesRead === 0) break;
         read += bytesRead;
-        if (read > size) stop("error", `file changed during workspace snapshot: ${leaf.rel}`);
+        if (read > size) return "unhashed";
       }
       return Bun.hash.wyhash(buffer.subarray(0, read));
+    } catch {
+      return "unhashed";
     } finally {
       await handle.close().catch(() => {});
     }
+  };
+
+  /** Racy files are collected during the walk and hashed afterwards in path order (see header). */
+  const racy: RacyCandidate[] = [];
+  const hashRacy = async (): Promise<void> => {
+    racy.sort((a, b) => (a.leaf.rel < b.leaf.rel ? -1 : 1));
+    let racyBytes = 0;
+    for (const candidate of racy) {
+      const size = Number(candidate.stat.size);
+      candidate.hashable = size <= limits.racyMaxFileBytes && racyBytes + size <= limits.racyMaxTotalBytes;
+      if (candidate.hashable) racyBytes += size;
+    }
+    await chunked(racy, async candidate => {
+      checkCaps();
+      const hash = candidate.hashable ? await racyHash(candidate.leaf, candidate.stat) : "unhashed";
+      if (hash === "gone") { entries -= 1; return; }
+      if (hash === "unhashed") {
+        degraded += 1;
+        record(`${candidate.entry}:x`, candidate.leaf.rel);
+        return;
+      }
+      record(`${candidate.entry}:h${hash}`, candidate.leaf.rel);
+    });
   };
 
   const fingerprint = async (leaf: Leaf, queue: Dir[]): Promise<void> => {
@@ -156,9 +206,8 @@ export async function snapshotWorkspace(
         return stop("error", `cannot read link ${leaf.rel}: ${errorMessage(error)}`);
       }
     } else if (kind === "f" && leaf.dirent.isFile() && stat.mtimeNs >= racyThresholdNs) {
-      const hash = await racyHash(leaf, stat);
-      if (hash === null) { entries -= 1; return; }
-      entry += `:h${hash}`;
+      racy.push({ leaf, stat, entry, hashable: false });
+      return;
     }
     record(entry, leaf.rel);
   };
@@ -167,8 +216,22 @@ export async function snapshotWorkspace(
     let dirents: Dirent[];
     try { dirents = await fs.readdir(dir.abs, { withFileTypes: true }); }
     catch (error) {
-      if (dir.rel !== "" && vanished(error)) return;
-      return stop("error", `cannot read directory ${dir.rel || "."}: ${errorMessage(error)}`);
+      if (dir.rel === "") return stop("error", `cannot read directory .: ${errorMessage(error)}`);
+      if (vanished(error)) return;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "EACCES" || code === "EPERM") {
+        // chmod-open/write/chmod-shut leaves the same mode but a newer ctime, so identity must be part of the marker.
+        let stat: BigIntStats;
+        try { stat = await fs.lstat(dir.abs, { bigint: true }); }
+        catch (statError) {
+          if (vanished(statError)) return;
+          return stop("error", `cannot stat ${dir.rel}: ${errorMessage(statError)}`);
+        }
+        degraded += 1;
+        record(`u:${dir.rel}:${stat.mode}:${stat.ctimeNs}:${stat.ino}`, dir.rel);
+        return;
+      }
+      return stop("error", `cannot read directory ${dir.rel}: ${errorMessage(error)}`);
     }
     for (const dirent of dirents) {
       const rel = dir.rel ? `${dir.rel}/${dirent.name}` : dirent.name;
@@ -203,7 +266,9 @@ export async function snapshotWorkspace(
       }
       level = next;
     }
-    return { ok: true, digest, entries, elapsedMs: performance.now() - startedAt, startedAtMs, paths };
+    await hashRacy();
+    checkCaps();
+    return { ok: true, digest, entries, degraded, elapsedMs: performance.now() - startedAt, startedAtMs, paths };
   } catch (error) {
     if (error instanceof SnapshotStop) return error.result;
     return { ok: false, reason: "error", detail: errorMessage(error) };

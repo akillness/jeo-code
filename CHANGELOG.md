@@ -9,6 +9,8 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.23] - 2026-11-06
+
 ### Added
 - **`pre-prompt` and `turn-end` hook events** - `pre-prompt` runs once per typed prompt before the model sees it (Claude `UserPromptSubmit`): stdout text, or JSON `hookSpecificOutput.additionalContext` / `additionalContext` / `context`, is appended to the prompt message as a `[pre-prompt hook context]` block; the prompt card, history title and turn-end payload keep the user's own words. `turn-end` runs once per finished turn (Claude `Stop`) with `prompt`, `response` (also `last_assistant_message` / `assistant_output`), `done`, `steps` and `model`. Both are advisory (non-zero exit, timeout or abort prints a notice, never blocks; default timeouts 10 s / 30 s), skipped for `$skill` runs and messenger-literal sessions, and an `agy/` model skips `pre-prompt` (the official CLI owns its prompt) but runs `turn-end`.
 - **User hook registry `~/.jeo/hooks.json`** - a hooks-only file (same shape as `.jeo/hooks.json`, follows `JEO_CONFIG_DIR`) for tools that install hooks, such as jeo-skills' OpenSpace prompt routing (`route-hooks.py install --host jeo`) and knowledge-pipeline ingesters, kept apart from `config.json` so credentials are never rewritten. It runs without `hooks.enabled: true`, ahead of configured hooks, and survives a project `.jeo/hooks.json` replacing the `config.json` list. Sandboxed sessions skip it. Entries with an unknown event, a missing `run` or a bad `timeoutMs` are dropped instead of failing the whole batch.
@@ -2744,7 +2746,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.22...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.23...HEAD
+[0.12.23]: https://github.com/akillness/jeo-code/releases/tag/v0.12.23
 [0.12.22]: https://github.com/akillness/jeo-code/compare/v0.12.21...v0.12.22
 [0.12.21]: https://github.com/akillness/jeo-code/releases/tag/v0.12.21
 [0.12.20]: https://github.com/akillness/jeo-code/releases/tag/v0.12.20

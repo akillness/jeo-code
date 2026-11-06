@@ -9,6 +9,8 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.24] - 2026-11-06
+
 ### Added
 - **`jeo doctor` hooks section** - a read-only `[hooks]` line (and `hooks` in `--json`) shows the global `hooks.enabled` state, the user registry and the project `.jeo/hooks.json` as written (valid and invalid entry counts, unreadable or `enabled: false` files) and what runs right now per event. Installers write these files and an unrunnable entry is dropped silently, so this is where to see why a hook is idle. It never affects `ready` or `--strict`, and prints nothing when no hook is configured and nothing is wrong.
 
@@ -2755,7 +2757,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.23...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.24...HEAD
+[0.12.24]: https://github.com/akillness/jeo-code/releases/tag/v0.12.24
 [0.12.23]: https://github.com/akillness/jeo-code/releases/tag/v0.12.23
 [0.12.22]: https://github.com/akillness/jeo-code/compare/v0.12.21...v0.12.22
 [0.12.21]: https://github.com/akillness/jeo-code/releases/tag/v0.12.21

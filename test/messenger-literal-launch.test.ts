@@ -241,7 +241,9 @@ test("literal worker delivers an exhausted unverified turn and keeps serving fol
   const replies = [
     // A real guest write through the rw bind mount: the host workspace snapshot must see it.
     JSON.stringify({ tool: "bash", arguments: { command: "printf changed > made.txt" } }),
-    ...Array.from({ length: 4 }, () => JSON.stringify({ tool: "done", arguments: { reason: "Candidate: made the change" } })),
+    // The only mutation evidence is that shell bracket (shell-only), so it earns ONE correction: the first done is
+    // bounced, the second is returned UNVERIFIED. Two done replies, then the follow-up turn's answer.
+    ...Array.from({ length: 2 }, () => JSON.stringify({ tool: "done", arguments: { reason: "Candidate: made the change" } })),
     JSON.stringify({ tool: "done", arguments: { reason: "follow-up answer" } }),
   ];
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
@@ -265,12 +267,13 @@ test("literal worker delivers an exhausted unverified turn and keeps serving fol
     expect(typeof marked).toBe("string");
     expect(marked).toContain("UNVERIFIED");
     expect(marked).toContain("Candidate: made the change");
-    expect(marked).toContain("completion rejected after 3 corrections");
+    expect(marked).toContain("completion rejected after 1 correction.");
+    expect(marked).toContain("added made.txt");
     // The same worker served the follow-up turn: no restart, no generic error line.
     expect(protocol[1]).toBe(`JEO_MESSENGER_RESULT ${JSON.stringify("follow-up answer")}`);
     expect(stdout).not.toContain("JEO_MESSENGER_ERROR");
     expect(await fs.readFile(path.join(workspace, "made.txt"), "utf8")).toBe("changed");
-    expect(requests).toHaveLength(6);
+    expect(requests).toHaveLength(4);
   } finally { server.stop(true); await fs.rm(root, { recursive: true, force: true }); }
 }, 120000);
 

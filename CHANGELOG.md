@@ -12,6 +12,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 ### Fixed
 - **A one-shot task now ranks the skills the system prompt advertises** - `jeo launch "<task>"` never passed the task to `skillsPromptSection`, so its relevance sort did not run and the ~40 visible skills (of 780+ installed) were whatever the directory listing returned first. The task now reaches it; matching is Unicode-aware (Korean, Japanese and Chinese words were dropped by the ASCII-only tokenizer); and a skill's description counts, at most +8, always below an exact name (+20) or name part (+10) match. Interactive sessions have no task at boot and are unchanged - per-prompt routing there stays with `pre-prompt` hooks.
 
+### Changed
+- **The done gate names an unmeasured shell call** - when the workspace snapshot around a bash/computer call is inconclusive (entry cap, time cap, or an error such as an unreadable subdirectory), the call is still counted as a possible file change (unchanged, deliberate), but the engine now emits one `workspace snapshot inconclusive (<reason>)` notice per distinct reason and the unverified / stale-verification message appends it. Before, a read-only `pwd` in such a directory ended `UNVERIFIED` after three correction rounds with only "You modified files this turn".
+
 ## [0.12.23] - 2026-11-06
 
 ### Added

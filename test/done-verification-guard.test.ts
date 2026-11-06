@@ -504,6 +504,45 @@ test("runAgentLoop: over-cap snapshot counts bash as a mutation and stops re-wal
   expect(snapCalls).toBe(1);
 });
 
+test("runAgentLoop: an inconclusive snapshot is reported once and named in the done-gate message", async () => {
+  const steps = [{ tool: "bash", arguments: { command: "ls" } }, { tool: "bash", arguments: { command: "pwd" } }];
+  let calls = 0;
+  const notices: string[] = [];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const history: Message[] = [{ role: "user", content: "list files" }];
+  const result = await runAgentLoop(history, {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: async () => ({ ok: false as const, reason: "error" as const, detail: "cannot read directory locked: EACCES" }),
+    tools: { bash: async () => ({ success: true, output: "a.txt" }) },
+  });
+
+  // Still the safe side (AC-5a): the bash calls count as possible mutations and the gate holds.
+  expect(result.completionRejected).toBe(true);
+  expect(result.doneReason).toContain("UNVERIFIED");
+  // ...but the reason is surfaced exactly once (two bash calls, two snapshots each) and in the gate message.
+  expect(notices.filter(n => n.includes("workspace snapshot inconclusive"))).toEqual([
+    "workspace snapshot inconclusive (error: cannot read directory locked: EACCES); shell calls are counted as possible file changes",
+  ]);
+  expect(userSaid(history, "could not measure a shell call's effect")).toBe(true);
+  expect(userSaid(history, "cannot read directory locked: EACCES")).toBe(true);
+});
+
+test("runAgentLoop: a measured workspace change gets no unmeasured note", async () => {
+  const steps = [{ tool: "bash", arguments: { command: "write-file" } }, done];
+  let calls = 0;
+  const history: Message[] = [{ role: "user", content: "write a file" }];
+  spyOn(loop, "callLlm").mockImplementation(async () => JSON.stringify(steps[calls++] ?? done));
+  const result = await runAgentLoop(history, {
+    cwd, maxSteps: 12, budget: { maxExtensions: 0 },
+    tools: { bash: async () => { await fs.writeFile(path.join(cwd, "made.txt"), "x"); return { success: true, output: "" }; } },
+  });
+
+  expect(result.completionRejected).toBe(true);
+  expect(userSaid(history, "no passing verification")).toBe(true);
+  expect(userSaid(history, "could not measure")).toBe(false);
+});
+
 test("runAgentLoop: a computer click that changes no workspace file completes without verification (AC-6)", async () => {
   const steps = [{ tool: "computer", arguments: { action: "click", x: 10, y: 20 } }, done];
   let calls = 0;

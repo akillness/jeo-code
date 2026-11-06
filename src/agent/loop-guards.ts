@@ -233,6 +233,12 @@ export interface DoneGateInput {
   verificationStale?: boolean;
   /** The run-command of the most recent still-failing post-turn hook, or null. */
   pendingHookFailure: string | null;
+  /**
+   * Why the host could not measure a shell call's effect on the workspace this turn (snapshot cap or
+   * error), when that happened. Such a call is counted as a possible mutation, so the gate says why
+   * instead of claiming files were modified.
+   */
+  unmeasured?: string;
 }
 
 /** Verdict from {@link classifyDoneGate}: whether to bounce `done`, and the message. */
@@ -257,6 +263,10 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
   const stale = input.sawVerification && input.verificationStale === true;
   const block = input.sawMutation && (!input.sawVerification || stale || hookFailing);
   if (!block) return { state: "done_ok", block: false, message: "" };
+  const unmeasuredNote = input.unmeasured
+    ? ` Note: the host could not measure a shell call's effect on the workspace (${input.unmeasured}), so it is counted as a possible file change; ` +
+      "if every command you ran was read-only, say so in your reply."
+    : "";
   if (hookFailing) {
     return {
       state: "done_hook_failing",
@@ -272,7 +282,8 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
       block: true,
       message:
         "You verified earlier, but then modified files again — your last passing test/build no longer reflects the current tree. " +
-        "Re-run the narrowest verification command against the latest changes (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done.",
+        "Re-run the narrowest verification command against the latest changes (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done." +
+        unmeasuredNote,
     };
   }
   return {
@@ -280,6 +291,7 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
     block: true,
     message:
       "You modified files this turn but have no passing verification (no test/build/typecheck command succeeded, or the latest recognized verification failed). " +
-      "Run the narrowest command that proves your change works (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done.",
+      "Run the narrowest command that proves your change works (e.g. a standalone bash call such as 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done." +
+      unmeasuredNote,
   };
 }

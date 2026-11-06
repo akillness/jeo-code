@@ -549,14 +549,28 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Turn-scoped memo: once the workspace is over the snapshot cap, gated calls count as
   // mutations without re-walking a tree that is known to be too large.
   let snapshotCapped = false;
+  // Why a bash/computer bracket could not be measured (cap or error), when one failed. The call still
+  // counts as a possible mutation, but the user and the done gate are told the real reason instead of
+  // only "files were modified" — a busy or oversized cwd (e.g. $HOME, /tmp) looks identical otherwise.
+  let unmeasuredSnapshot = null as string | null;
+  const reportedUnmeasured = new Set<string>();
+  const noteUnmeasured = (snap: WorkspaceSnapshot): WorkspaceSnapshot => {
+    if (snap.ok) return snap;
+    unmeasuredSnapshot = `${snap.reason}: ${snap.detail}`;
+    if (!reportedUnmeasured.has(unmeasuredSnapshot)) {
+      reportedUnmeasured.add(unmeasuredSnapshot);
+      ev.onNotice?.(`workspace snapshot inconclusive (${unmeasuredSnapshot}); shell calls are counted as possible file changes`);
+    }
+    return snap;
+  };
   const takeSnapshot = async (racySinceMs?: number): Promise<WorkspaceSnapshot> => {
     if (snapshotCapped) return { ok: false, reason: "cap", detail: "workspace exceeded the snapshot cap earlier this turn" };
     try {
       const snap = await snapshotter(cwd, racySinceMs);
       if (!snap.ok && snap.reason === "cap") snapshotCapped = true;
-      return snap;
+      return noteUnmeasured(snap);
     } catch (err) {
-      return { ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) };
+      return noteUnmeasured({ ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) });
     }
   };
   // bash/computer calls whose mutation status is decided by a workspace diff. Recognized
@@ -1205,7 +1219,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       };
       const candidate = stripLeakedReasoningTags(String(toolCalls[0].arguments?.reason ?? ""));
       if (candidate.trim()) lastCompletionCandidate = candidate;
-      const doneGate = classifyDoneGate({ ...evidence, pendingHookFailure });
+      const doneGate = classifyDoneGate({ ...evidence, pendingHookFailure, unmeasured: unmeasuredSnapshot ?? undefined });
       const nudge = await ev.onBeforeDone?.((toolCalls[0].arguments?.reason as string) ?? "", evidence);
       const rejection = [doneGate.block ? doneGate.message : "", nudge].filter(Boolean).join("\n\n");
       if (rejection) {

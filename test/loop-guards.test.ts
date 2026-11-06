@@ -139,6 +139,33 @@ test("classifyDoneGate: mutation without verification → block (unverified)", (
   expect(v.message).toContain("no passing verification");
 });
 
+test("classifyDoneGate: an unmeasured shell effect is named in the unverified and stale messages", () => {
+  const unmeasured = "cap: workspace snapshot exceeded 2000 ms";
+  const unverified = classifyDoneGate({ sawMutation: true, sawVerification: false, pendingHookFailure: null, unmeasured });
+  expect(unverified.state).toBe("done_unverified");
+  expect(unverified.block).toBe(true);
+  expect(unverified.message).toContain("no passing verification");
+  expect(unverified.message).toContain("could not measure a shell call's effect");
+  expect(unverified.message).toContain(unmeasured);
+  expect(unverified.message).toContain("if every command you ran was read-only, say so");
+
+  const stale = classifyDoneGate({ sawMutation: true, sawVerification: true, verificationStale: true, pendingHookFailure: null, unmeasured });
+  expect(stale.state).toBe("done_stale_verification");
+  expect(stale.message).toContain(unmeasured);
+});
+
+test("classifyDoneGate: the unmeasured note never changes the verdict and is absent without a reason", () => {
+  // It only explains a block that already holds; it must not create or lift one.
+  expect(classifyDoneGate({ sawMutation: false, sawVerification: false, pendingHookFailure: null, unmeasured: "cap: x" }))
+    .toEqual({ state: "done_ok", block: false, message: "" });
+  expect(classifyDoneGate({ sawMutation: true, sawVerification: true, pendingHookFailure: null, unmeasured: "cap: x" }).block).toBe(false);
+  const hook = classifyDoneGate({ sawMutation: true, sawVerification: true, pendingHookFailure: "bun test", unmeasured: "cap: x" });
+  expect(hook.state).toBe("done_hook_failing");
+  expect(hook.message).not.toContain("could not measure");
+  const plain = classifyDoneGate({ sawMutation: true, sawVerification: false, pendingHookFailure: null });
+  expect(plain.message).not.toContain("could not measure");
+});
+
 test("classifyDoneGate: failing post-turn hook outranks verification → block (hook)", () => {
   const v = classifyDoneGate({ sawMutation: true, sawVerification: true, pendingHookFailure: "bun test" });
   expect(v.state).toBe("done_hook_failing");

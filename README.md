@@ -506,10 +506,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.26]** (2026-11-06)
 - **[0.12.25]** (2026-11-06)
 - **[0.12.24]** (2026-11-06)
 - **[0.12.23]** (2026-11-06)
-- **[0.12.22]** (2026-11-04)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

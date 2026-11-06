@@ -9,6 +9,8 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.26] - 2026-11-06
+
 ### Fixed
 - **A read-only turn is no longer sent through three full-history retries by an unrelated writer** - the done gate counts a `bash` call as a file change when the workspace digest differs before and after it. In a shared directory (`/tmp`) a daemon heartbeat rewritten every 60 s during a 120 s `find /` flipped that digest, so a turn of `pwd`/`jeo-skill doctor` ended `UNVERIFIED` after three correction rounds (226k input tokens for `sleep 70`; the same prompt in an empty directory cost 32k). Three changes: (1) when the cwd *is* a shared scratch root (`$HOME`, `/`, a system temp dir) `bash` and `computer` calls are no longer snapshot-bracketed - the diff there cannot be attributed to one call and no project verifier exists - with one notice and `workspace: { mutation: false, skipped: "scratch" }` on the result; built-in `write`/`edit` and project directories nested inside a scratch root stay gated; (2) evidence that comes only from a shell/computer bracket ("shell-only": no built-in mutator, debug, monitor or job ran) earns one correction instead of three, counted apart from todo/hook nudges, and launch's `onBeforeDone` restatement of the gate (`MUTATION_NUDGE_PREFIX`) no longer disables that cap; (3) a passing verification now also resets the definite-mutation evidence, so a later unrelated write is judged as shell-only again. Re-run with an unrelated writer in a nested project dir: one correction, 47.8k tokens.
 
@@ -2770,7 +2772,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.25...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.26...HEAD
+[0.12.26]: https://github.com/akillness/jeo-code/releases/tag/v0.12.26
 [0.12.25]: https://github.com/akillness/jeo-code/releases/tag/v0.12.25
 [0.12.24]: https://github.com/akillness/jeo-code/releases/tag/v0.12.24
 [0.12.23]: https://github.com/akillness/jeo-code/releases/tag/v0.12.23

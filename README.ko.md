@@ -272,6 +272,19 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 
 비정상 종료한 훅의 출력은 모델이 읽는 도구 결과에 첨부되고(배치 내 중복 제거), 훅이 빨간 채로 `done`을 부르면 훅 이름과 함께 푸시백됩니다.
 
+### 프롬프트·턴 훅과 사용자 레지스트리
+
+도구 루프 이벤트 외에 턴마다 한 번씩 발생하는 이벤트가 둘 더 있습니다:
+
+| 이벤트 | 시점 | 페이로드(stdin JSON) | 훅 출력 |
+| ------ | ---- | -------------------- | ------- |
+| `pre-prompt` | 입력한 프롬프트를 모델이 보기 전 | `{event, hook_event_name: "UserPromptSubmit", session_id, cwd, prompt}` | stdout 텍스트 또는 JSON `hookSpecificOutput.additionalContext` / `additionalContext` / `context`가 `[pre-prompt hook context]` 블록으로 프롬프트 메시지 뒤에 붙습니다(프롬프트 카드와 히스토리 제목에는 사용자가 쓴 말만 남음) |
+| `turn-end` | 최종 답변 직후 | `{event, hook_event_name: "Stop", session_id, cwd, prompt, response, last_assistant_message, done, steps, model}` | 무시 |
+
+둘 다 권고(advisory)용입니다: 비정상 종료·타임아웃·중단은 알림만 출력하고 프롬프트를 막지 않습니다(기본 타임아웃 10초 / 30초). `$skill` 실행과 메신저 literal 세션은 건너뛰며, `agy/` 모델은 공식 CLI가 프롬프트를 소유하므로 `pre-prompt`는 건너뛰고 `turn-end`는 실행됩니다. `pre-tool` 훅은 exit 0으로 `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"…"}}`를 출력해 거부(`ask`는 deny로 처리)하거나 `additionalContext`를 출력해 해당 도구 결과에 덧붙일 수 있으며, 일반 stdout은 계속 무시됩니다. 모든 페이로드에 `hook_event_name`, `session_id`, `cwd`(도구 이벤트는 `tool_name`/`tool_input` 추가)가 들어 있어 Claude Code / Codex 훅 스크립트를 수정 없이 쓸 수 있습니다 — 호스트 세션 한정이며 샌드박스 훅은 기존 페이로드를 받습니다.
+
+**사용자 레지스트리.** `~/.jeo/hooks.json`(`.jeo/hooks.json`과 같은 형식, `JEO_CONFIG_DIR`을 따름)은 jeo-skills의 프롬프트 라우팅·지식 파이프라인처럼 훅을 대신 설치하는 도구를 위한 훅 전용 파일이며, 자격 증명이 다시 쓰이지 않도록 `config.json`과 분리되어 있습니다. 우선순위: `config.json`의 `"hooks": { "enabled": false }`는 모든 훅을 끄고, 프로젝트 `.jeo/hooks.json`의 `"enabled": false`는 그 프로젝트만 제외하며, 그 외에는 `hooks.enabled: true` 없이도 레지스트리가 설정된 훅보다 먼저 실행됩니다. 프로젝트 자체 `hooks` 목록은 `config.json` 목록만 대체하고 레지스트리는 대체하지 않으며, 프로젝트 / `config.json` 훅은 여전히 `hooks.enabled: true`일 때만 실행됩니다. 샌드박스 세션은 레지스트리를 건너뜁니다.
+
 ## 메모리 흐름
 
 `jeo`는 `.jeo/memory/` 아래에 **로컬 우선·증류된 프로젝트 메모리**를 둡니다(원격 백엔드 없음, 네이티브 의존성 0). 지난 세션은 [OKF](docs/okf_mem/) 개념 번들로 증류되고, 다음 세션은 관련성 높은 예산 한도 내 일부만 시스템 프롬프트로 다시 주입합니다 — 지시가 아닌 DATA로 강화 처리됩니다. `JEO_NO_MEMORY=1`로 전체 비활성화.

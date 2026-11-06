@@ -9,6 +9,15 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Added
+- **`pre-prompt` and `turn-end` hook events** - `pre-prompt` runs once per typed prompt before the model sees it (Claude `UserPromptSubmit`): stdout text, or JSON `hookSpecificOutput.additionalContext` / `additionalContext` / `context`, is appended to the prompt message as a `[pre-prompt hook context]` block; the prompt card, history title and turn-end payload keep the user's own words. `turn-end` runs once per finished turn (Claude `Stop`) with `prompt`, `response` (also `last_assistant_message` / `assistant_output`), `done`, `steps` and `model`. Both are advisory (non-zero exit, timeout or abort prints a notice, never blocks; default timeouts 10 s / 30 s), skipped for `$skill` runs and messenger-literal sessions, and an `agy/` model skips `pre-prompt` (the official CLI owns its prompt) but runs `turn-end`.
+- **User hook registry `~/.jeo/hooks.json`** - a hooks-only file (same shape as `.jeo/hooks.json`, follows `JEO_CONFIG_DIR`) for tools that install hooks, such as jeo-skills' OpenSpace prompt routing (`route-hooks.py install --host jeo`) and knowledge-pipeline ingesters, kept apart from `config.json` so credentials are never rewritten. It runs without `hooks.enabled: true`, ahead of configured hooks, and survives a project `.jeo/hooks.json` replacing the `config.json` list. Sandboxed sessions skip it. Entries with an unknown event, a missing `run` or a bad `timeoutMs` are dropped instead of failing the whole batch.
+- **Structured `pre-tool` decisions** - a `pre-tool` hook that exits 0 may print `{"hookSpecificOutput":{"permissionDecision":"deny"|"ask","permissionDecisionReason":"…"}}` (also `decision: "block"` or `continue: false`) to veto the call; `ask` counts as deny because jeo has no hook approval prompt. `additionalContext` is appended to that tool's result. Plain stdout stays ignored.
+- **Claude-protocol payload fields** - every host-session hook payload now carries `hook_event_name`, `session_id` and `cwd`, and tool events add `tool_name` / `tool_input`, beside the existing `event` / `tool` / `args`, so Claude Code and Codex hook scripts run unmodified. Sandboxed hooks keep the previous payload and never see the host `cwd` or session id.
+
+### Changed
+- **`hooks.enabled` is now an explicit kill switch** - `"hooks": { "enabled": false }` in `config.json` disables every hook, registry included. Left unset it still disables `config.json` and project hooks (a repo cannot enable its own hooks) but no longer silences the user registry. A project `.jeo/hooks.json` with `"enabled": false` opts that project out of everything.
+
 ## [0.12.22] - 2026-11-04
 
 ### Fixed

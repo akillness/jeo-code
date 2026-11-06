@@ -37,14 +37,24 @@ export interface StoredOAuth {
   projectId?: string;
 }
 
+/**
+ * Hook events. `pre-tool`/`post-turn`/`post-implementation` are the original tool-loop
+ * events. `pre-prompt` (Claude `UserPromptSubmit`) runs once per real user prompt before
+ * the model sees it and may inject context; `turn-end` (Claude `Stop`) runs once per
+ * completed turn with the final reply.
+ */
+export type HookEvent = "pre-tool" | "post-turn" | "post-implementation" | "pre-prompt" | "turn-end";
+
+export interface HookEntry {
+  event: HookEvent;
+  match?: { tool?: string };
+  run: string;
+  timeoutMs?: number;
+}
+
 export interface HookConfig {
   enabled?: boolean;
-  hooks?: Array<{
-    event: "pre-tool" | "post-turn" | "post-implementation";
-    match?: { tool?: string };
-    run: string;
-    timeoutMs?: number;
-  }>;
+  hooks?: HookEntry[];
 }
 
 export interface Config {
@@ -277,6 +287,17 @@ function globalConfigDir(): string {
 }
 function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
+}
+
+/**
+ * User-level hook registry, `<config dir>/hooks.json`. Same shape as a project's
+ * `.jeo/hooks.json` (`{ enabled?, hooks: [...] }`). It is deliberately separate from
+ * `config.json`: installers (jeo-skills' prompt-routing / knowledge-pipeline hooks)
+ * can own this one small file without touching credentials, and a schema-invalid
+ * `config.json` (which jeo resets wholesale) can never take their hooks down with it.
+ */
+export function userHooksPath(): string {
+  return path.join(globalConfigDir(), "hooks.json");
 }
 
 /**

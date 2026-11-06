@@ -218,6 +218,19 @@ jeo ultragoal
 
 非ゼロ終了したフックの出力はモデルが読むツール結果に付加され(バッチ内で重複排除)、フックが赤のまま `done` を呼ぶとフック名付きでプッシュバックされます。
 
+### プロンプト・ターンフックとユーザーレジストリ
+
+ツールループのイベントに加えて、ターンごとに 1 回発火するイベントが 2 つあります:
+
+| イベント | タイミング | ペイロード(stdin JSON) | フック出力 |
+| -------- | ---------- | ---------------------- | ---------- |
+| `pre-prompt` | 入力したプロンプトをモデルが見る前 | `{event, hook_event_name: "UserPromptSubmit", session_id, cwd, prompt}` | stdout のテキスト、または JSON の `hookSpecificOutput.additionalContext` / `additionalContext` / `context` が `[pre-prompt hook context]` ブロックとしてプロンプトメッセージの末尾に付加されます(プロンプトカードと履歴タイトルにはユーザー自身の言葉だけが残ります) |
+| `turn-end` | 最終返信の直後 | `{event, hook_event_name: "Stop", session_id, cwd, prompt, response, last_assistant_message, done, steps, model}` | 無視 |
+
+どちらも助言(advisory)扱いです: 非ゼロ終了・タイムアウト・中断は通知を出すだけでプロンプトをブロックしません(既定タイムアウト 10 秒 / 30 秒)。`$skill` 実行とメッセンジャー literal セッションはスキップされ、`agy/` モデルでは公式 CLI がプロンプトを管理するため `pre-prompt` はスキップされ、`turn-end` は実行されます。`pre-tool` フックは exit 0 で `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"…"}}` を出力して拒否(`ask` は deny 扱い)したり、`additionalContext` を出力してそのツール結果に付加したりできます。通常の stdout は引き続き無視されます。すべてのペイロードに `hook_event_name`、`session_id`、`cwd`(ツールイベントは `tool_name`/`tool_input` も)が含まれるため、Claude Code / Codex のフックスクリプトをそのまま使えます — ホストセッションのみで、サンドボックスのフックは従来のペイロードを受け取ります。
+
+**ユーザーレジストリ.** `~/.jeo/hooks.json`(`.jeo/hooks.json` と同形式、`JEO_CONFIG_DIR` に従う)は、jeo-skills のプロンプトルーティングやナレッジパイプラインのようにフックを代わりに設置するツール向けのフック専用ファイルで、認証情報が書き換えられないよう `config.json` から分離されています。優先順位: `config.json` の `"hooks": { "enabled": false }` はすべてを無効にし、プロジェクト `.jeo/hooks.json` の `"enabled": false` はそのプロジェクトだけを除外し、それ以外は `hooks.enabled: true` なしでレジストリが設定済みフックより先に実行されます。プロジェクト自身の `hooks` リストは `config.json` のリストだけを置き換えレジストリは置き換えず、プロジェクト / `config.json` のフックは従来どおり `hooks.enabled: true` のときだけ実行されます。サンドボックスセッションはレジストリをスキップします。
+
 ## メモリフロー
 
 `jeo` は `.jeo/memory/` 配下に **ローカルファースト・蒸留されたプロジェクトメモリ** を保持します(リモートバックエンドなし、ネイティブ依存ゼロ)。過去のセッションは [OKF](docs/okf_mem/) コンセプトバンドルへ蒸留され、次のセッションは関連性の高い予算内のスライスだけをシステムプロンプトへ再注入します — 指示ではなく DATA として堅牢化されます。`JEO_NO_MEMORY=1` ですべて無効化。

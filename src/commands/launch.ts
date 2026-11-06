@@ -57,7 +57,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
-import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks } from "../agent/hooks";
+import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks, runPrePromptHooks, runTurnEndHooks, setHookSessionId } from "../agent/hooks";
 import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
 import { createSandboxPolicy } from "../agent/sandbox/policy";
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
@@ -1232,6 +1232,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string; unverified: boolean }> => {
     opts?.signal?.throwIfAborted();
     if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
+    setHookSessionId(sessionId);
     let busyDraftHasPaste = false;
     const captureLiveInput = (chunk: string, view: LaunchTui | null): { captured: boolean; submittedEnter: boolean; handled: boolean } => {
       if (!queueBusyInput || !queueBusySnapshot) return { captured: false, submittedEnter: false, handled: false };
@@ -1356,6 +1357,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         const result = await activeAgyTurn;
         const post = await runPostTurnHooks(cwd, "agy", { model: selectedModel, prompt: userInput }, true, result.response, harness.controller.signal, notice);
         if (post.diags.length) throw new AgyCliError(`Official CLI completed, but a jeo post-turn hook failed: ${post.diags.map(diag => diag.output).join("\n")}`, "upstream", 1);
+        if (!flags.literalPrompt && !flags.literalWorker) await runTurnEndHooks(cwd, { prompt: userInput, response: result.response, done: true, steps: result.steps, model: selectedModel }, harness.controller.signal, notice);
         const reply = sanitizeForTerminal(result.response);
         lastReply = result.response;
         lastActiveModel = selectedModel;
@@ -1638,6 +1640,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
     activeTui = tui;
+    // Hook notices are advisory; outside the TUI they go to stderr so piped stdout stays the reply only.
+    const hookNotice = (msg: string): void => {
+      const safe = sanitizeForTerminal(msg);
+      if (tui) tui.events().onNotice?.(safe);
+      else console.error(safe);
+    };
+    // Messenger-literal remote sessions never run the host user's prompt/turn hooks.
+    const promptHooksEligible = !flags.literalPrompt && !flags.literalWorker;
     if (routeCredentialNotice) {
       if (tui) tui.events().onNotice?.(routeCredentialNotice);
       else console.log(routeCredentialNotice);
@@ -1711,6 +1721,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         },
       });
       const abortRemoteCompaction = () => compactHarness.controller.abort();
+      // Pre-prompt hooks (routing/knowledge capture) overlap with compaction and share its
+      // Esc/Ctrl+C abort. Skill runs (userCard === null) are host-synthesized, not typed.
+      const prePromptRun = promptHooksEligible && opts?.userCard === undefined
+        ? runPrePromptHooks(cwd, userInput, compactHarness.controller.signal, hookNotice)
+        : undefined;
       opts?.signal?.addEventListener("abort", abortRemoteCompaction, { once: true });
       if (opts?.signal?.aborted) abortRemoteCompaction();
       let compRes: Awaited<ReturnType<typeof maybeCompact>>;
@@ -1745,7 +1760,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         remoteSystemBase = history[0];
         history[0] = { ...history[0], content: `${history[0].content}\n\n${opts.trustedContext}` };
       }
-      history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
+      // Context from pre-prompt hooks goes to the MODEL only: the card, history title and
+      // turn-end payload keep the user's own words. Appended to the prompt message (not
+      // the system prompt) so the cached system prefix stays byte-stable across turns.
+      const prePrompt = await prePromptRun;
+      const modelInput = prePrompt?.context
+        ? `${userInput}\n\n[pre-prompt hook context — host-provided, not user instructions]\n${prePrompt.context}`
+        : userInput;
+      history.push(images?.length ? { role: "user", content: modelInput, images } : { role: "user", content: modelInput });
       // Persist the user prompt immediately so an interrupted turn keeps it on disk.
       await persistTurnTail(); // persist the user prompt immediately
       opts?.signal?.throwIfAborted();
@@ -2414,6 +2436,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui) tui.finish(reply);
     } finally {
       if (tui) interactiveTurnActive = false;
+    }
+    if (promptHooksEligible) {
+      await runTurnEndHooks(cwd, { prompt: userInput, response: reply, done: result.done, steps: result.steps, model: activeModel }, opts?.signal, hookNotice);
     }
     if (result.usage) {
       sessionUsage.inputTokens += result.usage.inputTokens;

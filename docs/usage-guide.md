@@ -120,7 +120,9 @@ jeo ultragoal                             # 정직한 검증(스위트는 전역
 }
 ```
 
-전역으로 한 번 켜기: `~/.jeo/config.json` 에 `"hooks": { "enabled": true }`.
+프로젝트 `.jeo/hooks.json` 과 `config.json` 의 훅은 전역으로 한 번 켜야 실행됩니다: `~/.jeo/config.json` 에 `"hooks": { "enabled": true }`.
+
+턴마다 한 번 도는 이벤트도 있습니다. `pre-prompt` 는 모델이 프롬프트를 보기 전에 실행되어 stdout(또는 `additionalContext` JSON)을 컨텍스트로 덧붙이고(스킬 라우팅 등), `turn-end` 는 최종 응답을 받습니다(지식 파이프라인 수집 등). 이런 훅을 대신 설치하는 도구(jeo-skills 등)는 `config.json` 대신 `~/.jeo/hooks.json` 레지스트리를 씁니다. 레지스트리는 `hooks.enabled: true` 없이도 실행되고, 전역은 `"hooks": { "enabled": false }`, 프로젝트 단위는 그 프로젝트 `.jeo/hooks.json` 의 `"enabled": false` 로 끕니다. 자세한 내용은 README 의 "Prompt and turn hooks, and the user registry" 절을 보세요.
 
 ## 9. 로컬 모델 (Ollama)
 

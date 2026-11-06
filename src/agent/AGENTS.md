@@ -26,7 +26,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `config-schema.ts` | Brief description of purpose |
 | `context-files.ts` | Brief description of purpose |
 | `engine.ts` | Brief description of purpose |
-| `hooks.ts` | Brief description of purpose |
+| `hooks.ts` | Command-hook runtime: `loadHooks` (user registry `~/.jeo/hooks.json` ⊕ `config.json`/project `.jeo/hooks.json`, with the `hooks.enabled=false` kill switch and project `enabled:false` opt-out; the registry is skipped in sandboxed sessions), `runPreToolHooks` (veto by exit code or structured `permissionDecision`, `additionalContext` passthrough), `runPostTurnHooksForBatch`, `runPostImplementationHooks`, and the per-turn `runPrePromptHooks` (context injected by `commands/launch.ts` into the prompt message) / `runTurnEndHooks` (final reply to ingesters); payloads follow the Claude hook protocol on the host (`hook_event_name`, `session_id`, `cwd`, `tool_name`/`tool_input`) and stay legacy-shaped in a sandbox |
 | `json.ts` | Brief description of purpose |
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
 | `loop-guards.ts` | Intermediate-judgment classification (gjc ultragoal-guard parity): named `GuardState` taxonomy, `GUARD_LIMITS` thresholds, and pure classifiers (`verifierCores`/`isVerificationSignal` — recognizes wrapped verifiers such as `cd x && bun test`, env/`timeout`/`uv run`/`rtk` prefixes and `2>&1`, never pipes or `;` — `repeatHint`, `classifyDoneGate` incl. `done_stale_verification`, and `formatRejectedCompletion`, which keeps the last candidate answer under an `UNVERIFIED` marker when corrections are exhausted) consumed by `engine.ts` |

@@ -218,6 +218,19 @@ jeo ultragoal
 
 非零退出钩子的输出会附加到模型读取的工具结果中(批内去重)；钩子未通过就调用 `done` 会收到带钩子名称的回推。
 
+### 提示与回合钩子,以及用户注册表
+
+除工具循环事件外,每个回合还会触发两个事件:
+
+| 事件 | 时机 | 载荷(stdin JSON) | 钩子输出 |
+| ---- | ---- | ---------------- | -------- |
+| `pre-prompt` | 模型看到所输入提示之前 | `{event, hook_event_name: "UserPromptSubmit", session_id, cwd, prompt}` | stdout 文本,或 JSON 的 `hookSpecificOutput.additionalContext` / `additionalContext` / `context`,会以 `[pre-prompt hook context]` 块的形式追加到提示消息末尾(提示卡片和历史标题只保留你自己的话) |
+| `turn-end` | 最终回复之后 | `{event, hook_event_name: "Stop", session_id, cwd, prompt, response, last_assistant_message, done, steps, model}` | 忽略 |
+
+两者都是建议性的:非零退出、超时或中止只会打印通知,绝不阻止提示(默认超时 10 秒 / 30 秒)。`$skill` 运行和消息机器人 literal 会话会跳过它们;`agy/` 模型因官方 CLI 自行管理提示而跳过 `pre-prompt`,但仍运行 `turn-end`。`pre-tool` 钩子也可以 exit 0 并输出 `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"…"}}` 来否决(`ask` 视为 deny),或输出 `additionalContext` 追加到该工具的结果;普通 stdout 仍被忽略。所有载荷还带有 `hook_event_name`、`session_id` 和 `cwd`(工具事件另有 `tool_name`/`tool_input`),因此 Claude Code / Codex 的钩子脚本无需修改即可运行 —— 仅限主机会话;沙箱内的钩子收到旧版载荷。
+
+**用户注册表。** `~/.jeo/hooks.json`(与 `.jeo/hooks.json` 格式相同,遵循 `JEO_CONFIG_DIR`)是供代你安装钩子的工具(如 jeo-skills 的提示路由和知识管道)使用的仅含钩子的文件,与 `config.json` 分离,因此凭据不会被重写。优先级:`config.json` 中的 `"hooks": { "enabled": false }` 会禁用一切;项目 `.jeo/hooks.json` 中的 `"enabled": false` 仅让该项目退出;否则注册表无需 `hooks.enabled: true` 即可运行,并排在已配置钩子之前。项目自己的 `hooks` 列表仍然只替换 `config.json` 的列表,绝不替换注册表,且项目 / `config.json` 钩子仍然只在 `hooks.enabled: true` 时运行。沙箱会话会跳过注册表。
+
 ## 内存流程
 
 `jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。

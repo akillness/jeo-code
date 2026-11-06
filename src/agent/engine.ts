@@ -1411,6 +1411,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               // an unchanged recently-modified file is hashed on both sides or neither.
               mutationMayHaveOccurred = before.ok ? workspaceSnapshotChanged(before, await takeSnapshot(before.startedAtMs)) : true;
             }
+            // A pre-tool hook's structured `additionalContext` rides along with the result
+            // so the model sees it next to the output it concerns.
+            if (preHookResult.context) output = `${output}\n\n[pre-tool hook context]\n${preHookResult.context}`;
           }
         }
       }

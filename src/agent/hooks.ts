@@ -22,8 +22,8 @@ export function withSandboxExecution<T>(scope: SandboxExecutionScope, run: () =>
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolvePosixTool } from "../util/posix-tools";
-import { readGlobalConfig } from "./state";
-import type { HookConfig } from "./state";
+import { readGlobalConfig, userHooksPath } from "./state";
+import type { HookConfig, HookEntry, HookEvent } from "./state";
 
 interface HookRunResult {
   stdout: string;
@@ -57,6 +57,23 @@ type LocalHooks =
 const localHooksCache = new Map<string, { mtimeMs: number; size: number; result: LocalHooks }>();
 const LOCAL_HOOKS_CACHE_CAP = 32;
 
+const HOOK_EVENTS: ReadonlySet<string> = new Set<HookEvent>(["pre-tool", "post-turn", "post-implementation", "pre-prompt", "turn-end"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Hook files are written by installers as well as by hand: drop entries that cannot run
+ *  (unknown event, missing command, bad timeout) instead of letting one poison the batch. */
+function isHookEntry(value: unknown): value is HookEntry {
+  if (!isRecord(value)) return false;
+  if (typeof value.event !== "string" || !HOOK_EVENTS.has(value.event)) return false;
+  if (typeof value.run !== "string" || !value.run.trim()) return false;
+  if (value.timeoutMs !== undefined && !(typeof value.timeoutMs === "number" && value.timeoutMs > 0)) return false;
+  if (value.match !== undefined && !isRecord(value.match)) return false;
+  return true;
+}
+
 async function readLocalHooks(localPath: string): Promise<LocalHooks> {
   let st: { mtimeMs: number; size: number };
   try {
@@ -72,7 +89,7 @@ async function readLocalHooks(localPath: string): Promise<LocalHooks> {
     const parsed = JSON.parse(await fs.readFile(localPath, "utf-8"));
     if (parsed && typeof parsed === "object") {
       if (parsed.enabled === false) result = { kind: "disabled" };
-      else if (Array.isArray(parsed.hooks)) result = { kind: "hooks", hooks: parsed.hooks };
+      else if (Array.isArray(parsed.hooks)) result = { kind: "hooks", hooks: parsed.hooks.filter(isHookEntry) };
     }
   } catch {
     // Missing/invalid local file → fall back to the global config hooks.
@@ -85,35 +102,66 @@ async function readLocalHooks(localPath: string): Promise<LocalHooks> {
   return result;
 }
 
-export async function loadHooks(cwd: string, signal?: AbortSignal): Promise<NonNullable<HookConfig["hooks"]>> {
-  const config = await readGlobalConfig();
-  if (!config.hooks?.enabled) {
-    return [];
+/**
+ * A sandboxed session reads the project hook file through the supervisor so the host
+ * never trusts workspace content it did not mediate. Same outcome shape as
+ * `readLocalHooks`.
+ */
+async function readSandboxLocalHooks(sandbox: SandboxExecutionScope, cwd: string, signal?: AbortSignal): Promise<LocalHooks> {
+  const result = await sandbox.supervisor.exec(["bun", "-e", "const file=Bun.file('.jeo/hooks.json');let value={};try{if(await file.exists())value=await file.json()}catch{}process.stdout.write(JSON.stringify(value));"], { cwd, signal: signal ?? sandbox.signal });
+  if (!result.success || result.exitCode !== 0) throw new Error(`Sandbox project hook configuration read failed (exit code ${result.exitCode ?? "unavailable"}): ${result.error || result.output}`);
+  let local: unknown;
+  try { local = JSON.parse(result.stdout ?? result.output); }
+  catch { throw new Error("Malformed sandbox project hook configuration"); }
+  if (isRecord(local)) {
+    if (local.enabled === false) return { kind: "disabled" };
+    if (Array.isArray(local.hooks)) return { kind: "hooks", hooks: local.hooks.filter(isHookEntry) };
   }
+  return { kind: "fallback" };
+}
+
+/**
+ * Effective hook list, in run order: user registry (`userHooksPath()`) first, then the
+ * configured list.
+ *
+ * Precedence, strongest first:
+ *  1. `config.hooks.enabled === false` — global kill switch; nothing runs.
+ *  2. Project `.jeo/hooks.json` with `enabled: false` — project opt-out; nothing runs.
+ *  3. The user registry runs unless it opts itself out (`enabled: false`). It is
+ *     user-owned and installer-managed, so it does NOT need `config.hooks.enabled: true`.
+ *  4. `config.hooks.hooks` / the project `.jeo/hooks.json` list run only when
+ *     `config.hooks.enabled === true` (so an untrusted repo cannot enable its own hooks);
+ *     the project list replaces the config list, as before, but never the user registry.
+ *
+ * Sandboxed sessions skip the user registry: its commands live on the host and cannot
+ * run inside the sandbox.
+ */
+export async function loadHooks(cwd: string, signal?: AbortSignal): Promise<HookEntry[]> {
+  const config = await readGlobalConfig();
+  if (config.hooks?.enabled === false) return [];
 
   const sandbox = currentSandboxExecution();
-  if (sandbox) {
-    const result = await sandbox.supervisor.exec(["bun", "-e", "const file=Bun.file('.jeo/hooks.json');let value={};try{if(await file.exists())value=await file.json()}catch{}process.stdout.write(JSON.stringify(value));"], { cwd, signal: signal ?? sandbox.signal });
-    if (!result.success || result.exitCode !== 0) throw new Error(`Sandbox project hook configuration read failed (exit code ${result.exitCode ?? "unavailable"}): ${result.error || result.output}`);
-    let local: unknown;
-    try { local = JSON.parse(result.stdout ?? result.output); }
-    catch { throw new Error("Malformed sandbox project hook configuration"); }
-    if (local && typeof local === "object") {
-      if ("enabled" in local && local.enabled === false) return [];
-      if ("hooks" in local && Array.isArray(local.hooks)) return local.hooks;
-    }
-    return config.hooks.hooks || [];
-  }
-  const local = await readLocalHooks(path.join(cwd, ".jeo", "hooks.json"));
-  if (local.kind === "disabled") return [];
-  if (local.kind === "hooks") return local.hooks;
+  const configHooksOn = config.hooks?.enabled === true;
+  // Sandboxed sessions read the project file only when hooks are explicitly enabled, as before.
+  if (sandbox && !configHooksOn) return [];
+  // The registry lives on the host; a sandboxed session never runs it.
+  const user = sandbox ? undefined : await readLocalHooks(userHooksPath());
+  const userHooks = user?.kind === "hooks" ? user.hooks : [];
+  // Common case (no registry, hooks not enabled): nothing can run, so skip the project file.
+  if (!configHooksOn && userHooks.length === 0) return [];
 
-  return config.hooks?.hooks || [];
+  const local = sandbox
+    ? await readSandboxLocalHooks(sandbox, cwd, signal)
+    : await readLocalHooks(path.join(cwd, ".jeo", "hooks.json"));
+  if (local.kind === "disabled") return [];
+
+  const configured = !configHooksOn ? [] : local.kind === "hooks" ? local.hooks : config.hooks?.hooks ?? [];
+  return userHooks.length ? [...userHooks, ...configured] : configured;
 }
 
 async function runHookCommand(
   runCmd: string,
-  payload: any,
+  payload: unknown,
   cwd: string,
   timeoutMs = 30000,
   signal?: AbortSignal
@@ -211,13 +259,79 @@ export function hookMatchesTool(matchTool: string | undefined, tool: string): bo
   return matchTool.split("|").some(t => t.trim() === tool);
 }
 
+let hookSessionId = "";
+
+/** Set by the launch loop so every hook payload carries the live session id
+ *  (`session_id`, Claude hook protocol). Empty string when no session is active. */
+export function setHookSessionId(sessionId: string | undefined): void {
+  hookSessionId = sessionId ?? "";
+}
+
+/**
+ * Fields every hook payload carries. `event` is jeo's own name (kept for existing hooks);
+ * `hook_event_name`/`session_id`/`cwd` follow the Claude hook protocol so scripts written
+ * for Claude Code / Codex (`UserPromptSubmit`, `Stop`, `PreToolUse`) run unmodified.
+ *
+ * A sandboxed hook runs in the guest, so it gets the legacy payload only: never the host
+ * `cwd` or session id.
+ */
+function basePayload(event: HookEvent, claudeEvent: string, cwd: string) {
+  if (currentSandboxExecution()) return { event };
+  return { event, hook_event_name: claudeEvent, session_id: hookSessionId, cwd };
+}
+
+/** Claude-protocol aliases (`tool_name`/`tool_input`) for a tool call; none in a sandbox. */
+function toolAliases(tool: string, args: Record<string, unknown>) {
+  return currentSandboxExecution() ? {} : { tool_name: tool, tool_input: args };
+}
+
+const MAX_HOOK_CONTEXT_CHARS = 8_000;
+
+function parseHookJson(stdout: string): Record<string, unknown> | undefined {
+  const text = stdout.trim();
+  if (!text.startsWith("{")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function clampContext(text: string): string {
+  return text.length > MAX_HOOK_CONTEXT_CHARS ? `${text.slice(0, MAX_HOOK_CONTEXT_CHARS)}\n... (hook context truncated)` : text;
+}
+
+/** `additionalContext` from a Claude-protocol hook output (`hookSpecificOutput.additionalContext`,
+ *  top-level `additionalContext`, or `context`). Empty when the output carries none. */
+function jsonHookContext(json: Record<string, unknown>): string {
+  const specific = isRecord(json.hookSpecificOutput) ? json.hookSpecificOutput : {};
+  for (const value of [specific.additionalContext, json.additionalContext, json.context]) {
+    if (typeof value === "string" && value.trim()) return clampContext(value.trim());
+  }
+  return "";
+}
+
+/** A deny decision a hook returned with exit 0 (Claude `permissionDecision: deny|ask`,
+ *  legacy `decision: block`, or `continue: false`). jeo has no approval prompt for hooks,
+ *  so `ask` is treated as deny — the safe reading. */
+function jsonHookDenial(json: Record<string, unknown>): { reason: string } | undefined {
+  const specific = isRecord(json.hookSpecificOutput) ? json.hookSpecificOutput : {};
+  const decision = specific.permissionDecision ?? json.decision;
+  const denied = decision === "deny" || decision === "ask" || decision === "block" || json.continue === false;
+  if (!denied) return undefined;
+  const reason = [specific.permissionDecisionReason, json.reason, json.stopReason].find(v => typeof v === "string" && v.trim());
+  return { reason: typeof reason === "string" ? reason.trim() : "no reason given" };
+}
+
 export async function runPreToolHooks(
   cwd: string,
   tool: string,
-  args: Record<string, any>,
+  args: Record<string, unknown>,
   signal?: AbortSignal,
   onNotice?: (msg: string) => void
-): Promise<{ vetoed: boolean; error?: string; output?: string }> {
+): Promise<{ vetoed: boolean; error?: string; output?: string; context?: string }> {
+  const contexts: string[] = [];
   try {
     const hooks = await loadHooks(cwd, signal);
     const preToolHooks = hooks.filter(
@@ -226,9 +340,10 @@ export async function runPreToolHooks(
 
     for (const hook of preToolHooks) {
       const payload = {
-        event: "pre-tool",
+        ...basePayload("pre-tool", "PreToolUse", cwd),
         tool,
         args,
+        ...toolAliases(tool, args),
       };
 
       const timeoutMs = hook.timeoutMs || 30000;
@@ -248,14 +363,27 @@ export async function runPreToolHooks(
         onNotice?.(msg);
         return { vetoed: true, error: msg, output: result.output };
       }
+      // Exit 0 can still carry a structured decision (Claude-protocol hooks never exit 2
+      // to deny; they print `permissionDecision`). Plain stdout stays ignored so a
+      // hook's own logging never leaks into the model's tool result.
+      const json = parseHookJson(result.stdout);
+      if (!json) continue;
+      const denial = jsonHookDenial(json);
+      if (denial) {
+        const msg = `Pre-tool hook "${hook.run}" denied execution: ${denial.reason}`;
+        onNotice?.(msg);
+        return { vetoed: true, error: msg };
+      }
+      const context = jsonHookContext(json);
+      if (context) contexts.push(context);
     }
-  } catch (err: any) {
-    const msg = `Error executing pre-tool hooks: ${err.message}`;
+  } catch (err: unknown) {
+    const msg = `Error executing pre-tool hooks: ${err instanceof Error ? err.message : String(err)}`;
     onNotice?.(msg);
     return { vetoed: true, error: msg, output: "" };
   }
 
-  return { vetoed: false };
+  return contexts.length ? { vetoed: false, context: contexts.join("\n") } : { vetoed: false };
 }
 
 /** One executed tool call fed to the post-turn hooks of a batch. */
@@ -301,10 +429,11 @@ export async function runPostTurnHooksForBatch(
     // Distinct hooks are independent commands → run them concurrently. Each hook
     // itself runs once for the whole batch (the redundancy this fix removes).
     const settled = await Promise.all(jobs.map(async ({ hook, matched }) => {
+      const base = basePayload("post-turn", "PostToolUse", cwd);
       const payload = matched.length === 1
-        ? { event: "post-turn", tool: matched[0].tool, args: matched[0].args, success: matched[0].success, output: outputPreviewOf(matched[0].output) }
+        ? { ...base, tool: matched[0].tool, args: matched[0].args, ...toolAliases(matched[0].tool, matched[0].args), success: matched[0].success, output: outputPreviewOf(matched[0].output) }
         : {
-            event: "post-turn",
+            ...base,
             tool: matched.map(c => c.tool).join(","),
             calls: matched.map(c => ({ tool: c.tool, args: c.args, success: c.success })),
             success: matched.every(c => c.success),
@@ -368,7 +497,7 @@ export async function runPostImplementationHooks(
 
     for (const hook of postImplHooks) {
       const payload = {
-        event: "post-implementation",
+        ...basePayload("post-implementation", "post-implementation", cwd),
         request,
       };
 
@@ -388,4 +517,125 @@ export async function runPostImplementationHooks(
     onNotice?.(msg);
     return { success: false, output: msg };
   }
+}
+
+const PRE_PROMPT_TIMEOUT_MS = 10_000;
+const TURN_END_TIMEOUT_MS = 30_000;
+const MAX_PROMPT_PAYLOAD_CHARS = 20_000;
+const MAX_RESPONSE_PAYLOAD_CHARS = 200_000;
+
+export interface PrePromptHookResult {
+  /** Context the hooks asked to place in front of the model (empty when none). */
+  context: string;
+  /** Hooks that ran to completion (exit 0) — lets callers tell "nothing to add" from "no hook". */
+  ran: number;
+}
+
+/**
+ * Run `pre-prompt` hooks once for a real user prompt, before the model sees it
+ * (Claude `UserPromptSubmit`). Payload: `{event, hook_event_name:"UserPromptSubmit",
+ * session_id, cwd, prompt}`. A hook contributes context by printing either plain text or a
+ * Claude-protocol JSON object (`hookSpecificOutput.additionalContext` / `additionalContext`
+ * / `context`). This is a routing/enrichment point, never a gate: a hook that fails, times
+ * out or is aborted yields a notice and no context, so a broken hook can't block a prompt.
+ */
+export async function runPrePromptHooks(
+  cwd: string,
+  prompt: string,
+  signal?: AbortSignal,
+  onNotice?: (msg: string) => void,
+): Promise<PrePromptHookResult> {
+  const contexts: string[] = [];
+  let ran = 0;
+  try {
+    const hooks = (await loadHooks(cwd, signal)).filter(h => h.event === "pre-prompt");
+    if (hooks.length === 0 || !prompt.trim()) return { context: "", ran: 0 };
+    const payload = { ...basePayload("pre-prompt", "UserPromptSubmit", cwd), prompt: prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS) };
+    const settled = await Promise.all(hooks.map(async hook => {
+      try {
+        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || PRE_PROMPT_TIMEOUT_MS, signal) };
+      } catch (err: unknown) {
+        onNotice?.(`Pre-prompt hook "${hook.run}" failed to start (advisory): ${err instanceof Error ? err.message : String(err)}`);
+        return undefined;
+      }
+    }));
+    // Hook order, not completion order, decides how contexts are stacked.
+    for (const entry of settled) {
+      if (!entry) continue;
+      const { hook, result } = entry;
+      if (result.timedOut) onNotice?.(`Pre-prompt hook "${hook.run}" timed out (advisory).`);
+      else if (result.aborted) continue;
+      else if (result.exitCode !== 0) onNotice?.(`Pre-prompt hook "${hook.run}" exited with non-zero code ${result.exitCode} (advisory).`);
+      else {
+        ran++;
+        const json = parseHookJson(result.stdout);
+        const context = json ? jsonHookContext(json) : clampContext(result.stdout.trim());
+        if (context) contexts.push(context);
+      }
+    }
+  } catch (err: unknown) {
+    onNotice?.(`Error executing pre-prompt hooks (advisory): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { context: contexts.join("\n\n"), ran };
+}
+
+export interface TurnEndInfo {
+  prompt: string;
+  /** The final reply text of the turn. */
+  response: string;
+  /** True when the model signalled completion (false for a step-limit/unverified stop). */
+  done: boolean;
+  steps: number;
+  model?: string;
+}
+
+/**
+ * Run `turn-end` hooks once per finished turn (Claude `Stop`). Payload carries the turn's
+ * final reply under `response` and `last_assistant_message` (and `assistant_output`) so
+ * scripts that ingest assistant output can read it directly, alongside `prompt`, `done`,
+ * `steps`, `model`, `session_id`, `cwd`. Advisory only: failures yield a notice and never
+ * change the turn's result. Awaited so a one-shot `jeo -p` does not exit before they finish.
+ */
+export async function runTurnEndHooks(
+  cwd: string,
+  info: TurnEndInfo,
+  signal?: AbortSignal,
+  onNotice?: (msg: string) => void,
+): Promise<{ ran: number }> {
+  let ran = 0;
+  try {
+    const hooks = (await loadHooks(cwd, signal)).filter(h => h.event === "turn-end");
+    if (hooks.length === 0) return { ran: 0 };
+    const response = info.response.length > MAX_RESPONSE_PAYLOAD_CHARS ? info.response.slice(0, MAX_RESPONSE_PAYLOAD_CHARS) : info.response;
+    const payload = {
+      ...basePayload("turn-end", "Stop", cwd),
+      prompt: info.prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS),
+      response,
+      last_assistant_message: response,
+      assistant_output: response,
+      done: info.done,
+      steps: info.steps,
+      model: info.model ?? "",
+      stop_hook_active: false,
+    };
+    const settled = await Promise.all(hooks.map(async hook => {
+      try {
+        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || TURN_END_TIMEOUT_MS, signal) };
+      } catch (err: unknown) {
+        onNotice?.(`Turn-end hook "${hook.run}" failed to start (advisory): ${err instanceof Error ? err.message : String(err)}`);
+        return undefined;
+      }
+    }));
+    for (const entry of settled) {
+      if (!entry) continue;
+      const { hook, result } = entry;
+      if (result.timedOut) onNotice?.(`Turn-end hook "${hook.run}" timed out (advisory).`);
+      else if (result.aborted) continue;
+      else if (result.exitCode !== 0) onNotice?.(`Turn-end hook "${hook.run}" exited with non-zero code ${result.exitCode} (advisory).`);
+      else ran++;
+    }
+  } catch (err: unknown) {
+    onNotice?.(`Error executing turn-end hooks (advisory): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { ran };
 }

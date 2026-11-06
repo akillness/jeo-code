@@ -45,7 +45,7 @@ const HookConfigSchema = z.object({
   hooks: z
     .array(
       z.object({
-        event: z.enum(["pre-tool", "post-turn", "post-implementation"]),
+        event: z.enum(["pre-tool", "post-turn", "post-implementation", "pre-prompt", "turn-end"]),
         match: z
           .object({
             tool: z.string().optional(),

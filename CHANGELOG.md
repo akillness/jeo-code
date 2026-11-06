@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Changed
+- **`jeo update` no longer special-cases another tool** - the `shared global unchanged: N packages (...)` line used to list `jeopi-cli` first; it now lists every other package in plain ascending order, at most three shown.
+
 ## [0.12.24] - 2026-11-06
 
 ### Added

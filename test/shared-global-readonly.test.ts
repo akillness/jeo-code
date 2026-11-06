@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 // C1: nothing outside jeo-code is ever installed, changed or deleted by jeo code. The two shared-global
 // modules therefore have to stay read-only. This scans their SOURCE TEXT by call form (not by substring):
-// plain words such as `execPath`, the literal `jeopi-cli`, the kind 'dangling-symlink' and `readlink` are
+// plain words such as `execPath`, the identifier `SELF_PACKAGE`, the kind 'dangling-symlink' and `readlink` are
 // fine, member calls such as `re.exec(` are fine, and a mutating fs call, a process spawn or a write-mode
 // open is not. Process execution is additionally excluded by the child_process import ban.
 
@@ -88,7 +88,7 @@ describe("shared-global modules stay read-only (C1)", () => {
 
   test("the words the scan must tolerate appear in the combined text, so it cannot pass vacuously", () => {
     const combined = sources.map(source => source.text).join("\n");
-    for (const word of ["execPath", "jeopi-cli", "dangling-symlink"]) {
+    for (const word of ["execPath", "SELF_PACKAGE", "dangling-symlink"]) {
       expect(combined, `combined text lacks ${word}`).toContain(word);
     }
   });
@@ -123,7 +123,7 @@ describe("the call-form scan itself", () => {
     "currentJeoCommand(o.entry, o.execPath)",
     'fs.openSync(file, "r")',
     "fs.readFileSync(file, 'utf8')",
-    "name === 'jeopi-cli'",
+    "name === SELF_PACKAGE",
   ];
 
   test("every forbidden sample is caught by at least one call form", () => {

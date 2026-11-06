@@ -554,9 +554,9 @@ describe("formatting", () => {
     expect(lines[3]).toBe("# restore fine manually");
   });
 
-  test("formatUnchangedSummary lists jeopi-cli first, then ascending, at most three", () => {
+  test("formatUnchangedSummary lists packages ascending by name, at most three", () => {
     const snapshot: InstalledSnapshot = { "oh-my-hermes": "3.0.2", "gajae-code": "0.6.1", "jeopi-cli": "16.6.18", "@gajae-code/coding-agent": "0.18.5", "oh-my-agent": "10.23.2" };
-    expect(formatUnchangedSummary(snapshot)).toBe("shared global unchanged: 5 packages (jeopi-cli 16.6.18, @gajae-code/coding-agent 0.18.5, gajae-code 0.6.1, ...)");
+    expect(formatUnchangedSummary(snapshot)).toBe("shared global unchanged: 5 packages (@gajae-code/coding-agent 0.18.5, gajae-code 0.6.1, jeopi-cli 16.6.18, ...)");
   });
 
   test("formatUnchangedSummary: three packages have no ellipsis, one is singular, none has no parentheses", () => {

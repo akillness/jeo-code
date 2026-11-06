@@ -1,7 +1,7 @@
 /**
  * Read-only view of the shared bun global install (`~/.bun/install/global`) that `jeo update`
- * writes into with `bun install -g jeo-code@V`. That directory also holds other tools (jeopi,
- * gajae-code, ...), so `jeo update` must prove it leaves every other top-level package alone.
+ * writes into with `bun install -g jeo-code@V`. That directory also holds other tools
+ * (gajae-code, ...), so `jeo update` must prove it leaves every other top-level package alone.
  *
  * This module only ever reads: it never writes, deletes, renames, spawns or executes anything.
  * Restore commands are formatted as strings for a human to run.
@@ -120,7 +120,7 @@ export interface ManifestDeps {
 
 /**
  * Top-level dependencies of the global package.json. Empty names and non-string specs are dropped into
- * `ignored` (an older jeopi wrote a `"": "."` dependency that no lockfile could ever cover). `external` is
+ * `ignored` (another tool's older updater wrote a `"": "."` dependency that no lockfile could ever cover). `external` is
  * every name except jeo-code, in manifest order. An absent `dependencies` means zero dependencies.
  */
 export function readManifestDeps(dir: string): { ok: true; deps: ManifestDeps } | { ok: false; error: string } {
@@ -243,13 +243,11 @@ export function formatRestoreCommands(cs: readonly ExternalChange[]): string[] {
   });
 }
 
-const PRIMARY_TOOL = "jeopi-cli";
-
-/** `shared global unchanged: 3 packages (jeopi-cli X, a Y, b Z, ...)`; jeopi-cli leads, then ascending, at most 3 shown. */
+/** `shared global unchanged: 3 packages (a X, b Y, c Z, ...)`: ascending by name, at most 3 shown. */
 export function formatUnchangedSummary(after: InstalledSnapshot): string {
   const present = Object.entries(after)
     .filter((e): e is [string, string] => e[0] !== SELF_PACKAGE && e[1] !== null)
-    .sort(([a], [b]) => (a === PRIMARY_TOOL ? -1 : b === PRIMARY_TOOL ? 1 : a < b ? -1 : a > b ? 1 : 0));
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const count = `${present.length} ${present.length === 1 ? "package" : "packages"}`;
   if (present.length === 0) return `shared global unchanged: ${count}`;
   const shown = present.slice(0, 3).map(([name, version]) => `${name} ${version}`);

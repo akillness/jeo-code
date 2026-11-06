@@ -3,6 +3,7 @@ import { emitKeypressEvents } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
+import { MUTATION_NUDGE_PREFIX } from "../agent/loop-guards";
 import { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
@@ -2001,7 +2002,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           const carriedPending = turnPendingMutation || (goalState !== null && pendingMutationVerification);
           if ((carriedPending || evidence.sawMutation) && !(evidence.sawVerification && !evidence.verificationStale)) {
             return (
-              `Cannot finish: a workspace mutation from this session still lacks a successful, non-stale verification. ` +
+              `${MUTATION_NUDGE_PREFIX} ` +
               `Run a relevant test/build/typecheck/lint after the last change (e.g. 'bun test', 'bun run typecheck', 'tsc --noEmit', 'npm test', 'pytest', 'cargo test', or 'go test ./...'), then call done again.`
             );
           }

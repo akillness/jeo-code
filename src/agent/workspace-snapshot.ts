@@ -13,9 +13,10 @@
  *   - FIFO/socket/device: stat only, never opened
  */
 import * as fs from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import type { BigIntStats, Dirent } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 
 export interface WorkspaceSnapshotLimits {
@@ -42,7 +43,12 @@ export const WORKSPACE_SNAPSHOT_LIMITS: Readonly<WorkspaceSnapshotLimits> = Obje
 export const WORKSPACE_SNAPSHOT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([".git", ".jeo", "node_modules"]);
 
 export type WorkspaceSnapshot =
-  | { ok: true; digest: bigint; entries: number; elapsedMs: number; startedAtMs: number }
+  | {
+      ok: true; digest: bigint; entries: number; elapsedMs: number; startedAtMs: number;
+      /** Relative path -> entry fingerprint, so a mismatch can name WHICH paths changed
+       *  (`snapshotChangedPaths`). Optional so hand-built snapshots and mocks stay valid. */
+      paths?: ReadonlyMap<string, bigint>;
+    }
   | { ok: false; reason: "error" | "cap"; detail: string };
 
 /** `racySinceMs`: anchor for the racy content-hash predicate. The engine passes the BEFORE snapshot's
@@ -89,7 +95,12 @@ export async function snapshotWorkspace(
   let entries = 0;
   let racyBytes = 0;
 
-  const record = (entry: string): void => { digest = (digest + Bun.hash.wyhash(entry)) & DIGEST_MASK; };
+  const paths = new Map<string, bigint>();
+  const record = (entry: string, rel: string): void => {
+    const hash = BigInt(Bun.hash.wyhash(entry));
+    digest = (digest + hash) & DIGEST_MASK;
+    paths.set(rel, hash);
+  };
   const checkCaps = (): void => {
     if (entries > limits.maxEntries) stop("cap", `workspace has more than ${limits.maxEntries} entries`);
     if (performance.now() - startedAt > limits.maxMs) stop("cap", `workspace snapshot exceeded ${limits.maxMs} ms`);
@@ -132,7 +143,7 @@ export async function snapshotWorkspace(
     if (stat.isDirectory()) {
       // Unreported or raced dirent type: a real directory is never fingerprinted by metadata.
       if (WORKSPACE_SNAPSHOT_EXCLUDED_DIRS.has(leaf.dirent.name)) { entries -= 1; return; }
-      record(`d:${leaf.rel}`);
+      record(`d:${leaf.rel}`, leaf.rel);
       queue.push(leaf);
       return;
     }
@@ -149,7 +160,7 @@ export async function snapshotWorkspace(
       if (hash === null) { entries -= 1; return; }
       entry += `:h${hash}`;
     }
-    record(entry);
+    record(entry, leaf.rel);
   };
 
   const list = async (dir: Dir, next: Dir[], leaves: Leaf[]): Promise<void> => {
@@ -165,7 +176,7 @@ export async function snapshotWorkspace(
       if (dirent.isDirectory()) {
         if (WORKSPACE_SNAPSHOT_EXCLUDED_DIRS.has(dirent.name)) continue;
         entries += 1;
-        record(`d:${rel}`);
+        record(`d:${rel}`, rel);
         next.push(child);
       } else {
         entries += 1;
@@ -192,7 +203,7 @@ export async function snapshotWorkspace(
       }
       level = next;
     }
-    return { ok: true, digest, entries, elapsedMs: performance.now() - startedAt, startedAtMs };
+    return { ok: true, digest, entries, elapsedMs: performance.now() - startedAt, startedAtMs, paths };
   } catch (error) {
     if (error instanceof SnapshotStop) return error.result;
     return { ok: false, reason: "error", detail: errorMessage(error) };
@@ -206,4 +217,67 @@ export const defaultWorkspaceSnapshotter: WorkspaceSnapshotter = (cwd, since) =>
 export function workspaceSnapshotChanged(before: WorkspaceSnapshot, after: WorkspaceSnapshot): boolean {
   if (!before.ok || !after.ok) return true;
   return before.digest !== after.digest || before.entries !== after.entries;
+}
+
+/** Result of comparing two snapshots path by path (sorted, relative to the workspace root). */
+export interface SnapshotPathChange {
+  added: string[];
+  removed: string[];
+  modified: string[];
+}
+
+/**
+ * Paths that differ between two successful snapshots. Null when either side cannot say (a failed
+ * snapshot, or a hand-built one without a per-path map) — callers then fall back to the bare
+ * digest verdict. Directories are reported by name too; their mtimes are not fingerprinted.
+ */
+export function snapshotChangedPaths(before: WorkspaceSnapshot, after: WorkspaceSnapshot): SnapshotPathChange | null {
+  if (!before.ok || !after.ok || !before.paths || !after.paths) return null;
+  const added: string[] = [];
+  const modified: string[] = [];
+  const removed: string[] = [];
+  for (const [rel, hash] of after.paths) {
+    const prev = before.paths.get(rel);
+    if (prev === undefined) added.push(rel);
+    else if (prev !== hash) modified.push(rel);
+  }
+  for (const rel of before.paths.keys()) if (!after.paths.has(rel)) removed.push(rel);
+  return { added: added.sort(), removed: removed.sort(), modified: modified.sort() };
+}
+
+/** `modified a/b.json; added c.txt (+3 more)` — at most `limit` paths, for notices and gate messages. */
+export function formatSnapshotChange(change: SnapshotPathChange, limit = 5): string {
+  const items = [
+    ...change.modified.map(p => `modified ${p}`),
+    ...change.added.map(p => `added ${p}`),
+    ...change.removed.map(p => `removed ${p}`),
+  ];
+  if (items.length === 0) return "no path-level difference";
+  const shown = items.slice(0, limit).join("; ");
+  return items.length > limit ? `${shown} (+${items.length - limit} more)` : shown;
+}
+
+const realOrResolved = (target: string): string => {
+  try { return realpathSync(target); } catch { return path.resolve(target); }
+};
+
+function accountHomedir(): string {
+  try { return os.userInfo().homedir; } catch { return os.homedir(); }
+}
+
+function defaultScratchRoots(cwd: string): string[] {
+  // `os.homedir()` / `os.tmpdir()` follow $HOME / $TMPDIR, so the account's real home is listed too.
+  return [os.homedir(), accountHomedir(), path.parse(path.resolve(cwd)).root, os.tmpdir(), "/tmp", "/var/tmp"];
+}
+
+/**
+ * True when `cwd` IS a shared scratch root — `$HOME`, the filesystem root, or a system temp directory —
+ * rather than a directory inside one. Those roots are written by unrelated processes (daemon heartbeats,
+ * logs, other agents), are often too large or partly unreadable to snapshot, and hold no project whose
+ * verifier could ever run, so a snapshot diff there cannot be attributed to one shell call. A project
+ * directory nested under them (a `mkdtemp` dir, `~/work/app`) is NOT a scratch root and stays gated.
+ */
+export function isSharedScratchRoot(cwd: string, roots: readonly string[] = defaultScratchRoots(cwd)): boolean {
+  const here = realOrResolved(cwd);
+  return roots.some(root => realOrResolved(root) === here);
 }

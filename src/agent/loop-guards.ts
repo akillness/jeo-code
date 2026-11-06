@@ -36,6 +36,13 @@ export type GuardState =
  * Kept in one frozen object so the limits are discoverable and testable instead of
  * sprinkled as bare literals through the loop body.
  */
+/**
+ * Prefix of the launch-level `onBeforeDone` nudge that merely restates the mutation-verification gate. The engine's
+ * own `classifyDoneGate` already blocks (and explains) that case, so the engine must not count the restatement as an
+ * independent block — otherwise the shell-only correction cap could never apply in the interactive loop.
+ */
+export const MUTATION_NUDGE_PREFIX = "Cannot finish: a workspace mutation from this session still lacks a successful, non-stale verification.";
+
 export const GUARD_LIMITS = Object.freeze({
   /** Identical step repeats tolerated before a consolidated stop (with corrections en route). */
   MAX_REPEAT: 4,
@@ -43,6 +50,10 @@ export const GUARD_LIMITS = Object.freeze({
   MAX_FAILURES: 5,
   /** Rejected completion attempts that may request a correction before stopping incomplete. */
   MAX_DONE_CORRECTIONS: 3,
+  /** Same, when the only mutation evidence is a shell/computer snapshot bracket (no built-in mutator
+   *  succeeded). An unrelated process writing in the cwd looks identical to the command's own writes, so
+   *  one correction states the paths and asks for verification; a second full-history retry only burns tokens. */
+  MAX_SHELL_ONLY_DONE_CORRECTIONS: 1,
   /** Context-mutating refusal-ladder rungs (resend → reset → guidance strip) before
    *  recovery switches to unbounded backoff resends (gjc parity: never terminal). */
   MAX_REFUSAL_RETRIES: 3,
@@ -185,7 +196,7 @@ export const UNVERIFIED_MARKER = "UNVERIFIED";
  * model's last candidate answer, never presents it as accepted, and keeps the gate reason.
  */
 export function formatRejectedCompletion(candidate: string, corrections: number, rejection: string): string {
-  const stop = `Stopped: completion rejected after ${corrections} corrections. ${rejection}`;
+  const stop = `Stopped: completion rejected after ${corrections} correction${corrections === 1 ? "" : "s"}. ${rejection}`;
   const answer = candidate.trim();
   if (!answer) return stop;
   return `${UNVERIFIED_MARKER} - the completion gate did not accept this answer; treat it as unconfirmed.\n\n${answer}\n\n${stop}`;
@@ -239,6 +250,11 @@ export interface DoneGateInput {
    * instead of claiming files were modified.
    */
   unmeasured?: string;
+  /**
+   * Paths a shell call's before/after snapshot saw change (`modified a.json; added b.txt`), when the evidence
+   * came from a shell bracket. Lets the model and user judge whether the command or an unrelated process wrote them.
+   */
+  shellChanged?: string;
 }
 
 /** Verdict from {@link classifyDoneGate}: whether to bounce `done`, and the message. */
@@ -263,10 +279,15 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
   const stale = input.sawVerification && input.verificationStale === true;
   const block = input.sawMutation && (!input.sawVerification || stale || hookFailing);
   if (!block) return { state: "done_ok", block: false, message: "" };
-  const unmeasuredNote = input.unmeasured
-    ? ` Note: the host could not measure a shell call's effect on the workspace (${input.unmeasured}), so it is counted as a possible file change; ` +
-      "if every command you ran was read-only, say so in your reply."
+  // A reply alone never clears this gate: only a passing verification does, or the budget running out.
+  const escape = "Only a passing verification command clears this check; if none applies, the answer is returned labelled UNVERIFIED once the correction budget is spent.";
+  const changedNote = input.shellChanged
+    ? ` Note: around a shell/computer call the host saw these paths change: ${input.shellChanged}. ` +
+      `Something other than your commands may have written them (another process, or your own background job). ${escape}`
     : "";
+  const unmeasuredNote = changedNote + (input.unmeasured
+    ? ` Note: the host could not measure a shell/computer call's effect on the workspace (${input.unmeasured}), so it is counted as a possible file change. ${escape}`
+    : "");
   if (hookFailing) {
     return {
       state: "done_hook_failing",

@@ -32,8 +32,11 @@ import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSigna
 
 import { historyTokens, trimToolResultsInPlace, stripReasoningArtifactsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
-import { GUARD_LIMITS, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate, formatRejectedCompletion } from "./loop-guards";
-import { defaultWorkspaceSnapshotter, workspaceSnapshotChanged, type WorkspaceSnapshot, type WorkspaceSnapshotter } from "./workspace-snapshot";
+import { GUARD_LIMITS, MUTATION_NUDGE_PREFIX, isVerificationSignal, verificationProducedEvidence, repeatHint, classifyDoneGate, formatRejectedCompletion } from "./loop-guards";
+import {
+  defaultWorkspaceSnapshotter, formatSnapshotChange, isSharedScratchRoot, snapshotChangedPaths, workspaceSnapshotChanged,
+  type WorkspaceSnapshot, type WorkspaceSnapshotter,
+} from "./workspace-snapshot";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
 
 const MID_TASK_PROSE_RE =
@@ -411,6 +414,9 @@ export interface AgentLoopOptions {
   /** Host-side workspace fingerprint used to decide whether a bash/computer call mutated the
    *  workspace. Defaults to defaultWorkspaceSnapshotter; tests inject fakes. */
   workspaceSnapshot?: WorkspaceSnapshotter;
+  /** Directories treated as shared scratch roots (default: `$HOME`, `/`, system temp dirs). Where the cwd IS one of
+   *  these, bash/computer calls are not snapshot-bracketed. Tests inject a hermetic root instead of touching `$TMPDIR`. */
+  scratchRoots?: readonly string[];
   signal?: AbortSignal;
   events?: AgentLoopEvents;
   /** Step-budget overrides (gjc-style retry flow). `{ maxExtensions: 0 }` restores the
@@ -575,9 +581,22 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   };
   // bash/computer calls whose mutation status is decided by a workspace diff. Recognized
   // verifiers are never mutations, and observe-only computer actions are read-only.
-  const snapshotGated = (tool: string, args: Record<string, any> | undefined): boolean =>
+  // A shared scratch root ($HOME, /, the system temp dir) is written by unrelated processes (daemon heartbeats,
+  // logs, other agents) and holds no project verifier, so a snapshot diff there cannot be attributed to one shell
+  // call: bash and computer calls are not bracketed (a built-in write/edit still counts as a definite mutation).
+  // A project directory nested inside a scratch root stays gated.
+  const scratchCwd = isSharedScratchRoot(cwd, opts.scratchRoots);
+  let scratchNoted = false;
+  const snapshotCandidate = (tool: string, args: Record<string, any> | undefined): boolean =>
     (tool === "bash" && !isVerificationSignal(String(args?.command ?? args?.cmd ?? ""))) ||
     (tool === "computer" && computerActionMayAffectState(args));
+  const snapshotGated = (tool: string, args: Record<string, any> | undefined): boolean =>
+    !scratchCwd && snapshotCandidate(tool, args);
+  // Mutation evidence that came ONLY from a shell/computer snapshot bracket, kept apart from definite mutators
+  // (write/edit/eval/…): an unrelated writer in the cwd is indistinguishable from the command's own writes, so a
+  // shell-only block gets one correction (naming the paths) instead of the full budget.
+  let definiteMutation = false;
+  const shellChanges: string[] = [];
   const sandbox = currentSandboxExecution();
   const parentTools: Record<string, true> = { task: true, subagent: true, irc: true, todo: true, sandbox_request: true };
   const maxSteps = opts.maxSteps ?? 15;
@@ -703,6 +722,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let verificationCycles = 0;
   let completionGraceUsed = false;
   let doneCorrections = 0;
+  // Corrections spent on a shell-only block, counted apart so an earlier todo/hook nudge cannot use up the one
+  // correction that names the changed paths.
+  let shellOnlyCorrections = 0;
   // Most recent non-empty completion candidate, kept so an exhausted gate still shows it.
   let lastCompletionCandidate = "";
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
@@ -1219,11 +1241,23 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       };
       const candidate = stripLeakedReasoningTags(String(toolCalls[0].arguments?.reason ?? ""));
       if (candidate.trim()) lastCompletionCandidate = candidate;
-      const doneGate = classifyDoneGate({ ...evidence, pendingHookFailure, unmeasured: unmeasuredSnapshot ?? undefined });
+      const doneGate = classifyDoneGate({
+        ...evidence,
+        pendingHookFailure,
+        unmeasured: unmeasuredSnapshot ?? undefined,
+        shellChanged: !definiteMutation && shellChanges.length ? shellChanges.slice(-3).join(" | ") : undefined,
+      });
       const nudge = await ev.onBeforeDone?.((toolCalls[0].arguments?.reason as string) ?? "", evidence);
-      const rejection = [doneGate.block ? doneGate.message : "", nudge].filter(Boolean).join("\n\n");
+      // launch's onBeforeDone restates the mutation gate in its own words when the gate blocks; the engine's message
+      // names the paths, so the restatement is dropped and does not count as an independent reason to keep going.
+      const independentNudge = nudge && !(doneGate.block && nudge.startsWith(MUTATION_NUDGE_PREFIX)) ? nudge : "";
+      const rejection = [doneGate.block ? doneGate.message : "", independentNudge].filter(Boolean).join("\n\n");
       if (rejection) {
-        if (doneCorrections >= GUARD_LIMITS.MAX_DONE_CORRECTIONS) {
+        // Shell-only evidence (no built-in mutator succeeded) cannot tell the command's writes from an unrelated
+        // process's, so it earns one correction naming the paths; every other block keeps the full budget.
+        const shellOnlyBlock = doneGate.block && doneGate.state !== "done_hook_failing" && !definiteMutation && !independentNudge;
+        const correctionLimit = shellOnlyBlock ? GUARD_LIMITS.MAX_SHELL_ONLY_DONE_CORRECTIONS : GUARD_LIMITS.MAX_DONE_CORRECTIONS;
+        if (shellOnlyBlock ? shellOnlyCorrections >= correctionLimit : doneCorrections >= correctionLimit) {
           return finish({
             done: false,
             steps: step,
@@ -1232,9 +1266,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           });
         }
         doneCorrections++;
+        if (shellOnlyBlock) shellOnlyCorrections++;
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
         history.push({ role: "user", content: rejection });
-        ev.onNotice?.(`done deferred — completion correction ${doneCorrections}/${GUARD_LIMITS.MAX_DONE_CORRECTIONS}`);
+        ev.onNotice?.(`done deferred — completion correction ${shellOnlyBlock ? shellOnlyCorrections : doneCorrections}/${correctionLimit}`);
         step++;
         continue;
       }
@@ -1371,6 +1406,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       let output: string;
       let images: import("../ai/types").ImageAttachment[] | undefined;
       let mutationMayHaveOccurred: boolean | undefined;
+      let workspace: import("../ai/types").ToolResultRecord["workspace"];
+      let bracketed = false;
       if (tool === "done") {
         success = false;
         output = "Error: 'done' can only be called as the single tool invocation, not in a batch. Please send 'done' alone.";
@@ -1393,6 +1430,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             success = false;
             output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
           } else {
+            if (scratchCwd && snapshotCandidate(tool, args)) {
+              workspace = { mutation: false, skipped: "scratch" };
+              if (!scratchNoted) {
+                scratchNoted = true;
+                ev.onNotice?.(`cwd ${cwd} is a shared scratch directory: shell and computer calls here are not checked for file changes`);
+              }
+            }
             // Taken after pre-tool hooks so hook writes are never attributed to the call.
             const before = snapshotGated(tool, args) ? await takeSnapshot() : undefined;
             try {
@@ -1423,7 +1467,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               // bash/computer: the workspace diff is the sole mutation authority (overrides
               // handler flags and the catch heuristic). Both sides share one racy anchor so
               // an unchanged recently-modified file is hashed on both sides or neither.
-              mutationMayHaveOccurred = before.ok ? workspaceSnapshotChanged(before, await takeSnapshot(before.startedAtMs)) : true;
+              const after = before.ok ? await takeSnapshot(before.startedAtMs) : undefined;
+              mutationMayHaveOccurred = after ? workspaceSnapshotChanged(before, after) : true;
+              bracketed = true;
+              const failed = !before.ok ? before : after && !after.ok ? after : undefined;
+              const change = after ? snapshotChangedPaths(before, after) : null;
+              workspace = {
+                mutation: mutationMayHaveOccurred,
+                ...(mutationMayHaveOccurred && change ? { changed: formatSnapshotChange(change) } : {}),
+                ...(failed && !failed.ok ? { inconclusive: `${failed.reason}: ${failed.detail}` } : {}),
+              };
             }
             // A pre-tool hook's structured `additionalContext` rides along with the result
             // so the model sees it next to the output it concerns.
@@ -1431,7 +1484,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
         }
       }
-      return { success, output, images, mutationMayHaveOccurred };
+      return { success, output, images, mutationMayHaveOccurred, bracketed, workspace };
     };
 
     const WRITE_TOOLS = new Set(["write", "edit"]);
@@ -1474,7 +1527,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       }
     }
 
-    const results: { success: boolean; output: string; executed: boolean; images?: import("../ai/types").ImageAttachment[]; mutationMayHaveOccurred?: boolean }[] = Array.from(
+    const results: { success: boolean; output: string; executed: boolean; images?: import("../ai/types").ImageAttachment[]; mutationMayHaveOccurred?: boolean; bracketed?: boolean; workspace?: import("../ai/types").ToolResultRecord["workspace"] }[] = Array.from(
       { length: toolCalls.length },
       () => ({ success: false, output: "", executed: false })
     );
@@ -1563,6 +1616,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         id: idFor(idx),
         output: bodies[i],
         isError: !results[idx].success,
+        ...(results[idx].workspace ? { workspace: results[idx].workspace } : {}),
       }));
       pushAssistantTurn(history, responseText, reasonBuf, artifactBuf, toolUse);
       const resultMsg: Message = { role: "user", content: resultBlocks.join("\n\n"), toolResults };
@@ -1607,11 +1661,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         if (results[i].success && verificationProducedEvidence(command, String(results[i].output ?? ""))) {
           sawVerification = true;
           lastVerificationSeq = ++mutVerSeq;
-          if (!pendingHookFailure) doneCorrections = 0;
+          // A passing verification supersedes the evidence before it: what happens next is judged on its own.
+          definiteMutation = false;
+          shellChanges.length = 0;
+          unmeasuredSnapshot = null;
+          if (!pendingHookFailure) { doneCorrections = 0; shellOnlyCorrections = 0; }
         } else {
           sawVerification = false;
           if (results[i].mutationMayHaveOccurred === true) {
             sawMutation = true;
+            definiteMutation = true; // a verifier is never snapshot-bracketed: this flag came from the handler itself
             lastMutationSeq = ++mutVerSeq;
           }
         }
@@ -1619,6 +1678,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       }
       if (t === "todo" && results[i].success && doneCorrections > 0 && (!sawMutation || (sawVerification && lastMutationSeq < lastVerificationSeq)) && !pendingHookFailure) {
         doneCorrections = 0;
+        shellOnlyCorrections = 0;
       }
 
       const output = String(results[i].output ?? "").trim();
@@ -1638,19 +1698,24 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         if (results[i].success || results[i].mutationMayHaveOccurred === true) {
           sawMutation = true;
           lastMutationSeq = ++mutVerSeq;
+          if (results[i].bracketed !== true) definiteMutation = true;
+          else if (results[i].workspace?.changed) shellChanges.push(results[i].workspace!.changed!);
         }
       } else if (t === "debug" && MUTATING_DEBUG_ACTIONS[String(toolCalls[i].arguments?.action ?? "")] === true) {
         sawMutation = true;
+        definiteMutation = true;
         lastMutationSeq = ++mutVerSeq;
       } else if (t === "monitor" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
         // Starting a background monitor can mutate the workspace asynchronously;
         // read-only monitor controls (list/tail/await/cancel) do not invalidate verification.
         sawMutation = true;
+        definiteMutation = true;
         lastMutationSeq = ++mutVerSeq;
       } else if (t === "job" && String(toolCalls[i].arguments?.action ?? "").trim().toLowerCase() === "start") {
         // Starting a background shell may mutate the workspace asynchronously;
         // read-only job controls (list/tail/await/cancel) do not invalidate verification.
         sawMutation = true;
+        definiteMutation = true;
         lastMutationSeq = ++mutVerSeq;
       }
     }

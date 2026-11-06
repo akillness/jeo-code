@@ -663,8 +663,9 @@ test("createTaskTool: an exhausted completion mentioning 429 is not rerouted as 
   expect(await fs.readFile(path.join(cwd, "made.txt"), "utf8")).toBe("changed");
   expect(res.success).toBe(false);
   expect(res.output).toContain("UNVERIFIED");
-  // One bash step plus four rejected done calls, all on the primary model.
-  expect(modelsCalled).toEqual(Array(5).fill("claude-sonnet-4-6"));
+  // One bash step plus two done calls: the only mutation evidence is the bash snapshot bracket (shell-only),
+  // which earns a single correction. All calls stay on the primary model.
+  expect(modelsCalled).toEqual(Array(3).fill("claude-sonnet-4-6"));
   expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
 });
 

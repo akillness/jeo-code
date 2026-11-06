@@ -10,6 +10,10 @@ import {
 } from "../src/agent/loop-guards";
 import { verificationProducedEvidence } from "../src/agent/loop-guards";
 
+// The sentence every shell-evidence note ends with: only verification clears the gate, and the answer is labelled
+// UNVERIFIED if the budget runs out first (a reply alone never lifts it).
+const GATE_ESCAPE = "Only a passing verification command clears this check; if none applies, the answer is returned labelled UNVERIFIED once the correction budget is spent.";
+
 
 test("isVerificationSignal only accepts explicit supported verification commands", () => {
   for (const command of ["bun test", "bun test test/foo.test.ts", "bun run typecheck", "tsc --noEmit", "cargo test", "npm run build", "eslint ."]) {
@@ -145,13 +149,14 @@ test("classifyDoneGate: an unmeasured shell effect is named in the unverified an
   expect(unverified.state).toBe("done_unverified");
   expect(unverified.block).toBe(true);
   expect(unverified.message).toContain("no passing verification");
-  expect(unverified.message).toContain("could not measure a shell call's effect");
+  expect(unverified.message).toContain("could not measure a shell/computer call's effect");
   expect(unverified.message).toContain(unmeasured);
-  expect(unverified.message).toContain("if every command you ran was read-only, say so");
+  expect(unverified.message).toContain(GATE_ESCAPE);
 
   const stale = classifyDoneGate({ sawMutation: true, sawVerification: true, verificationStale: true, pendingHookFailure: null, unmeasured });
   expect(stale.state).toBe("done_stale_verification");
   expect(stale.message).toContain(unmeasured);
+  expect(stale.message).toContain(GATE_ESCAPE);
 });
 
 test("classifyDoneGate: the unmeasured note never changes the verdict and is absent without a reason", () => {
@@ -352,5 +357,86 @@ test("formatRejectedCompletion keeps the candidate answer under the UNVERIFIED m
 test("formatRejectedCompletion without a candidate returns the plain stop text", () => {
   for (const candidate of ["", "   \n\t "]) {
     expect(formatRejectedCompletion(candidate, 3, "reason here")).toBe("Stopped: completion rejected after 3 corrections. reason here");
+  }
+});
+
+test("classifyDoneGate: shell-changed paths are named in the unverified and stale messages", () => {
+  // Fails against the old gate: the message said only "you modified files", so the model could not tell its own
+  // writes from an unrelated process's and retried the same completion.
+  const shellChanged = "modified heartbeat.json; added x.txt";
+  const note = `Note: around a shell/computer call the host saw these paths change: ${shellChanged}.`;
+
+  const unverified = classifyDoneGate({ sawMutation: true, sawVerification: false, pendingHookFailure: null, shellChanged });
+  expect(unverified.state).toBe("done_unverified");
+  expect(unverified.block).toBe(true);
+  expect(unverified.message).toContain("no passing verification");
+  expect(unverified.message).toContain(note);
+  expect(unverified.message).toContain("Something other than your commands may have written them (another process, or your own background job)");
+  expect(unverified.message).toContain(GATE_ESCAPE);
+
+  const stale = classifyDoneGate({ sawMutation: true, sawVerification: true, verificationStale: true, pendingHookFailure: null, shellChanged });
+  expect(stale.state).toBe("done_stale_verification");
+  expect(stale.block).toBe(true);
+  expect(stale.message).toContain("You verified earlier, but then modified files again");
+  expect(stale.message).toContain(note);
+  expect(stale.message).toContain(GATE_ESCAPE);
+});
+
+test("classifyDoneGate: shell-changed and unmeasured notes compose, changed paths first", () => {
+  const shellChanged = "added made.txt";
+  const unmeasured = "cap: workspace snapshot exceeded 2000 ms";
+  for (const input of [
+    { sawMutation: true, sawVerification: false, pendingHookFailure: null },
+    { sawMutation: true, sawVerification: true, verificationStale: true, pendingHookFailure: null },
+  ]) {
+    const { message } = classifyDoneGate({ ...input, shellChanged, unmeasured });
+    const changedAt = message.indexOf(`these paths change: ${shellChanged}.`);
+    const unmeasuredAt = message.indexOf(`(${unmeasured})`);
+    expect(changedAt).toBeGreaterThan(-1);
+    expect(unmeasuredAt).toBeGreaterThan(changedAt);
+  }
+});
+
+test("classifyDoneGate: the shell-changed note never changes the verdict and is absent without paths", () => {
+  // Like `unmeasured`, it only explains a block that already holds; it must not create or lift one.
+  const shellChanged = "added made.txt";
+  expect(classifyDoneGate({ sawMutation: false, sawVerification: false, pendingHookFailure: null, shellChanged }))
+    .toEqual({ state: "done_ok", block: false, message: "" });
+  expect(classifyDoneGate({ sawMutation: true, sawVerification: true, pendingHookFailure: null, shellChanged }))
+    .toEqual({ state: "done_ok", block: false, message: "" });
+  expect(classifyDoneGate({ sawMutation: true, sawVerification: true, verificationStale: false, pendingHookFailure: null, shellChanged }).block).toBe(false);
+  // A failing hook keeps its own state and message: the model must fix the hook, not reason about paths.
+  const hook = classifyDoneGate({ sawMutation: true, sawVerification: true, pendingHookFailure: "bun test", shellChanged });
+  expect(hook.state).toBe("done_hook_failing");
+  expect(hook.block).toBe(true);
+  expect(hook.message).not.toContain(shellChanged);
+  expect(hook.message).not.toContain("Only a passing verification command");
+  // No (or empty) path list means no note at all, not a dangling "Note: ... change: .".
+  for (const absent of [undefined, ""]) {
+    const plain = classifyDoneGate({ sawMutation: true, sawVerification: false, pendingHookFailure: null, shellChanged: absent });
+    expect(plain.state).toBe("done_unverified");
+    expect(plain.message).not.toContain("these paths change");
+    expect(plain.message).not.toContain("Something other than your commands");
+    expect(plain.message).not.toContain(GATE_ESCAPE);
+  }
+});
+
+test("formatRejectedCompletion pluralizes the correction count and keeps the UNVERIFIED marker rule", () => {
+  // Fails against the old text, which said "after 1 corrections.".
+  const rejection = "reason here";
+  for (const { count, noun } of [
+    { count: 0, noun: "corrections" },
+    { count: 1, noun: "correction" },
+    { count: 2, noun: "corrections" },
+    { count: 3, noun: "corrections" },
+  ]) {
+    const stop = `Stopped: completion rejected after ${count} ${noun}. ${rejection}`;
+    // No candidate answer: just the stop text, never the marker.
+    for (const empty of ["", "   \n\t "]) expect(formatRejectedCompletion(empty, count, rejection)).toBe(stop);
+    // A candidate answer is kept verbatim (trimmed) under the marker, with the same stop text last.
+    const withAnswer = formatRejectedCompletion("  The answer\n", count, rejection);
+    expect(withAnswer.startsWith(`${UNVERIFIED_MARKER} - `)).toBe(true);
+    expect(withAnswer).toContain("\n\nThe answer\n\n");
+    expect(withAnswer.endsWith(stop)).toBe(true);
   }
 });

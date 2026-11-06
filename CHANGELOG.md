@@ -9,6 +9,14 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Fixed
+- **A read-only turn is no longer sent through three full-history retries by an unrelated writer** - the done gate counts a `bash` call as a file change when the workspace digest differs before and after it. In a shared directory (`/tmp`) a daemon heartbeat rewritten every 60 s during a 120 s `find /` flipped that digest, so a turn of `pwd`/`jeo-skill doctor` ended `UNVERIFIED` after three correction rounds (226k input tokens for `sleep 70`; the same prompt in an empty directory cost 32k). Three changes: (1) when the cwd *is* a shared scratch root (`$HOME`, `/`, a system temp dir) `bash` and `computer` calls are no longer snapshot-bracketed - the diff there cannot be attributed to one call and no project verifier exists - with one notice and `workspace: { mutation: false, skipped: "scratch" }` on the result; built-in `write`/`edit` and project directories nested inside a scratch root stay gated; (2) evidence that comes only from a shell/computer bracket ("shell-only": no built-in mutator, debug, monitor or job ran) earns one correction instead of three, counted apart from todo/hook nudges, and launch's `onBeforeDone` restatement of the gate (`MUTATION_NUDGE_PREFIX`) no longer disables that cap; (3) a passing verification now also resets the definite-mutation evidence, so a later unrelated write is judged as shell-only again. Re-run with an unrelated writer in a nested project dir: one correction, 47.8k tokens.
+
+### Changed
+- **The done gate names the paths a shell call changed** - a snapshot mismatch is diffed per path (`snapshotChangedPaths`, `formatSnapshotChange`; the snapshot now keeps a relative-path to fingerprint map, digest arithmetic unchanged) and the unverified / stale-verification messages say `the host saw these paths change: modified heartbeat.json`, so the user and model can tell the command's writes from someone else's. The note no longer suggests that replying "read-only" can clear the gate - only a passing verification does - and `workspace snapshot inconclusive` notices and `done deferred` counters show the effective limit (`1/1`).
+- **Transcripts record the workspace evidence** - each bash/computer tool result persists `workspace: { mutation, changed?, inconclusive?, skipped? }` in the session (never sent to a provider), so a rejected completion can be audited from the transcript; before, 1,221 sessions could not show which call latched the mutation flag.
+- `formatRejectedCompletion` pluralizes (`after 1 correction.`).
+
 ## [0.12.25] - 2026-11-06
 
 ### Changed

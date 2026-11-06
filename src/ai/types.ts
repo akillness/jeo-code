@@ -81,6 +81,14 @@ export interface ToolResultRecord {
   id: string;
   output: string;
   isError: boolean;
+  /**
+   * Host-side workspace evidence for a shell/computer call. Never sent to a provider; persisted with
+   * the transcript so a completion-gate rejection can be audited afterwards. `mutation` is whether the
+   * snapshot bracket counted the call as a possible file change, `changed` names the paths that differed,
+   * and `inconclusive` is why the bracket could not measure (cap or error; counted as a change). `skipped: "scratch"`
+   * means the cwd is a shared scratch root, where calls are deliberately not bracketed (nothing was measured).
+   */
+  workspace?: { mutation: boolean; changed?: string; inconclusive?: string; skipped?: "scratch" };
 }
 
 export interface Usage {

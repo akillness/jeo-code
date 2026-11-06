@@ -288,6 +288,8 @@ Both are advisory: a non-zero exit, timeout or abort prints a notice and never b
 
 **User registry.** `~/.jeo/hooks.json` (same shape as `.jeo/hooks.json`; follows `JEO_CONFIG_DIR`) is a hooks-only file for tools that install hooks for you, such as jeo-skills' prompt routing and knowledge pipeline, kept apart from `config.json` so credentials are never rewritten. Precedence: `"hooks": { "enabled": false }` in `config.json` disables everything; a project `.jeo/hooks.json` with `"enabled": false` opts that project out; otherwise the registry runs, with no `hooks.enabled: true` needed, ahead of configured hooks. A project's own `hooks` list still replaces the `config.json` list, never the registry, and project / `config.json` hooks still run only with `hooks.enabled: true`. Sandboxed sessions skip the registry.
 
+`jeo doctor` prints a `[hooks]` line (and `hooks` in `--json`) with what runs right now, and warns when the registry or project file is unreadable, an entry was dropped as invalid, or a kill switch or project opt-out is silencing everything.
+
 ## Memory flow
 
 `jeo` keeps a **local-first, distilled project memory** under `.jeo/memory/` (no remote backend, zero native deps). Past sessions are distilled into an [OKF](docs/okf_mem/) concept bundle, and the next session injects only the relevant, budget-bounded slice back into the system prompt — hardened as DATA, never as instructions. Disable everything with `JEO_NO_MEMORY=1`.

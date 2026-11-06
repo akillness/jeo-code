@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { loadHooks, runPrePromptHooks, runTurnEndHooks, runPreToolHooks, setHookSessionId } from "../src/agent/hooks";
+import { loadHooks, describeHooks, runPrePromptHooks, runTurnEndHooks, runPreToolHooks, setHookSessionId } from "../src/agent/hooks";
 
 // Each test gets its own config dir: the hook readers cache by path + mtime/size, so a
 // shared path rewritten within one millisecond could serve a stale parse.
@@ -236,4 +236,33 @@ test("pre-tool: the payload carries Claude tool_name/tool_input beside jeo's too
     tool_name: "write",
     tool_input: { path: "x.ts", content: "1" },
   });
+});
+
+test("describeHooks reports the gate, both files and what actually runs", async () => {
+  await writeConfig();
+  await writeUser({ hooks: [{ event: "pre-prompt", run: "echo a" }, { event: "turn-end", run: "echo b" }, { event: "bogus", run: "echo c" }, { event: "pre-prompt" }] });
+  const report = await describeHooks(proj);
+  expect(report.gate).toBe("unset");
+  expect(report.registry).toMatchObject({ state: "ok", entries: 2, invalid: 2 });
+  expect(report.project).toMatchObject({ state: "missing", entries: 0, invalid: 0 });
+  expect(report.active).toEqual({ "pre-prompt": 1, "turn-end": 1 });
+  expect(report.total).toBe(2);
+});
+
+test("describeHooks explains why nothing runs: kill switch, project opt-out, unreadable registry", async () => {
+  await writeConfig({ enabled: false });
+  await writeUser({ hooks: [{ event: "pre-prompt", run: "echo a" }] });
+  expect(await describeHooks(proj)).toMatchObject({ gate: "off", total: 0 });
+
+  await writeConfig();
+  await writeProject({ enabled: false });
+  const optedOut = await describeHooks(proj);
+  expect(optedOut.project.state).toBe("disabled");
+  expect(optedOut.total).toBe(0);
+
+  await fs.rm(path.join(proj, ".jeo", "hooks.json"));
+  await fs.writeFile(path.join(cfgDir, "hooks.json"), "{not json", "utf-8");
+  const broken = await describeHooks(proj);
+  expect(broken.registry.state).toBe("unreadable");
+  expect(broken.total).toBe(0);
 });

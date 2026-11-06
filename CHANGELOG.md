@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Added
+- **`jeo doctor` hooks section** - a read-only `[hooks]` line (and `hooks` in `--json`) shows the global `hooks.enabled` state, the user registry and the project `.jeo/hooks.json` as written (valid and invalid entry counts, unreadable or `enabled: false` files) and what runs right now per event. Installers write these files and an unrunnable entry is dropped silently, so this is where to see why a hook is idle. It never affects `ready` or `--strict`, and prints nothing when no hook is configured and nothing is wrong.
+
 ### Fixed
 - **A one-shot task now ranks the skills the system prompt advertises** - `jeo launch "<task>"` never passed the task to `skillsPromptSection`, so its relevance sort did not run and the ~40 visible skills (of 780+ installed) were whatever the directory listing returned first. The task now reaches it; matching is Unicode-aware (Korean, Japanese and Chinese words were dropped by the ASCII-only tokenizer); and a skill's description counts, at most +8, always below an exact name (+20) or name part (+10) match. Interactive sessions have no task at boot and are unchanged - per-prompt routing there stays with `pre-prompt` hooks.
 

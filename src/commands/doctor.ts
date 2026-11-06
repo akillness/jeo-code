@@ -1,4 +1,5 @@
 import { readGlobalConfig } from "../agent/state";
+import { describeHooks, type HookReport } from "../agent/hooks";
 import { findRetiredPins } from "../ai/model-retirements";
 import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider, describeProvider } from "../ai";
@@ -308,6 +309,28 @@ function sharedInstallLines(report: SharedInstallReport): string[] {
   return lines;
 }
 
+/** Human lines for the hook setup. Silent when nothing is configured and nothing is wrong. */
+function hookLines(report: HookReport | { error: string }): string[] {
+  if ("error" in report) return [chalk.yellow(`[hooks] check failed (${report.error})`)];
+  const { gate, registry, project, active, total } = report;
+  const lines: string[] = [];
+  if (gate === "off") lines.push(chalk.yellow("[hooks] disabled globally (config.json hooks.enabled=false): no hook runs, the registry included."));
+  if (project.state === "disabled") lines.push(chalk.yellow(`[hooks] ${project.path} sets enabled:false: no hook runs in this project.`));
+  for (const file of [registry, project]) {
+    if (file.state === "unreadable") lines.push(chalk.yellow(`[hooks] ${file.path} is not readable JSON: its hooks are ignored.`));
+    if (file.invalid > 0) lines.push(chalk.yellow(`[hooks] ${file.path}: ${file.invalid} invalid entr${file.invalid === 1 ? "y" : "ies"} ignored (unknown event, missing run, or bad timeoutMs).`));
+  }
+  if (project.state === "ok" && project.entries > 0 && gate !== "on") {
+    lines.push(chalk.yellow(`[hooks] ${project.path} lists ${project.entries} hook(s) that do not run: project hooks need hooks.enabled=true in config.json.`));
+  }
+  if (total > 0) {
+    const parts = Object.entries(active).map(([event, count]) => `${event} ${count}`).join(", ");
+    lines.push(`${chalk.green("[hooks]")} ${total} active (${parts})${registry.state === "ok" ? `; registry ${registry.path}` : ""}`);
+  }
+  if (lines.length > 0) lines.push("");
+  return lines;
+}
+
 export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {}): Promise<void> {
   const strict = args.includes("--strict");
   const json = args.includes("--json");
@@ -476,6 +499,14 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
     sharedInstall = { error: err instanceof Error ? err.message : String(err) };
   }
 
+  // Hook setup: read-only, never affects `ready` or the exit code.
+  let hooks: HookReport | { error: string };
+  try {
+    hooks = await describeHooks(process.cwd());
+  } catch (err) {
+    hooks = { error: err instanceof Error ? err.message : String(err) };
+  }
+
   // --- JSON output mode (CI / scripting) ---
   if (json) {
     const report = {
@@ -498,6 +529,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
       })),
       oauth: oauthHealth,
       ready,
+      hooks,
       ...(routingEnabled ? { routing: { enabled: true, smolConfigured, preview: routingPreview, ...(routingNotes.length ? { notes: routingNotes } : {}) } } : {}),
       sharedInstall,
 
@@ -594,6 +626,8 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
     for (const line of sharedInstallLines(sharedInstall)) console.log(line);
   }
   console.log("");
+
+  for (const line of hookLines(hooks)) console.log(line);
 
   // Final verdict
   if (ready) {

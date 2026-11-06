@@ -231,6 +231,8 @@ jeo ultragoal
 
 **用户注册表。** `~/.jeo/hooks.json`(与 `.jeo/hooks.json` 格式相同,遵循 `JEO_CONFIG_DIR`)是供代你安装钩子的工具(如 jeo-skills 的提示路由和知识管道)使用的仅含钩子的文件,与 `config.json` 分离,因此凭据不会被重写。优先级:`config.json` 中的 `"hooks": { "enabled": false }` 会禁用一切;项目 `.jeo/hooks.json` 中的 `"enabled": false` 仅让该项目退出;否则注册表无需 `hooks.enabled: true` 即可运行,并排在已配置钩子之前。项目自己的 `hooks` 列表仍然只替换 `config.json` 的列表,绝不替换注册表,且项目 / `config.json` 钩子仍然只在 `hooks.enabled: true` 时运行。沙箱会话会跳过注册表。
 
+`jeo doctor` 会用 `[hooks]` 行(`--json` 中为 `hooks`)显示当前实际运行的钩子,并在注册表/项目文件无法读取、条目因无效被忽略,或全局开关/项目退出让所有钩子失效时发出警告。
+
 ## 内存流程
 
 `jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。

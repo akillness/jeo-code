@@ -285,6 +285,8 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 
 **사용자 레지스트리.** `~/.jeo/hooks.json`(`.jeo/hooks.json`과 같은 형식, `JEO_CONFIG_DIR`을 따름)은 jeo-skills의 프롬프트 라우팅·지식 파이프라인처럼 훅을 대신 설치하는 도구를 위한 훅 전용 파일이며, 자격 증명이 다시 쓰이지 않도록 `config.json`과 분리되어 있습니다. 우선순위: `config.json`의 `"hooks": { "enabled": false }`는 모든 훅을 끄고, 프로젝트 `.jeo/hooks.json`의 `"enabled": false`는 그 프로젝트만 제외하며, 그 외에는 `hooks.enabled: true` 없이도 레지스트리가 설정된 훅보다 먼저 실행됩니다. 프로젝트 자체 `hooks` 목록은 `config.json` 목록만 대체하고 레지스트리는 대체하지 않으며, 프로젝트 / `config.json` 훅은 여전히 `hooks.enabled: true`일 때만 실행됩니다. 샌드박스 세션은 레지스트리를 건너뜁니다.
 
+`jeo doctor` 는 지금 실행되는 훅을 `[hooks]` 줄(`--json` 에서는 `hooks`)로 보여 주고, 레지스트리/프로젝트 파일을 읽을 수 없거나 항목이 잘못되어 무시되었거나 전역 스위치·프로젝트 opt-out 이 모든 훅을 끈 경우 경고합니다.
+
 ## 메모리 흐름
 
 `jeo`는 `.jeo/memory/` 아래에 **로컬 우선·증류된 프로젝트 메모리**를 둡니다(원격 백엔드 없음, 네이티브 의존성 0). 지난 세션은 [OKF](docs/okf_mem/) 개념 번들로 증류되고, 다음 세션은 관련성 높은 예산 한도 내 일부만 시스템 프롬프트로 다시 주입합니다 — 지시가 아닌 DATA로 강화 처리됩니다. `JEO_NO_MEMORY=1`로 전체 비활성화.

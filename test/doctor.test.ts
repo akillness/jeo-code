@@ -348,3 +348,41 @@ test("runDoctorCommand (human output): routing preview prints tier -> model (pro
   expect(output).toContain("auto-selected: cheapest credentialed");
   expect(output).toContain("auto-selected: strongest credentialed");
 });
+async function runDoctor(args: string[]): Promise<string> {
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(args);
+  } finally {
+    console.log = orig;
+  }
+  return lines.join("\n");
+}
+
+test("runDoctorCommand --json: hooks section lists active hooks and dropped entries", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "gpt-4o" }));
+  await fs.writeFile(path.join(cfgDir, "hooks.json"), JSON.stringify({ hooks: [
+    { event: "pre-prompt", run: "echo route" },
+    { event: "turn-end", run: "echo ingest" },
+    { event: "no-such-event", run: "echo x" },
+  ] }));
+  const report = JSON.parse(await runDoctor(["--json"]));
+  expect(report.hooks.gate).toBe("unset");
+  expect(report.hooks.registry).toMatchObject({ state: "ok", entries: 2, invalid: 1 });
+  expect(report.hooks.active).toEqual({ "pre-prompt": 1, "turn-end": 1 });
+});
+
+test("runDoctorCommand: human output names active hooks and warns about dropped ones", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "gpt-4o" }));
+  await fs.writeFile(path.join(cfgDir, "hooks.json"), JSON.stringify({ hooks: [{ event: "pre-prompt", run: "echo route" }, { event: "pre-prompt" }] }));
+  const out = await runDoctor([]);
+  expect(out).toContain("[hooks] 1 active (pre-prompt 1)");
+  expect(out).toContain("1 invalid entry ignored");
+});
+
+test("runDoctorCommand: no hooks configured prints no hooks line", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "gpt-4o" }));
+  expect(await runDoctor([])).not.toContain("[hooks]");
+});

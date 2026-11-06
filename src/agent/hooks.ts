@@ -159,6 +159,66 @@ export async function loadHooks(cwd: string, signal?: AbortSignal): Promise<Hook
   return userHooks.length ? [...userHooks, ...configured] : configured;
 }
 
+/** One hook file as `describeHooks` sees it, read fresh (never from the loader cache). */
+export interface HookFileReport {
+  path: string;
+  /** `missing`; `ok`; `disabled` (`enabled: false`); `unreadable` (not valid JSON or not an object). */
+  state: "missing" | "ok" | "disabled" | "unreadable";
+  /** Entries that can run. */
+  entries: number;
+  /** Entries dropped as unrunnable (unknown event, missing `run`, bad `timeoutMs`). */
+  invalid: number;
+}
+
+export interface HookReport {
+  /** `config.hooks.enabled`: `on` (true), `off` (false: global kill switch), `unset`. */
+  gate: "on" | "off" | "unset";
+  registry: HookFileReport;
+  project: HookFileReport;
+  /** What `loadHooks(cwd)` returns right now, counted by event. */
+  active: Partial<Record<HookEvent, number>>;
+  total: number;
+}
+
+async function inspectHookFile(file: string): Promise<HookFileReport> {
+  let text: string;
+  try {
+    text = await fs.readFile(file, "utf-8");
+  } catch (err: unknown) {
+    const missing = isRecord(err) && err.code === "ENOENT";
+    return { path: file, state: missing ? "missing" : "unreadable", entries: 0, invalid: 0 };
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { path: file, state: "unreadable", entries: 0, invalid: 0 }; }
+  if (!isRecord(parsed)) return { path: file, state: "unreadable", entries: 0, invalid: 0 };
+  const list = Array.isArray(parsed.hooks) ? parsed.hooks : [];
+  const entries = list.filter(isHookEntry).length;
+  return { path: file, state: parsed.enabled === false ? "disabled" : "ok", entries, invalid: list.length - entries };
+}
+
+/**
+ * Read-only account of the hook setup for `jeo doctor`: the global switch, the user
+ * registry and the project file as written (with how many entries were dropped as
+ * unrunnable), and what actually runs for `cwd`. Installers write these files, and a bad
+ * entry is otherwise dropped silently, so this is the one place to see why a hook is idle.
+ */
+export async function describeHooks(cwd: string): Promise<HookReport> {
+  const config = await readGlobalConfig();
+  const gate = config.hooks?.enabled === true ? "on" : config.hooks?.enabled === false ? "off" : "unset";
+  const [registry, project] = await Promise.all([inspectHookFile(userHooksPath()), inspectHookFile(path.join(cwd, ".jeo", "hooks.json"))]);
+  const active: Partial<Record<HookEvent, number>> = {};
+  let total = 0;
+  try {
+    for (const hook of await loadHooks(cwd)) {
+      active[hook.event] = (active[hook.event] ?? 0) + 1;
+      total++;
+    }
+  } catch {
+    // An unreadable project file must not take the whole report down.
+  }
+  return { gate, registry, project, active, total };
+}
+
 async function runHookCommand(
   runCmd: string,
   payload: unknown,

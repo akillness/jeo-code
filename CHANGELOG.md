@@ -9,6 +9,11 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.30] - 2026-11-07
+
+### Fixed
+- **Antigravity multi-turn tool calling preserves thought signatures to prevent HTTP 400 errors** - Google Cloud Code Assist / Antigravity strictly enforces `thoughtSignature` on `functionCall` parts for Gemini 2.5 and Gemini 3 models (previously failing with `HTTP 400: Function call is missing a thought_signature in functionCall parts`). The Antigravity adapter now captures authentic thought signatures during streaming chunks, replays them on the first `functionCall` part of subsequent turns, falls back to the official Google sentinel `skip_thought_signature_validator` when synthetic or un-signed calls are replayed, and guards requests with `fetchWithArtifactFailSafe` to retry with stripped artifacts should signature verification fail.
+
 ## [0.12.29] - 2026-11-07
 
 ### Fixed

@@ -9,6 +9,11 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.28] - 2026-11-07
+
+### Fixed
+- **A successful `bun install -g` on Windows no longer reports "Failed to install update."** - `runInstall` treated an unreadable active version (`jeo --version` returning null) exactly like a positively stale binary, so it burned the `--force` retry and failed a landed install. A null is now trusted as success (only a real older version string retries/fails), and `readActiveVersion` retries the `jeo.exe` and `cmd /c` spellings on win32, which a bare `["jeo", ...]` spawn often cannot resolve.
+
 ## [0.12.27] - 2026-11-06
 
 ### Fixed

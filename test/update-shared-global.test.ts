@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { installCandidates, manualInstallLines, runInstall, runUpdateCommandWith, type InstallIo, type InstallResult, type UpdateDeps } from "../src/commands/update";
+import { installCandidates, jeoVersionAttempts, manualInstallLines, runInstall, runUpdateCommandWith, type InstallIo, type InstallResult, type UpdateDeps } from "../src/commands/update";
 import { detectInstallOrigin, locateSharedGlobal, type InstallOrigin, type LocatedGlobal } from "../src/util/shared-global";
 
 // Every fixture lives under this root; the real ~/.bun, ~/.npmrc and installers are never touched.
@@ -1038,4 +1038,23 @@ test("runInstall resolves the origin once even when every candidate fails", () =
   runInstall("0.2.0", io);
   expect(events.filter(event => event === "origin")).toHaveLength(1);
   expect(events[0]).toBe("origin");
+});
+
+test("runInstall accepts an installer success when the active version is unreadable (Windows shim)", () => {
+  // Regression: on Windows `bun install -g` succeeds ("N packages installed") yet a bare
+  // `jeo --version` spawn can fail to resolve the bin, so activeVersion is null. That must
+  // not burn the --force candidate and report a failure for a landed install.
+  const { io, spawned } = recordingIo("unknown", [{ success: true }]); // active defaults to null
+  expect(runInstall("0.2.0", io)).toEqual({ success: true });
+  expect(spawned).toEqual([BUN]);
+});
+
+test("jeoVersionAttempts: POSIX asks jeo once, win32 retries exe and cmd spellings", () => {
+  expect(jeoVersionAttempts("darwin")).toEqual([["jeo", "--version"]]);
+  expect(jeoVersionAttempts("linux")).toEqual([["jeo", "--version"]]);
+  expect(jeoVersionAttempts("win32")).toEqual([
+    ["jeo", "--version"],
+    ["jeo.exe", "--version"],
+    ["cmd", "/d", "/s", "/c", "jeo --version"],
+  ]);
 });

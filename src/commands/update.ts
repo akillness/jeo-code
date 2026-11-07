@@ -142,9 +142,15 @@ export function runInstall(version: string | undefined, io: InstallIo): InstallR
         // A zero exit is NOT proof the user's `jeo` moved: npm's global prefix is
         // often a different directory than the bun prefix PATH actually resolves,
         // so an npm fallback can "succeed" while the active binary is untouched.
-        // Only stop once the binary on PATH really reports the requested version.
-        if (!version || io.activeVersion() === version) return { success: true };
-        lastErr = `${cmd[0]} reported success but the active 'jeo' is still ${io.activeVersion() ?? "unknown"}`;
+        // Only stop once the binary on PATH really reports the requested version —
+        // unless the active version cannot be read at all (null). A null means
+        // `jeo --version` could not even run (e.g. a Windows `.cmd`/`.exe` shim
+        // the bare spawn cannot resolve); re-running the installer cannot fix an
+        // unreadable binary, so the installer's zero exit is trusted. A positively
+        // stale version (a real older string) is what retries and fails the update.
+        const active = io.activeVersion();
+        if (!version || active === null || active === version) return { success: true };
+        lastErr = `${cmd[0]} reported success but the active 'jeo' is still ${active ?? "unknown"}`;
         continue;
       }
       lastErr = `${cmd[0]} exited with code ${proc.exitCode}`;
@@ -155,17 +161,32 @@ export function runInstall(version: string | undefined, io: InstallIo): InstallR
   return { success: false, stderr: lastErr, manual: manualInstallLines(target, origin) };
 }
 
+/**
+ * How to ask the `jeo` on PATH for its version. On Windows the bun-global bin
+ * can be a `jeo.exe` stub or a `cmd` shim, which a bare `["jeo", ...]` spawn
+ * often cannot resolve, so a `/c` form is tried as well. Pure so both shapes
+ * are unit-testable without spawning.
+ */
+export function jeoVersionAttempts(platform: NodeJS.Platform): string[][] {
+  const direct = ["jeo", "--version"];
+  if (platform !== "win32") return [direct];
+  return [direct, ["jeo.exe", "--version"], ["cmd", "/d", "/s", "/c", "jeo --version"]];
+}
+
 /** Version of the `jeo` binary PATH actually resolves, or null when unreadable. */
 function readActiveVersion(): string | null {
-  try {
-    const proc = Bun.spawnSync(["jeo", "--version"], { stdout: "pipe", stderr: "pipe" });
-    if (!proc.success) return null;
-    const out = new TextDecoder().decode(proc.stdout);
-    const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
-    return m ? m[1] : null;
-  } catch {
-    return null;
+  for (const argv of jeoVersionAttempts(process.platform)) {
+    try {
+      const proc = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+      if (!proc.success) continue;
+      const out = new TextDecoder().decode(proc.stdout);
+      const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
+      if (m) return m[1];
+    } catch {
+      // Try the next spelling; unreadable is reported only when every one fails.
+    }
   }
+  return null;
 }
 export const defaultDeps: UpdateDeps = {
   fetchJson: async (url: string, options?: { signal?: AbortSignal }) => {

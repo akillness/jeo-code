@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { retryableStream } from "../src/ai/model-manager";
-import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
+import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter, SKIP_THOUGHT_SIGNATURE } from "../src/ai/providers/antigravity";
+import type { CallOptions, Message, ReasoningArtifact } from "../src/ai/types";
 import { isRefusalError, isProviderStreamError, isRateLimitError, isMalformedFunctionCallError, defaultRetryable, withRetry } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
@@ -461,4 +462,189 @@ test("antigravityRequest serializes multi-turn toolUse and toolResults to native
 
   expect(contents[2].role).toBe("user");
   expect(contents[2].parts[0].functionResponse).toEqual({ name: "read", response: { output: "file content here" } });
+});
+
+test("antigravityRequest: attaches SKIP_THOUGHT_SIGNATURE to first functionCall when no artifact exists", () => {
+  const messages: Message[] = [
+    { role: "user", content: "read file" },
+    {
+      role: "assistant",
+      content: '{"tool":"read","arguments":{"filePath":"test.txt"}}',
+      toolUse: [
+        { id: "call_1", tool: "read", arguments: { filePath: "test.txt" } },
+        { id: "call_2", tool: "done", arguments: {} },
+      ],
+    },
+  ];
+  const opts: CallOptions = { model: "antigravity/gemini-3.8-flash-high" };
+  const { body } = antigravityRequest(messages, opts, cred);
+  const payload = JSON.parse(body);
+  const parts = payload.request.contents[1].parts;
+  // First functionCall MUST have the sentinel signature to satisfy Google's validator.
+  expect(parts[0].functionCall.name).toBe("read");
+  expect(parts[0].thoughtSignature).toBe(SKIP_THOUGHT_SIGNATURE);
+  // Parallel call in the same turn does NOT have thoughtSignature per Gemini spec.
+  expect(parts[1].functionCall.name).toBe("done");
+  expect(parts[1].thoughtSignature).toBeUndefined();
+});
+
+test("antigravityRequest: replays authentic thoughtSignature when present in reasoningArtifacts", () => {
+  const authentic = "authentic_signature_bytes_base64==";
+  const messages: Message[] = [
+    { role: "user", content: "read file" },
+    {
+      role: "assistant",
+      content: '{"tool":"read","arguments":{"filePath":"test.txt"}}',
+      toolUse: [{ id: "call_1", tool: "read", arguments: { filePath: "test.txt" } }],
+      reasoningArtifacts: [
+        { provider: "antigravity", model: "antigravity/gemini-3.8-flash-high", thoughtSignature: authentic },
+      ],
+    },
+  ];
+  const opts: CallOptions = { model: "antigravity/gemini-3.8-flash-high" };
+  const { body } = antigravityRequest(messages, opts, cred);
+  const payload = JSON.parse(body);
+  const parts = payload.request.contents[1].parts;
+  expect(parts[0].thoughtSignature).toBe(authentic);
+});
+
+test("antigravityAdapter.stream: captures thoughtSignature from SSE chunk into onReasoningArtifact", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  const sig = "sig_from_stream_12345";
+  globalThis.fetch = (async () =>
+    new Response(
+      sse({
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    functionCall: { name: "default_api:read", args: { filePath: "test.txt" } },
+                    thoughtSignature: sig,
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    const artifacts: ReasoningArtifact[] = [];
+    const opts: CallOptions = {
+      model: "antigravity/gemini-3.8-flash-high",
+      onReasoningArtifact: a => artifacts.push(a),
+    };
+    let out = "";
+    for await (const chunk of antigravityAdapter.stream!([{ role: "user", content: "read" }], opts, cred)) {
+      out += chunk;
+    }
+    expect(JSON.parse(out)).toEqual({ tool: "read", arguments: { filePath: "test.txt" } });
+    expect(artifacts).toEqual([
+      { provider: "antigravity", model: "antigravity/gemini-3.8-flash-high", thoughtSignature: sig },
+    ]);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call: captures thoughtSignature from SSE chunk into onReasoningArtifact", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  const sig = "sig_from_call_67890";
+  globalThis.fetch = (async () =>
+    new Response(
+      sse({
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    functionCall: { name: "default_api:read", args: { filePath: "test.txt" } },
+                    thought_signature: sig,
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    const artifacts: ReasoningArtifact[] = [];
+    const opts: CallOptions = {
+      model: "antigravity/gemini-3.8-flash-high",
+      onReasoningArtifact: a => artifacts.push(a),
+    };
+    const out = await antigravityAdapter.call([{ role: "user", content: "read" }], opts, cred);
+    expect(JSON.parse(out)).toEqual({ tool: "read", arguments: { filePath: "test.txt" } });
+    expect(artifacts).toEqual([
+      { provider: "antigravity", model: "antigravity/gemini-3.8-flash-high", thoughtSignature: sig },
+    ]);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravity failsafe retries with stripArtifacts (SKIP_THOUGHT_SIGNATURE) on 400 thought_signature error", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  let callCount = 0;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    callCount++;
+    const reqBody = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    const contents = reqBody.request?.contents ?? [];
+    const firstPart = contents[1]?.parts?.[0];
+    if (callCount === 1) {
+      // First call has the expired/invalid signature, backend returns 400.
+      expect(firstPart?.thoughtSignature).toBe("invalid_signature");
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message: "Function call is missing a thought_signature in functionCall parts.",
+            status: "INVALID_ARGUMENT",
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    // Retry call should have stripped artifacts and used SKIP_THOUGHT_SIGNATURE.
+    expect(firstPart?.thoughtSignature).toBe(SKIP_THOUGHT_SIGNATURE);
+    return new Response(
+      sse({
+        response: {
+          candidates: [{ content: { parts: [{ text: "recovered successfully" }] }, finishReason: "STOP" }],
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  }) as typeof fetch;
+  try {
+    const messages: Message[] = [
+      { role: "user", content: "read file" },
+      {
+        role: "assistant",
+        content: '{"tool":"read","arguments":{}}',
+        toolUse: [{ id: "c1", tool: "read", arguments: {} }],
+        reasoningArtifacts: [
+          { provider: "antigravity", model: "antigravity/gemini-3.8-flash-high", thoughtSignature: "invalid_signature" },
+        ],
+      },
+      { role: "user", content: "result", toolResults: [{ id: "c1", output: "ok" }] },
+    ];
+    const opts: CallOptions = { model: "antigravity/gemini-3.8-flash-high" };
+    const out = await antigravityAdapter.call(messages, opts, cred);
+    expect(out).toBe("recovered successfully");
+    expect(callCount).toBe(2);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 });

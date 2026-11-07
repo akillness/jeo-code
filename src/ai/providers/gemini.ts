@@ -110,7 +110,7 @@ export function geminiThinkingActive(options: CallOptions): boolean {
 export function geminiNativizable(m: Message, modelKey: string, thinkingEnabled: boolean): boolean {
   return thinkingEnabled
     && !!m.toolUse?.length
-    && !!m.reasoningArtifacts?.some(a => a.provider === "gemini" && a.model === modelKey && !!a.thoughtSignature);
+    && !!m.reasoningArtifacts?.some(a => (a.provider === "gemini" || a.provider === "antigravity") && a.model === modelKey && !!a.thoughtSignature);
 }
 /** Shared Gemini request payload (contents + generationConfig + systemInstruction)
  *  used by BOTH the public generativelanguage path (API key) and the Cloud Code
@@ -136,7 +136,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
     const role = m.role === "assistant" ? "model" : "user";
     let parts: GeminiPart[];
     if (m.role === "assistant" && geminiNativizable(m, options.model, thinkingEnabled)) {
-      const sig = m.reasoningArtifacts!.find(a => a.provider === "gemini" && a.model === options.model && a.thoughtSignature)?.thoughtSignature;
+      const sig = m.reasoningArtifacts!.find(a => (a.provider === "gemini" || a.provider === "antigravity") && a.model === options.model && a.thoughtSignature)?.thoughtSignature;
       parts = m.toolUse!.map((tu, idx) => {
         const p: GeminiPart = { functionCall: { name: tu.tool, args: tu.arguments } };
         if (idx === 0 && sig) p.thoughtSignature = sig; // bind the turn signature to the first call
@@ -256,7 +256,7 @@ function geminiFetchFailSafe(
 }
 
 interface GeminiChunk {
-  candidates?: { content?: { parts?: { text?: string; thought?: boolean; thoughtSignature?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
+  candidates?: { content?: { parts?: { text?: string; thought?: boolean; thoughtSignature?: string; thought_signature?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   /** A `google.rpc.Status`-shaped in-band error line: Google's streaming endpoints can emit
@@ -292,8 +292,8 @@ function thoughtOf(chunk: GeminiChunk): string {
  *  dedups across the streamed chunks of one turn. */
 function captureGeminiSignatures(chunk: GeminiChunk, options: CallOptions, seen: Set<string>): void {
   for (const p of chunk.candidates?.[0]?.content?.parts ?? []) {
-    const sig = p.thoughtSignature;
-    if (sig && !seen.has(sig)) {
+    const sig = p.thoughtSignature ?? p.thought_signature;
+    if (sig && typeof sig === "string" && !seen.has(sig)) {
       seen.add(sig);
       options.onReasoningArtifact?.({ provider: "gemini", model: options.model, thoughtSignature: sig });
     }

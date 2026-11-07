@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError, ProviderStreamError } from "./errors";
+import { providerHttpError, ProviderStreamError, fetchWithArtifactFailSafe } from "./errors";
 import { serializeToolCalls, sanitizeGeminiToolParameters } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { geminiThinkingConfig, type GeminiThinkingConfig } from "./gemini";
@@ -149,27 +149,38 @@ export async function resolveAntigravityProjectId(
   return projectId;
 }
 
+export const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+
 type CcaPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } }
-  | { functionCall: { name: string; args?: Record<string, unknown> } }
+  | { functionCall: { name: string; args?: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: Record<string, unknown> } };
 
-// Reasoning-artifact replay (signed thinking / thoughtSignature / encrypted reasoning) is
-// deliberately OUT OF SCOPE for antigravity: it captures no artifacts and replays none.
-// However, native multi-turn tool calling (functionCall / functionResponse) MUST be preserved
-// across turns for Gemini/CCA wire parity — otherwise sending tool calls as plain text JSON
-// while tools are declared causes finishReason=MALFORMED_FUNCTION_CALL on subsequent turns.
-function antigravityContents(messages: Message[]): { role: "user" | "model"; parts: CcaPart[] }[] {
+// Google Antigravity (Gemini 2.5 / 3+) strictly requires thoughtSignature on functionCall parts
+// in multi-turn tool calling (HTTP 400 "Function call is missing a thought_signature in functionCall parts").
+// When an authentic signature is captured on this turn, replay it on the first functionCall;
+// otherwise, supply the official Google sentinel SKIP_THOUGHT_SIGNATURE to bypass strict validation.
+function antigravityContents(messages: Message[], options?: CallOptions, stripArtifacts = false): { role: "user" | "model"; parts: CcaPart[] }[] {
   const nonSystem = messages.filter(m => m.role !== "system");
   const contents: { role: "user" | "model"; parts: CcaPart[] }[] = [];
   nonSystem.forEach((m, i) => {
     const role = m.role === "assistant" ? "model" : "user";
     let parts: CcaPart[];
     if (m.role === "assistant" && m.toolUse?.length) {
-      parts = m.toolUse.map(tu => ({
-        functionCall: { name: tu.tool, args: tu.arguments },
-      }));
+      const authenticSig = stripArtifacts ? undefined : (
+        m.reasoningArtifacts?.find(a => (a.provider === "antigravity" || a.provider === "gemini") && a.model === options?.model && a.thoughtSignature)?.thoughtSignature
+        ?? m.reasoningArtifacts?.find(a => (a.provider === "antigravity" || a.provider === "gemini") && a.thoughtSignature)?.thoughtSignature
+        ?? m.reasoningArtifacts?.find(a => !!a.thoughtSignature)?.thoughtSignature
+      );
+      const sig = authenticSig || SKIP_THOUGHT_SIGNATURE;
+      parts = m.toolUse.map((tu, idx) => {
+        const p: CcaPart = {
+          functionCall: { name: tu.tool, args: tu.arguments },
+        };
+        if (idx === 0) p.thoughtSignature = sig;
+        return p;
+      });
     } else if (
       m.role === "user" &&
       m.toolResults?.length &&
@@ -205,7 +216,7 @@ function sessionId(messages: Message[]): string {
   return `-${hash.toString()}`;
 }
 
-export function antigravityRequest(messages: Message[], options: CallOptions, credential: Credential, endpoint = ANTIGRAVITY_DAILY_ENDPOINT, projectId?: string): { url: string; headers: Record<string, string>; body: string } {
+export function antigravityRequest(messages: Message[], options: CallOptions, credential: Credential, endpoint = ANTIGRAVITY_DAILY_ENDPOINT, projectId?: string, stripArtifacts = false): { url: string; headers: Record<string, string>; body: string } {
   if (credential.kind !== "oauth") throw new Error("Antigravity provider requires Google/Gemini CLI OAuth credentials.");
   const project = projectId ?? projectIdFor(credential);
   if (!project) {
@@ -239,7 +250,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   }
 
   const request: Record<string, unknown> = {
-    contents: antigravityContents(messages),
+    contents: antigravityContents(messages, options, stripArtifacts),
     sessionId: sessionId(messages),
   };
   if (systemPrompt) request.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -276,7 +287,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
 type CcaUsage = { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 interface CcaChunk {
   response?: {
-    candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean; thoughtSignature?: string; thought_signature?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
     usageMetadata?: CcaUsage;
   };
   /** A `google.rpc.Status`-shaped in-band error line, sibling of `response` — see
@@ -323,36 +334,60 @@ function functionCallsOf(chunk: CcaChunk): { tool: string; arguments: Record<str
   return out;
 }
 
-async function fetchAntigravity(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
+/** Emit each NEW thoughtSignature seen on this chunk's parts as a replay artifact (Gemini
+ *  binds it to the functionCall part — replayed to keep cross-step thought context). `seen`
+ *  dedups across the streamed chunks of one turn. */
+function captureAntigravitySignatures(chunk: CcaChunk, options: CallOptions, seen: Set<string>): void {
+  for (const p of chunk.response?.candidates?.[0]?.content?.parts ?? []) {
+    const sig = p.thoughtSignature ?? p.thought_signature;
+    if (sig && typeof sig === "string" && !seen.has(sig)) {
+      seen.add(sig);
+      options.onReasoningArtifact?.({ provider: "antigravity", model: options.model, thoughtSignature: sig });
+    }
+  }
+}
+
+async function fetchAntigravity(messages: Message[], options: CallOptions, credential: Credential, stripArtifacts = false): Promise<Response> {
   // Resolve the project id up front: stored credential → env → lazy
   // loadCodeAssist/onboardUser discovery (persisted for future sessions).
   const projectId = await resolveAntigravityProjectId(credential, { signal: options.signal });
   let last: Response | undefined;
   for (const endpoint of ENDPOINTS) {
-    const { url, headers, body } = antigravityRequest(messages, options, credential, endpoint, projectId);
+    const { url, headers, body } = antigravityRequest(messages, options, credential, endpoint, projectId, stripArtifacts);
     const res = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (res.ok) return res;
     last = res;
     if (res.status !== 404 && res.status !== 503) break;
   }
-  throw await providerHttpError("Antigravity", last!);
+  return last!;
+}
+
+async function fetchAntigravityFailSafe(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
+  const response = await fetchWithArtifactFailSafe(
+    strip => fetchAntigravity(messages, options, credential, strip),
+    (status, body) => status === 400 && /thoughtsignature|thought_signature|functioncall|function_call|signature/i.test(body),
+  );
+  if (!response.ok) throw await providerHttpError("Antigravity", response);
+  return response;
 }
 
 export const antigravityAdapter: ProviderAdapter = {
   name: "antigravity",
   supportsNativeTools: true,
   async call(messages, options, credential) {
-    const response = await fetchAntigravity(messages, options, credential);
+    const response = await fetchAntigravityFailSafe(messages, options, credential);
     if (!response.body) return "";
     let out = "";
     let usage: CcaUsage | undefined;
     let lastEmptyReason: string | undefined;
     let terminal = false;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
+    const seenSignatures = new Set<string>();
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
       throwIfGoogleStreamError(chunk);
+      captureAntigravitySignatures(chunk, options, seenSignatures);
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
@@ -372,7 +407,7 @@ export const antigravityAdapter: ProviderAdapter = {
     return out;
   },
   async *stream(messages, options, credential) {
-    const response = await fetchAntigravity(messages, options, credential);
+    const response = await fetchAntigravityFailSafe(messages, options, credential);
     if (!response.body) return;
     // Signal the thinking phase up front (parity with anthropic's content_block_start) so the
     // UI shows it even before/without `thought` parts — otherwise reasoning looked dead here.
@@ -382,10 +417,12 @@ export const antigravityAdapter: ProviderAdapter = {
     let lastEmptyReason: string | undefined;
     let terminal = false;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
+    const seenSignatures = new Set<string>();
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
       throwIfGoogleStreamError(chunk);
+      captureAntigravitySignatures(chunk, options, seenSignatures);
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);

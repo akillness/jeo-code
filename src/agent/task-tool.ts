@@ -575,7 +575,8 @@ export async function runSubagentOnce(
     // its text (e.g. "HTTP 429") is not a provider failure and must never reroute.
     const rateLimited = !result.done && !result.completionRejected && isRateLimitError(new Error(result.doneReason ?? ""));
     const safetyBail = !result.done && !rateLimited && isSafetyFallbackBail(result.doneReason);
-    if (!rateLimited && !safetyBail) break;
+    const malformedCall = !result.done && !rateLimited && !safetyBail && /finishReason=MALFORMED_FUNCTION_CALL|malformed function call/i.test(result.doneReason ?? "");
+    if (!rateLimited && !safetyBail && !malformedCall) break;
     const previousModel = activeModel;
     if (rateLimited) {
       // The model that just 429'd: exclude its WHOLE credential scope (not just its
@@ -587,7 +588,7 @@ export async function runSubagentOnce(
       if (candidates.length === 0) break;
       activeModel = selectFromPool(candidates, undefined);
       emit({ role: role.id, kind: "step", detail: `↳ rate limited on '${previousModel}' — switching to equivalent '${activeModel}'`, step: currentStep, maxSteps, model: activeModel });
-    } else {
+    } else if (safetyBail) {
       // Uncategorized refusal with a fallback available (engine already verified
       // this via safetyFallbackAvailable before bailing) — exclude the WHOLE
       // provider (see safetyFallbackCandidates' doc comment), not just this model.
@@ -596,6 +597,11 @@ export async function runSubagentOnce(
       if (candidates.length === 0) break;
       activeModel = selectFromPool(candidates, undefined);
       emit({ role: role.id, kind: "step", detail: `↳ refused on '${previousModel}' — switching to '${activeModel}' in case of a classifier false positive`, step: currentStep, maxSteps, model: activeModel });
+    } else {
+      const candidates = fallbackCandidates();
+      if (candidates.length === 0) break;
+      activeModel = selectFromPool(candidates, undefined);
+      emit({ role: role.id, kind: "step", detail: `↳ malformed function call on '${previousModel}' — switching to equivalent '${activeModel}'`, step: currentStep, maxSteps, model: activeModel });
     }
     attemptedModels.add(activeModel);
     outcome = await runSafely();

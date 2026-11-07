@@ -1112,6 +1112,30 @@ test("post-call reroute: persistent 5xx from a ProviderStreamError (Antigravity/
     expect(notice).toContain("gpt-4.1");
   });
 });
+test("post-call reroute: MALFORMED_FUNCTION_CALL from Antigravity/Gemini switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: Antigravity Cloud Code Assist response incomplete (finishReason=MALFORMED_FUNCTION_CALL)." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("produced a malformed function call"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("gpt-4.1");
+  });
+});
+
 
 test("post-call reroute: context-overflow (400/413, conversation too large) does NOT switch models — switching providers cannot fix a prompt that no longer fits", async () => {
   await withRoutingProviderEnvCleared(async () => {

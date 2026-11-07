@@ -35,7 +35,7 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
     description: "Run a shell command. Optional timeoutMs, cwd (subdir), env (extra vars).",
     parameters: {
       type: "object",
-      properties: { command: STRING, timeoutMs: { type: "number" }, cwd: STRING, env: { type: "object" } },
+      properties: { command: STRING, timeoutMs: { type: "number" }, cwd: STRING, env: { type: "object", properties: {} } },
       required: ["command"],
     },
   },
@@ -93,7 +93,7 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
         deltaX: { type: "number" },
         deltaY: { type: "number" },
         duration: { type: "number" },
-        actions: { type: "array", items: { type: "object" } },
+        actions: { type: "array", items: { type: "object", properties: { action: STRING } } },
       },
       required: ["action"],
     },
@@ -143,13 +143,12 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
         host: STRING,
         mode: { type: "string", enum: ["ro", "rw"] },
       },
-      required: [],
     },
   },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",
-    parameters: { type: "object", properties: { reason: STRING }, required: [] },
+    parameters: { type: "object", properties: { reason: STRING } },
   },
 };
 
@@ -210,4 +209,33 @@ export function serializeAccumulatedToolCalls(acc: Map<number, { name: string; a
     return { tool: b.name, arguments: args };
   });
   return serializeToolCalls(calls);
+}
+
+/**
+ * Sanitize a JSON-schema parameters object for Google Gemini / Antigravity function declarations:
+ * - Every `type: "object"` MUST specify a `properties` map (empty `{}` if absent)
+ * - Empty `required: []` arrays are removed (Google schema validator rejects or misbehaves on them)
+ * - Recursively walks nested objects, array items, and properties.
+ */
+export function sanitizeGeminiToolParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!schema || typeof schema !== "object") return { type: "object", properties: {} };
+  const copy: Record<string, unknown> = { ...schema };
+  if (copy.type === "object") {
+    if (!copy.properties || typeof copy.properties !== "object" || Array.isArray(copy.properties)) {
+      copy.properties = {};
+    } else {
+      const props: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(copy.properties as Record<string, unknown>)) {
+        props[k] = sanitizeGeminiToolParameters(v as Record<string, unknown>);
+      }
+      copy.properties = props;
+    }
+  }
+  if (copy.type === "array" && copy.items && typeof copy.items === "object" && !Array.isArray(copy.items)) {
+    copy.items = sanitizeGeminiToolParameters(copy.items as Record<string, unknown>);
+  }
+  if (Array.isArray(copy.required) && copy.required.length === 0) {
+    delete copy.required;
+  }
+  return copy;
 }

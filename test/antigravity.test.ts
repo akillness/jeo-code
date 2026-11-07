@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { retryableStream } from "../src/ai/model-manager";
 import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
-import { isRefusalError, isProviderStreamError, isRateLimitError, defaultRetryable, withRetry } from "../src/util/retry";
+import { isRefusalError, isProviderStreamError, isRateLimitError, isMalformedFunctionCallError, defaultRetryable, withRetry } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
 
@@ -394,4 +394,71 @@ test("antigravity stream does not replay after emitting text before a malformed 
   } finally {
     globalThis.fetch = prevFetch;
   }
+});
+
+test("isMalformedFunctionCallError matches finishReason=MALFORMED_FUNCTION_CALL", () => {
+  expect(isMalformedFunctionCallError(new Error("Antigravity Cloud Code Assist response incomplete (finishReason=MALFORMED_FUNCTION_CALL)."))).toBe(true);
+  expect(isMalformedFunctionCallError(new Error("Gemini response incomplete (finishReason=MALFORMED_FUNCTION_CALL)."))).toBe(true);
+  expect(isMalformedFunctionCallError(new Error("Some malformed function call error"))).toBe(true);
+  expect(isMalformedFunctionCallError(new Error("finishReason=MAX_TOKENS"))).toBe(false);
+  expect(isMalformedFunctionCallError(new Error("network timeout"))).toBe(false);
+});
+
+test("antigravityRequest sanitizes tool schema parameters for Gemini", () => {
+  const { body } = antigravityRequest(
+    [{ role: "user" as const, content: "hi" }],
+    {
+      model: "antigravity/gemini-3.8-flash-high",
+      tools: [
+        {
+          name: "test_tool",
+          description: "desc",
+          parameters: {
+            type: "object",
+            properties: {
+              bare_obj: { type: "object" },
+            },
+            required: [],
+          },
+        },
+      ],
+    } as any,
+    cred,
+  );
+  const payload = JSON.parse(body);
+  const fnDecl = payload.request.tools[0].functionDeclarations[0];
+  expect(fnDecl.parameters.required).toBeUndefined();
+  expect(fnDecl.parameters.properties.bare_obj).toEqual({ type: "object", properties: {} });
+});
+
+test("antigravityRequest serializes multi-turn toolUse and toolResults to native parts", () => {
+  const messages = [
+    { role: "user" as const, content: "read file" },
+    {
+      role: "assistant" as const,
+      content: '{"tool":"read","arguments":{"filePath":"test.txt"}}',
+      toolUse: [{ id: "call_1", tool: "read", arguments: { filePath: "test.txt" } }],
+    },
+    {
+      role: "user" as const,
+      content: "file content here",
+      toolResults: [{ id: "call_1", output: "file content here" }],
+    },
+  ];
+  const { body } = antigravityRequest(
+    messages,
+    { model: "antigravity/gemini-3.8-flash-high" } as any,
+    cred,
+  );
+  const payload = JSON.parse(body);
+  const contents = payload.request.contents;
+  expect(contents).toHaveLength(3);
+  expect(contents[0].role).toBe("user");
+  expect(contents[0].parts[0].text).toBe("read file");
+
+  expect(contents[1].role).toBe("model");
+  expect(contents[1].parts[0].functionCall).toEqual({ name: "read", args: { filePath: "test.txt" } });
+
+  expect(contents[2].role).toBe("user");
+  expect(contents[2].parts[0].functionResponse).toEqual({ name: "read", response: { output: "file content here" } });
 });

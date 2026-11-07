@@ -73,7 +73,7 @@ export function defaultRetryable(err: unknown): boolean {
   // exact shape — other `response incomplete (…)` reasons (MAX_TOKENS, missing finishReason)
   // stay non-retryable; the empty-candidate variant ("returned no content (…)") is already
   // retried below. A stream that has yielded a chunk is never re-run by retryableStream.
-  if (/Antigravity Cloud Code Assist response incomplete \(finishReason=MALFORMED_FUNCTION_CALL\)/i.test(errorMessageOf(err))) {
+  if (isMalformedFunctionCallError(err)) {
     return true;
   }
   // A pre-response connection failure (refused / unresolved host) — retryable: a
@@ -410,4 +410,13 @@ export async function withConnectionContext<T>(fn: () => Promise<T>, provider: s
  *  `defaultRetryable` there to avoid double-spending that budget. */
 export function isProviderStreamError(err: unknown): boolean {
   return err instanceof Error && err.name === "ProviderStreamError";
+}
+
+/**
+ * True when the provider rejected or failed to complete a function call because of
+ * malformed arguments or an invalid function call structure (e.g. Gemini / Antigravity
+ * Cloud Code Assist `finishReason=MALFORMED_FUNCTION_CALL`).
+ */
+export function isMalformedFunctionCallError(err: unknown): boolean {
+  return /finishReason=MALFORMED_FUNCTION_CALL|malformed function call/i.test(errorMessageOf(err));
 }

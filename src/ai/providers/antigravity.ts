@@ -3,7 +3,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError, ProviderStreamError } from "./errors";
-import { serializeToolCalls } from "../../agent/tool-schemas";
+import { serializeToolCalls, sanitizeGeminiToolParameters } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { geminiThinkingConfig, type GeminiThinkingConfig } from "./gemini";
 import { saveConfigPatch } from "../../agent/state";
@@ -149,28 +149,52 @@ export async function resolveAntigravityProjectId(
   return projectId;
 }
 
-type CcaPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+type CcaPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { functionCall: { name: string; args?: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: Record<string, unknown> } };
 
 // Reasoning-artifact replay (signed thinking / thoughtSignature / encrypted reasoning) is
-// deliberately OUT OF SCOPE for antigravity: it serves Gemini- and Claude-shaped models over
-// the CCA wire (neither the native Anthropic messages nor the public Gemini shape), so it
-// captures no artifacts and replays none — Message.toolUse/toolResults/reasoningArtifacts are
-// ignored here. The provider-keyed match guard (D3) keeps "anthropic"/"gemini" artifacts from
-// ever being re-injected by this adapter, so there is no cross-adapter leakage.
+// deliberately OUT OF SCOPE for antigravity: it captures no artifacts and replays none.
+// However, native multi-turn tool calling (functionCall / functionResponse) MUST be preserved
+// across turns for Gemini/CCA wire parity — otherwise sending tool calls as plain text JSON
+// while tools are declared causes finishReason=MALFORMED_FUNCTION_CALL on subsequent turns.
 function antigravityContents(messages: Message[]): { role: "user" | "model"; parts: CcaPart[] }[] {
+  const nonSystem = messages.filter(m => m.role !== "system");
   const contents: { role: "user" | "model"; parts: CcaPart[] }[] = [];
-  for (const m of messages) {
-    if (m.role === "system") continue;
+  nonSystem.forEach((m, i) => {
     const role = m.role === "assistant" ? "model" : "user";
-    // Clipboard-pasted images become inlineData parts alongside the text part.
-    const parts: CcaPart[] = [
-      ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
-      { text: m.content },
-    ];
+    let parts: CcaPart[];
+    if (m.role === "assistant" && m.toolUse?.length) {
+      parts = m.toolUse.map(tu => ({
+        functionCall: { name: tu.tool, args: tu.arguments },
+      }));
+    } else if (
+      m.role === "user" &&
+      m.toolResults?.length &&
+      i > 0 &&
+      nonSystem[i - 1].role === "assistant" &&
+      nonSystem[i - 1].toolUse?.length
+    ) {
+      const prevToolUse = nonSystem[i - 1].toolUse ?? [];
+      parts = m.toolResults.map(tr => ({
+        functionResponse: {
+          name: prevToolUse.find(tu => tu.id === tr.id)?.tool ?? "tool",
+          response: { output: tr.output },
+        },
+      }));
+      if (m.toolResultExtra) parts.push({ text: m.toolResultExtra });
+    } else {
+      parts = [
+        ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
+        { text: m.content },
+      ];
+    }
     const prev = contents[contents.length - 1];
     if (prev && prev.role === role) prev.parts.push(...parts);
     else contents.push({ role, parts });
-  }
+  });
   return contents;
 }
 
@@ -218,12 +242,12 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
     contents: antigravityContents(messages),
     sessionId: sessionId(messages),
   };
-  if (systemPrompt) request.systemInstruction = { role: "user", parts: [{ text: systemPrompt }] };
+  if (systemPrompt) request.systemInstruction = { parts: [{ text: systemPrompt }] };
   if (Object.keys(generationConfig).length > 0) request.generationConfig = generationConfig;
   if (options.tools?.length) {
     // NATIVE tool-calling: Gemini functionDeclarations through the CCA proxy. AUTO mode
     // keeps prose answers + the `done` tool both reachable.
-    request.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+    request.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: sanitizeGeminiToolParameters(t.parameters) })) }];
     request.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
   }
 

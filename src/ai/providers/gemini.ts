@@ -3,7 +3,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError, fetchWithArtifactFailSafe, ProviderStreamError } from "./errors";
 import { jeoEnv } from "../../util/env";
-import { serializeToolCalls } from "../../agent/tool-schemas";
+import { serializeToolCalls, sanitizeGeminiToolParameters } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 
 /** Gemini 2.5+/latest models think by default and BILL thought tokens against
@@ -189,7 +189,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
     // NATIVE function-calling (gjc/antigravity parity): declare the toolset so the
     // model emits functionCall parts instead of hand-formatting the JSON tool protocol
     // (which weaker models mangle — wasted steps + apology prose leaking into replies).
-    payload.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+    payload.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: sanitizeGeminiToolParameters(t.parameters) })) }];
     payload.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
   }
   return { geminiModel, payload };

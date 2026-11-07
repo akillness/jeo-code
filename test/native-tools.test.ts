@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { nativeToolSchemasFor, serializeToolCalls, normalizeNativeToolName } from "../src/agent/tool-schemas";
+import { nativeToolSchemasFor, serializeToolCalls, normalizeNativeToolName, sanitizeGeminiToolParameters } from "../src/agent/tool-schemas";
 
 test("nativeToolSchemasFor: always appends `done` and mirrors handler arg keys", () => {
   const schemas = nativeToolSchemasFor(["read", "bash"]);
@@ -48,4 +48,21 @@ test("serializeToolCalls: a default_api-namespaced call dispatches as the bare t
   // A namespaced read normalizes too, single-call envelope.
   expect(serializeToolCalls([{ tool: "default_api.read", arguments: { filePath: "x" } }]))
     .toBe(JSON.stringify({ tool: "read", arguments: { filePath: "x" } }));
+});
+
+test("sanitizeGeminiToolParameters: adds properties to bare object types and strips empty required", () => {
+  const raw = {
+    type: "object",
+    properties: {
+      cmd: { type: "string" },
+      env: { type: "object" },
+      items: { type: "array", items: { type: "object" } },
+    },
+    required: [],
+  };
+  const sanitized = sanitizeGeminiToolParameters(raw);
+  expect(sanitized.required).toBeUndefined();
+  const props = sanitized.properties as any;
+  expect(props.env).toEqual({ type: "object", properties: {} });
+  expect(props.items).toEqual({ type: "array", items: { type: "object", properties: {} } });
 });

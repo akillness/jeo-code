@@ -2273,6 +2273,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             }
             return "returned no content";
           }
+          if (/finishReason=MALFORMED_FUNCTION_CALL|malformed function call/i.test(message)) {
+            return "produced a malformed function call";
+          }
           if (/no valid tool call|without signaling done|consecutive failing tool calls|consecutive failing tool steps|repeating the same tool call|cycling through the same/i.test(message)) {
             return "did not produce a usable agent response";
           }

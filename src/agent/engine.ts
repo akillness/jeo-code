@@ -23,7 +23,7 @@ import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
-import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, waitAbortable } from "../util/retry";
+import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
@@ -1096,21 +1096,17 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         continue; // loop top surfaces "Cancelled." when the wait was aborted
       }
       // Mid-stream transient fault (see `transientNetworkRetries` above): bounded resend
-      // with capped exponential backoff, covering TWO distinct failure classes that both
-      // land here unretried:
+      // with capped exponential backoff, covering failure classes that land here unretried:
       //   - `isTransientStreamDropError` — a live TCP/TLS socket dying mid-stream.
-      //   - `isProviderStreamError` — an in-band SSE error EVENT on an otherwise-200
-      //     connection (OpenAI Responses `response.failed`/`error`, e.g. `server_error`).
+      //   - `isProviderStreamError` — an in-band SSE error EVENT on an otherwise-200 connection.
+      //   - `isMalformedFunctionCallError` — a provider mid-stream abort (e.g. Antigravity/Gemini
+      //     finishReason=MALFORMED_FUNCTION_CALL arriving after partial text/thought was yielded,
+      //     which retryableStream cannot replay).
       // Deliberately narrower than a general `defaultRetryable` check — a rate-limit/5xx/
       // timeout error already ran the FULL model-manager `withRetry` budget (visible as
       // its own "auto-retry #N" notices) before reaching here, so re-retrying it in this
-      // ladder too would silently double that budget. Both classes above are structurally
-      // exempt from that budget: `retryableStream` (model-manager.ts) only auto-retries
-      // losing the FIRST chunk — once any chunk has streamed it deliberately stops (a full
-      // re-call would replay already-emitted content) — so a fault arriving AFTER the
-      // first chunk never got a model-manager retry at all and needs this engine-level
-      // recovery instead.
-      if (isTransientStreamDropError(err) || isProviderStreamError(err)) {
+      // ladder too would silently double that budget.
+      if (isTransientStreamDropError(err) || isProviderStreamError(err) || isMalformedFunctionCallError(err)) {
         transientNetworkRetries++;
         if (transientNetworkRetries <= GUARD_LIMITS.MAX_TRANSIENT_NETWORK_RETRIES) {
           const baseRaw = Number(jeoEnv("TRANSIENT_NETWORK_BACKOFF_BASE_MS") ?? NaN);

@@ -268,3 +268,36 @@ test("mid-stream ladder: the shared retry budget caps the TOTAL across classes, 
     delete process.env.JEO_TRANSIENT_NETWORK_BACKOFF_BASE_MS;
   }
 });
+
+test("transient-network ladder: a mid-stream MALFORMED_FUNCTION_CALL resends the same step and recovers", async () => {
+  process.env.JEO_TRANSIENT_NETWORK_BACKOFF_BASE_MS = "1";
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        if (calls === 1) throw new Error("Antigravity Cloud Code Assist response incomplete (finishReason=MALFORMED_FUNCTION_CALL).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after malformed function call" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const notices: string[] = [];
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    const result = await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      events: { onNotice: m => notices.push(m) },
+    });
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("recovered after malformed function call");
+    expect(calls).toBe(2);
+    expect(notices.some(n => /mid-response provider fault/.test(n) && /auto-retry #1/.test(n))).toBe(true);
+  } finally {
+    delete process.env.JEO_TRANSIENT_NETWORK_BACKOFF_BASE_MS;
+  }
+});

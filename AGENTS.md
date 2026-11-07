@@ -54,3 +54,12 @@
 - `chalk` for terminal styling
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+
+<!-- JEO-WORKFLOWS:START -->
+## Workflow rules
+Every prompt: openspace route → rtk shell → semble search → jev (only after rtk and
+semble, if a profile is enabled) → then by query: knowledge → second-brain vault,
+code/memory → `.mex/`, semantic search → `zg query`, ontology → open-ontologies,
+harness changes → `.harness2/`. Full rules: `.agents/rules/jeo-workflows.md` (global copy
+`~/.agents/rules/jeo-workflows.md`).
+<!-- JEO-WORKFLOWS:END -->

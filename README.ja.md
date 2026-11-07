@@ -462,10 +462,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.29]** (2026-11-07)
 - **[0.12.28]** (2026-11-07)
 - **[0.12.27]** (2026-11-06)
 - **[0.12.26]** (2026-11-06)
-- **[0.12.25]** (2026-11-06)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

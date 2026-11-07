@@ -9,6 +9,11 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.29] - 2026-11-07
+
+### Fixed
+- **Native multi-turn tool calling survives provider-side validation and malformed calls recover** - the Antigravity (CCA) adapter now serializes native `functionCall` / `functionResponse` parts across assistant-to-tool turns (pairing each tool result with the preceding call) instead of flattening them into prose text, and Gemini tool declarations are sanitized before send; the task runner detects `finishReason=MALFORMED_FUNCTION_CALL` / "malformed function call" and switches to an equivalent fallback model instead of ending the turn, the retry layer treats that failure as retryable, and the launch done-gate classifies it as a produced response.
+
 ## [0.12.28] - 2026-11-07
 
 ### Fixed

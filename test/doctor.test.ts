@@ -8,7 +8,10 @@ const savedCfgDir = process.env.JEO_CONFIG_DIR;
 const savedFetch = globalThis.fetch;
 // readGlobalConfig overlays env API keys onto provider gaps, so clear them to keep
 // "no credential" / "oauth-only" diagnostics deterministic regardless of the host env.
-const CRED_ENV = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN"];
+// OPENAI_BASE_URL is cleared too: an ambient local OpenAI-compatible proxy (e.g.
+// http://127.0.0.1:8787/v1) makes the openai provider look credentialed/ready, which
+// would flip the "skipped vs probed" and routing-readiness expectations below.
+const CRED_ENV = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN", "OPENAI_BASE_URL"];
 const savedCredEnv: Record<string, string | undefined> = {};
 
 beforeEach(async () => {

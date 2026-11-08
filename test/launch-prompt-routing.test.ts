@@ -422,30 +422,34 @@ test("sessionKey: two turns routed to DIFFERENT models within one session produc
 // provider ever having a usable credential) ---
 
 test("credential gate: routed tier resolves to a provider with NO credential -> switches to an equivalent credentialed model", async () => {
-  const { calls } = await runOneTurnWithLogs({
-    providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" }, // defaultModel's provider + a real trivial-tier equivalent: both credentialed
-    defaultModel: "claude-sonnet-4-6",
-    roles: { smol: "gpt-4o-mini" }, // openai: NOT credentialed anywhere in this config
-    routing: { enabled: true },
-  }, "what is this?"); // trivial, 0.85 confidence -> would route to roles.smol (gpt-4o-mini)
-  expect(calls.length).toBeGreaterThan(0);
-  // Without the gate this would be "gpt-4o-mini" and the real call would fail with
-  // "No credential for provider 'openai'" — the gate must prevent dispatch to it.
-  expect(calls[0].model).toBe("gemini-2.0-flash");
+  await withOpenAiEnvCleared(async () => {
+    const { calls } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" }, // defaultModel's provider + a real trivial-tier equivalent: both credentialed
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" }, // openai: NOT credentialed anywhere in this config
+      routing: { enabled: true },
+    }, "what is this?"); // trivial, 0.85 confidence -> would route to roles.smol (gpt-4o-mini)
+    expect(calls.length).toBeGreaterThan(0);
+    // Without the gate this would be "gpt-4o-mini" and the real call would fail with
+    // "No credential for provider 'openai'" — the gate must prevent dispatch to it.
+    expect(calls[0].model).toBe("gemini-2.0-flash");
+  });
 });
 
 test("credential gate: veto notice explains what happened and how to fix it", async () => {
-  const { logs } = await runOneTurnWithLogs({
-    providers: { anthropic: "test-anthropic-key" },
-    defaultModel: "claude-sonnet-4-6",
-    roles: { smol: "gpt-4o-mini" },
-    routing: { enabled: true },
-  }, "what is this?");
-  const noticeLine = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
-  expect(noticeLine).toBeDefined();
-  expect(noticeLine).toContain("gpt-4o-mini");
-  expect(noticeLine).toContain("openai");
-  expect(noticeLine).toContain("jeo auth login openai");
+  await withOpenAiEnvCleared(async () => {
+    const { logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+    const noticeLine = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
+    expect(noticeLine).toBeDefined();
+    expect(noticeLine).toContain("gpt-4o-mini");
+    expect(noticeLine).toContain("openai");
+    expect(noticeLine).toContain("jeo auth login openai");
+  });
 });
 
 test("credential gate: does not fire when the routed provider IS credentialed (no false positives)", async () => {
@@ -466,26 +470,30 @@ test("credential gate: warnOnce suppresses the notice on a second turn hitting t
     roles: { smol: "gpt-4o-mini" },
     routing: { enabled: true },
   };
-  const first = await runOneTurnWithLogs(config, "what is this?");
-  expect(first.calls[0].model).toBe("gemini-2.0-flash"); // alternate applied
-  expect(first.logs.some(l => l.includes("no usable credential"))).toBe(true); // notice fired
+  await withOpenAiEnvCleared(async () => {
+    const first = await runOneTurnWithLogs(config, "what is this?");
+    expect(first.calls[0].model).toBe("gemini-2.0-flash"); // alternate applied
+    expect(first.logs.some(l => l.includes("no usable credential"))).toBe(true); // notice fired
 
-  const second = await runOneTurnWithLogs(config, "what is that?");
-  expect(second.calls[0].model).toBe("gemini-2.0-flash"); // alternate STILL applied
-  expect(second.logs.some(l => l.includes("no usable credential"))).toBe(false); // notice suppressed (warnOnce)
+    const second = await runOneTurnWithLogs(config, "what is that?");
+    expect(second.calls[0].model).toBe("gemini-2.0-flash"); // alternate STILL applied
+    expect(second.logs.some(l => l.includes("no usable credential"))).toBe(false); // notice suppressed (warnOnce)
+  });
 });
 
 test("credential gate: /route why after a veto explains the equivalent fallback, not a phantom routed decision", async () => {
-  const { logs } = await runOneTurnWithLogs({
-    providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
-    defaultModel: "claude-sonnet-4-6",
-    roles: { smol: "gpt-4o-mini" },
-    routing: { enabled: true },
-  }, ["what is this?", "/route why"]);
-  const whyLine = logs.find(l => l.includes("switched to equivalent"));
-  expect(whyLine).toBeDefined();
-  expect(whyLine).toContain("gpt-4o-mini");
-  expect(whyLine).toContain("gemini-2.0-flash"); // names the equivalent actually used
+  await withOpenAiEnvCleared(async () => {
+    const { logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+    const whyLine = logs.find(l => l.includes("switched to equivalent"));
+    expect(whyLine).toBeDefined();
+    expect(whyLine).toContain("gpt-4o-mini");
+    expect(whyLine).toContain("gemini-2.0-flash"); // names the equivalent actually used
+  });
 });
 // --- model-servability veto (v0.8.2): provider-level readiness is necessary but
 // NOT sufficient. An OAuth-only OpenAI login passes describeProvider's ready

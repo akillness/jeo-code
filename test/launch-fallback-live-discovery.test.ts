@@ -67,6 +67,27 @@ mock.module("../src/ai", () => ({
 
 let originalIsTTY: boolean | undefined;
 
+// Clears ambient OPENAI_* env (API key / base URL / OAuth token) so an ambient local
+// OpenAI-compatible proxy (e.g. http://127.0.0.1:8787/v1) cannot make every openai model
+// look credentialed/servable. Mirrors launch-prompt-routing.test.ts's
+// `withOpenAiEnvCleared` — the pre-call credential gate and the static-vs-live fallback
+// eligibility both key off that ambient base URL.
+async function withOpenAiEnvCleared<T>(run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_OAUTH_TOKEN"]) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 beforeEach(() => {
   originalIsTTY = process.stdin.isTTY;
   process.stdin.isTTY = true;
@@ -156,24 +177,26 @@ test("equivalentRouteFallback: warms live discovery on-demand and falls back to 
 });
 
 test("equivalentRouteFallback: does not call discoverModels when the static catalog already has a candidate", async () => {
-  runAgentLoopDelegate = async (_history, opts) => {
-    if (opts.model === "gpt-4o-mini") {
-      return { done: false, steps: 1, doneReason: "Error: OpenAI hit a rate limit (HTTP 429). Retry later." };
-    }
-    return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
-  };
+  await withOpenAiEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI hit a rate limit (HTTP 429). Retry later." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
 
-  const { calls, discoverCalls } = await runOneShotWithLogs({
-    providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
-    defaultModel: "claude-sonnet-4-6",
-    roles: { smol: "gpt-4o-mini" },
-    routing: { enabled: true },
-  }, "what is this?");
+    const { calls, discoverCalls } = await runOneShotWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
 
-  expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
-  // Static catalog (gpt-4.1, trivial tier) already satisfies the fallback —
-  // the empty-pool discovery warm-up must never fire when candidates already exist.
-  expect(discoverCalls).toBe(0);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
+    // Static catalog (gpt-4.1, trivial tier) already satisfies the fallback —
+    // the empty-pool discovery warm-up must never fire when candidates already exist.
+    expect(discoverCalls).toBe(0);
+  });
 });
 
 test("fallbackDecision (pre-call credential veto): warms live discovery on-demand when the static pool is empty and switches to the newly-discovered candidate BEFORE ever dispatching the uncredentialed model", async () => {
@@ -184,24 +207,26 @@ test("fallbackDecision (pre-call credential veto): warms live discovery on-deman
   // `equivalentRouteFallback`, but this proves the on-demand warm-up also fires
   // from the veto call site, and that the vetoed model is never actually dispatched
   // to `runAgentLoop` (the switch happens before any call is made).
-  runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
-  discoverModelsResult = [{ provider: "groq", models: ["llama-3.1-8b-instant"], ok: true, source: "api_key" }];
+  await withOpenAiEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+    discoverModelsResult = [{ provider: "groq", models: ["llama-3.1-8b-instant"], ok: true, source: "api_key" }];
 
-  const { calls, logs, discoverCalls } = await runOneShotWithLogs({
-    providers: { groq: "test-groq-key" },
-    defaultModel: "groq/llama-3.3-70b-versatile",
-    routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
-  }, "what is this?");
+    const { calls, logs, discoverCalls } = await runOneShotWithLogs({
+      providers: { groq: "test-groq-key" },
+      defaultModel: "groq/llama-3.3-70b-versatile",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
+    }, "what is this?");
 
-  expect(discoverCalls).toBeGreaterThan(0);
-  // gpt-4o-mini is vetoed before dispatch — the only actual runAgentLoop call is
-  // the live-discovered equivalent, never the uncredentialed pinned model.
-  expect(calls.map(c => c.model)).toEqual(["groq/llama-3.1-8b-instant"]);
-  const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
-  expect(notice).toBeDefined();
-  expect(notice).toContain("gpt-4o-mini");
-  expect(notice).toContain("Switching to equivalent");
-  expect(notice).toContain("groq/llama-3.1-8b-instant");
+    expect(discoverCalls).toBeGreaterThan(0);
+    // gpt-4o-mini is vetoed before dispatch — the only actual runAgentLoop call is
+    // the live-discovered equivalent, never the uncredentialed pinned model.
+    expect(calls.map(c => c.model)).toEqual(["groq/llama-3.1-8b-instant"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("Switching to equivalent");
+    expect(notice).toContain("groq/llama-3.1-8b-instant");
+  });
 });
 
 test("fallbackDecision (pre-call credential veto): discovery warm-up finds nothing usable -> returns null cleanly, falls back to defaultModel, no throw", async () => {
@@ -211,27 +236,29 @@ test("fallbackDecision (pre-call credential veto): discovery warm-up finds nothi
   // equivalentRouteFallback degrades to `null` (no throw escapes runTurn) and the
   // turn completes on `defaultModel` — the pre-existing "fell back to" veto-note
   // path, unchanged by this fix's on-demand warm-up.
-  discoverModelsShouldThrow = true;
-  runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+  await withOpenAiEnvCleared(async () => {
+    discoverModelsShouldThrow = true;
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
 
-  const { calls, logs, discoverCalls } = await runOneShotWithLogs({
-    providers: { groq: "test-groq-key" },
-    defaultModel: "groq/llama-3.3-70b-versatile",
-    routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
-  }, "what is this?");
+    const { calls, logs, discoverCalls } = await runOneShotWithLogs({
+      providers: { groq: "test-groq-key" },
+      defaultModel: "groq/llama-3.3-70b-versatile",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
+    }, "what is this?");
 
-  expect(discoverCalls).toBeGreaterThan(0);
-  // No fallback was found (discovery errored, pool still empty) -> routed is
-  // nulled entirely -> the turn falls through to defaultModel, not gpt-4o-mini
-  // (which is never dispatched) and not any live-discovered model (none found).
-  expect(calls.map(c => c.model)).toEqual(["groq/llama-3.3-70b-versatile"]);
-  const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
-  expect(notice).toBeDefined();
-  expect(notice).toContain("gpt-4o-mini");
-  // Distinguishes the "no fallback found" notice from the "switched to equivalent"
-  // notice the previous test asserts — proves the null path is truly a distinct,
-  // gracefully-handled outcome, not an accidental partial match.
-  expect(notice).not.toContain("Switching to equivalent");
+    expect(discoverCalls).toBeGreaterThan(0);
+    // No fallback was found (discovery errored, pool still empty) -> routed is
+    // nulled entirely -> the turn falls through to defaultModel, not gpt-4o-mini
+    // (which is never dispatched) and not any live-discovered model (none found).
+    expect(calls.map(c => c.model)).toEqual(["groq/llama-3.3-70b-versatile"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    // Distinguishes the "no fallback found" notice from the "switched to equivalent"
+    // notice the previous test asserts — proves the null path is truly a distinct,
+    // gracefully-handled outcome, not an accidental partial match.
+    expect(notice).not.toContain("Switching to equivalent");
+  });
 });
 
 test("fallbackDecision (pre-call credential veto): discovery warm-up SUCCEEDS but no discovered model matches the tier's size class -> returns null cleanly, falls back to defaultModel", async () => {
@@ -243,22 +270,24 @@ test("fallbackDecision (pre-call credential veto): discovery warm-up SUCCEEDS bu
   // re-check after warming correctly finds nothing (rather than looping or crashing)
   // when discovery genuinely has no USABLE (tier-matching) candidate, not just an
   // empty/erroring discovery call.
-  discoverModelsResult = [{ provider: "groq", models: ["custom-opus-model"], ok: true, source: "api_key" }];
-  runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+  await withOpenAiEnvCleared(async () => {
+    discoverModelsResult = [{ provider: "groq", models: ["custom-opus-model"], ok: true, source: "api_key" }];
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
 
-  const { calls, logs, discoverCalls } = await runOneShotWithLogs({
-    providers: { groq: "test-groq-key" },
-    defaultModel: "groq/llama-3.3-70b-versatile",
-    routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
-  }, "what is this?");
+    const { calls, logs, discoverCalls } = await runOneShotWithLogs({
+      providers: { groq: "test-groq-key" },
+      defaultModel: "groq/llama-3.3-70b-versatile",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
+    }, "what is this?");
 
-  expect(discoverCalls).toBeGreaterThan(0);
-  // Falls through to defaultModel — the discovered "custom-opus-model" classifies
-  // as "large" (opus-suffix), not "trivial", so it never enters the candidate pool.
-  expect(calls.map(c => c.model)).toEqual(["groq/llama-3.3-70b-versatile"]);
-  const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
-  expect(notice).toBeDefined();
-  expect(notice).not.toContain("Switching to equivalent");
+    expect(discoverCalls).toBeGreaterThan(0);
+    // Falls through to defaultModel — the discovered "custom-opus-model" classifies
+    // as "large" (opus-suffix), not "trivial", so it never enters the candidate pool.
+    expect(calls.map(c => c.model)).toEqual(["groq/llama-3.3-70b-versatile"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("no usable credential"));
+    expect(notice).toBeDefined();
+    expect(notice).not.toContain("Switching to equivalent");
+  });
 });
 
 test("equivalentRouteFallback: does not re-warm discovery on a SECOND reroute attempt once the cache is already warm from the first", async () => {

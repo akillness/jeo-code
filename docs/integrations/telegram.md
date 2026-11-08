@@ -6,8 +6,9 @@
 
 ## Key Highlights
 
-- **Edge-Triggered Notifications**: Alerts fire only when a subagent transitions state (`started` → `completed` / `failed` / `cancelled`). No spammy "still running" periodic pings.
-- **Remote Steering**: Send live prompt steering commands (`/steer`) into running subagents while away from your terminal.
+- **Full-Capability Session Endpoint Mirror (`SessionNotifyEndpoint`)**: Each `jeo` session opens an authenticated local loopback endpoint (`~/.jeo/notify/sessions/<sessionId>.json`) that mirrors the **full root session lifecycle** — not just subagents. It broadcasts root session identity (`repo`, `branch`, `cwd`), turn start/end context summaries (`turn_start`, `turn_end` with model and token usage), the finalized turn response stream (`turn_stream`), and subagent state edges, while accepting inbound free-text user messages (waking an idle REPL prompt or steering an active turn in-flight), image attachments, in-thread config commands (`/verbose`, `/lean`, `/redact`), and subagent controls (`/subagents`, `/steer`, `/cancel`).
+- **Edge-Triggered Notifications**: Alerts fire only when a subagent transitions state (`started` → `completed` / `failed` / `cancelled`) or on turn boundaries. No spammy "still running" periodic pings.
+- **Remote Steering**: Send live prompt steering commands (`/steer`) into running subagents or reply directly in a session topic to steer the main session while away from your terminal.
 - **One-Click Cancel**: Inline keyboard buttons (⏹ Cancel) are automatically attached to running subagent messages.
 - **Per-Session Forum Topics**: Group sessions cleanly in Telegram Supergroups with forum topics enabled.
 - **Zero Internet Attack Surface**: Interactive turns communicate with the notification daemon via local loopback WebSockets (`127.0.0.1`). Only the daemon reaches outbound to `api.telegram.org`.

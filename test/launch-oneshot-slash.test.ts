@@ -12,8 +12,9 @@ const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
  *  /wiki, /evolve) are pure/local — no network/model call — so a full process
  *  spawn is cheap and gives byte-for-byte real CLI behavior instead of mocked
  *  approximations. */
-async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: number | "timeout"; stdout: string; stderr: string }> {
+async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: number | "timeout"; stdout: string; stderr: string; configText?: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oneshot-"));
+  const configDir = path.join(dir, ".jeo");
   const proc = Bun.spawn([process.execPath, CLI, "--no-tui", "--no-session", "--no-skills", "-p", arg], {
     cwd: dir,
     stdin: "ignore",
@@ -21,7 +22,7 @@ async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: numb
     stderr: "pipe",
     // JEO_CONFIG_DIR: the spawned CLI must NEVER touch the real ~/.jeo (one-shot
     // /theme, /wiki etc. persist config) — sandbox it in this run's temp dir.
-    env: { ...process.env, NO_COLOR: "1", JEO_CONFIG_DIR: path.join(dir, ".jeo") },
+    env: { ...process.env, NO_COLOR: "1", JEO_CONFIG_DIR: configDir },
   });
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
@@ -32,8 +33,14 @@ async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: numb
   if (result === "timeout") proc.kill();
   const stdout = await stdoutPromise;
   const stderr = await stderrPromise;
+  let configText: string | undefined;
+  try {
+    configText = await fs.readFile(path.join(configDir, "config.json"), "utf8");
+  } catch {
+    configText = undefined;
+  }
   await fs.rm(dir, { recursive: true, force: true });
-  return { code: result, stdout, stderr };
+  return { code: result, stdout, stderr, configText };
 }
 
 /** A one-shot control command must exit 0 with its panel on stdout. On failure the
@@ -59,6 +66,12 @@ test("one-shot /config prints the config panel, does not hit the model", async (
 
 test("one-shot /settings is an alias for /config", async () => {
   expectPanel(await runOneShot("/settings", 25_000), "Effective runtime config:");
+}, 35_000);
+
+test("one-shot /model sets the default without hitting the model", async () => {
+  const run = await runOneShot("/model claude-sonnet-4-6", 25_000);
+  expectPanel(run, "Model set to: claude-sonnet-4-6");
+  expect(run.configText).toContain('"defaultModel": "claude-sonnet-4-6"');
 }, 35_000);
 
 test("one-shot /usage prints the usage panel, does not hit the model", async () => {

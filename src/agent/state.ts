@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createHash } from "node:crypto";
 import { parseConfig } from "./config-schema";
+import { parseSeedAcceptanceCriteria, parseSeedList } from "./seed";
 import type { AuthProvider } from "../auth/storage";
 import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { resolveCustomApiKey, setCustomProviders, type CustomProviderConfig } from "../ai/providers/custom-providers";
@@ -270,6 +272,20 @@ export interface WorkflowState {
   /** ultragoal: whether the global verification suite was green (round-7 honest
    *  contract — criteria are recorded, not individually claimed as passed). */
   suite_green?: boolean;
+  /** Source-bound contract identity persisted across interview → plan → approve → team → ultragoal. */
+  contract_id?: string;
+  /** Deterministic SHA-256 cohort hash over the target workspace files at plan/execution/verification time. */
+  source_hash?: string;
+  /** Target workspace file paths covered by source_hash. */
+  source_paths?: string[];
+  /** Accepted scope items (active topology components and/or planned step targets). */
+  accepted_scope?: string[];
+  /** Explicit non-goals (deferred components and constraint exclusions). */
+  non_goals?: string[];
+  /** Acceptance criteria or tasks that remain unverified/incomplete. */
+  unresolved_criteria?: string[];
+  /** Unambiguous next CLI command or action to advance or recover the workflow. */
+  next_action?: string;
 }
 
 /** The built-in default model when neither disk config nor JEO_DEFAULT_MODEL provides one.
@@ -972,4 +988,203 @@ export function createWorkflowStateTool(): ToolHandler {
 /** Returns true if the agent is running in development mode (enables self-improvement). */
 export function isDevMode(): boolean {
   return jeoEnv("DEV_MODE") === "1" || process.env.NODE_ENV === "development";
+}
+
+/** Compute a deterministic contract ID binding interview/slug identity to seed/plan content. */
+export function computeContractId(input: {
+  interviewId?: string;
+  slug?: string;
+  seedContent?: string;
+  planHash?: string;
+}): string {
+  const base = (input.interviewId || input.slug || "contract").trim();
+  const h = createHash("sha256")
+    .update(base)
+    .update("\0")
+    .update(input.seedContent ?? "")
+    .update("\0")
+    .update(input.planHash ?? "")
+    .digest("hex")
+    .slice(0, 12);
+  const prefix = (input.slug || base).replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 24) || "contract";
+  return `${prefix}:${h}`;
+}
+
+/** Compute a deterministic SHA-256 cohort hash across the specified workspace-relative target files. */
+export async function computeSourceBoundHash(
+  cwd: string = process.cwd(),
+  targetPaths: readonly string[] = [],
+): Promise<{ hash: string; paths: string[] }> {
+  const normalized = [...new Set(
+    targetPaths
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => path.relative(cwd, path.resolve(cwd, p)).replace(/\\/g, "/"))
+      .filter(rel => !rel.startsWith("..") && rel !== ""),
+  )].sort();
+  const hasher = createHash("sha256");
+  for (const rel of normalized) {
+    hasher.update(`file:${rel}\0`);
+    try {
+      const content = await fs.readFile(path.join(cwd, rel), "utf-8");
+      hasher.update(content).update("\0");
+    } catch {
+      hasher.update("<missing>\0");
+    }
+  }
+  return { hash: hasher.digest("hex"), paths: normalized };
+}
+
+export interface WorkflowRecoverySnapshot {
+  contract_id: string | null;
+  slug: string | null;
+  active_skill: WorkflowState["skill"] | null;
+  current_phase: string | null;
+  source_hash: string | null;
+  current_source_hash: string | null;
+  source_drift: boolean;
+  source_paths: string[];
+  accepted_scope: string[];
+  non_goals: string[];
+  unresolved_criteria: string[];
+  next_action: string;
+  phases: {
+    "deep-interview": WorkflowState | null;
+    ralplan: WorkflowState | null;
+    team: WorkflowState | null;
+    ultragoal: WorkflowState | null;
+  };
+}
+
+/** Reconstruct the source-bound contract identity, scope, unresolved criteria, source drift, and unambiguous next_action. */
+export async function buildRecoverySnapshot(cwd: string = process.cwd()): Promise<WorkflowRecoverySnapshot> {
+  const [interview, ralplan, team, ultragoal] = await Promise.all([
+    readWorkflowState("deep-interview", cwd),
+    readWorkflowState("ralplan", cwd),
+    readWorkflowState("team", cwd),
+    readWorkflowState("ultragoal", cwd),
+  ]);
+
+  const slug = ultragoal?.slug ?? team?.slug ?? ralplan?.slug ?? interview?.slug ?? null;
+  let seedContent = "";
+  const seedPath = ultragoal?.seed_path ?? ralplan?.seed_path ?? interview?.seed_path;
+  if (seedPath) {
+    try {
+      seedContent = await fs.readFile(path.resolve(cwd, seedPath), "utf-8");
+    } catch {}
+  }
+
+  const contractId =
+    ultragoal?.contract_id ??
+    team?.contract_id ??
+    ralplan?.contract_id ??
+    interview?.contract_id ??
+    (slug || interview?.interview_id
+      ? computeContractId({
+          interviewId: interview?.interview_id,
+          slug: slug ?? undefined,
+          seedContent,
+          planHash: team?.consensus_hash ?? ralplan?.consensus_hash,
+        })
+      : null);
+
+  const activeComponents = (interview?.topology?.components ?? [])
+    .filter(c => c.status === "active")
+    .map(c => `${c.name}: ${c.description}`);
+  const deferredComponents = (interview?.topology?.components ?? [])
+    .filter(c => c.status === "deferred")
+    .map(c => `${c.name}: ${c.description}`);
+  const deferralReasons = (interview?.topology?.deferrals ?? []).map(d => `${d.component_id}: ${d.reason}`);
+  const seedConstraints = seedContent ? parseSeedList(seedContent, "constraints") : [];
+  const constraintNonGoals = seedConstraints.filter(c => /\b(non-?goal|out of scope|exclude|do not|비목표|제외)\b/i.test(c));
+
+  const acceptedScope = [
+    ...new Set([
+      ...(team?.accepted_scope ?? ralplan?.accepted_scope ?? interview?.accepted_scope ?? []),
+      ...activeComponents,
+    ]),
+  ];
+  const nonGoals = [
+    ...new Set([
+      ...(team?.non_goals ?? ralplan?.non_goals ?? interview?.non_goals ?? []),
+      ...deferredComponents,
+      ...deferralReasons,
+      ...constraintNonGoals,
+    ]),
+  ];
+
+  const seedCriteria = seedContent ? parseSeedAcceptanceCriteria(seedContent) : [];
+  const unresolvedCriteria =
+    ultragoal?.unresolved_criteria ??
+    team?.unresolved_criteria ??
+    ralplan?.unresolved_criteria ??
+    interview?.unresolved_criteria ??
+    (ultragoal?.current_phase === "complete" && ultragoal.status === "SUCCESS"
+      ? []
+      : seedCriteria);
+
+  const sourcePaths = ultragoal?.source_paths ?? team?.source_paths ?? ralplan?.source_paths ?? [];
+  const recordedHash = ultragoal?.source_hash ?? team?.source_hash ?? ralplan?.source_hash ?? null;
+  let currentSourceHash: string | null = null;
+  let sourceDrift = false;
+  if (recordedHash && sourcePaths.length > 0) {
+    const live = await computeSourceBoundHash(cwd, sourcePaths);
+    currentSourceHash = live.hash;
+    sourceDrift = live.hash !== recordedHash;
+  }
+
+  let activeSkill: WorkflowState["skill"] | null = null;
+  let currentPhase: string | null = null;
+  let nextAction = "jeo deep-interview \"<project idea>\"";
+
+  if (!interview) {
+    activeSkill = null;
+    currentPhase = null;
+    nextAction = "jeo deep-interview \"<project idea>\"";
+  } else if (interview.current_phase !== "complete") {
+    activeSkill = "deep-interview";
+    currentPhase = interview.current_phase;
+    nextAction = interview.next_action || "jeo deep-interview";
+  } else if (!ralplan || ralplan.current_phase !== "complete") {
+    activeSkill = "ralplan";
+    currentPhase = ralplan?.current_phase ?? "pending";
+    nextAction = ralplan?.next_action || "jeo ralplan";
+  } else if (!ralplan.approved) {
+    activeSkill = "ralplan";
+    currentPhase = "awaiting_approval";
+    nextAction = ralplan.next_action || (ralplan.plan_path ? `jeo approve "${ralplan.plan_path}"` : "jeo ralplan");
+  } else if (!team || team.current_phase !== "complete" || team.consensus_hash !== ralplan.consensus_hash) {
+    activeSkill = "team";
+    currentPhase = team?.current_phase ?? "ready";
+    nextAction = team?.next_action && team.consensus_hash === ralplan.consensus_hash ? team.next_action : "jeo team";
+  } else if (!ultragoal || ultragoal.current_phase !== "complete" || ultragoal.status === "FAILED") {
+    activeSkill = "ultragoal";
+    currentPhase = ultragoal?.current_phase ?? "ready";
+    nextAction = ultragoal?.next_action || "jeo ultragoal";
+  } else {
+    activeSkill = "ultragoal";
+    currentPhase = "complete";
+    nextAction = ultragoal.next_action || (unresolvedCriteria.length > 0 ? "jeo ultragoal" : "none (workflow complete)");
+  }
+
+  return {
+    contract_id: contractId,
+    slug,
+    active_skill: activeSkill,
+    current_phase: currentPhase,
+    source_hash: recordedHash,
+    current_source_hash: currentSourceHash,
+    source_drift: sourceDrift,
+    source_paths: sourcePaths,
+    accepted_scope: acceptedScope,
+    non_goals: nonGoals,
+    unresolved_criteria: unresolvedCriteria,
+    next_action: nextAction,
+    phases: {
+      "deep-interview": interview,
+      ralplan,
+      team,
+      ultragoal,
+    },
+  };
 }

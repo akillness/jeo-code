@@ -182,33 +182,31 @@ The 402 (Payment Required) error on `aside exec` and fallback to direct REPL pro
    - Priority: P0 (production readiness)
    - Status: ✅ All capabilities implemented and tested
 
-3. **Stale Telegram README fix** (session-endpoint capability documentation)
+3. **Stale Telegram README fix** (session-endpoint capability documentation) — **COMPLETED**
    - Acceptance: README accurately describes session endpoint as "full capability mirror" not "subagent-only"
    - Priority: P1 (clarity)
-   - Status: ✅ Session-endpoint.ts reviewed; README to update
+   - Status: ✅ `README.md`, `README.ko.md`, and `docs/integrations/telegram.md` updated to document `SessionNotifyEndpoint` as a full capability mirror (root session identity, turn start/end context, finalized turn output, inbound free-text/image prompts, `/verbose`·`/lean`·`/redact` config toggles, and subagent lifecycle transitions)
 
-4. **Slack adapter security review** (SlackSecurityReview + SlackCodeReview + SlackTsReview)
+4. **Slack adapter security review** (SlackSecurityReview + SlackCodeReview + SlackTsReview) — **COMPLETED**
    - Acceptance: Slack Socket Mode adapter (source-verified offline, 86 pass artifact558) clears full security review before live Socket Mode activation
    - Priority: P1 (production readiness, blocks live activation)
-   - Status: Source wiring + test-verified offline; pending SlackSecurityReview, SlackCodeReview, SlackTsReview verdicts
-   - Dependencies: SlackSecurityReview input validation coverage, SlackCodeReview external-input sanitization, SlackTsReview TypeScript safety
-   - **Note**: Setup/health/status commands work offline (auth.test, bots.info, conversations.info read-only); live Socket Mode connection gated on security clearance
+   - Status: ✅ Security, Code, and TypeScript reviews passed (`src/agent/notify/slack-api.ts`, `src/agent/notify/slack-daemon.ts`). `docs/integrations/slack.md` updated with Socket Mode live daemon setup, allowlist/thread routing, and security invariants. Live Socket Mode ready when `xoxb-` + `xapp-` credentials are configured.
 
 ### Tier 2: Medium Scope, Owned Separately
-5. **Source-bound verification/recovery** (LoopAudit deep findings)
+5. **Source-bound verification/recovery** (LoopAudit deep findings) — **COMPLETED**
    - Acceptance: Contract identity persists, accepted scope restored, next-action unambiguous
    - Priority: P1 (correctness)
-   - Dependencies: LoopAudit full report, RatchetFix integration
+   - Status: ✅ Implemented `contract_id`, `source_hash`, `source_paths`, `accepted_scope`, `non_goals`, `unresolved_criteria`, and deterministic `next_action` across `src/agent/state.ts`, `deep-interview`, `ralplan`, `approve`, `team`, `ultragoal`, and `jeo state [skill] recovery [--json]` (`test/source-bound-recovery.test.ts`).
 
-6. **Structural read summaries** (TypeScript AST declarations)
+6. **Structural read summaries** (TypeScript AST declarations) — **COMPLETED**
    - Acceptance: Declaration summaries with exact recovery ranges, fallback on unknown syntax
    - Priority: P2 (token reduction)
-   - Dependencies: Existing TS compiler API, no new native deps
+   - Status: ✅ Implemented `summarizeTypeScriptStructure` and `read` tool `summary: true` / `lineRange: "summary"` mode (plus truncated-tail structural declaration previews) in `src/agent/tools.ts` with exact `startLine-endLine` and hashline anchors, honoring `raw` and numeric `lineRange` bypasses (`test/structural-read.test.ts`).
 
-7. **Credential-free controller read/status** (session DTO, operation IDs)
+7. **Credential-free controller read/status** (session DTO, operation IDs) — **COMPLETED**
    - Acceptance: `jeo status` returns durable session metadata without secrets
    - Priority: P2 (security + observability)
-   - Dependencies: None; extend CLI
+   - Status: ✅ Implemented `buildStatusDto` and `jeo status [--json] [--session <id>]` in `src/commands/status.ts` returning session, workflow recovery contract, goal gate, daemon, and provider readiness metadata with zero secret/token exposure (`test/status-command.test.ts`).
 
 ### Tier 3: Large Scope, Separate Feature Gates
 8. **Discord session persistence** (durable message-ID registry, restart recovery)

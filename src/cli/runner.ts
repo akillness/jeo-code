@@ -261,10 +261,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "status",
-    summary: "Show evolution status + engine performance metrics.",
+    summary: "Show credential-free session, workflow contract, goal, daemon, and performance status.",
+    usage: "status [--json] [--session <id>]",
     loader: async () => {
       const m = await import("../commands/status");
-      return async () => m.runStatusCommand();
+      return args => m.runStatusCommand(args);
     },
   },
   {

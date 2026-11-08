@@ -7,8 +7,11 @@ import {
   writeWorkflowState,
   readGlobalConfig,
   getLocalJeoDir,
+  computeContractId,
+  computeSourceBoundHash,
   type WorkflowState,
 } from "../agent/state";
+import { parseSeedAcceptanceCriteria } from "../agent/seed";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 import {
   getSubagentRole,
@@ -194,6 +197,11 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     skill: "ralplan" as const,
     slug: interviewState.slug,
     seed_path: seedPath,
+    contract_id: interviewState.contract_id ?? computeContractId({ interviewId: interviewState.interview_id, slug: interviewState.slug, seedContent }),
+    accepted_scope: interviewState.accepted_scope,
+    non_goals: interviewState.non_goals,
+    unresolved_criteria: interviewState.unresolved_criteria ?? parseSeedAcceptanceCriteria(seedContent),
+    next_action: "jeo ralplan",
   };
   await writeWorkflowState("ralplan", ralplanState, cwd);
 
@@ -335,6 +343,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     if (!planValid) {
       ralplanState.plan_path = planPath; // saved for inspection — but NOT complete
       ralplanState.approved = false;
+      ralplanState.next_action = "jeo ralplan";
       await writeWorkflowState("ralplan", ralplanState, cwd);
       log(
         `[ERROR] No pass produced a schema/role-valid plan. The last output was saved to ${planPath} for review, ` +
@@ -377,9 +386,26 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     ralplanState.consensus_detail = gate.detail.slice(0, 600);
     if (gate.verdict === "okay") {
       ralplanState.consensus_hash = createHash("sha256").update(cleanPlan).digest("hex");
+      ralplanState.contract_id = computeContractId({
+        interviewId: interviewState.interview_id,
+        slug: interviewState.slug,
+        seedContent,
+        planHash: ralplanState.consensus_hash,
+      });
+      try {
+        const parsedPlan = PlanSchema.safeParse(normalizePlanShape(parseYaml(cleanPlan)));
+        if (parsedPlan.success) {
+          const targets = parsedPlan.data.steps.map(s => typeof s.target === "string" ? s.target.trim() : undefined).filter((t): t is string => !!t);
+          const sourceBound = await computeSourceBoundHash(cwd, targets);
+          ralplanState.source_hash = sourceBound.hash;
+          ralplanState.source_paths = sourceBound.paths;
+          ralplanState.accepted_scope = [...new Set([...(interviewState.accepted_scope ?? []), ...parsedPlan.data.steps.map(s => s.name)])];
+        }
+      } catch {}
     }
     if (gate.verdict !== "okay") {
       ralplanState.approved = false;
+      ralplanState.next_action = "jeo ralplan";
       await writeWorkflowState("ralplan", ralplanState, cwd);
       log(
         `[ERROR] Consensus critic did NOT approve the plan (verdict: ${gate.verdict.toUpperCase()}).\n` +
@@ -394,6 +420,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
 
     ralplanState.current_phase = "complete";
     ralplanState.approved = false;
+    ralplanState.next_action = `jeo approve "${planPath}"`;
     await writeWorkflowState("ralplan", ralplanState, cwd);
 
     log("\nPlan preview:");

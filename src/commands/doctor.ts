@@ -156,6 +156,17 @@ async function probeOllama(baseUrl: string): Promise<ProbeResult> {
   }
 }
 
+async function probeLmStudio(baseUrl: string): Promise<ProbeResult> {
+  const base = baseUrl.replace(/\/$/, "");
+  try {
+    const { res, latencyMs } = await timedFetch(`${base}/models`, { method: "GET" });
+    if (res.ok) return { status: "ok", detail: `GET ${base}/models 200`, latencyMs };
+    return { status: "fail", detail: `GET ${base}/models ${res.status}`, latencyMs };
+  } catch (err) {
+    return { status: "fail", detail: `network error: ${(err as Error).message}` };
+  }
+}
+
 function colorStatus(status: ProbeResult["status"], label: string): string {
   if (status === "ok") return chalk.green(label);
   if (status === "skipped") return chalk.yellow(label);
@@ -338,6 +349,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   const resolvedModel = await resolveModelId(config.defaultModel);
   const defaultProvider = resolveProvider(resolvedModel);
   const ollamaBase = config.ollamaBaseUrl ?? "http://localhost:11434";
+  const lmstudioBase = config.lmstudioBaseUrl ?? "http://localhost:1234/v1";
 
   // Routing diagnostic (design doc §7 risk #2): routing.enabled without roles.smol
   // used to mean routePrompt()'s LLM-escalation path silently never fired. It no
@@ -455,9 +467,13 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
       return { name: provider, credKind: credential.kind, result };
     })
   );
-  const ollamaResult = await probeOllama(ollamaBase);
+  const [ollamaResult, lmstudioResult] = await Promise.all([
+    probeOllama(ollamaBase),
+    probeLmStudio(lmstudioBase),
+  ]);
   for (const p of cloudProbes) probes.push(p);
   probes.push({ name: "ollama", credKind: "none (local)", result: ollamaResult });
+  probes.push({ name: "lmstudio", credKind: "none (local)", result: lmstudioResult });
   if (defaultProvider === "agy") {
     let executable: string | undefined;
     try {
@@ -514,6 +530,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
       bunVersion: Bun.version,
       defaultModel: { configured: config.defaultModel, resolved: resolvedModel, provider: defaultProvider },
       ollamaBaseUrl: ollamaBase,
+      lmstudioBaseUrl: lmstudioBase,
       openaiBaseUrl: config.openaiBaseUrl ?? null,
       terminal: {
         cols: size().cols,
@@ -556,6 +573,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   ];
   if (config.openaiBaseUrl) headerLines.push(`OpenAI base:    ${config.openaiBaseUrl}`);
   headerLines.push(`Ollama base:    ${ollamaBase}`);
+  headerLines.push(`LM Studio base: ${lmstudioBase}`);
   headerLines.push(`Terminal size:  ${tuiVerdict}`);
   headerLines.push(`Color support:  Level ${chalk.level} (${chalk.level > 0 ? chalk.green("enabled") : "disabled"})`);
 

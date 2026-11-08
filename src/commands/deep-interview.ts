@@ -8,6 +8,7 @@ import {
   readWorkflowState,
   writeWorkflowState,
   clearWorkflowState,
+  computeContractId,
   type WorkflowState,
   type WorkflowTopologyComponent,
   type WorkflowTopologyState,
@@ -617,6 +618,14 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
       state!.active = false; // finished — must not read as "interview in progress" forever
       state!.seed_path = seedPath;
       state!.current_ambiguity = Math.min(state!.current_ambiguity ?? threshold, threshold);
+      state!.contract_id = computeContractId({ interviewId, slug, seedContent });
+      state!.accepted_scope = (state!.topology?.components ?? []).filter(c => c.status === "active").map(c => `${c.name}: ${c.description}`);
+      state!.non_goals = [
+        ...(state!.topology?.components ?? []).filter(c => c.status === "deferred").map(c => `${c.name}: ${c.description}`),
+        ...constraints.filter(c => /\b(non-?goal|out of scope|exclude|do not|비목표|제외)\b/i.test(c)),
+      ];
+      state!.unresolved_criteria = criteria;
+      state!.next_action = "jeo ralplan";
       await writeWorkflowState("deep-interview", state!, cwd);
       log(`Saved frozen requirements spec seed to: ${seedPath}`);
       return true;
@@ -725,6 +734,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
 
     if (state.current_phase !== "complete") {
       state.current_phase = "interviewing";
+      state.next_action = "jeo deep-interview";
       await writeWorkflowState("deep-interview", state, cwd);
       if (auto) {
         const readiness = freezeReadiness(lastParsed);

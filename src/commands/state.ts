@@ -4,6 +4,7 @@ import {
   writeWorkflowState,
   clearWorkflowState,
   getLocalJeoDir,
+  buildRecoverySnapshot,
   type WorkflowState,
 } from "../agent/state";
 
@@ -18,7 +19,7 @@ function isSkill(val: string): val is Skill {
   return allowedSkills.includes(val as Skill);
 }
 
-const allowedVerbs = ["read", "write", "clear", "handoff"] as const;
+const allowedVerbs = ["read", "write", "clear", "handoff", "recovery"] as const;
 type Verb = typeof allowedVerbs[number];
 
 function isVerb(val: string): val is Verb {
@@ -31,12 +32,13 @@ function printUsage(): void {
   console.log("  jeo state <skill> write --input '<json>' [--json]");
   console.log("  jeo state <skill> clear");
   console.log("  jeo state <skill> handoff --to <skill> [--json]");
+  console.log("  jeo state [skill] recovery [--json]");
   console.log("");
   console.log("Skills:");
   console.log("  deep-interview, ralplan, team, ultragoal");
   console.log("");
   console.log("Verbs:");
-  console.log("  read, write, clear, handoff");
+  console.log("  read, write, clear, handoff, recovery");
 }
 
 export async function runStateCommand(args: string[] = []): Promise<void> {
@@ -46,6 +48,25 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
   if (isHelp) {
     printUsage();
     process.exitCode = 0;
+    return;
+  }
+
+  const isJson = args.includes("--json");
+
+  if (args[0] === "recovery" || (args.length >= 2 && isSkill(args[0]!) && args[1] === "recovery")) {
+    const snap = await buildRecoverySnapshot(cwd);
+    if (isJson) {
+      console.log(JSON.stringify(snap, null, 2));
+    } else {
+      console.log(`Contract ID:         ${snap.contract_id ?? "(none)"}`);
+      console.log(`Slug:                ${snap.slug ?? "(none)"}`);
+      console.log(`Active Skill/Phase:  ${snap.active_skill ?? "none"} (${snap.current_phase ?? "idle"})`);
+      console.log(`Source Hash:         ${snap.source_hash ?? "(unrecorded)"}${snap.source_drift ? " [DRIFT DETECTED]" : ""}`);
+      console.log(`Accepted Scope:      ${snap.accepted_scope.length > 0 ? snap.accepted_scope.join("; ") : "(none)"}`);
+      console.log(`Non-Goals:           ${snap.non_goals.length > 0 ? snap.non_goals.join("; ") : "(none)"}`);
+      console.log(`Unresolved Criteria: ${snap.unresolved_criteria.length > 0 ? snap.unresolved_criteria.join("; ") : "(none)"}`);
+      console.log(`Next Action:         ${snap.next_action}`);
+    }
     return;
   }
 
@@ -63,8 +84,6 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
     process.exitCode = 1;
     return;
   }
-
-  const isJson = args.includes("--json");
 
   if (verb === "read") {
     const state = await readWorkflowState(skill, cwd);
@@ -169,6 +188,7 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
       skill,
     };
     sourceState.current_phase = "handoff";
+    sourceState.next_action = `jeo ${toSkill}`;
     const sourcePath = await writeWorkflowState(skill, sourceState, cwd);
 
     const targetState = await readWorkflowState(toSkill, cwd) || {
@@ -180,6 +200,16 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
       ...targetState,
       active: true,
       handoff_from: skill,
+      contract_id: targetState.contract_id ?? sourceState.contract_id,
+      slug: targetState.slug ?? sourceState.slug,
+      seed_path: targetState.seed_path ?? sourceState.seed_path,
+      plan_path: targetState.plan_path ?? sourceState.plan_path,
+      source_hash: targetState.source_hash ?? sourceState.source_hash,
+      source_paths: targetState.source_paths ?? sourceState.source_paths,
+      accepted_scope: targetState.accepted_scope ?? sourceState.accepted_scope,
+      non_goals: targetState.non_goals ?? sourceState.non_goals,
+      unresolved_criteria: targetState.unresolved_criteria ?? sourceState.unresolved_criteria,
+      next_action: `jeo ${toSkill}`,
     };
     const targetPath = await writeWorkflowState(toSkill, updatedTarget, cwd);
 

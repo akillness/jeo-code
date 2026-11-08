@@ -177,6 +177,9 @@ import {
   reapStaleTmuxSessions,
   callerTmuxTerminalSize,
   tmuxNewSessionSizeArgs,
+  shouldEnableTmuxRemainOnExit,
+  tmuxRemainOnExitChainArgs,
+  shouldSelfCloseTmuxSession,
   type TmuxTerminalSize,
   type TmuxCreateResult,
   type TmuxProfileCommand,
@@ -287,6 +290,9 @@ export {
   reapStaleTmuxSessions,
   callerTmuxTerminalSize,
   tmuxNewSessionSizeArgs,
+  shouldEnableTmuxRemainOnExit,
+  tmuxRemainOnExitChainArgs,
+  shouldSelfCloseTmuxSession,
   type TmuxTerminalSize,
   type TmuxCreateResult,
   type TmuxProfileCommand,
@@ -515,6 +521,23 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     process.exitCode = 1;
     return;
   }
+  // Self-cleanup for `jeo --tmux`: the outer launcher turns `remain-on-exit` ON
+  // (so an unexpected crash leaves the pane + traceback on screen instead of
+  // vanishing), which means a NORMAL exit (`exitCode === 0` — `/exit`, `/quit`,
+  // clean EOF) would ALSO leave the pane stuck on `Pane is dead (status 0)`.
+  // Killing our own jeo-created session from the `exit` hook only when `code === 0`
+  // keeps both halves of the contract: clean exit closes the tmux session; crash /
+  // nonzero exit leaves the dead pane up for inspection.
+  process.on("exit", code => {
+    const sessionName = process.env.JEO_TMUX_SESSION_NAME;
+    if (!shouldSelfCloseTmuxSession(code, process.env) || !sessionName) return;
+    try {
+      Bun.spawnSync(["tmux", "kill-session", "-t", `=${sessionName}`], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    } catch { /* best-effort */ }
+  });
   // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
   // surfaces as an opaque downstream EMFILE ("too many open files") from file
   // watching, the browser tool, or a broad repo scan — warn up front with
@@ -600,15 +623,31 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
         const cmd = tmuxLaunchCommand(process.argv[1], process.execPath, cwd);
 
-        const innerCmd = `exec env JEO_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
-
         // Create a fresh, independent session (race-safe: the create is the guard).
         // Size the DETACHED session to the caller terminal (gjc launch-tmux parity
         // #1376): without -x/-y tmux creates it 80x24 and the inner jeo's first
         // frames render mis-wrapped into the pane scrollback before attach resizes.
+        // Chain `; set-option -t =<name> remain-on-exit on` onto the SAME tmux
+        // invocation (via tmuxRemainOnExitChainArgs) so even an instant inner-process
+        // crash keeps its pane + traceback visible instead of closing the session
+        // before attach (`server exited unexpectedly` / `can't find session`).
+        // JEO_TMUX_SESSION_NAME tells the inner jeo which session to self-close on a
+        // clean (`exit 0`) exit so `/exit` doesn't leave a `Pane is dead` screen.
         const termSize = callerTmuxTerminalSize();
         const alloc = allocateTmuxSession(sessionBase, name => {
-          const created = Bun.spawnSync([tmuxBin, "new-session", "-d", ...tmuxNewSessionSizeArgs(termSize), "-s", name, "-c", cwd, innerCmd]);
+          const innerCmd = `exec env JEO_TMUX_LAUNCHED=1 JEO_TMUX_SESSION_NAME=${shellQuote(name)} ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
+          const created = Bun.spawnSync([
+            tmuxBin,
+            "new-session",
+            "-d",
+            ...tmuxNewSessionSizeArgs(termSize),
+            "-s",
+            name,
+            "-c",
+            cwd,
+            innerCmd,
+            ...tmuxRemainOnExitChainArgs(name, process.env),
+          ]);
           if (created.exitCode === 0) return "ok";
           const err = created.stderr.toString().trim();
           if (/duplicate session/i.test(err)) return "taken"; // another jeo grabbed this name
@@ -2681,6 +2720,24 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
         if (cmd === "/config" || cmd === "/settings") {
           for (const line of await buildConfigPanelLines({ sessionModel, sessionThinking, sessionId })) console.log(line);
+          return;
+        }
+        if (cmd === "/model" || cmd.startsWith("/model ")) {
+          const modelRes = await runModelSlash(cmd, {
+            sessionModel,
+            sessionThinking,
+            defaultModel,
+            lastPickIndex,
+            liveModelsCache,
+            isTTY: false,
+            getLiveModels,
+            applyPickedModelWithTarget: async () => false,
+            persistSessionModel,
+            pickLiveProviderModel: async () => undefined,
+          });
+          if (modelRes.sessionModel !== undefined) sessionModel = modelRes.sessionModel === null ? undefined : modelRes.sessionModel;
+          if (modelRes.sessionThinking !== undefined) sessionThinking = modelRes.sessionThinking;
+          if (modelRes.lastPickIndex !== undefined) lastPickIndex = modelRes.lastPickIndex;
           return;
         }
         if (cmd === "/evolve") {

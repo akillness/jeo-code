@@ -2,6 +2,7 @@ import { applyBashFixups } from "./bash-fixups";
 import { resolvePosixTool } from "../util/posix-tools";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as ts from "typescript";
 import { readWorkflowStateStrict, type WorkflowState } from "./state";
 import { jeoEnv } from "../util/env";
 import { READ_OUTPUT_MAX } from "./tool-output";
@@ -226,11 +227,253 @@ function excerptForRecovery(content: string, centerLine?: number): string {
   const note = lines.length > end - start + 1 ? `\n…(showing lines ${start}-${end} of ${lines.length})` : "";
   return body + note;
 }
+const STRUCTURAL_SUMMARY_EXTS = new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".mts",
+  ".cts",
+]);
+
+export interface StructuralDeclaration {
+  kind:
+    | "import"
+    | "export"
+    | "function"
+    | "class"
+    | "method"
+    | "property"
+    | "interface"
+    | "type"
+    | "enum"
+    | "variable";
+  name: string;
+  signature: string;
+  startLine: number;
+  endLine: number;
+  startAnchor: string;
+  endAnchor: string;
+}
+
+export interface StructuralReadSummary {
+  supported: boolean;
+  declarations: StructuralDeclaration[];
+  formatted: string;
+}
+
+function scriptKindForExt(ext: string): ts.ScriptKind {
+  if (ext === ".tsx") return ts.ScriptKind.TSX;
+  if (ext === ".jsx") return ts.ScriptKind.JSX;
+  if (ext === ".ts" || ext === ".mts" || ext === ".cts") return ts.ScriptKind.TS;
+  return ts.ScriptKind.JS;
+}
+
+function cleanSignature(raw: string, maxLen = 140): string {
+  const collapsed = raw.replace(/\s+/g, " ").trim().replace(/\{$/, "").trim();
+  return collapsed.length > maxLen ? `${collapsed.slice(0, maxLen - 1)}…` : collapsed;
+}
+
+/**
+ * Emit a zero-native-dependency TypeScript/JavaScript AST declaration summary with
+ * exact 1-indexed recovery ranges (`startLine-endLine`) and hashline anchors
+ * (`12ab..28cd`). Unsupported file extensions return `supported: false` so callers
+ * can fall back truthfully to anchored line reads.
+ */
+export function summarizeTypeScriptStructure(
+  content: string,
+  filePath: string
+): StructuralReadSummary {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!STRUCTURAL_SUMMARY_EXTS.has(ext)) {
+    return { supported: false, declarations: [], formatted: "" };
+  }
+
+  const lines = content.split("\n");
+  const sf = ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindForExt(ext)
+  );
+
+  const declarations: StructuralDeclaration[] = [];
+  const spanOf = (node: ts.Node) => {
+    const startPos = node.getStart(sf);
+    const endPos = Math.max(startPos, node.getEnd() - 1);
+    const startLine = sf.getLineAndCharacterOfPosition(startPos).line + 1;
+    const endLine = sf.getLineAndCharacterOfPosition(endPos).line + 1;
+    return {
+      startLine,
+      endLine,
+      startAnchor: lineAnchor(lines[startLine - 1] ?? ""),
+      endAnchor: lineAnchor(lines[endLine - 1] ?? ""),
+    };
+  };
+
+  for (const stmt of sf.statements) {
+    if (ts.isImportDeclaration(stmt)) {
+      const mod = stmt.moduleSpecifier.getText(sf).replace(/^['"]|['"]$/g, "");
+      declarations.push({
+        kind: "import",
+        name: mod,
+        signature: cleanSignature(stmt.getText(sf)),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isExportDeclaration(stmt) || ts.isExportAssignment(stmt)) {
+      declarations.push({
+        kind: "export",
+        name: "export",
+        signature: cleanSignature(stmt.getText(sf)),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isFunctionDeclaration(stmt)) {
+      const name = stmt.name?.getText(sf) ?? "<anonymous>";
+      const head = stmt.body
+        ? content.slice(stmt.getStart(sf), stmt.body.getStart(sf))
+        : stmt.getText(sf);
+      declarations.push({
+        kind: "function",
+        name,
+        signature: cleanSignature(head),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isClassDeclaration(stmt)) {
+      const className = stmt.name?.getText(sf) ?? "<anonymous>";
+      const fullText = stmt.getText(sf);
+      const braceIdx = fullText.indexOf("{");
+      const head = braceIdx >= 0 ? fullText.slice(0, braceIdx) : fullText;
+      declarations.push({
+        kind: "class",
+        name: className,
+        signature: cleanSignature(head),
+        ...spanOf(stmt),
+      });
+      for (const member of stmt.members) {
+        if (
+          ts.isMethodDeclaration(member) ||
+          ts.isConstructorDeclaration(member) ||
+          ts.isGetAccessorDeclaration(member) ||
+          ts.isSetAccessorDeclaration(member)
+        ) {
+          const mName = ts.isConstructorDeclaration(member)
+            ? "constructor"
+            : (member.name?.getText(sf) ?? "<member>");
+          const mHead = member.body
+            ? content.slice(member.getStart(sf), member.body.getStart(sf))
+            : member.getText(sf);
+          declarations.push({
+            kind: "method",
+            name: `${className}.${mName}`,
+            signature: `  ${cleanSignature(mHead)}`,
+            ...spanOf(member),
+          });
+        } else if (ts.isPropertyDeclaration(member)) {
+          const pName = member.name?.getText(sf) ?? "<property>";
+          const pHead = member.initializer
+            ? content
+                .slice(member.getStart(sf), member.initializer.getStart(sf))
+                .replace(/=\s*$/, "")
+            : member.getText(sf);
+          declarations.push({
+            kind: "property",
+            name: `${className}.${pName}`,
+            signature: `  ${cleanSignature(pHead)}`,
+            ...spanOf(member),
+          });
+        }
+      }
+    } else if (ts.isInterfaceDeclaration(stmt)) {
+      const name = stmt.name.getText(sf);
+      const fullText = stmt.getText(sf);
+      const braceIdx = fullText.indexOf("{");
+      const head = braceIdx >= 0 ? fullText.slice(0, braceIdx) : fullText;
+      const memberNames = stmt.members
+        .map(m => (m as { name?: ts.PropertyName }).name?.getText(sf))
+        .filter((n): n is string => Boolean(n));
+      const preview =
+        memberNames.length > 0
+          ? ` { ${memberNames.slice(0, 8).join(", ")}${memberNames.length > 8 ? ", …" : ""} }`
+          : " {}";
+      declarations.push({
+        kind: "interface",
+        name,
+        signature: cleanSignature(`${head}${preview}`),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isTypeAliasDeclaration(stmt)) {
+      const name = stmt.name.getText(sf);
+      declarations.push({
+        kind: "type",
+        name,
+        signature: cleanSignature(stmt.getText(sf)),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isEnumDeclaration(stmt)) {
+      const name = stmt.name.getText(sf);
+      const members = stmt.members.map(m => m.name.getText(sf));
+      const preview = `${members.slice(0, 8).join(", ")}${members.length > 8 ? ", …" : ""}`;
+      declarations.push({
+        kind: "enum",
+        name,
+        signature: cleanSignature(`enum ${name} { ${preview} }`),
+        ...spanOf(stmt),
+      });
+    } else if (ts.isVariableStatement(stmt)) {
+      const isExport = stmt.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+      const flags = stmt.declarationList.flags;
+      const kw = flags & ts.NodeFlags.Const ? "const" : flags & ts.NodeFlags.Let ? "let" : "var";
+      const singleDecl = stmt.declarationList.declarations.length === 1;
+      for (const decl of stmt.declarationList.declarations) {
+        const dName = decl.name.getText(sf);
+        const typeAnn = decl.type ? `: ${decl.type.getText(sf)}` : "";
+        const spanTarget = singleDecl ? stmt : decl;
+        if (
+          decl.initializer &&
+          (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))
+        ) {
+          const fn = decl.initializer;
+          const fnHead = fn.body
+            ? content.slice(fn.getStart(sf), fn.body.getStart(sf))
+            : fn.getText(sf);
+          declarations.push({
+            kind: "function",
+            name: dName,
+            signature: cleanSignature(`${isExport ? "export " : ""}${kw} ${dName}${typeAnn} = ${fnHead}`),
+            ...spanOf(spanTarget),
+          });
+        } else {
+          declarations.push({
+            kind: "variable",
+            name: dName,
+            signature: cleanSignature(`${isExport ? "export " : ""}${kw} ${dName}${typeAnn}`),
+            ...spanOf(spanTarget),
+          });
+        }
+      }
+    }
+  }
+
+  const rows = declarations.map(
+    d => `${d.startLine}${d.startAnchor}..${d.endLine}${d.endAnchor} (${d.startLine}-${d.endLine}) | [${d.kind}] ${d.signature}`
+  );
+  const header = `[structural summary: ${filePath} (${lines.length} lines, ${declarations.length} declarations — pass lineRange "start-end" or raw:true to read full bodies)]`;
+  return {
+    supported: true,
+    declarations,
+    formatted: declarations.length > 0 ? `${header}\n${rows.join("\n")}` : "",
+  };
+}
+
 export async function readTool(
   filePath: string,
   lineRange?: string | number,
   cwd: string = process.cwd(),
-  raw: boolean = false
+  raw: boolean = false,
+  summary: boolean = false
 ): Promise<ToolResult> {
   try {
     if (typeof filePath !== "string" || filePath.trim() === "") {
@@ -240,8 +483,8 @@ export async function readTool(
     // gjc parity: reading a directory returns its listing instead of an EISDIR error.
     const st = await fs.stat(absPath).catch(() => null);
     if (st?.isDirectory()) {
-      if (raw || lineRange) {
-        return { success: false, output: "", error: `${filePath} is a directory — drop raw/lineRange; reading it lists entries.` };
+      if (raw || lineRange || summary) {
+        return { success: false, output: "", error: `${filePath} is a directory — drop raw/lineRange/summary; reading it lists entries.` };
       }
       return lsTool(filePath, cwd);
     }
@@ -258,8 +501,13 @@ export async function readTool(
     }
 
     const lines = content.split("\n");
+    const isSummarySelector =
+      typeof lineRange === "string" &&
+      (lineRange.trim().toLowerCase() === "summary" || lineRange.trim().toLowerCase() === ":summary");
+    const hasExplicitLineRange =
+      lineRange !== undefined && lineRange !== null && lineRange !== "" && !isSummarySelector;
 
-    if (lineRange !== undefined && lineRange !== null && lineRange !== "") {
+    if (hasExplicitLineRange) {
       const parsed = parseLineSelector(lineRange, lines.length);
       if ("error" in parsed) {
         return { success: false, output: "", error: `Invalid lineRange '${lineRange}': ${parsed.error}` };
@@ -284,6 +532,17 @@ export async function readTool(
       return { success: true, output: out.join("\n") };
     }
 
+    let summaryFallbackPrefix = "";
+    if (summary || isSummarySelector) {
+      const struct = summarizeTypeScriptStructure(content, filePath);
+      if (struct.supported && struct.declarations.length > 0) {
+        return { success: true, output: struct.formatted };
+      }
+      summaryFallbackPrefix = !struct.supported
+        ? `[structural summary fallback: ${filePath} is not a supported TypeScript/JavaScript source file; showing anchored lines]\n`
+        : `[structural summary fallback: ${filePath} has no top-level AST declarations; showing anchored lines]\n`;
+    }
+
     // Default (no lineRange): fill the model-visible read budget with WHOLE lines
     // instead of a fixed 500-line cap that left half the 32k budget unused and forced
     // needless pagination (the read tool's biggest "reads too little per call" pain).
@@ -301,10 +560,21 @@ export async function readTool(
       shownLines.push(annotatedLine);
       usedChars += cost;
     }
-    const annotated = shownLines.join("\n");
+    const annotated = summaryFallbackPrefix + shownLines.join("\n");
     if (shownLines.length < lines.length) {
       const shown = shownLines.length;
-      const notice = `\n…(showing lines 1-${shown} of ${lines.length}; pass lineRange "${shown + 1}-" to read the rest)`;
+      let notice = `\n…(showing lines 1-${shown} of ${lines.length}; pass lineRange "${shown + 1}-" to read the rest)`;
+      const struct = summarizeTypeScriptStructure(content, filePath);
+      const remainingDecls = struct.supported
+        ? struct.declarations.filter(d => d.endLine > shown)
+        : [];
+      if (remainingDecls.length > 0) {
+        const previewRows = remainingDecls
+          .slice(0, 25)
+          .map(d => `  ${d.startLine}${d.startAnchor}..${d.endLine}${d.endAnchor} (${d.startLine}-${d.endLine}) | [${d.kind}] ${d.signature}`);
+        const extra = remainingDecls.length > 25 ? `\n  …(${remainingDecls.length - 25} more declarations)` : "";
+        notice += `\nStructural declarations in remaining lines (${shown + 1}-${lines.length}):\n${previewRows.join("\n")}${extra}`;
+      }
       return { success: true, output: annotated + notice };
     }
     return { success: true, output: annotated };

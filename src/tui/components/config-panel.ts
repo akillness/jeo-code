@@ -113,6 +113,7 @@ export function formatConfigPanel(d: {
   provider: string;
   thinkingLevel: string;
   ollamaBaseUrl?: string;
+  lmstudioBaseUrl?: string;
   openaiBaseUrl?: string;
   requestMaxRetries?: number;
   sessionId?: string;
@@ -122,6 +123,7 @@ export function formatConfigPanel(d: {
     `  thinking:  ${d.thinkingLevel}`,
   ];
   if (d.ollamaBaseUrl) lines.push(`  ollama:    ${d.ollamaBaseUrl}`);
+  if (d.lmstudioBaseUrl) lines.push(`  lmstudio:  ${d.lmstudioBaseUrl}`);
   if (d.openaiBaseUrl) lines.push(`  openai:    ${d.openaiBaseUrl}`);
   if (typeof d.requestMaxRetries === "number") lines.push(`  retries:   ${d.requestMaxRetries}`);
   if (d.sessionId) lines.push(`  session:   ${d.sessionId}`);

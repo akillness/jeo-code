@@ -8,6 +8,7 @@ import {
   readWorkflowStateStrict,
   writeWorkflowState,
   acquireWorkflowRunLock,
+  computeSourceBoundHash,
   type WorkflowState,
   type Config,
 } from "../agent/state";
@@ -289,6 +290,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
     return { ok: false, reason: "another team run holds the lock" };
   }
   try {
+    const stepTargets = parsed.data.steps.map(s => typeof s.target === "string" ? s.target.trim() : undefined).filter((t): t is string => !!t);
     let teamState: WorkflowState;
     try {
       teamState = (await readWorkflowStateStrict("team", cwd)) ?? {
@@ -296,8 +298,16 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
         current_phase: "executing",
         skill: "team" as const,
         slug: planState.slug,
+        seed_path: planState.seed_path,
         plan_path: planPath,
         consensus_hash: planState.consensus_hash,
+        contract_id: planState.contract_id,
+        source_hash: planState.source_hash,
+        source_paths: planState.source_paths ?? stepTargets,
+        accepted_scope: planState.accepted_scope ?? tasks,
+        non_goals: planState.non_goals,
+        unresolved_criteria: planState.unresolved_criteria,
+        next_action: "jeo team",
         completed_tasks: [],
         pending_tasks: [...tasks],
       };
@@ -321,11 +331,27 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
         current_phase: "executing",
         skill: "team" as const,
         slug: planState.slug,
+        seed_path: planState.seed_path,
         plan_path: planPath,
         consensus_hash: planState.consensus_hash,
+        contract_id: planState.contract_id,
+        source_hash: planState.source_hash,
+        source_paths: planState.source_paths ?? stepTargets,
+        accepted_scope: planState.accepted_scope ?? tasks,
+        non_goals: planState.non_goals,
+        unresolved_criteria: planState.unresolved_criteria,
+        next_action: "jeo team",
         completed_tasks: [],
         pending_tasks: [...tasks],
       };
+    } else {
+      teamState.contract_id ??= planState.contract_id;
+      teamState.seed_path ??= planState.seed_path;
+      teamState.source_paths ??= planState.source_paths ?? stepTargets;
+      teamState.accepted_scope ??= planState.accepted_scope ?? tasks;
+      teamState.non_goals ??= planState.non_goals;
+      teamState.unresolved_criteria ??= planState.unresolved_criteria;
+      teamState.next_action = "jeo team";
     }
 
     // Round-8: a previous run halted on a task — its partial edits may still be
@@ -454,6 +480,11 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<TeamE
     if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
       teamState.current_phase = "complete";
       teamState.active = false; // execution finished — the flag must not read as "in progress"
+      teamState.next_action = "jeo ultragoal";
+      if (teamState.source_paths && teamState.source_paths.length > 0) {
+        const postExecSource = await computeSourceBoundHash(cwd, teamState.source_paths);
+        teamState.source_hash = postExecSource.hash;
+      }
       await writeWorkflowState("team", teamState, cwd);
       log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
       log("Run 'jeo ultragoal' to run verify tests and evaluate metrics.");

@@ -78,6 +78,7 @@ export function buildEnabledProviders(config: Config): string[] {
   if (cfg.providers?.gemini || cfg.oauth?.gemini || cfg.providers?.antigravity || cfg.oauth?.antigravity) enabled.push("google-oauth");
   if (cfg.providers?.kimi || cfg.oauth?.kimi) enabled.push("kimi");
   if (cfg.ollamaBaseUrl) enabled.push(`ollama(${cfg.ollamaBaseUrl})`);
+  if (cfg.lmstudioBaseUrl) enabled.push(`lmstudio(${cfg.lmstudioBaseUrl})`);
   if (cfg.openaiBaseUrl) enabled.push(`openai-compatible(${cfg.openaiBaseUrl})`);
   return enabled;
 }

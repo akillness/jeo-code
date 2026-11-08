@@ -13,10 +13,10 @@ const STRING = { type: "string" } as const;
 const SCHEMAS: Record<string, NativeToolSchema> = {
   read: {
     name: "read",
-    description: "Read a file. Optional lineRange ('a-b','a-','a','a+n','a-b,c-d'); raw=true skips line-number prefixes.",
+    description: "Read a file. Optional lineRange ('a-b','a-','a','a+n','a-b,c-d'); raw=true skips line-number prefixes; summary=true emits TS/JS AST declaration summaries with recovery line ranges.",
     parameters: {
       type: "object",
-      properties: { filePath: STRING, lineRange: STRING, raw: { type: "boolean" } },
+      properties: { filePath: STRING, lineRange: STRING, raw: { type: "boolean" }, summary: { type: "boolean" } },
       required: ["filePath"],
     },
   },

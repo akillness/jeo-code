@@ -82,7 +82,7 @@ jeo-code is a **local-first AI coding agent CLI** designed to safely drive entir
 
 ### 4. Advanced Interaction, Desktop Automation & Remote Ops
 - **Headless Browser Tool**: First-class Playwright Chromium automation (`open`, `act`, `observe`) paired with vision-capable models to perform visual QA and element-level verification.
-- **Remote Bot Daemon (Telegram, Discord, Slack)**: Background daemon (`jeo daemon start`) broadcasts subagent lifecycle transitions and accepts authorized steering commands (`/steer`, `/cancel`, `/sessions`).
+- **Remote Bot Daemon (Telegram, Discord, Slack)**: Background daemon (`jeo daemon start`) connects to each session's full-capability `session-endpoint` mirror (root session identity, turn start/end context, finalized turn stream, inbound free-text/image prompts, `/verbose`·`/lean`·`/redact` config toggles, and subagent lifecycle transitions) and accepts authorized steering commands (`/steer`, `/cancel`, `/sessions`, `/send`).
 - **Fail-Closed Computer Use**: Opt-in desktop GUI automation under explicit heartbeat supervisors and kill-switches (`/computer`).
 
 ---

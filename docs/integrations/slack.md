@@ -10,8 +10,51 @@ Connect `jeo` and AI coding agents to **Slack** workspaces for engineering team 
 - **Block Kit Visual Hierarchy**: Structured cards with clean markdown headers, metadata key-value grids, status badges, and action buttons.
 - **Threaded Task Execution (`thread_ts`)**: Keep main channels uncluttered by threading all subagent updates under a single root turn announcement.
 - **Dual Connection Modes**:
-  1. **Incoming Webhook Mode (Push-only)**: Zero maintenance, instant setup for status reports and CI routines.
-  2. **Slack App / Bot Token Mode (Bi-directional)**: Rich Slack API access, file uploads, thread replies, and Socket Mode interactions.
+  1. **Native Socket Mode Daemon (`jeo notify` + `jeo daemon`)**: Built-in bi-directional Web API (`xoxb-`) + Socket Mode (`xapp-`) WebSocket integration for live session monitoring, remote `/sessions`/`/subagents`/`/send`/`/steer`/`/cancel` commands, and per-session thread reply routing — zero public webhook endpoints required.
+  2. **Incoming Webhook Mode (Push-only)**: Zero maintenance, instant setup for status reports and CI routines.
+
+---
+
+## 0. Native Socket Mode Daemon (`jeo notify` + `jeo daemon`)
+
+### Step 1: Configure Socket Mode & Scopes in Slack
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and create or select your Slack App.
+2. **Socket Mode**: Enable **Socket Mode** and generate an App-Level Token (`xapp-...`) with the `connections:write` scope.
+3. **OAuth & Permissions**: Add Bot Token Scopes `chat:write`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`, then install the app to your workspace to obtain your **Bot User OAuth Token** (`xoxb-...`).
+4. **Event Subscriptions**: Enable Events and subscribe to bot events: `app_mention`, `message.channels`, `message.groups`, `message.im`.
+5. Invite the bot to your target channel (`/invite @your-bot`) and copy the Channel ID (`C...`).
+
+### Step 2: Pair with `jeo notify setup` & Start the Daemon
+
+```bash
+export JEO_SLACK_BOT_TOKEN="xoxb-..."
+export SLACK_APP_TOKEN="xapp-..."
+
+jeo notify setup --provider slack \
+  --channel-id C0123456789 \
+  --allowed-user-ids U0111111111,U0222222222
+
+jeo notify status --provider slack   # Masked tokens, channel, allowlist, daemon lock state
+jeo notify health --provider slack   # Read-only probe: auth.test, bots.info, conversations.info, apps.connections.open
+jeo notify test   --provider slack   # Sends one real verification message to the channel
+jeo daemon start                     # Starts the shared background daemon (Telegram / Discord / Slack)
+```
+
+### Step 3: Remote Commands & Thread Reply Routing
+
+Authorized human users in `allowedUserIds` can control live `jeo` sessions from the configured channel (via `@bot /command` or registered Slack slash commands):
+
+| Command | Description |
+| :--- | :--- |
+| `/sessions` | List all active `jeo` sessions on the host |
+| `/subagents` | List active and recent subagents across all live sessions |
+| `/send <sessionId> <text>` | Inject a user prompt into an idle session or steer a running turn |
+| `/steer <sessionId> <subagentId> <msg>` | Send steering instructions to an in-flight subagent |
+| `/cancel <sessionId> <subagentId>` | Cancel a running subagent |
+| `/help` | Show available Slack remote commands |
+
+- **Thread Reply Routing**: Replying directly in a session notification's Slack thread (within 24 hours) forwards your text straight to that session (`sendUserMessage`) without needing `/send <sessionId>`.
+- **Security Guarantees**: Enforces `xoxb-`/`xapp-` token validation, strict `wss://wss*.slack.com/link/?ticket=...` Socket Mode URL verification, `redirect: "error"` on all Web API calls, bounded 429 `Retry-After` retries (max 3 attempts; non-429 POST errors never auto-retry), human-only `allowedUserIds` allowlist enforcement (bot/subtype events dropped), `mrkdwn` entity escaping (`&`, `<`, `>`), and constant-time `timingSafeEqual` session endpoint token verification.
 
 ---
 

@@ -6,6 +6,7 @@ import {
   readWorkflowState,
   writeWorkflowState,
   readWorkflowFile,
+  computeSourceBoundHash,
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 import { getSubagentRole, subagentRoleIds } from "../agent/subagents";
@@ -160,8 +161,18 @@ export async function approvePlan(planPathInput: string, cwd: string): Promise<A
     return { ok: true, message: `[SUCCESS] Plan is already approved.` };
   }
 
-  // Update ralplan-state.json to approved: true
+  // Update ralplan-state.json to approved: true and refresh source-bound cohort hash
   ralplanState.approved = true;
+  ralplanState.next_action = "jeo team";
+  try {
+    const parsedPlan = PlanSchema.safeParse(normalizePlanShape(parseYaml(planContent)));
+    if (parsedPlan.success) {
+      const targets = parsedPlan.data.steps.map(s => typeof s.target === "string" ? s.target.trim() : undefined).filter((t): t is string => !!t);
+      const sourceBound = await computeSourceBoundHash(cwd, targets);
+      ralplanState.source_hash = sourceBound.hash;
+      ralplanState.source_paths = sourceBound.paths;
+    }
+  } catch {}
   await writeWorkflowState("ralplan", ralplanState, cwd);
 
   return { ok: true, message: `[SUCCESS] Plan approved successfully.` };

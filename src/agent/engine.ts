@@ -93,7 +93,7 @@ export type ToolHandler = (args: Record<string, any>, cwd: string, onProgress?: 
 
 /** The default executor toolset (read / write / edit / bash / find / search / ls / mkdir / delete / web_search). */
 export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
-  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd, !!a.raw),
+  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd, !!a.raw, !!a.summary),
   write: (a, cwd) => writeTool(a.filePath ?? a.path, a.content ?? "", cwd),
   edit: (a, cwd) => editTool(a.filePath ?? a.path, a.editBlock ?? a.edit ?? "", cwd),
   bash: (a, cwd, onProgress) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined), a.env && typeof a.env === "object" ? a.env : undefined, onProgress),
@@ -181,7 +181,7 @@ function computerActionMayAffectState(action: unknown): boolean {
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
-  "1. read   {filePath, lineRange?, raw?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes)",
+  "1. read   {filePath, lineRange?, raw?, summary?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes); summary:true emits TS/JS AST declarations with exact recovery ranges",
   "2. write  {filePath, content}         — create/overwrite a file",
   "3. edit   {filePath, editBlock}       — ≔A..B replace lines (append read anchors for safety: ≔12ab..15cd — rejected with fresh content if the lines changed); ≔A+ insert after line A; ≔$ append EOF (payload on next line). NEVER copy the `LINEhh|` prefixes into SEARCH blocks or payloads",
   "4. bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",

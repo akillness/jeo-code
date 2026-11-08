@@ -67,7 +67,7 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: "jeo_config_snapshot",
-    description: "Return a redacted snapshot of jeo's current config: default model, openai/ollama base URLs, and which providers have credentials.",
+    description: "Return a redacted snapshot of jeo's current config: default model, openai/ollama/lmstudio base URLs, and which providers have credentials.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const cfg = await readGlobalConfig();
@@ -76,6 +76,7 @@ export const TOOLS: ToolDefinition[] = [
         defaultProvider: resolveProvider(cfg.defaultModel),
         openaiBaseUrl: cfg.openaiBaseUrl ?? null,
         ollamaBaseUrl: cfg.ollamaBaseUrl ?? "http://localhost:11434",
+        lmstudioBaseUrl: cfg.lmstudioBaseUrl ?? "http://localhost:1234/v1",
         credentials: {
           anthropic: await effectiveKind("anthropic"),
           openai: await effectiveKind("openai"),

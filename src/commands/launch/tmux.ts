@@ -126,6 +126,36 @@ export function tmuxNewSessionSizeArgs(size: TmuxTerminalSize | undefined): stri
   return size ? ["-x", String(size.columns), "-y", String(size.rows)] : [];
 }
 
+/**
+ * Extra argv tokens to CHAIN onto the SAME `new-session` invocation (via
+ * tmux's own `;` command-separator token — a standalone argv element, no
+ * shell involved) so `remain-on-exit on` lands on the tmux server's command
+ * queue immediately after window/pane creation, in the same client round
+ * trip. A separate LATER `tmux set-option` call (as {@link tmuxProfileCommands}
+ * applies the rest of the profile) loses a real, live-verified race: an inner
+ * process that crashes near-instantly at startup can already be gone —
+ * `tmux` reports "no such window" — before the follow-up `set-option`
+ * subprocess even connects, so the session vanishes anyway for exactly the
+ * fastest-crashing case this whole mechanism exists to catch. Chaining
+ * closes that gap; verified live that a chained failure (e.g. an invalid
+ * option on some hypothetical ancient tmux) does NOT abort the `new-session`
+ * itself — only exit code/stderr changes, `allocateTmuxSession`'s
+ * duplicate-session detection is unaffected. `JEO_TMUX_REMAIN_ON_EXIT=0`
+ * opts out (matches {@link tmuxProfileCommands}).
+ */
+export function tmuxRemainOnExitChainArgs(
+  target: string,
+  env: Record<string, string | undefined>,
+): string[] {
+  if (!shouldEnableTmuxRemainOnExit(env)) return [];
+  return [";", "set-option", "-t", `=${target}:`, "remain-on-exit", "on"];
+}
+
+/** `remain-on-exit` is enabled unless explicitly disabled. */
+export function shouldEnableTmuxRemainOnExit(env: Record<string, string | undefined>): boolean {
+  return env.JEO_TMUX_REMAIN_ON_EXIT !== "0";
+}
+
 
 
 
@@ -210,6 +240,24 @@ export function tmuxProfileCommands(
       args: ["set-option", "-t", t, "mouse", "on"],
     });
   }
+  // Keep a DEAD pane visible instead of tmux destroying the window (and, since
+  // this is normally the only window, the whole session) the instant the inner
+  // `jeo launch` process exits — whether from a clean crash-net catch, an
+  // uncaught exception, or an external SIGKILL/OOM the JS layer never sees.
+  // Without this, an unexpected exit leaves zero forensic trace: the pane's
+  // final screen (including any printed error) vanishes with the session
+  // before a supervisor's next poll can observe it — the exact "GJC tmux
+  // sessions vanish repeatedly ... no SIGKILL/OOM/panic in the watch logs"
+  // failure class. `runLaunchCommand`'s exit hook (see
+  // {@link shouldSelfCloseTmuxSession}) still self-closes the session on the
+  // intentional "happy path" (clean success / deliberate Ctrl-C hard exit), so
+  // normal `/exit` UX is unchanged. `JEO_TMUX_REMAIN_ON_EXIT=0` opts out.
+  if (shouldEnableTmuxRemainOnExit(env)) {
+    commands.push({
+      description: "keep a dead pane visible after an unexpected exit (forensic evidence)",
+      args: ["set-option", "-t", t, "remain-on-exit", "on"],
+    });
+  }
   commands.push({
     description: "mark jeo tmux ownership",
     args: ["set-option", "-t", t, "@jeo-profile", "1"],
@@ -252,6 +300,28 @@ export function tmuxProfileCommands(
   }
 
   return commands;
+}
+
+/**
+ * True when the current process should self-close its OWN jeo-owned tmux
+ * session on this exit `code`. Only the intentional "happy path" exits
+ * self-close (clean success `0`, or the deliberate Ctrl-C hard exit `130`) —
+ * every other code (the cli.ts crash-net catching an uncaught
+ * exception/rejection, an unexpected top-level error, or this handler never
+ * running at all because an external SIGKILL/OOM killed the process outright)
+ * is left alone, so `remain-on-exit on` (see {@link tmuxProfileCommands})
+ * keeps the dead pane's final screen around for `tmux attach`/`capture-pane`
+ * forensics instead of the whole session silently vanishing. Requires
+ * `JEO_TMUX_SESSION_NAME` (set by the creator alongside `JEO_TMUX_LAUNCHED=1`
+ * — see the `--tmux` inner-command construction) so the kill targets exactly
+ * the session this process owns, never an unrelated one.
+ */
+export function shouldSelfCloseTmuxSession(
+  code: number,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (env.JEO_TMUX_LAUNCHED !== "1" || !env.TMUX || !env.JEO_TMUX_SESSION_NAME) return false;
+  return code === 0 || code === 130;
 }
 
 /**

@@ -386,3 +386,87 @@ test("runDoctorCommand: no hooks configured prints no hooks line", async () => {
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "gpt-4o" }));
   expect(await runDoctor([])).not.toContain("[hooks]");
 });
+
+// --- LM Studio probe (was completely absent — jeo never detected LM Studio) ---
+
+interface DoctorProbeRow {
+  name: string;
+  credential: string;
+  status: "ok" | "fail" | "skipped";
+  latencyMs: number | null;
+  detail: string;
+}
+interface DoctorReport {
+  ollamaBaseUrl: string;
+  lmstudioBaseUrl: string;
+  providers: DoctorProbeRow[];
+  ready: boolean;
+}
+
+test("runDoctorCommand --json: LM Studio reachable -> ok status, /models detail, and base URL in report", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "claude-3-5-sonnet",
+    lmstudioBaseUrl: "http://localhost:1234/v1",
+  }));
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("localhost:1234")) return new Response(JSON.stringify({ data: [{ id: "qwen2.5-coder" }] }), { status: 200 });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  const report = JSON.parse(await runDoctor(["--json"])) as DoctorReport;
+  expect(report.lmstudioBaseUrl).toBe("http://localhost:1234/v1");
+  const lmstudio = report.providers.find(p => p.name === "lmstudio");
+  expect(lmstudio).toBeDefined();
+  expect(lmstudio!.status).toBe("ok");
+  expect(lmstudio!.detail).toContain("GET http://localhost:1234/v1/models 200");
+});
+
+test("runDoctorCommand --json: LM Studio not running -> fail status with network-error detail, never silently absent", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "claude-3-5-sonnet",
+    lmstudioBaseUrl: "http://localhost:1234/v1",
+  }));
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("localhost:1234")) throw new Error("connect ECONNREFUSED 127.0.0.1:1234");
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  const report = JSON.parse(await runDoctor(["--json"])) as DoctorReport;
+  const lmstudio = report.providers.find(p => p.name === "lmstudio");
+  expect(lmstudio).toBeDefined();
+  expect(lmstudio!.status).toBe("fail");
+  expect(lmstudio!.detail).toContain("network error");
+  expect(lmstudio!.detail).toContain("ECONNREFUSED");
+});
+
+test("runDoctorCommand --json: defaultModel pointed at lmstudio/* now resolves ready=true when LM Studio answers (previously always [NOT READY] — no probe named 'lmstudio' existed)", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "lmstudio/qwen2.5-coder",
+    lmstudioBaseUrl: "http://localhost:1234/v1",
+  }));
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("localhost:1234")) return new Response(JSON.stringify({ data: [{ id: "qwen2.5-coder" }] }), { status: 200 });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  const report = JSON.parse(await runDoctor(["--json", "--strict"])) as DoctorReport;
+  expect(report.ready).toBe(true);
+});
+
+test("runDoctorCommand (human output): prints an LM Studio base line and a lmstudio provider row", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "claude-3-5-sonnet",
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const output = await runDoctor([]);
+  expect(output).toContain("LM Studio base: http://localhost:1234/v1");
+  expect(output).toContain("lmstudio");
+});

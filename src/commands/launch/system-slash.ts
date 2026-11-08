@@ -61,6 +61,7 @@ export async function buildConfigPanelLines(opts: {
     provider,
     thinkingLevel: opts.sessionThinking ?? cfgNow.thinkingLevel ?? "medium",
     ollamaBaseUrl: cfgNow.ollamaBaseUrl,
+    lmstudioBaseUrl: cfgNow.lmstudioBaseUrl,
     openaiBaseUrl: cfgNow.openaiBaseUrl,
     requestMaxRetries: cfgNow.retry?.requestMaxRetries,
     sessionId: opts.sessionId,

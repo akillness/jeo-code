@@ -71,7 +71,7 @@ jeo-code는 단순한 코드 완성을 넘어 실제 엔지니어링 사이클(�
 
 ### 4. 확장된 에이전트 기능 및 원격 제어
 - **헤드리스 브라우저 도구**: Playwright Chromium 기반의 브라우저 상호작용(`open`, `act`, `observe`) 및 비전 모델을 활용한 자동 시각 QA 루프 완결
-- **원격 알림 & 제어 데몬 (Telegram, Discord, Slack)**: 공유 데몬(`jeo daemon start`)을 통해 서브에이전트 상태 변화를 모바일/메신저로 실시간 수신하고, 양방향 명령(`/steer`, `/cancel`, `/sessions`) 전달
+- **원격 알림 & 제어 데몬 (Telegram, Discord, Slack)**: 공유 데몬(`jeo daemon start`)이 각 세션의 전체 기능 미러(`session-endpoint` — 루트 세션 신원, 턴 시작/종료 컨텍스트, 최종 응답 스트림, 양방향 자유 텍스트/이미지 입력, `/verbose`·`/lean`·`/redact` 설정, 서브에이전트 상태 전환)와 연결되어 실시간 알림 및 양방향 제어(`/steer`, `/cancel`, `/sessions`, `/send`)를 수행합니다.
 - **데스크톱 자동화 (Computer Use)**: 엄격한 킬스위치와 감독 하에 스크린샷 캡처, 클릭, 타이핑 등 GUI 조작 지원 (`/computer`)
 
 ---

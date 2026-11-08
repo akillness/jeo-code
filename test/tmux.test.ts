@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
-import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags, shouldEnableCurrentTmuxMouse, tmuxProfileCommands } from "../src/commands/launch";
+import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags, shouldEnableCurrentTmuxMouse, tmuxProfileCommands, shouldSelfCloseTmuxSession, tmuxRemainOnExitChainArgs } from "../src/commands/launch";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -143,11 +143,22 @@ test("tmux runtime model flags get a distinct session and propagate to inner lau
     const sessName = newSessionCall![newSessionCall!.indexOf("-s") + 1] as string;
     expect(sessName.startsWith("jeo-feature-branch-")).toBe(true);
     expect(sessName).toContain("model-gemini-2-5-flash-think-high-steps-7"); // runtime suffix preserved
-    const innerCmd = String(newSessionCall.at(-1));
+    const innerCmd = String(newSessionCall.find((a: string) => a.includes("JEO_TMUX_LAUNCHED=1")));
     expect(innerCmd).toContain("'--model' 'gemini-2.5-flash'");
     expect(innerCmd).toContain("'--thinking' 'high'");
     expect(innerCmd).toContain("'--max-steps=7'");
     expect(innerCmd).toContain("'it'\\''s ok'");
+    // The inner process gets its OWN final session name (matters on a collision
+    // retry, where the allocated name differs from the base) so it can self-close
+    // exactly the session it owns on a clean exit — see shouldSelfCloseTmuxSession.
+    expect(innerCmd).toContain(`JEO_TMUX_SESSION_NAME='${sessName}'`);
+    expect(innerCmd).toContain("JEO_TMUX_LAUNCHED=1");
+    // remain-on-exit is CHAINED onto this very same new-session invocation
+    // (via tmux's `;` command-separator token) rather than applied as a
+    // separate later call — closes a live-verified race where a near-instant
+    // startup crash beats a follow-up `set-option` and the session vanishes
+    // anyway. Tail of the argv array, after the inner command.
+    expect(newSessionCall!.slice(-6)).toEqual([";", "set-option", "-t", `=${sessName}:`, "remain-on-exit", "on"]);
   } finally {
     Bun.which = originalWhich;
     Bun.spawnSync = originalSpawnSync;
@@ -354,6 +365,50 @@ test("shouldEnableCurrentTmuxMouse: only inside a foreign tmux session, opt-out 
   expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JEO_TMUX_MOUSE: "0" })).toBe(false);
 });
 
+test("tmuxProfileCommands: remain-on-exit keeps a dead pane visible (forensic evidence), opt-out honored", () => {
+  const cmds = tmuxProfileCommands("jeo-main-abc", {});
+  const remain = cmds.find(c => c.args.includes("remain-on-exit"));
+  expect(remain).toBeDefined();
+  expect(remain!.args.slice(-2)).toEqual(["remain-on-exit", "on"]);
+  expect(remain!.args[remain!.args.indexOf("-t") + 1]).toBe("=jeo-main-abc:");
+  expect(remain!.args).not.toContain("-g");
+
+  const optedOut = tmuxProfileCommands("jeo-main-abc", { JEO_TMUX_REMAIN_ON_EXIT: "0" });
+  expect(optedOut.some(c => c.args.includes("remain-on-exit"))).toBe(false);
+  // The rest of the profile is unaffected by the opt-out.
+  expect(optedOut.some(c => c.args.includes("@jeo-profile"))).toBe(true);
+});
+
+test("shouldSelfCloseTmuxSession: only the intentional happy-path exit codes self-close, and only inside a named jeo-owned session", () => {
+  const owned = { JEO_TMUX_LAUNCHED: "1", TMUX: "/tmp/tmux-1/default,123,0", JEO_TMUX_SESSION_NAME: "jeo-main-abc" };
+  // Clean success and the deliberate Ctrl-C hard exit (130) both self-close.
+  expect(shouldSelfCloseTmuxSession(0, owned)).toBe(true);
+  expect(shouldSelfCloseTmuxSession(130, owned)).toBe(true);
+  // Every other code (crash-net, unexpected top-level error) is left alone —
+  // remain-on-exit then preserves the dead pane for forensics.
+  expect(shouldSelfCloseTmuxSession(1, owned)).toBe(false);
+  expect(shouldSelfCloseTmuxSession(2, owned)).toBe(false);
+  // Not a jeo-owned tmux-launched process: never self-close (would target an
+  // unrelated or nonexistent session).
+  expect(shouldSelfCloseTmuxSession(0, { TMUX: "/tmp/tmux-1/default,123,0" })).toBe(false);
+  expect(shouldSelfCloseTmuxSession(0, { JEO_TMUX_LAUNCHED: "1", TMUX: "/tmp/tmux-1/default,123,0" })).toBe(false); // no session name
+  expect(shouldSelfCloseTmuxSession(0, { JEO_TMUX_LAUNCHED: "1", JEO_TMUX_SESSION_NAME: "jeo-main-abc" })).toBe(false); // not actually inside tmux
+});
+test("tmuxRemainOnExitChainArgs: chains a `;`-separated set-option onto the SAME new-session invocation, opt-out honored", () => {
+  // Live-verified (real tmux 3.6a) that a SEPARATE later `set-option` call loses
+  // a real race — an inner process that crashes near-instantly at startup can
+  // already be gone ("no such window") before the follow-up call connects, so
+  // the session vanishes anyway. Chaining onto the SAME new-session invocation
+  // (a literal `;` argv token, tmux's own command separator — no shell involved)
+  // closes that gap; live-verified this does not disturb allocateTmuxSession's
+  // duplicate-session detection even if the chained command somehow failed.
+  const args = tmuxRemainOnExitChainArgs("jeo-main-abc", {});
+  expect(args).toEqual([";", "set-option", "-t", "=jeo-main-abc:", "remain-on-exit", "on"]);
+
+  const optedOut = tmuxRemainOnExitChainArgs("jeo-main-abc", { JEO_TMUX_REMAIN_ON_EXIT: "0" });
+  expect(optedOut).toEqual([]);
+});
+
 test("tmuxProfileCommands: gjc-parity profile — mouse, markers, clipboard, copy-mode style", () => {
   const cmds = tmuxProfileCommands("jeo-main-abc", {}, { branch: "main", project: "/home/u/proj" });
   const byDesc = Object.fromEntries(cmds.map(c => [c.description, c.args]));
@@ -462,6 +517,48 @@ test("tmux launch applies the gjc-parity profile to the CREATED session before a
     Bun.which = originalWhich;
     Bun.spawnSync = originalSpawnSync;
     Bun.spawn = originalSpawn;
+    process.env = originalEnv;
+  }
+});
+test("runLaunchCommand (tmux-launched inner process): registers a self-close exit hook honoring shouldSelfCloseTmuxSession", async () => {
+  const originalOn = process.on;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalEnv = { ...process.env };
+  const spawnSyncCalls: any[] = [];
+  let exitHandler: ((code: number) => void) | undefined;
+
+  try {
+    (process as any).on = ((event: string, handler: any) => {
+      if (event === "exit" && !exitHandler) exitHandler = handler;
+      return process;
+    }) as any;
+    Bun.spawnSync = ((cmd: any) => {
+      spawnSyncCalls.push(Array.isArray(cmd) ? cmd : [cmd]);
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    }) as any;
+
+    process.env.JEO_TMUX_LAUNCHED = "1";
+    process.env.JEO_TMUX_SESSION_NAME = "jeo-owned-session";
+    process.env.TMUX = "/tmp/tmux-1/default,123,0";
+
+    await runLaunchCommand(["--list"]);
+
+    expect(exitHandler).toBeDefined();
+    // Clean exit (0): self-closes the exact owned session — normal `/exit` UX unchanged.
+    exitHandler!(0);
+    expect(
+      spawnSyncCalls.some(c => c[0] === "tmux" && c[1] === "kill-session" && c.includes("=jeo-owned-session")),
+    ).toBe(true);
+
+    // A crash-net exit (1) leaves the session alone — remain-on-exit preserves the
+    // dead pane's final screen for forensic tmux attach/capture-pane instead of the
+    // whole session silently vanishing (gjc #1746 class).
+    spawnSyncCalls.length = 0;
+    exitHandler!(1);
+    expect(spawnSyncCalls.some(c => c[0] === "tmux" && c[1] === "kill-session")).toBe(false);
+  } finally {
+    (process as any).on = originalOn;
+    Bun.spawnSync = originalSpawnSync;
     process.env = originalEnv;
   }
 });

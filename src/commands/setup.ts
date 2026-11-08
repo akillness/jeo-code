@@ -33,7 +33,7 @@ const DEFAULT_MODELS: Record<ProviderChoice, string> = {
   antigravity: "antigravity/gemini-3-flash",
   kimi: "kimi-k2.5",
   ollama: "ollama/llama3.1:8b",
-  lmstudio: "openai/local-model",
+  lmstudio: "lmstudio/local-model",
   "openai-compatible": "openai/local-model",
 };
 
@@ -192,7 +192,29 @@ export async function runSetupCommand(): Promise<void> {
       reportModelChoice(picked);
       next.defaultModel = picked.model || DEFAULT_MODELS.ollama;
     }
-  } else if (choice === "lmstudio" || choice === "openai-compatible") {
+  } else if (choice === "lmstudio") {
+    const dflt = DEFAULT_BASE_URLS.lmstudio!;
+    const url = normalizeBaseUrl(await rl.question(`LM Studio base URL [${current.lmstudioBaseUrl || dflt}]: `), current.lmstudioBaseUrl || dflt);
+    console.log(`Probing models at ${url} …`);
+    const models = await listOpenAiCompatibleModels(url);
+    if (models.length) {
+      console.log("Detected local LM Studio models:");
+      models.slice(0, 20).forEach(m => console.log(`  - ${m}`));
+      const def = await rl.question(`Default model (lmstudio/<name>) [lmstudio/${models[0]}]: `);
+      const rawInput = def.trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "lmstudio") : `lmstudio/${models[0]}`;
+      next.defaultModel = qualified;
+      reportModelChoice(chooseDefaultModel(next.defaultModel, "lmstudio"));
+    } else {
+      console.log("  (no models detected — LM Studio not reachable, defaulting to local-model)");
+      const rawInput = (await rl.question(`Default model [${DEFAULT_MODELS.lmstudio}]: `)).trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "lmstudio") : DEFAULT_MODELS.lmstudio;
+      const picked = chooseDefaultModel(qualified, "lmstudio");
+      reportModelChoice(picked);
+      next.defaultModel = picked.model || DEFAULT_MODELS.lmstudio;
+    }
+    next.lmstudioBaseUrl = url;
+  } else if (choice === "openai-compatible") {
     const dflt = DEFAULT_BASE_URLS[choice]!;
     const url = normalizeBaseUrl(await rl.question(`Base URL [${dflt}]: `), dflt);
     const key = (await rl.question(`API key (optional, blank for none): `)).trim();

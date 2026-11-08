@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { readWorkflowState, writeWorkflowState, readWorkflowFile, writeWorkflowFile, getLocalJeoDir, type WorkflowState } from "../agent/state";
+import { readWorkflowState, writeWorkflowState, readWorkflowFile, writeWorkflowFile, getLocalJeoDir, computeContractId, computeSourceBoundHash, type WorkflowState } from "../agent/state";
 import { DEFAULT_TOOLS } from "../agent/engine";
 import { parseSeedAcceptanceCriteria, parseCriterion } from "../agent/seed";
 
@@ -168,6 +168,10 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
 
   await writeWorkflowFile(reportPath, reportContent, cwd);
 
+  const unresolvedCriteria = results.filter(r => r.status !== "passed").map(r => r.criterion);
+  const sourcePaths = teamState?.source_paths ?? [];
+  const sourceBound = sourcePaths.length > 0 ? await computeSourceBoundHash(cwd, sourcePaths) : undefined;
+
   // Persist a machine-readable terminal phase so the chain is queryable end-to-end.
   const ultragoalState: WorkflowState = {
     active: false,
@@ -180,6 +184,21 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
     suite_green: suite.success,
     passed: passedCount,
     total: totalCount,
+    contract_id:
+      teamState?.contract_id ??
+      interviewState.contract_id ??
+      computeContractId({
+        interviewId: interviewState.interview_id,
+        slug: interviewState.slug,
+        seedContent,
+        planHash: teamState?.consensus_hash,
+      }),
+    source_hash: sourceBound?.hash ?? teamState?.source_hash,
+    source_paths: sourceBound?.paths ?? teamState?.source_paths,
+    accepted_scope: teamState?.accepted_scope ?? interviewState.accepted_scope,
+    non_goals: teamState?.non_goals ?? interviewState.non_goals,
+    unresolved_criteria: unresolvedCriteria,
+    next_action: status === "FAILED" ? "jeo team" : unresolvedCriteria.length > 0 ? "jeo ultragoal" : "none (workflow complete)",
   };
   await writeWorkflowState("ultragoal", ultragoalState, cwd);
 

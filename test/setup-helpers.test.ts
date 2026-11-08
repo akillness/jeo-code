@@ -60,6 +60,7 @@ test("buildEnabledProviders detects keys, oauth, and base URLs", () => {
   expect(buildEnabledProviders(cfg({ providers: { anthropic: "k" } }))).toContain("anthropic");
   expect(buildEnabledProviders(cfg({ oauth: { openai: "t" } as Config["oauth"] }))).toContain("openai");
   expect(buildEnabledProviders(cfg({ ollamaBaseUrl: "http://h" }))).toEqual(["ollama(http://h)"]);
+  expect(buildEnabledProviders(cfg({ lmstudioBaseUrl: "http://localhost:1234/v1" }))).toEqual(["lmstudio(http://localhost:1234/v1)"]);
   expect(buildEnabledProviders(cfg({ openaiBaseUrl: "http://c" }))).toContain("openai-compatible(http://c)");
   expect(buildEnabledProviders(cfg({}))).toEqual([]);
 });

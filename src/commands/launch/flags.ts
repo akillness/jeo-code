@@ -245,7 +245,7 @@ export function filterToolMap(
 }
 
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  read: "read   {filePath, lineRange?, raw?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes)",
+  read: "read   {filePath, lineRange?, raw?, summary?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes); summary:true emits TS/JS AST declarations with exact recovery ranges",
   write: "write  {filePath, content}         — create/overwrite a file",
   edit: "edit   {filePath, editBlock}       — ≔A..B replace lines (append read anchors for safety: ≔12ab..15cd — rejected with fresh content if the lines changed); ≔A+ insert after line A; ≔$ append EOF (payload on next line). NEVER copy the `LINEhh|` prefixes into SEARCH blocks or payloads",
   bash: "bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",

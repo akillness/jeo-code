@@ -460,10 +460,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
+- **[0.12.31]** (2026-11-08) — LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO.
 - **[0.12.30]** (2026-11-07)
 - **[0.12.29]** (2026-11-07)
-- **[0.12.28]** (2026-11-07)
-- **[0.12.27]** (2026-11-06)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

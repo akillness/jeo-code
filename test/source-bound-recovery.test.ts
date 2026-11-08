@@ -153,6 +153,8 @@ test("buildRecoverySnapshot preserves contract identity, scope, unresolved crite
     const afterApproveAndMutate = await buildRecoverySnapshot(dir);
     expect(afterApproveAndMutate.next_action).toBe("jeo team");
     expect(afterApproveAndMutate.source_drift).toBe(true);
+    expect(afterApproveAndMutate.source_drift_reason).toContain("source_hash mismatch");
+    expect(afterApproveAndMutate.source_drift_reason).toContain("1 target file(s)");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

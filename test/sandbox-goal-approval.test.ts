@@ -158,7 +158,7 @@ test("sandbox approval resolves guest aliases, hashes exact guest bytes and uses
     expect(await approvePlan("alias.yaml", host)).toEqual({ ok: true, message: "[SUCCESS] Plan approved successfully." });
     expect(await approvePlan(path.join(host, "actual.yaml"), host)).toEqual({ ok: true, message: "[SUCCESS] Plan is already approved." });
   });
-  expect(JSON.parse(await fs.readFile(workflowPath(guest), "utf8"))).toEqual({ ...originalState, approved: true });
+  expect(JSON.parse(await fs.readFile(workflowPath(guest), "utf8"))).toEqual({ ...originalState, approved: true, next_action: "jeo team", source_hash: hash(""), source_paths: [] });
   expect(JSON.parse(await fs.readFile(workflowPath(outside), "utf8"))).toEqual(privateState);
   expect(await fs.readFile(path.join(outside, "private-plan.yaml"), "utf8")).toBe("HOST-PRIVATE-PLAN\n");
   expect(await fs.readFile(path.join(outside, "other-plan.yaml"), "utf8")).toBe("HOST-OTHER-PLAN\n");
@@ -235,5 +235,5 @@ test("ordinary nonsandbox goal persistence and canonical plan approval remain us
   await fs.symlink("plan.yaml", path.join(cwd, "alias.yaml"));
   const state = await reviewedState(cwd, path.join(cwd, "plan.yaml"), reviewedPlan);
   expect(await approvePlan("alias.yaml", cwd)).toEqual({ ok: true, message: "[SUCCESS] Plan approved successfully." });
-  expect(JSON.parse(await fs.readFile(workflowPath(cwd), "utf8"))).toEqual({ ...state, approved: true });
+  expect(JSON.parse(await fs.readFile(workflowPath(cwd), "utf8"))).toEqual({ ...state, approved: true, next_action: "jeo team", source_hash: hash(""), source_paths: [] });
 });

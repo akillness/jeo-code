@@ -1043,6 +1043,7 @@ export interface WorkflowRecoverySnapshot {
   source_hash: string | null;
   current_source_hash: string | null;
   source_drift: boolean;
+  source_drift_reason?: string;
   source_paths: string[];
   accepted_scope: string[];
   non_goals: string[];
@@ -1127,10 +1128,14 @@ export async function buildRecoverySnapshot(cwd: string = process.cwd()): Promis
   const recordedHash = ultragoal?.source_hash ?? team?.source_hash ?? ralplan?.source_hash ?? null;
   let currentSourceHash: string | null = null;
   let sourceDrift = false;
+  let sourceDriftReason: string | undefined;
   if (recordedHash && sourcePaths.length > 0) {
     const live = await computeSourceBoundHash(cwd, sourcePaths);
     currentSourceHash = live.hash;
     sourceDrift = live.hash !== recordedHash;
+    if (sourceDrift) {
+      sourceDriftReason = `source_hash mismatch (${recordedHash.slice(0, 12)} !== ${live.hash.slice(0, 12)}) across ${sourcePaths.length} target file(s)`;
+    }
   }
 
   let activeSkill: WorkflowState["skill"] | null = null;
@@ -1175,6 +1180,7 @@ export async function buildRecoverySnapshot(cwd: string = process.cwd()): Promis
     source_hash: recordedHash,
     current_source_hash: currentSourceHash,
     source_drift: sourceDrift,
+    ...(sourceDriftReason ? { source_drift_reason: sourceDriftReason } : {}),
     source_paths: sourcePaths,
     accepted_scope: acceptedScope,
     non_goals: nonGoals,

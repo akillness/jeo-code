@@ -262,7 +262,9 @@ export async function runStatusCommand(args: string[] = [], cwd: string = proces
   }
   console.log(`Contract ID:    ${dto.workflow.contract_id ?? "(none)"}`);
   console.log(`Active Skill:   ${dto.workflow.active_skill ?? "none"}${dto.workflow.current_phase ? ` (${dto.workflow.current_phase})` : ""}`);
-  console.log(`Source Drift:   ${dto.workflow.source_drift ? chalk.red("YES") : chalk.green("no")}`);
+  console.log(
+    `Source Drift:   ${dto.workflow.source_drift ? chalk.red(`YES (${dto.workflow.source_drift_reason ?? "hash mismatch"})`) : chalk.green("no")}`,
+  );
   console.log(`Next Action:    ${chalk.cyan(dto.workflow.next_action)}`);
 
   if (dto.goal.active) {

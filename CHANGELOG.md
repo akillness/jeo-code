@@ -9,6 +9,27 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.32] - 2026-11-08
+_Refresh the embedded sandbox runtime for npm consumers._
+
+### Fixed
+- Rebuild the packaged sandbox worker source from the current runtime sources so published sandbox behavior stays aligned with the CLI.
+
+## [0.12.31] - 2026-11-08
+_LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO._
+
+### Added
+- **Source-bound workflow contract & recovery (`jeo state [skill] recovery [--json]`)** (`src/agent/state.ts`, `src/commands/state.ts`, `src/commands/deep-interview.ts`, `src/commands/ralplan.ts`, `src/commands/approve.ts`, `src/commands/team.ts`, `src/commands/ultragoal.ts`) — persists deterministic `contract_id`, `source_hash`, `source_paths`, `accepted_scope`, `non_goals`, `unresolved_criteria`, and `next_action` across workflow phases, and detects workspace source drift (`source_drift` / `source_drift_reason`) on recovery.
+- **TypeScript AST structural read summaries** (`src/agent/structural-read.ts`, `src/agent/tools.ts`, `src/agent/tool-schemas.ts`) — `read` tool supports `summary: true` (or `lineRange: "summary"`) on `.ts`/`.tsx`/`.mts`/`.cts` files, returning top-level declarations, signatures, line ranges (`[Lstart-Lend]`), and `1:hash` anchors without dumping full implementation bodies.
+- **Credential-free status DTO (`jeo status [--json] [--session <id>]`)** (`src/commands/status.ts`, `src/cli/runner.ts`) — exposes workspace, provider auth readiness, sanitized session summaries, source-bound workflow recovery state, active goal verdict, and notification daemon status while strictly stripping API keys, OAuth tokens, and raw transcripts.
+- **LM Studio local provider support & setup/doctor integration** (`src/commands/doctor.ts`, `src/commands/setup-helpers.ts`, `src/commands/setup.ts`, `src/tui/components/config-panel.ts`, `src/mcp/tools.ts`) — adds `lmstudio` connectivity probing, setup onboarding, config panel status, and MCP state schema support.
+
+### Fixed
+- **tmux session exit diagnostics & one-shot `/model` slash handling** (`src/commands/launch/tmux.ts`, `src/commands/launch.ts`) — chains `remain-on-exit failed` on `new-session` so early crash output remains visible, and handles one-shot `/model` slash invocations cleanly.
+
+### Documentation
+- **Slack Socket Mode & Telegram full-capability session endpoint guides** (`docs/integrations/slack.md`, `docs/integrations/telegram.md`, `docs/gajae-aside-integration-research.md`, `README.md`, `README.ko.md`) — documents Slack Socket Mode security/review verification and clarifies `SessionNotifyEndpoint` as a full capability mirror.
+
 ## [0.12.30] - 2026-11-07
 
 ### Fixed
@@ -2797,7 +2818,9 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.26...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.32...HEAD
+[0.12.32]: https://github.com/akillness/jeo-code/compare/v0.12.31...v0.12.32
+[0.12.31]: https://github.com/akillness/jeo-code/releases/tag/v0.12.31
 [0.12.26]: https://github.com/akillness/jeo-code/releases/tag/v0.12.26
 [0.12.25]: https://github.com/akillness/jeo-code/releases/tag/v0.12.25
 [0.12.24]: https://github.com/akillness/jeo-code/releases/tag/v0.12.24

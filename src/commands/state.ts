@@ -52,8 +52,9 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
   }
 
   const isJson = args.includes("--json");
+  const pos = args.filter(a => !a.startsWith("-"));
 
-  if (args[0] === "recovery" || (args.length >= 2 && isSkill(args[0]!) && args[1] === "recovery")) {
+  if (pos[0] === "recovery" || (pos.length >= 2 && isSkill(pos[0]!) && pos[1] === "recovery")) {
     const snap = await buildRecoverySnapshot(cwd);
     if (isJson) {
       console.log(JSON.stringify(snap, null, 2));
@@ -61,7 +62,7 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
       console.log(`Contract ID:         ${snap.contract_id ?? "(none)"}`);
       console.log(`Slug:                ${snap.slug ?? "(none)"}`);
       console.log(`Active Skill/Phase:  ${snap.active_skill ?? "none"} (${snap.current_phase ?? "idle"})`);
-      console.log(`Source Hash:         ${snap.source_hash ?? "(unrecorded)"}${snap.source_drift ? " [DRIFT DETECTED]" : ""}`);
+      console.log(`Source Hash:         ${snap.source_hash ?? "(unrecorded)"}${snap.source_drift ? ` [DRIFT DETECTED: ${snap.source_drift_reason ?? "modified"}]` : ""}`);
       console.log(`Accepted Scope:      ${snap.accepted_scope.length > 0 ? snap.accepted_scope.join("; ") : "(none)"}`);
       console.log(`Non-Goals:           ${snap.non_goals.length > 0 ? snap.non_goals.join("; ") : "(none)"}`);
       console.log(`Unresolved Criteria: ${snap.unresolved_criteria.length > 0 ? snap.unresolved_criteria.join("; ") : "(none)"}`);

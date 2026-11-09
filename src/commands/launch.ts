@@ -31,6 +31,7 @@ import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
 import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { routeSkillsForTask, skillAdvisoryRoutingNote } from "../agent/skill-router";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
@@ -692,13 +693,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Re-assemble the system prompt for a given memory block. The OKF memory block is
   // recomputed per turn (with that turn's query) so failure-first ranking actually
   // fires interactively and mid-session captures resurface — see refreshMemory below.
-  const composeSystemPrompt = (memBlock: string): string => {
+  const composeSystemPrompt = (memBlock: string, task: string = "", opts: { skillRun?: boolean } = {}): string => {
     const base = baseSystemPromptNoMemory + wikiRootPromptLine(sessionWikiRoot) + (memBlock ? "\n\n" + memBlock : "");
     let sp = withProjectContext(base, contextFiles);
     if (flags.appendSystemPrompt) sp += "\n" + flags.appendSystemPrompt;
+    // Jev `route-skills` advisory wiring (per turn): the static workflow block above is the
+    // baseline; when this turn's task clears the Jev gate+fit, surface the advisory selection.
+    // Advisory only — the router proposes, never auto-executes; $skill / explicit user intent
+    // remains the sole execution entrypoint. Tasks that clear nothing inject no advisory.
+    // Explicit skill invocations pass skillRun so the INJECTED skill task (guidance text, not
+    // a routing query) is never re-scored by the advisory router.
+    if (task.trim() && !effectiveNoSkills && !opts.skillRun) {
+      const jev = routeSkillsForTask(task, workflowSkills);
+      const note = skillAdvisoryRoutingNote(jev);
+      if (note) sp += "\n\n" + note;
+    }
     return sp;
   };
-  const systemPrompt = composeSystemPrompt(memoryBlock);
+  const systemPrompt = composeSystemPrompt(memoryBlock, flags.message ?? "");
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];
   // Per-turn OKF memory refresh: recompute the injected memory block with THIS turn's
@@ -707,12 +719,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // it per turn means each loop iteration pulls query-relevant past failures to the
   // top and picks up dead ends captured earlier in the SAME session. Opt out with
   // JEO_STATIC_MEMORY=1 (freeze the session-start block); JEO_NO_MEMORY=1 still wins.
-  const refreshSessionMemory = async (query: string): Promise<void> => {
+  const refreshSessionMemory = async (query: string, skillRun = false): Promise<void> => {
     if (jeoEnv("STATIC_MEMORY") === "1") return;
     if (!history[0] || history[0].role !== "system") return;
     try {
       const fresh = await memoryPromptSection(cwd, query || undefined);
-      history[0] = { ...history[0], content: composeSystemPrompt(fresh) };
+      history[0] = { ...history[0], content: composeSystemPrompt(fresh, query || "", { skillRun }) };
     } catch { /* keep the prior system prompt on any failure */ }
   };
   let sessionModel: string | undefined = initialSessionModel;
@@ -1085,7 +1097,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // itself (normal turns); null → suppress it entirely (skill runs, where the
     // injected SKILL.md is NOT user-authored and the [skill] card already names it,
     // gjc-style); a string → show that compact label instead of the raw input.
-    opts?: { userCard?: string | null; signal?: AbortSignal; trustedContext?: string },
+    opts?: { userCard?: string | null; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     opts?.signal?.throwIfAborted();
     let busyDraftHasPaste = false;
@@ -1524,7 +1536,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       // Refresh injected OKF memory with THIS turn's query before the model call so
       // failure-first ranking fires and same-session dead ends resurface.
-      await refreshSessionMemory(userInput);
+      await refreshSessionMemory(userInput, opts?.skillRun ?? false);
       preflightSignal?.throwIfAborted();
       preflightHarness?.dispose();
       preflightHarness = undefined;
@@ -2529,7 +2541,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`▶ Running skill: ${inv.skill.name}${inv.intent ? ` — ${inv.intent}` : ""}`);
         }
         const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
-        const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null });
+        const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null, skillRun: true });
         if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
         else if (usage) console.log(usage.trim());
       };
@@ -2765,7 +2777,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // final reply is the skill's result.
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
-      const { reply, rendered, usage } = await runTurn(task, useTui, undefined, { userCard: null });
+      const { reply, rendered, usage } = await runTurn(task, useTui, undefined, { userCard: null, skillRun: true });
       if (!rendered) console.log(`jeo> ${stripMarkdown(renderMarkdownTables(reply))}${usage}`);
       else if (usage) console.log(usage.trim());
     }

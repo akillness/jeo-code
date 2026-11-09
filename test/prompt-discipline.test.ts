@@ -138,3 +138,13 @@ test("Phase 3: task-state + failure-lesson disciplines and verification requirem
   expect(VERIFICATION_DIRECTIVE).toContain("never weaken, skip, or narrow a test to make it pass");
   expect(executorSystemPrompt()).toContain("never weaken, skip, or narrow a test to make it pass");
 });
+
+// Jev wiring: the per-turn agent path must run the turn task through the Jev advisory
+// skill router and inject the (gate-cleared) advisory note into the composed system prompt.
+test("jev: launch.ts routes each turn task through the Jev advisory skill router", async () => {
+  const src = await Bun.file(new URL("../src/commands/launch.ts", import.meta.url)).text();
+  expect(src).toContain("routeSkillsForTask(task, workflowSkills)");
+  expect(src).toContain("skillAdvisoryRoutingNote(jev)");
+  expect(src).toContain("const composeSystemPrompt = (memBlock: string, task: string = \"\", opts: { skillRun?: boolean } = {}): string =>");
+  expect(src).toContain("task.trim() && !effectiveNoSkills && !opts.skillRun");
+});

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { SKILLS, getSkill } from "../src/skills/catalog";
 import { KARPATHY_DISCIPLINE, executorSystemPrompt } from "../src/agent/engine";
-import { routeSkillsForTask, inventorySkillConflicts, SKILL_ROUTE_GATE } from "../src/agent/skill-router";
+import { routeSkillsForTask, inventorySkillConflicts, skillAdvisoryRoutingNote, SKILL_ROUTE_GATE } from "../src/agent/skill-router";
 
 test("karpathy-guidelines is a registered bundled skill", () => {
   const names = SKILLS.map(s => s.name);
@@ -65,4 +65,18 @@ test("inventory: duplicate normalized names from distinct paths conflict", () =>
 
 test("inventory: bundled catalog has no conflicts", () => {
   expect(inventorySkillConflicts(SKILLS)).toEqual([]);
+});
+
+test("skillAdvisoryRoutingNote: gate-miss selection renders no advisory (answer directly)", () => {
+  const miss = { topK: [], reason: "gate" as const, strategy: "sharded" as const, routing: "No skill cleared the gate." };
+  expect(skillAdvisoryRoutingNote(miss)).toBe("");
+});
+
+test("skillAdvisoryRoutingNote: ok selection renders the suggested skill names as advisory", () => {
+  const sel = routeSkillsForTask("run ralplan to plan the auth refactor", SKILLS);
+  expect(sel.reason).toBe("ok");
+  const note = skillAdvisoryRoutingNote(sel);
+  expect(note).toContain("Jev advisory routing");
+  expect(note).toContain("ralplan");
+  expect(note).toContain("Advisory only");
 });

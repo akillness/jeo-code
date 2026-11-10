@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { formatTranscript } from "../src/tui/components/transcript";
 import type { Message } from "../src/ai/types";
+import chalk from "chalk";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -154,4 +155,27 @@ test("formatTranscript: assistant turn without reasoning shows no thinking block
   const text = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
   expect(text).not.toContain("thinking");
   expect(text).toContain("hello");
+});
+
+test("formatTranscript sanitizes tool paths and results without stripping its own colors", () => {
+  const previousLevel = chalk.level;
+  chalk.level = 1;
+  try {
+    const osc = "\x1b]52;c;Y2xpcGJvYXJk\x07";
+    const cursor = "\x1b[2J";
+    const messages: Message[] = [
+      { role: "user", content: "Read the file" },
+      { role: "assistant", content: JSON.stringify({ tool: "read", arguments: { filePath: `safe${osc}${cursor}name.txt` } }) },
+      { role: "user", content: `Tool [read] result (ok):\nresult ${osc}${cursor}preserved` },
+    ];
+    const output = formatTranscript(messages, { color: true, unicode: true }).join("\n");
+    expect(output).toMatch(/\x1b\[[0-9;]*m/);
+    const plain = stripAnsi(output);
+    expect(plain).toContain("safename.txt");
+    expect(plain).toContain("result preserved");
+    expect(plain).not.toContain("Y2xpcGJvYXJk");
+    expect(plain).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+  } finally {
+    chalk.level = previousLevel;
+  }
 });

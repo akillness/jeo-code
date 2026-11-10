@@ -9,6 +9,7 @@ Abstractions for LLM inference, provider management, tool formatting, and token 
 ## Key Files
 | File | Description |
 |------|-------------|
+| `claude-code-version.ts` | ONE source of truth for the Claude Code version advertised on Anthropic OAuth requests (User-Agent + billing `cc_version`): `JEO_CLAUDE_CODE_VERSION` override → max(baseline, server-raised minimum, local `claude --version`); `parseRequiredClaudeCodeVersion`/`raiseClaudeCodeVersion` let `providers/anthropic.ts` and `agent/web-search.ts` self-heal a 400 `claude_code_version_too_old` by re-sending once with the server's stated minimum |
 | `index.ts` | Brief description of purpose |
 | `model-catalog-compat.ts` | Brief description of purpose |
 | `model-catalog.ts` | Brief description of purpose |

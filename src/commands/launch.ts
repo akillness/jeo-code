@@ -140,6 +140,10 @@ import {
   createSession,
   appendMessage,
   appendMessages,
+  appendParentResponse,
+  appendSubagentEvent,
+  appendSubagentMessage,
+  type SubagentMessage,
   loadSession,
   listSessions,
   latestSessionId,
@@ -221,6 +225,7 @@ import {
   gatedStdout,
   formatTaskSubEvent,
   logTaskSubEvent,
+  dispatchSubagentDisplay,
   createStreamEvents,
   shouldUseOneShotTui,
 } from "./launch/stream";
@@ -240,7 +245,6 @@ import {
   parseHandoffCommand,
   handoffLines,
 } from "./launch/slash-views";
-import { formatTranscript } from "../tui/components/transcript";
 
 
 import {
@@ -257,7 +261,7 @@ import {
   handleSearchSlash,
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
-import { runSessionSlash } from "./launch/session-slash";
+import { runSessionSlash, renderSessionTimeline, sessionPromptHistory, sessionSwitchBlocked } from "./launch/session-slash";
 import { runJobsSlash } from "./launch/jobs-slash";
 import { runModelSlash } from "./launch/model-slash";
 import { runRouteSlash } from "./launch/route-slash";
@@ -1007,6 +1011,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
+  let subagentWrites: Promise<void> = Promise.resolve();
+  const warnedSubagentSessions = new Set<string>();
+  const pendingSubagentWarnings: string[] = [];
+  const flushSubagentWarnings = (): void => {
+    for (const warning of pendingSubagentWarnings.splice(0)) console.error(warning);
+  };
   // True once a resume actually restored PRIOR messages (not just an empty
   // placeholder). Consumed by the "INTERACTIVE mode" welcome-banner block below to
   // skip the fresh-start clearScreen()+banner render — found live: printing the
@@ -1014,6 +1024,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // drawing the generic welcome box a few hundred lines later, buried the actual
   // restored work under a "fresh start" banner instead of leaving it on screen.
   let resumedWithHistory = false;
+  let restoredSession = false;
 
   let compactionSeq = 0;
   if (!flags.noSession) {
@@ -1033,25 +1044,25 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         const id = await latestSessionId(cwd);
         if (id) {
           try {
-            const { header, messages } = await loadSession(id, cwd);
+            const { header, messages, timeline } = await loadSession(id, cwd);
             for (const m of messages) history.push(m);
             sessionId = id;
+            restoredSession = true;
+            sessionModel = initialSessionModel ?? header.model;
+            startupDraft = header.draft;
+            lastUserInput = sessionPromptHistory(messages)[0] ?? "";
+            lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
             const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
-            console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
-            // Reproduce the prior screen exactly (gjc/gajae-code parity): a bare
-            // `--resume` picker with no TTY falls back to the latest session, so
-            // this is the ONLY chance to show the prior work before the REPL
-            // starts — replay it as a scrollback ledger, same formatter `/session
-            // resume` uses mid-session, so a resumed screen always reads like the
-            // exact prior conversation instead of a bare message count.
-            if (messages.length > 0) {
+            if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+            if (!flags.literalPrompt && timeline.length > 0) {
               resumedWithHistory = true;
               const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
-              console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
+              console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
             }
 
 
           } catch (err) {
+            if (flags.literalPrompt) throw err;
             console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
           }
         }
@@ -1094,23 +1105,23 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       } else {
         try {
-          const { header, messages } = await loadSession(id, cwd);
+          const { header, messages, timeline } = await loadSession(id, cwd);
           for (const m of messages) history.push(m);
           sessionId = id;
+          restoredSession = true;
+          sessionModel = initialSessionModel ?? header.model;
+          lastUserInput = sessionPromptHistory(messages)[0] ?? "";
+          lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
           // Restore the unsent input-box draft (gajae-code parity) — see
           // startupDraft's own doc comment for why this path can't feed
           // queuedPromptInput.partial directly yet.
           if (header.draft) startupDraft = header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
           if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
-          // Reproduce the prior screen exactly (gjc/gajae-code parity): same
-          // scrollback-ledger replay `/session resume` uses mid-session, so
-          // `--resume`/`-c`/`--resume <id>` restores the prior work onto the
-          // screen instead of just a bare message count.
-          if (!flags.literalPrompt && messages.length > 0) {
+          if (!flags.literalPrompt && timeline.length > 0) {
             resumedWithHistory = true;
             const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
-            console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
+            console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
           }
 
 
@@ -1239,6 +1250,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // instead of being steered into the model as literal text.
   let queueBusyCommand: ((line: string) => void) | undefined;
   let interactiveTurnActive = false;
+  const pendingDetachedEvents: { sessionId: string | undefined; event: TaskSubEvent }[] = [];
+  let displayDetachedEvent = (line: string, _event: TaskSubEvent): void => { console.log(line); };
+  const showDetachedEvent = (event: TaskSubEvent): void => {
+    const line = formatTaskSubEvent(event);
+    if (line) displayDetachedEvent(`${sanitizeForTerminal(line)} [${sanitizeForTerminal(event.detachedId ?? "")}]`, event);
+  };
+  const flushDetachedEvents = (): void => {
+    for (const item of pendingDetachedEvents.splice(0)) {
+      if (item.sessionId === sessionId) showDetachedEvent(item.event);
+    }
+  };
   let relayInputEpoch = 0;
   let remoteInputPending = 0;
   let remoteSystemBase: Message | undefined;
@@ -1264,6 +1286,51 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
   const turnSandboxScope = currentSandboxExecution();
+  // ── Hoisted turn-closure dependencies ──────────────────────────────────────────
+  // `runTurnScoped` (below) is invoked from BOTH the one-shot branch (`-p`, piped
+  // stdin, messenger worker, startup `$skill`) and the interactive REPL. Its in-flight
+  // abort harnesses close over `expandSentinel` and `forceExitFromCtrlC`. Both used
+  // to be `const`s declared ~2000 lines later in the interactive-only section, which
+  // the one-shot branch `return`s before reaching — so a keystroke or Ctrl+C during a
+  // one-shot turn hit the temporal dead zone (`ReferenceError: Cannot access
+  // 'forceExitFromCtrlC' before initialization`), tripped the cli.ts crash net, and
+  // killed the whole session with exit 1 (crash.log field cases 2026-08 → 2026-10).
+  // Declaring them here, before any turn can run, closes that window on every path.
+  const SENTINEL = MULTILINE_SENTINEL;
+  // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
+  // (fills the box, submits intact into the user card) is the default. The lone-"\n"
+  // break rule is ALSO default-on (JEO_MULTILINE=0 opts out): every real terminal
+  // sends `\r` for Enter in raw mode, so a bare `\n` can only come from Ctrl+J,
+  // Ctrl+Enter (Windows Terminal / conhost), or a ghostty `shift+enter=text:\n`
+  // keybind — all of which MEAN "insert a line break". This is what makes a break
+  // key available on Windows terminals that support neither the kitty keyboard
+  // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
+  // filter (reads stdin directly).
+  const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
+  const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
+  // Process-level hard exit (exit 130) shared by every turn path: cancel background
+  // work, release the notify endpoint, revoke the sandbox, then exit. Owns NO terminal
+  // state — the interactive REPL wraps it below (`forceExitFromCtrlC = …`) with the
+  // prompt/raw-mode restore that only exists once the REPL has been set up.
+  const hardExitCore = (): void => {
+    subagentRegistry.cancelAll();
+    jobRegistry.cancelAll();
+    monitorRegistry.cancelAll();
+    sessionNotifyEndpoint?.detachRegistry();
+    void sessionNotifyEndpoint?.stop();
+    void stopSessionNotifyEndpoint(subagentRegistry);
+    if (turnSandboxScope) {
+      void turnSandboxScope.supervisor.close().then(() => process.exit(130), error => {
+        console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      });
+      return;
+    }
+    process.exit(130);
+  };
+  // One-shot default: no prompt box or raw mode to restore, so the core IS the exit.
+  // The interactive section reassigns this with the terminal-restoring wrapper.
+  let forceExitFromCtrlC: () => void = hardExitCore;
   const runTurnScoped = async (
     userInput: string,
     useTui: boolean,
@@ -1689,6 +1756,47 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui) tui.events().onNotice?.(safe);
       else console.error(safe);
     };
+    const subagentSessionId = sessionId;
+    let originatingTurnOpen = true;
+    const onSubagentEvent = (event: TaskSubEvent): void => {
+      // eval log() emits a step without a worker run; do not create a phantom agent.
+      if (!event.runId && event.kind === "step") {
+        if (useTui) tui?.events().onNotice?.(event.detail ?? "");
+        else logTaskSubEvent(event);
+        return;
+      }
+      dispatchSubagentDisplay(event, {
+        sameSession: subagentSessionId === sessionId, originatingTurnOpen,
+        activeTui: !!activeTui, turnActive: interactiveTurnActive,
+      }, {
+        original: e => { if (useTui) tui?.onSubagentEvent(e); else logTaskSubEvent(e); },
+        active: e => activeTui?.onSubagentEvent(e),
+        deferred: e => pendingDetachedEvents.push({ sessionId: subagentSessionId, event: e }),
+        idle: showDetachedEvent,
+      });
+      if (!subagentSessionId || event.kind === "thinking") return;
+      subagentWrites = subagentWrites.then(() => appendSubagentEvent(subagentSessionId, event, cwd)).catch(err => {
+        if (warnedSubagentSessions.has(subagentSessionId)) return;
+        warnedSubagentSessions.add(subagentSessionId);
+        const warning = `Could not save subagent activity for session ${subagentSessionId}: ${sanitizeForTerminal(String(err))}`;
+        if (interactiveTurnActive) {
+          pendingSubagentWarnings.push(warning);
+          activeTui?.events().onNotice?.(warning);
+        } else console.error(warning);
+      });
+    };
+    const onSubagentMessage = (record: SubagentMessage): void => {
+      if (!subagentSessionId) return;
+      subagentWrites = subagentWrites.then(() => appendSubagentMessage(subagentSessionId, record, cwd)).catch(err => {
+        if (warnedSubagentSessions.has(subagentSessionId)) return;
+        warnedSubagentSessions.add(subagentSessionId);
+        const warning = `Could not save subagent activity for session ${subagentSessionId}: ${sanitizeForTerminal(String(err))}`;
+        if (interactiveTurnActive) {
+          pendingSubagentWarnings.push(warning);
+          activeTui?.events().onNotice?.(warning);
+        } else console.error(warning);
+      });
+    };
     // Messenger-literal remote sessions never run the host user's prompt/turn hooks.
     const promptHooksEligible = !flags.literalPrompt && !flags.literalWorker;
     if (routeCredentialNotice) {
@@ -1715,12 +1823,35 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // right after the user prompt, on every onStep boundary, and once post-turn — so
     // Ctrl+C / crash / ESC can't lose the prompt + finished steps before /resume.
     let persistedLen = beforeLen;
+    const pendingParentResponses: { content: string; id: string; saved: boolean }[] = [];
     const persistTurnTail = async (): Promise<void> => {
       opts?.signal?.throwIfAborted();
-      if (!sessionId || history.length <= persistedLen) return;
+      if (!subagentSessionId || history.length <= persistedLen) return;
       const tail = history.slice(persistedLen);
       persistedLen = history.length;
-      try { await appendMessages(sessionId, tail, cwd); } catch { /* best-effort */ }
+      const responses = tail.map(message => {
+        if (message.role !== "assistant") return undefined;
+        const index = pendingParentResponses.findIndex(response => response.content === message.content);
+        return index < 0 ? undefined : pendingParentResponses.splice(index, 1)[0];
+      });
+      subagentWrites = subagentWrites.then(async () => {
+        try { await appendMessages(subagentSessionId, tail, cwd, responses.map(response => response?.saved ? response.id : undefined)); } catch { /* best-effort */ }
+      });
+      await subagentWrites;
+    };
+    const onBeforeTools = async (content: string): Promise<void> => {
+      await persistTurnTail();
+      pendingParentResponses.length = 0; // An uncommitted response cannot belong to a later step.
+      if (!subagentSessionId) return;
+      const response = { content, id: crypto.randomUUID(), saved: false };
+      pendingParentResponses.push(response);
+      subagentWrites = subagentWrites.then(async () => {
+        try {
+          await appendParentResponse(subagentSessionId, response.id, { role: "assistant", content }, cwd);
+          response.saved = true;
+        } catch { /* best-effort; the normal history tail remains authoritative */ }
+      });
+      await subagentWrites;
     };
     let result;
     try {
@@ -2092,17 +2223,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             steer: drainSteer,
             registry: subagentRegistry,
             sessionEndpoint: sessionNotifyEndpoint,
-            onEvent: useTui
-              ? (e => tui?.onSubagentEvent(e))
-              : (e => logTaskSubEvent(e)),
+            onEvent: onSubagentEvent,
+            onSubagentMessage,
           }),
           eval: createEvalTool({
             config: { ...turnConfig, defaultModel: activeModel },
             signal: ac.signal,
             steer: drainSteer,
-            onEvent: useTui
-              ? (e => tui?.onSubagentEvent(e))
-              : (e => logTaskSubEvent(e)),
+            onEvent: onSubagentEvent,
+            onSubagentMessage,
           }),
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
@@ -2245,7 +2374,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           // with the reroute loop below, which `routingEnabled` also gates.
           ...(routingEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
 
-          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone, onEvidence }, persistTurnTail), opik),
+          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone, onEvidence, onBeforeTools }, persistTurnTail), opik),
 
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
@@ -2400,7 +2529,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             // mid-wait and this retry succeeding. See launch.ts's `rateLimitFallbackAvailable`
             // doc comment / commit history for why this predicate is paired with an
             // actual model-switch loop everywhere else it's used.
-            events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
+            events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeTools }, persistTurnTail), opik),
           });
           const usage =
             result.usage && retry.usage
@@ -2416,6 +2545,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       } finally {
         opts?.signal?.removeEventListener("abort", abortRemote);
         harness.dispose();
+        originatingTurnOpen = false;
         activeTui = null;
         currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
 
@@ -2428,10 +2558,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
       }
     } catch (err) {
+      await subagentWrites;
       if (tui) {
         tui.finish(`! ${friendlyProviderError(err)}`, { ok: false });
         interactiveTurnActive = false;
       }
+      flushSubagentWarnings();
+      flushDetachedEvents();
       throw err;
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
@@ -2471,6 +2604,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // Incremental onStep flushes already wrote the prompt and completed steps, so
     // this only covers the tail — net content is the full turn either way.
     try {
+      await subagentWrites;
       await persistTurnTail();
       opts?.signal?.throwIfAborted();
       const assistantMsg: Message = { role: "assistant", content: reply };
@@ -2482,6 +2616,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui) tui.finish(reply);
     } finally {
       if (tui) interactiveTurnActive = false;
+      flushSubagentWarnings();
+      flushDetachedEvents();
     }
     if (promptHooksEligible) {
       await runTurnEndHooks(cwd, { prompt: userInput, response: reply, done: result.done, steps: result.steps, model: activeModel }, opts?.signal, hookNotice);
@@ -2874,6 +3010,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return;
     } finally {
       await sessionNotifyEndpoint?.stop().catch(() => {});
+      // The in-flight abort harness `resume()`s a TTY stdin (and `dispose()` only
+      // reverts raw mode). A flowing TTY read handle keeps Bun's event loop alive, so
+      // `jeo "prompt"` run from a real terminal printed its answer and then never
+      // returned to the shell (cli.ts only force-exits on a NON-zero code). Pause it
+      // so the one-shot path drains naturally; piped/non-TTY stdin is unaffected.
+      if (process.stdin.isTTY) process.stdin.pause();
     }
   }
 
@@ -3128,23 +3270,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // readline sees them — readline inserts it as an ordinary character (no per-line
   // submit/race), the box renders it as a real line break, and it is expanded back to
   // "\n" on submit. On for any interactive TTY; JEO_NO_MULTILINE=1 reads stdin directly.
-  const SENTINEL = MULTILINE_SENTINEL;
-  // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
-  // (fills the box, submits intact into the user card) is the default. The lone-"\n"
-  // break rule is ALSO default-on (JEO_MULTILINE=0 opts out): every real terminal
-  // sends `\r` for Enter in raw mode, so a bare `\n` can only come from Ctrl+J,
-  // Ctrl+Enter (Windows Terminal / conhost), or a ghostty `shift+enter=text:\n`
-  // keybind — all of which MEAN "insert a line break". This is what makes a break
-  // key available on Windows terminals that support neither the kitty keyboard
-  // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
-  // filter (reads stdin directly).
-  const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
+  // `SENTINEL`, `multilineInput` and `expandSentinel` are declared above `runTurnScoped`
+  // (hoisted turn-closure dependencies) so one-shot turns can reach them too.
   // tmux-owned panes can translate the plain Enter key to LF after the launcher's
   // keyboard modes are enabled. In that mode LF must remain readline's submit key;
   // explicit Shift+Enter escape sequences still become MULTILINE_SENTINEL below.
   const loneLfShiftEnter =
     jeoEnv("MULTILINE") !== "0" && jeoEnv("TMUX_LAUNCHED") !== "1";
-  const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
   // once per launch but previously anonymous and never removed — benign for a single
   // CLI run, but repeated launch() (test harness) accumulated them past Node's
@@ -3248,7 +3380,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   if (process.stdin.isTTY) {
     const rliHist = rl as unknown as { history?: string[] };
     if (Array.isArray(rliHist.history)) {
-      for (const entry of loadInputHistory(cwd)) {
+      if (restoredSession) rliHist.history.push(...sessionPromptHistory(history));
+      else for (const entry of loadInputHistory(cwd)) {
         if (!rliHist.history.includes(entry)) rliHist.history.push(entry);
       }
     }
@@ -3894,6 +4027,19 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     footerParkedRow = tRow;
     out.write(s);
   };
+  displayDetachedEvent = (line, event) => {
+    if (pickerActive) {
+      pendingDetachedEvents.push({ sessionId, event });
+      return;
+    }
+    const armed = previewArmed;
+    if (armed) disarmPreview();
+    console.log(line);
+    if (armed) {
+      armPreview();
+      drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+    }
+  };
 
   // Ctrl-L "redraw / re-anchor" recovery. The boxed footer paints IN PLACE relative to
   // the last parked cursor row; if the terminal scrolled for any reason the app did not
@@ -3959,7 +4105,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // editor shortcut. `/exit` remains the graceful session-save path; ^C is the
   // emergency "get me back to my shell now" path. A first Ctrl+C with text in the box
   // CLEARS it instead (handleCtrlC); the next Ctrl+C on the now-empty box exits.
-  const forceExitFromCtrlC = () => {
+  // Reassigns the `let` declared above `runTurnScoped`: from here on, every in-flight
+  // harness (which captured the binding, not the value) gets the terminal-restoring
+  // variant instead of the bare one-shot `hardExitCore`.
+  forceExitFromCtrlC = () => {
     try {
       disarmPreview();
       out.write("\x1b[?25h\n");
@@ -3967,20 +4116,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     } catch {
       // Best-effort terminal restore; process exit is the contract.
     }
-    subagentRegistry.cancelAll();
-    jobRegistry.cancelAll();
-    monitorRegistry.cancelAll();
-    sessionNotifyEndpoint?.detachRegistry();
-    void sessionNotifyEndpoint?.stop();
-    void stopSessionNotifyEndpoint(subagentRegistry);
-    if (turnSandboxScope) {
-      void turnSandboxScope.supervisor.close().then(() => process.exit(130), error => {
-        console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-      });
-      return;
-    }
-    process.exit(130);
+    hardExitCore();
   };
   // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
   // `lastCtrlCAt` collapses the duplicate deliveries of one physical press (keypress
@@ -4114,6 +4250,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         rli.cursor = 0;
       }
       pickerActive = false;
+      flushDetachedEvents();
     }
   };
 
@@ -4875,6 +5012,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
 
 
+  const hasPendingSessionInput = (partial = ""): boolean => sessionSwitchBlocked("/session resume", {
+    images: pendingImages.length,
+    lines: pendingStdinLines.length + remoteInputPending + (pendingRemote || exclusiveRemote ? 1 : 0),
+    pastedLines: queuedPromptInput.pastedLines.length,
+    commands: pendingMidTurnCommands.length,
+    partial: partial || queuedPromptInput.partial || String(Reflect.get(rl, "line") ?? ""),
+    pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste,
+  });
+
   // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): show the SAME
   // interactive session picker `/session resume` (no arg) uses, in place of the
   // fresh session created above. TTY-only — non-TTY already fell back to
@@ -4883,16 +5029,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const pickResult = await runSessionSlash("/session resume", {
       cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
       advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+      canSwitchSession: () => !hasPendingSessionInput(),
+      onSessionCommitted: (id, draft) => { sessionId = id; queuedPromptInput.partial = draft; },
     });
     sessionId = pickResult.sessionId;
-    if (pickResult.sessionModel !== undefined) sessionModel = pickResult.sessionModel;
+    if (pickResult.sessionModel !== undefined) sessionModel = initialSessionModel ?? pickResult.sessionModel ?? undefined;
     if (pickResult.lastUserInput !== undefined) lastUserInput = pickResult.lastUserInput;
     if (pickResult.lastReply !== undefined) lastReply = pickResult.lastReply;
-    // Restore the unsent input-box draft left over at last save (gajae-code
-    // parity) — feeds the SAME "new input first" prefill path queued mid-turn
-    // lines already use, so it's visible in the box, Enter to run, Esc/Ctrl+U
-    // to discard, on the very first prompt of this resumed session.
-    if (pickResult.draft) queuedPromptInput.partial = pickResult.draft;
   }
 
   // Remote (Telegram) free-text reply / config command routing — wired here,
@@ -4912,7 +5055,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       else exclusiveRemote = undefined;
     };
     sessionNotifyEndpoint.onRemoteRequest = (text, finish, signal, stage, actor): boolean => {
-      if (!sandboxAuthority || actor?.origin !== "discord" || actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
+      if (!sandboxAuthority || sessionNotifyEndpoint.sessionId !== sessionId || actor?.origin !== "discord" || actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
           !cfg.notifications?.discord?.allowedUserIds?.includes(actor.userId ?? "") || pendingRemote || signal.aborted) return false;
       if (stage && ((sessionModel || defaultModel).startsWith("agy/") || history[0]?.role !== "system")) return false;
       const request = { text, finish, signal, stage, epoch: 0 };
@@ -4924,7 +5067,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return true;
     };
     sessionNotifyEndpoint.onUserMessage = async (msg): Promise<void | boolean> => {
-      if (!sandboxAuthority) return false;
+      if (!sandboxAuthority || sessionNotifyEndpoint.sessionId !== sessionId) return false;
       if (msg.actor && (msg.actor.origin !== "discord" || msg.actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
           !cfg.notifications?.discord?.allowedUserIds?.includes(msg.actor.userId ?? ""))) return false;
       relayInputEpoch++;
@@ -5040,6 +5183,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
+      const commandFromQueue = pendingMidTurnCommands.length > 0;
       const rawText = pendingMidTurnCommands.length
         ? (disarmPreview(), pendingMidTurnCommands.shift()!)
         : await promptInput(previewEnabled ? "" : "\njeo> ");
@@ -5290,20 +5434,34 @@ navMatches = [];
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {
+        const preservedPartial = commandFromQueue ? prefilledLine : "";
+        if (sessionSwitchBlocked(input, { images: pendingImages.length, lines: pendingStdinLines.length + remoteInputPending + (pendingRemote || exclusiveRemote ? 1 : 0), pastedLines: queuedPromptInput.pastedLines.length, commands: pendingMidTurnCommands.length, partial: preservedPartial || queuedPromptInput.partial || String(Reflect.get(rl, "line") ?? ""), pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste })) {
+          if (preservedPartial) queuedPromptInput.partial = preservedPartial;
+          console.log("(session unchanged: send or clear pending input and attachments before switching)");
+          continue;
+        }
         const result = await runSessionSlash(input, {
           cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
           advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+          canSwitchSession: () => !hasPendingSessionInput(preservedPartial),
+          onSessionCommitted: (id, draft) => {
+            if (id !== sessionId) sessionNotifyEndpoint?.setDiscordControlEnabled(false);
+            sessionId = id;
+            queuedPromptInput.partial = draft;
+          },
         });
         if (result.sessionId !== sessionId) sessionNotifyEndpoint?.setDiscordControlEnabled(false);
         sessionId = result.sessionId;
-        if (result.sessionModel !== undefined) sessionModel = result.sessionModel;
+        if (result.lastUserInput !== undefined) {
+          lastActiveModel = undefined;
+          lastToolDetail = null;
+          sessionUsage.inputTokens = 0;
+          sessionUsage.outputTokens = 0;
+          sessionUsage.turns = 0;
+        }
+        if (result.sessionModel !== undefined) sessionModel = result.sessionModel ?? undefined;
         if (result.lastUserInput !== undefined) lastUserInput = result.lastUserInput;
         if (result.lastReply !== undefined) lastReply = result.lastReply;
-        // Restore the unsent input-box draft (see the resumeInteractive call
-        // site above for the full rationale) — `continue` below immediately
-        // re-enters the loop top, which consumes `queuedPromptInput.partial`
-        // as this next prompt's prefill.
-        if (result.draft) queuedPromptInput.partial = result.draft;
         continue;
       }
       if (input === "/retry") {

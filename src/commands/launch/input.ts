@@ -491,6 +491,10 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
 
   const handleSigint = () => {
     if (!controller.signal.aborted) controller.abort();
+    if (rawChanged) {
+      try { stdin.setRawMode?.(false); } catch { /* terminal may already be gone */ }
+      rawChanged = false;
+    }
     opts.onHardExit?.();
   };
 

@@ -66,6 +66,23 @@ export function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (
   const line = formatTaskSubEvent(e);
   if (line) log(line);
 }
+/** Route late detached events only to their owning session's current display. */
+export function dispatchSubagentDisplay(
+  event: TaskSubEvent,
+  state: { sameSession: boolean; originatingTurnOpen: boolean; activeTui: boolean; turnActive: boolean },
+  handlers: { original: (event: TaskSubEvent) => void; active: (event: TaskSubEvent) => void; deferred: (event: TaskSubEvent) => void; idle: (event: TaskSubEvent) => void },
+): void {
+  if (state.originatingTurnOpen) {
+    if (!event.detachedId || state.sameSession) handlers.original(event);
+  } else if (event.detachedId && state.sameSession) {
+    if (state.activeTui) handlers.active(event);
+    else if (event.kind === "done" || event.kind === "error") {
+      if (state.turnActive) handlers.deferred(event);
+      else handlers.idle(event);
+    }
+  }
+}
+
 
 export function createStreamEvents(
   _maxSteps: number,

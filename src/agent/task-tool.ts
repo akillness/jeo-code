@@ -14,6 +14,7 @@ import { toolTarget } from "./step-budget";
 
 import type { ToolResult } from "./tools";
 import type { Message } from "./loop";
+import type { SubagentMessage } from "./session";
 import { loadProjectContext, withProjectContext, type ProjectContextFile } from "./context-files";
 import { memoryPromptSection } from "./memory";
 
@@ -52,6 +53,8 @@ export type SubagentTaskConfig = RoutingConfig & Pick<Config, "subagents" | "thi
 
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
+  /** Unique identifier for this run, shared by all its events. */
+  runId?: string;
   role: string;
   /** `"thinking"` streams the subagent's live reasoning/thought text (native
    *  extended-thinking models) — a transient live-preview beat, not persisted to
@@ -88,6 +91,8 @@ export interface TaskToolOptions {
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
   onEvent?: (ev: TaskSubEvent) => void;
+  /** Actual conversation messages, distinct from display-only progress events. */
+  onSubagentMessage?: (record: SubagentMessage) => void;
   /** Mid-turn steering drain (gjc parity): an additional user query typed while a
    *  subagent works is forwarded live. A single-task run forwards to the one active
    *  subagent. Any fan-out batch (both roles now run CONCURRENTLY, bounded at
@@ -255,6 +260,7 @@ export interface RunSubagentOptions {
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
   onEvent?: (ev: TaskSubEvent) => void;
+  onSubagentMessage?: (record: SubagentMessage) => void;
   /** Mid-turn steering drain — see TaskToolOptions.steer for the exact contract. */
   steer?: () => string[];
   /** 1-based position within a fan-out/parallel batch, for event tagging. */
@@ -339,6 +345,7 @@ export async function runSubagentOnce(
     return withSandboxExecution(opts.sandbox, () => runSubagentOnce(role, taskText, context, cwd, opts));
   }
   const { steer, slot, detachedId, projectContext: preloadedContext, signal } = opts;
+  const runId = crypto.randomUUID();
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
   const emit = (ev: TaskSubEvent) => {
@@ -355,10 +362,10 @@ export async function runSubagentOnce(
     }
     opts.onEvent?.(
       detachedId
-        ? { ...ev, detachedId }
+        ? { ...ev, runId, detachedId }
         : slot
-        ? { ...ev, index: slot.index, total: slot.total }
-        : ev
+        ? { ...ev, runId, index: slot.index, total: slot.total }
+        : { ...ev, runId }
     );
   };
 
@@ -467,6 +474,28 @@ export async function runSubagentOnce(
   const failoverEnabled = !!opts.config.routing?.enabled;
   let activeModel = initialModel;
   emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model: activeModel });
+  // The system prompt includes machine-local project and memory context; do not
+  // persist it again. Capture the actual task and subsequent loop history instead.
+  const recordMessage = (message: Message) => {
+    if (!opts.onSubagentMessage) return;
+    const { reasoning: _reasoning, reasoningArtifacts: _reasoningArtifacts, ...visible } = message;
+    opts.onSubagentMessage({ runId, role: role.id, message: visible });
+  };
+  let pendingAssistant: string | undefined;
+  recordMessage(history[1]);
+  if (opts.onSubagentMessage) {
+    Object.defineProperty(history, "push", {
+      configurable: true,
+      value: (...messages: Message[]) => {
+        const length = Array.prototype.push.apply(history, messages);
+        for (const message of messages) {
+          if (message.role === "assistant" && message.content === pendingAssistant) pendingAssistant = undefined;
+          recordMessage(message);
+        }
+        return length;
+      },
+    });
+  }
   let contractCorrections = 0;
   const runOnce = () => {
     return runAgentLoop(history, {
@@ -511,7 +540,8 @@ export async function runSubagentOnce(
           const preview = tail.replace(/\s+/g, " ").trim();
           if (preview) emit({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model: activeModel });
         },
-        onAssistant: (_raw, invocation) => {
+        onAssistant: (raw, invocation) => {
+          pendingAssistant = raw;
           if (invocation && invocation.tool && invocation.tool !== "done") {
             lastTarget = toolTarget(invocation.tool, invocation.arguments);
             trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
@@ -544,6 +574,7 @@ export async function runSubagentOnce(
   const failureResult = (error: unknown): SubagentRunResult => {
     const explicitSignal = typeof error === "object" && error !== null && "mutationMayHaveOccurred" in error && error.mutationMayHaveOccurred === true;
     const message = error instanceof Error ? error.message : String(error);
+    emit({ role: role.id, kind: "error", detail: message, success: false, step: currentStep, maxSteps, model: activeModel });
     return {
       success: false,
       output: "",
@@ -562,6 +593,10 @@ export async function runSubagentOnce(
       return { ok: true, result: await runOnce() };
     } catch (error: unknown) {
       return { ok: false, error };
+    } finally {
+      // A terminal done or exhausted gate can return without appending its response.
+      if (pendingAssistant !== undefined) recordMessage({ role: "assistant", content: pendingAssistant });
+      pendingAssistant = undefined;
     }
   };
   let outcome = await runSafely();
@@ -676,6 +711,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       sandbox,
       signal: extra.signal ?? opts.signal,
       onEvent: opts.onEvent,
+      onSubagentMessage: opts.onSubagentMessage,
       steer: extra.steer,
       slot: extra.slot,
       projectContext: extra.projectContext,

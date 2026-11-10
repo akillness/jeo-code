@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "../src/agent/loop";
+import { appendSubagentMessage, createSession, loadSession } from "../src/agent/session";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
@@ -30,8 +31,10 @@ test("taskToolProtocolLine: spells out single vs fan-out shapes with a concrete 
 test("createTaskTool: executor delegates, runs a tool, then completes on done", async () => {
   let turn = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
+    callLlm: async (_history: unknown, options: { onReasoning?: (delta: string) => void; onReasoningArtifact?: (artifact: { provider: "openai"; model: string; encrypted: string }) => void }) => {
       turn++;
+      options.onReasoning?.("private native reasoning");
+      options.onReasoningArtifact?.({ provider: "openai", model: "test-model", encrypted: "private artifact" });
       if (turn === 1) return JSON.stringify({ tool: "find", arguments: { globPattern: "*" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "Summary: scaffolded\nChanged Files: x.ts created\nVerification: bun test passed\nOpen Risks: none\nscaffold ready" } });
     },
@@ -39,13 +42,29 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
 
   const { createTaskTool } = await import("../src/agent/task-tool");
   const events: string[] = [];
+  const cwd = await tmpDir();
+  const session = await createSession(cwd);
+  const pending: Promise<void>[] = [];
   const tool = createTaskTool({
     config: { defaultModel: "ollama/fast", subagents: {} },
     onEvent: e => events.push(`${e.role}:${e.kind}${e.detail ? ":" + e.detail : ""}`),
+    onSubagentMessage: record => pending.push(appendSubagentMessage(session.id, record, cwd)),
   });
 
-  const cwd = await tmpDir();
   const res = await tool({ role: "executor", task: "scaffold the project" }, cwd);
+  await Promise.all(pending);
+  const records = (await loadSession(session.id, cwd)).subagentMessages;
+  expect(records.length).toBeGreaterThanOrEqual(4);
+  expect(records.every(record => record.role === "executor" && record.runId === records[0]!.runId)).toBe(true);
+  expect(records.map(record => record.message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  expect(records[0]!.message.content).toContain("scaffold the project");
+  expect(records[1]!.message.content).toContain('"tool":"find"');
+  expect(records[2]!.message.content).toContain("Tool [find] result (ok)");
+  expect(records[3]!.message.content).toContain("scaffold ready");
+  expect(records.some(record => record.message.role === "system")).toBe(false);
+  expect(records.every(record => record.message.reasoning === undefined && record.message.reasoningArtifacts === undefined)).toBe(true);
+  expect(await fs.readFile(session.path, "utf8")).not.toContain("private native reasoning");
+  expect(await fs.readFile(session.path, "utf8")).not.toContain("private artifact");
 
   expect(res.success).toBe(true);
   expect(res.output).toContain("[Executor subagent] completed");
@@ -57,6 +76,34 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
   expect(events.some(e => e === "executor:tool:find *")).toBe(true); // detail carries the glob target
   expect(events.some(e => e.startsWith("executor:done"))).toBe(true);
 });
+test("createTaskTool persists an actual failed tool result without inventing success", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => ++turn === 1
+      ? JSON.stringify({ tool: "read", arguments: { path: "missing-input.txt" } })
+      : JSON.stringify({ tool: "done", arguments: { reason: "Summary: missing input\nChanged Files: none\nVerification: attempted read\nOpen Risks: missing input" } }),
+  }));
+  // The mock must be installed before loading the task module.
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+  try {
+    const session = await createSession(cwd);
+    const pending: Promise<void>[] = [];
+    const tool = createTaskTool({
+      config: { defaultModel: "ollama/fast", subagents: {} },
+      onSubagentMessage: record => pending.push(appendSubagentMessage(session.id, record, cwd)),
+    });
+    await tool({ role: "executor", task: "read missing input" }, cwd);
+    await Promise.all(pending);
+    const records = (await loadSession(session.id, cwd)).subagentMessages;
+    const result = records.find(record => record.message.content.startsWith("Tool [read] result"));
+    expect(result?.message.content).toContain("result (fail)");
+    expect(records.some(record => record.message.content.includes("result (ok)"))).toBe(false);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("createTaskTool: a mutating delegate that writes then throws blocks done until fresh verification", async () => {
   const done = {
     tool: "done",

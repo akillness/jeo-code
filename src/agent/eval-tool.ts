@@ -47,6 +47,7 @@ import {
   type SubagentRunResult,
   type TaskSubEvent,
 } from "./task-tool";
+import type { SubagentMessage } from "./session";
 import { getSubagentRole, defaultSubagentRole, subagentRoleIds } from "./subagents";
 import { loadProjectContext, type ProjectContextFile } from "./context-files";
 import { currentSandboxExecution } from "./hooks";
@@ -55,6 +56,7 @@ export interface EvalToolOptions {
   config: SubagentTaskConfig;
   signal?: AbortSignal;
   onEvent?: (ev: TaskSubEvent) => void;
+  onSubagentMessage?: (record: SubagentMessage) => void;
   /** Mid-turn steering drain — forwarded to every `task()` dispatch the script
    *  makes, same contract as TaskToolOptions.steer. */
   steer?: () => string[];
@@ -396,6 +398,7 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
               config: opts.config,
               signal: rpcSignal,
               onEvent: opts.onEvent,
+              onSubagentMessage: opts.onSubagentMessage,
               steer: opts.steer,
               projectContext,
               excludedCredentialScopes,

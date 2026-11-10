@@ -1,4 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+
+
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
@@ -6,11 +8,11 @@ import { ProviderHttpError, ProviderStreamError, parseRetryAfter, parseRetryFrom
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { jeoEnv } from "../../util/env";
+import { getClaudeCodeVersion, parseRequiredClaudeCodeVersion, raiseClaudeCodeVersion } from "../claude-code-version";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 const DEPRECATED_TEMPERATURE = "`temperature` is deprecated for this model.";
-const CLAUDE_CODE_VERSION = "2.1.289";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 /** Betas needed for API-key requests: interleaved-thinking enables thinking+tools,
@@ -69,7 +71,7 @@ function createClaudeBillingHeader(payload: unknown): string {
   const randomBytes = new Uint8Array(2);
   crypto.getRandomValues(randomBytes);
   const buildHash = Array.from(randomBytes, byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 3);
-  return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${CLAUDE_CODE_VERSION}.${buildHash}; cc_entrypoint=cli; cch=${cch};`;
+  return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${getClaudeCodeVersion()}.${buildHash}; cc_entrypoint=cli; cch=${cch};`;
 }
 
 function anthropicSystemBlocks(
@@ -426,6 +428,7 @@ async function postAnthropic(
   let stripArtifacts = false;
   let disableFallback = false;
   let disableEffort = false;
+  let bumpedVersion = false;
 
   for (let attempt = 1; attempt <= 5; attempt++) {
     const { url, headers, body } = anthropicRequest(
@@ -442,6 +445,14 @@ async function postAnthropic(
     if (response.ok) return response;
 
     const detail = await response.text().catch(() => "");
+    // Self-heal `claude_code_version_too_old` (400): the server names the minimum Claude Code
+    // version it accepts for this model; raise the advertised version process-wide and re-send
+    // once so a newer model works without a jeo release that bumps the baseline constant.
+    const requiredVersion = parseRequiredClaudeCodeVersion(detail);
+    if (!bumpedVersion && requiredVersion && raiseClaudeCodeVersion(requiredVersion)) {
+      bumpedVersion = true;
+      continue;
+    }
     if (isDeprecatedTemperatureError(response.status, detail) && includeTemperature) {
       includeTemperature = false;
       continue;
@@ -700,7 +711,7 @@ function claudeCodeOAuthHeaders(stream: boolean, model: string): Record<string, 
     accept: stream ? "text/event-stream" : "application/json",
     "anthropic-beta": anthropicBetaHeader(ANTHROPIC_OAUTH_BETA, model),
     "anthropic-dangerous-direct-browser-access": "true",
-    "user-agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
+    "user-agent": `claude-cli/${getClaudeCodeVersion()} (external, cli)`,
     "x-app": "cli",
     "x-stainless-arch": mapStainlessArch(process.arch),
     "x-stainless-lang": "js",

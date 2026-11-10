@@ -396,10 +396,12 @@ test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progre
   const { runAgentLoop } = await import("../src/agent/engine");
   const history = [{ role: "system" as const, content: "sys" }];
   let writes = 0;
+  const order: string[] = [];
   const result = await runAgentLoop(history, {
     cwd: process.cwd(),
     maxSteps: 25,
-    tools: { write: async () => { writes++; return { success: true, output: "wrote" }; } },
+    events: { onBeforeTools: async raw => { await Promise.resolve(); order.push(`before:${raw}`); } },
+    tools: { write: async () => { order.push("write"); writes++; return { success: true, output: "wrote" }; } },
   });
   expect(result.done).toBe(false);
   expect(result.doneReason).toContain("repeated the same 'write' call");
@@ -407,6 +409,7 @@ test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progre
   // calls are SKIPPED with escalating corrective bounces, and the 4th (repeated through
   // both corrections) trips the consolidated stop — a mutating call never re-executes.
   expect(writes).toBe(1);
+  expect(order).toEqual([`before:${JSON.stringify({ tool: "write", arguments: { filePath: "x.txt", content: "hi" } })}`, "write"]);
   expect(history.some(m => m.content.includes("repeated the EXACT same"))).toBe(true);
   expect(calls).toBeLessThan(25);
 });

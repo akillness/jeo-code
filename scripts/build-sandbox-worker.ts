@@ -5,7 +5,8 @@ const entry = path.join(root, "src/agent/sandbox/hands-worker.ts");
 const output = path.join(root, "src/agent/sandbox/hands-source.text");
 // Hands always runs in a Linux container. Do not embed Darwin's optional watcher binary.
 export async function buildSandboxWorker(): Promise<void> {
-  const build = Bun.spawn([process.execPath, "build", entry, "--target=bun", "--format=esm", "--minify", "--external=chromium-bidi", "--external=fsevents", "--outfile", output], {
+  // Resolve CommonJS path globals at runtime instead of embedding build-host paths.
+  const build = Bun.spawn([process.execPath, "build", entry, "--target=bun", "--format=esm", "--minify", "--define=__dirname=import.meta.dir", "--define=__filename=import.meta.path", "--external=chromium-bidi", "--external=fsevents", "--outfile", output], {
     cwd: root,
     stdout: "inherit",
     stderr: "inherit",

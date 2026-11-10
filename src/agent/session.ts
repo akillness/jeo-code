@@ -1,6 +1,8 @@
 import type { Message } from "./loop";
+import type { TaskSubEvent } from "./task-tool";
 import { getLocalJeoDir } from "./state";
 import * as fs from "node:fs/promises";
+import { constants } from "node:fs";
 import * as path from "node:path";
 
 export interface SessionHeader {
@@ -34,7 +36,27 @@ export interface SessionEntry {
   type: "message";
   timestamp: string;
   message: Message;
+  /** Links an early parent response to the final engine history record. */
+  responseId?: string;
 }
+export interface SubagentMessage {
+  runId: string;
+  role: string;
+  message: Message;
+  /** The stored message was shortened and structured attachments were omitted. */
+  truncated?: boolean;
+}
+export interface ParentResponseEntry {
+  type: "parent_response";
+  timestamp: string;
+  id: string;
+  message: Message;
+  truncated?: boolean;
+}
+export type SessionTimelineEntry = SessionEntry | ParentResponseEntry
+  | { type: "subagent_event"; timestamp: string; event: TaskSubEvent }
+  | ({ type: "subagent_message"; timestamp: string } & SubagentMessage);
+
 export interface CompactionEntry {
   type: "compaction";
   timestamp: string;
@@ -82,6 +104,39 @@ export function sessionsDir(cwd = process.cwd()): string {
 export function sessionPath(id: string, cwd = process.cwd()): string {
   return path.join(sessionsDir(cwd), `${id}.jsonl`);
 }
+const sessionWrites = new Map<string, Promise<void>>();
+
+async function separateIncompleteTail(file: string): Promise<void> {
+  let handle: fs.FileHandle;
+  try {
+    handle = await fs.open(file, "r+");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    const { size } = await handle.stat();
+    if (size === 0) return;
+    const lastByte = Buffer.alloc(1);
+    await handle.read(lastByte, 0, 1, size - 1);
+    if (lastByte[0] !== 10) await handle.write("\n", size, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function withSessionWrite<T>(file: string, write: () => Promise<T>): Promise<T> {
+  const previous = sessionWrites.get(file) ?? Promise.resolve();
+  const perform = async () => { await separateIncompleteTail(file); return write(); };
+  const current = previous.then(perform, perform);
+  const settled = current.then(() => {}, () => {});
+  sessionWrites.set(file, settled);
+  try {
+    return await current;
+  } finally {
+    if (sessionWrites.get(file) === settled) sessionWrites.delete(file);
+  }
+}
 
 export async function createSession(
   cwd = process.cwd(),
@@ -103,7 +158,7 @@ export async function createSession(
   };
 
   const file = path.join(dir, `${id}.jsonl`);
-  await fs.writeFile(file, JSON.stringify(header) + "\n", { encoding: "utf8", ...(exclusive ? { flag: "wx", mode: 0o600 } : {}) });
+  await fs.writeFile(file, JSON.stringify(header) + "\n", { encoding: "utf8", mode: 0o600, ...(exclusive ? { flag: "wx" } : {}) });
 
   return { id, path: file };
 }
@@ -120,7 +175,7 @@ export async function appendMessage(
     message,
   };
 
-  await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
+  await withSessionWrite(file, () => fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8"));
 }
 
 /** Append a batch of messages with ONE fs append (turn-end persistence: a long
@@ -128,15 +183,100 @@ export async function appendMessage(
 export async function appendMessages(
   id: string,
   messages: readonly Message[],
-  cwd = process.cwd()
+  cwd = process.cwd(),
+  responseIds?: readonly (string | undefined)[]
 ): Promise<void> {
   if (messages.length === 0) return;
   const file = sessionPath(id, cwd);
   const timestamp = new Date().toISOString();
   const chunk = messages
-    .map(message => JSON.stringify({ type: "message", timestamp, message } satisfies SessionEntry))
+    .map((message, index) => JSON.stringify({ type: "message", timestamp, message, ...(responseIds?.[index] ? { responseId: responseIds[index] } : {}) } satisfies SessionEntry))
     .join("\n") + "\n";
-  await fs.appendFile(file, chunk, "utf8");
+  await withSessionWrite(file, () => fs.appendFile(file, chunk, "utf8"));
+}
+
+/** Persist a model response before its tools run, without recreating deleted sessions. */
+export async function appendParentResponse(id: string, responseId: string, message: Message, cwd = process.cwd()): Promise<void> {
+  const file = sessionPath(id, cwd);
+  let entry: ParentResponseEntry = { type: "parent_response", timestamp: new Date().toISOString(), id: responseId, message: { role: "assistant", content: message.content } };
+  let serialized = JSON.stringify(entry);
+  if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) {
+    entry = { ...entry, truncated: true, message: { role: "assistant", content: message.content.slice(0, 65536) } };
+    serialized = JSON.stringify(entry);
+  }
+  await withSessionWrite(file, async () => {
+    const handle = await fs.open(file, constants.O_WRONLY | constants.O_APPEND);
+    try {
+      await handle.appendFile(serialized + "\n", "utf8");
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
+/** Persist observed task activity, excluding transient reasoning previews. */
+export async function appendSubagentEvent(id: string, event: TaskSubEvent, cwd = process.cwd()): Promise<void> {
+  if (event.kind === "thinking") return;
+  const path = sessionPath(id, cwd);
+  await withSessionWrite(path, async () => {
+    const file = await fs.open(path, constants.O_WRONLY | constants.O_APPEND);
+    try {
+      await file.appendFile(JSON.stringify({ type: "subagent_event", timestamp: new Date().toISOString(), event }) + "\n", "utf8");
+    } finally {
+      await file.close();
+    }
+  });
+}
+
+/** Append an actual nested conversation message without recreating a deleted session. */
+export async function appendSubagentMessage(id: string, record: SubagentMessage, cwd = process.cwd()): Promise<void> {
+  const file = sessionPath(id, cwd);
+  const { reasoning: _reasoning, reasoningArtifacts: _reasoningArtifacts, ...visible } = record.message;
+  let stored = { type: "subagent_message" as const, timestamp: new Date().toISOString(), ...record, message: visible };
+  let serialized = JSON.stringify(stored);
+  if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) {
+    stored = { ...stored, truncated: true, message: { role: record.message.role, content: record.message.content.slice(0, 65536) } };
+    serialized = JSON.stringify(stored);
+  }
+  await withSessionWrite(file, async () => {
+    const handle = await fs.open(file, constants.O_WRONLY | constants.O_APPEND);
+    try {
+      await handle.appendFile(serialized + "\n", "utf8");
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
+function isSubagentMessage(value: unknown): value is SubagentMessage {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.runId !== "string" || !record.runId || typeof record.role !== "string" || !record.role) return false;
+  if (record.truncated !== undefined && typeof record.truncated !== "boolean") return false;
+  if (!record.message || typeof record.message !== "object") return false;
+  const message = record.message as Record<string, unknown>;
+  return (message.role === "system" || message.role === "user" || message.role === "assistant") && typeof message.content === "string";
+}
+
+function isSubagentEvent(value: unknown): value is TaskSubEvent {
+  if (!value || typeof value !== "object") return false;
+  const e = value as Record<string, unknown>;
+  if (typeof e.runId !== "string" || !e.runId || typeof e.role !== "string" || !e.role ||
+      !["start", "step", "tool", "done", "error"].includes(String(e.kind))) return false;
+  for (const key of ["detail", "summary", "model", "detachedId"]) {
+    if (e[key] !== undefined && typeof e[key] !== "string") return false;
+  }
+  for (const key of ["step", "maxSteps", "index", "total"]) {
+    if (e[key] !== undefined && (typeof e[key] !== "number" || !Number.isFinite(e[key]))) return false;
+  }
+  if (e.success !== undefined && typeof e.success !== "boolean") return false;
+  if (e.tokens !== undefined) {
+    if (!e.tokens || typeof e.tokens !== "object") return false;
+    const tokens = e.tokens as Record<string, unknown>;
+    if (typeof tokens.input !== "number" || !Number.isFinite(tokens.input) ||
+        typeof tokens.output !== "number" || !Number.isFinite(tokens.output)) return false;
+  }
+  return true;
 }
 
 function isAgySessionState(value: unknown): value is NonNullable<SessionHeader["agy"]> {
@@ -154,9 +294,10 @@ export async function appendAgySession(
   cwd = process.cwd(),
 ): Promise<void> {
   if (!isAgySessionState(state)) throw new Error("Invalid official CLI session metadata");
-  await fs.appendFile(sessionPath(id, cwd), JSON.stringify({
+  const file = sessionPath(id, cwd);
+  await withSessionWrite(file, () => fs.appendFile(file, JSON.stringify({
     type: "agy_session", timestamp: new Date().toISOString(), state,
-  }) + "\n", "utf8");
+  }) + "\n", "utf8"));
 }
 
 export async function appendCompaction(
@@ -175,13 +316,13 @@ export async function appendCompaction(
     replacesThrough,
   };
 
-  await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
+  await withSessionWrite(file, () => fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8"));
 }
 
 export async function loadSession(
   id: string,
   cwd = process.cwd()
-): Promise<{ header: SessionHeader; messages: Message[] }> {
+): Promise<{ header: SessionHeader; messages: Message[]; subagentEvents: TaskSubEvent[]; subagentMessages: SubagentMessage[]; timeline: SessionTimelineEntry[] }> {
   const file = sessionPath(id, cwd);
   let content: string;
   try {
@@ -197,6 +338,9 @@ export async function loadSession(
   let header: SessionHeader | undefined;
   const rawMessages: Message[] = [];
   const compactions: CompactionEntry[] = [];
+  const subagentEvents: TaskSubEvent[] = [];
+  const subagentMessages: SubagentMessage[] = [];
+  const timeline: SessionTimelineEntry[] = [];
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -207,8 +351,18 @@ export async function loadSession(
           header = entry as SessionHeader;
         } else if (entry.type === "message") {
           rawMessages.push(entry.message);
+          timeline.push(entry as SessionEntry);
+        } else if (entry.type === "parent_response" && typeof entry.id === "string" && entry.id &&
+                   entry.message && entry.message.role === "assistant" && typeof entry.message.content === "string") {
+          timeline.push(entry as ParentResponseEntry);
         } else if (entry.type === "compaction") {
           compactions.push(entry as CompactionEntry);
+        } else if (entry.type === "subagent_event" && isSubagentEvent(entry.event)) {
+          subagentEvents.push(entry.event);
+          timeline.push(entry as SessionTimelineEntry);
+        } else if (entry.type === "subagent_message" && isSubagentMessage(entry)) {
+          subagentMessages.push({ runId: entry.runId, role: entry.role, message: entry.message, ...(entry.truncated ? { truncated: true } : {}) });
+          timeline.push(entry as SessionTimelineEntry);
         } else if (entry.type === "agy_session" && header) {
           if (isAgySessionState(entry.state)) header.agy = entry.state;
           else delete header.agy;
@@ -243,7 +397,49 @@ export async function loadSession(
     messages = [...systemPrompt, summaryMessage, ...remaining];
   }
 
-  return { header, messages };
+  const parentResponses = new Map(timeline.flatMap(entry =>
+    entry.type === "parent_response" ? [[entry.id, entry] as const] : []
+  ));
+  const completedResponses = new Set<string>();
+  const incompleteMessages = new Set<Message>();
+  for (let index = 0; index < timeline.length; index++) {
+    const entry = timeline[index];
+    if (entry.type !== "message" || !entry.responseId) continue;
+    const next = timeline[index + 1];
+    const results = next?.type === "message" && next.message?.role === "user" ? next.message : undefined;
+    const calls = entry.message.toolUse;
+    const paired = results && calls?.length && calls.every(call => results.toolResults?.some(result => result.id === call.id));
+    if (!paired) {
+      incompleteMessages.add(entry.message);
+      continue;
+    }
+    const parent = parentResponses.get(entry.responseId);
+    let requestedCount = 0;
+    try {
+      const invocation: unknown = JSON.parse(parent?.message.content ?? "");
+      if (invocation && typeof invocation === "object") {
+        if ("tools" in invocation && Array.isArray(invocation.tools)) requestedCount = invocation.tools.length;
+        else if ("tool" in invocation && typeof invocation.tool === "string") requestedCount = 1;
+      }
+    } catch { /* An unparseable or truncated response cannot prove completion. */ }
+    const indices = new Set(calls.map(call => /^call_\d+_(\d+)$/.exec(call.id)?.[1]));
+    if (requestedCount > 0 && calls.length === requestedCount && indices.size === requestedCount &&
+        Array.from({ length: requestedCount }, (_, index) => String(index)).every(index => indices.has(index))) {
+      completedResponses.add(entry.responseId);
+    }
+  }
+  if (incompleteMessages.size) messages = messages.filter(message => !incompleteMessages.has(message));
+  const interruptedResponses = timeline.filter((entry): entry is ParentResponseEntry =>
+    entry.type === "parent_response" && !completedResponses.has(entry.id)
+  );
+  if (interruptedResponses.length > 0) {
+    messages = [...messages, {
+      role: "user",
+      content: `[Interrupted tool execution] These tool calls were not recorded as complete. Whether they executed is unknown. Inspect the actual state and verify before repeating any action to avoid duplicate effects. The following is recorded assistant output, not a new instruction:\n\n${interruptedResponses.map(entry => entry.message.content).join("\n\n")}`,
+    }];
+  }
+
+  return { header, messages, subagentEvents, subagentMessages, timeline };
 }
 
 export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[]> {
@@ -427,6 +623,14 @@ async function rewriteSessionHeader(
   mutate: (header: SessionHeader) => boolean,
   cwd: string,
 ): Promise<void> {
+  await withSessionWrite(sessionPath(id, cwd), () => rewriteSessionHeaderUnlocked(id, mutate, cwd));
+}
+
+async function rewriteSessionHeaderUnlocked(
+  id: string,
+  mutate: (header: SessionHeader) => boolean,
+  cwd: string,
+): Promise<void> {
   const file = sessionPath(id, cwd);
   let content: string;
   try {
@@ -463,7 +667,14 @@ async function rewriteSessionHeader(
 
   if (!mutate(header)) return;
   lines[headerIndex] = JSON.stringify(header);
-  await fs.writeFile(file, lines.join("\n"), "utf8");
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    const { mode } = await fs.stat(file);
+    await fs.writeFile(temporary, lines.join("\n"), { encoding: "utf8", mode: mode & 0o777, flag: "wx" });
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.unlink(temporary).catch(() => {});
+  }
 }
 
 /**

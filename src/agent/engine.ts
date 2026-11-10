@@ -318,6 +318,8 @@ export function executorSystemPrompt(
 export interface AgentLoopEvents {
   onStep?(step: number): void | Promise<void>;
   onAssistant?(raw: string, invocation: ToolInvocation | null): void;
+  /** Called once after tool-call guards pass, before the first tool starts. */
+  onBeforeTools?(raw: string): void | Promise<void>;
   onToolResult?(tool: string, success: boolean, output: string): void;
   /** Streaming partial output of the currently-running tool (e.g. bash stdout as it
    *  arrives) — drives a live DIMMED output view that the final formatted result
@@ -1582,6 +1584,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (opts.signal?.aborted) {
         aborted = true;
         break;
+      }
+      if (group === groups[0] && ev.onBeforeTools) {
+        await ev.onBeforeTools(responseText);
+        if (opts.signal?.aborted) {
+          aborted = true;
+          break;
+        }
       }
       if (group.calls.length > 1) {
         // read OR distinct-file write group → run concurrently.

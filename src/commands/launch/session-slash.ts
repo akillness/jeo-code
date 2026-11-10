@@ -10,9 +10,10 @@
  */
 
 import type { Message } from "../../agent/loop";
-import { createSession, deleteSession, renameSession, loadSession, listSessions, sessionPath, resolveSessionRef } from "../../agent/session";
+import { createSession, deleteSession, renameSession, loadSession, listSessions, sessionPath, resolveSessionRef, type SessionTimelineEntry } from "../../agent/session";
 import { SessionPicker, renderSessionPicker } from "../../tui/components/session-picker";
 import { formatTranscript } from "../../tui/components/transcript";
+import { sanitizeForTerminal } from "../../tui/components/code-view";
 import { importGjcSession, listGjcSessions, type GjcSessionLeaf } from "../../agent/gjc-session-import";
 import { SelectList, renderSelectList, type SelectItem } from "../../tui/components/select-list";
 
@@ -30,6 +31,8 @@ export interface SessionSlashCtx {
   clearScreen: () => string;
   freshWelcomeLines: () => string[];
   logLines: (lines: string[]) => void;
+  canSwitchSession?: () => boolean;
+  onSessionCommitted?: (id: string | undefined, draft: string) => void;
   /**
    * REPL's interactive list-picker runner (raw-mode keypress loop + repaint).
    * Not a pure module export — it closes over terminal/readline state owned
@@ -43,8 +46,8 @@ export interface SessionSlashCtx {
 
 export interface SessionSlashResult {
   sessionId: string | undefined;
-  /** Present only when changed (by `/session resume` restoring header.model). */
-  sessionModel?: string;
+  /** A null value clears the prior session's model pin. */
+  sessionModel?: string | null;
   /** Present only when changed (by `/session resume` re-seeding retry state). */
   lastUserInput?: string;
   /** Present only when changed (by `/session resume` re-seeding retry state). */
@@ -106,6 +109,61 @@ function gjcResumeItems(pool: GjcSessionLeaf[]): SelectItem<GjcSessionLeaf>[] {
   }));
 }
 
+/** Replay only persisted records, in file order; the compacted model context is separate. */
+export function renderSessionTimeline(timeline: readonly SessionTimelineEntry[], color = false): string[] {
+  const messages: Message[] = [];
+  const inserts: string[][] = [[]];
+  const runs = new Map<string, { role: string; completed: boolean }>();
+  const earlyResponses = new Set(timeline.filter(e => e.type === "parent_response").map(e => e.id));
+  const linkedMessages = new Map(timeline.flatMap(e => e.type === "message" && e.responseId ? [[e.responseId, e.message] as const] : []));
+  for (const entry of timeline) {
+    if (entry.type === "parent_response" || entry.type === "message") {
+      if (entry.type === "message" && entry.responseId && earlyResponses.has(entry.responseId)) continue;
+      const linked = entry.type === "parent_response" ? linkedMessages.get(entry.id) : undefined;
+      if (entry.type === "parent_response" && entry.truncated && !linked) inserts[messages.length]!.push("  … (stored parent response truncated)");
+      messages.push(linked ?? entry.message);
+      inserts.push([]);
+      continue;
+    }
+    const lines = inserts[messages.length]!;
+    if (entry.type === "subagent_event") {
+      const e = entry.event;
+      const key = e.runId ?? e.detachedId ?? `${e.role}:${e.index ?? 0}`;
+      runs.set(key, { role: e.role, completed: e.kind === "done" || e.kind === "error" });
+      const detail = [e.detail, e.summary].filter(Boolean).join(" — ");
+      lines.push(`  subagent ${sanitizeForTerminal(e.role)} · ${e.kind}${e.success === false ? " (failed)" : ""}${detail ? `: ${sanitizeForTerminal(detail)}` : ""}`);
+    } else if (entry.message.role !== "system") {
+      const text = sanitizeForTerminal(entry.message.content ?? "");
+      const bounded = text.slice(0, 262144);
+      lines.push(`  subagent ${sanitizeForTerminal(entry.role)} · ${entry.message.role}`);
+      lines.push(...bounded.split("\n").map(line => `    ${line}`));
+      if (bounded.length < text.length) lines.push(`    … (${text.length - bounded.length} characters omitted)`);
+      if (entry.truncated) lines.push("    … (stored message truncated)");
+    }
+  }
+  for (const run of runs.values()) {
+    if (!run.completed) inserts[messages.length]!.push(`  subagent ${sanitizeForTerminal(run.role)} · no completion observed`);
+  }
+  return formatTranscript(messages, { color, unicode: true, bodyLines: 2000,
+    beforeMessage: index => inserts[index]!, trailingLines: inserts[messages.length] });
+}
+
+export function sessionPromptHistory(messages: readonly Message[]): string[] {
+  const prompts: string[] = [];
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    const text = String(message.content ?? "").trim();
+    if (!text || text.startsWith("Tool [") || text.startsWith("[mid-turn steering") || text.startsWith("[Earlier conversation summary]") || text.startsWith("[Interrupted tool execution]") || text.startsWith("Your last reply") || text.startsWith("The budget for this turn is exhausted") || text.startsWith("The step budget for this turn is exhausted") || text.startsWith("You are cycling through the same")) continue;
+    if (prompts[0] !== text) prompts.unshift(text);
+  }
+  return prompts;
+}
+
+export function sessionSwitchBlocked(input: string, pending: { images: number; lines: number; pastedLines: number; commands: number; partial: string; pasteActive: boolean }): boolean {
+  return /^\/session\s+(?:new|drop|delete|resume)(?:\s|$)/i.test(input) &&
+    !!(pending.images || pending.lines || pending.pastedLines || pending.commands || pending.partial || pending.pasteActive);
+}
+
 /**
  * Handle `/session [new|drop|delete|rename <title>|resume [id]|list|info]`
  * (default: list + current-session summary). Extracted verbatim from
@@ -124,7 +182,7 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
 
   const result = (): SessionSlashResult => ({
     sessionId,
-    ...(sessionModelChanged ? { sessionModel } : {}),
+    ...(sessionModelChanged ? { sessionModel: sessionModel ?? null } : {}),
     ...(lastUserInput !== undefined ? { lastUserInput } : {}),
     ...(lastReply !== undefined ? { lastReply } : {}),
     ...(draft !== undefined ? { draft } : {}),
@@ -133,29 +191,46 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
 
   const tokens = input.substring(8).trim().split(/\s+/).filter(Boolean);
   const sub = (tokens[0] ?? "").toLowerCase();
+  const maySwitch = (): boolean => {
+    if (ctx.canSwitchSession?.() !== false) return true;
+    console.log("(session unchanged: send or clear pending input and attachments before switching)");
+    return false;
+  };
 
-  const startFreshSession = async (verb: string): Promise<void> => {
-    history.length = 1;
-    if (!noSession) {
-      sessionId = (await createSession(cwd, undefined, sessionModel)).id;
-      advanceSessionBoxColor(); // distinct input-box hue per newly opened session
-      console.log(`(${verb} — new session ${sessionId})`);
-    } else {
-      sessionId = undefined;
-      console.log(`(${verb} — sessions disabled)`);
+  const startFreshSession = async (verb: string): Promise<boolean> => {
+    const nextId = noSession ? undefined : (await createSession(cwd, undefined, sessionModel)).id;
+    if (!maySwitch()) {
+      if (nextId) await deleteSession(nextId, cwd);
+      return false;
     }
+    history.length = 1;
+    sessionId = nextId;
+    ctx.onSessionCommitted?.(sessionId, "");
+    if (sessionId) {
+      advanceSessionBoxColor();
+      console.log(`(${verb} — new session ${sessionId})`);
+    } else console.log(`(${verb} — sessions disabled)`);
+    lastUserInput = "";
+    lastReply = "";
+    draft = "";
+    const rli = rl as { history?: string[] };
+    if (Array.isArray(rli.history)) rli.history.length = 0;
+    return true;
   };
 
   if (sub === "new") {
+    if (!maySwitch()) return result();
     await startFreshSession("started fresh");
     return result();
   }
   if (sub === "drop" || sub === "delete") {
-    if (sessionId) {
-      const removed = await deleteSession(sessionId, cwd);
-      console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
+    if (!maySwitch()) return result();
+    const oldId = sessionId;
+    if (!await startFreshSession("dropped")) return result();
+    if (oldId) {
+      const removed = await deleteSession(oldId, cwd);
+      console.log(removed ? `(deleted session ${oldId})` : `(session ${oldId} already gone)`);
     }
-    await startFreshSession("dropped");
     return result();
   }
   if (sub === "rename") {
@@ -184,34 +259,27 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
     ): Promise<void> => {
       try {
         const loadedSession = loaded ?? await loadSession(rid, cwd);
-        const { header, messages } = loadedSession;
+        if (!maySwitch()) return;
+        const { header, messages, timeline } = loadedSession;
         history.length = 1;
         for (const m of messages) history.push(m);
         sessionId = rid;
-        // Restore the unsent input-box draft left over at last save, if any.
-        if (header.draft) draft = header.draft;
+        ctx.onSessionCommitted?.(sessionId, header.draft ?? "");
+        draft = header.draft ?? "";
+        sessionModel = header.model;
+        sessionModelChanged = true;
 
 
         // Seed /retry + reply marker from the last user/assistant turn.
-        lastUserInput = ""; lastReply = "";
-        for (let k = history.length - 1; k >= 1; k--) {
-          if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
-          if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
-          if (lastUserInput && lastReply) break;
-        }
+        lastUserInput = sessionPromptHistory(messages)[0] ?? "";
+        lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
         // Seed readline's input history so ↑ in the prompt recalls THIS session's
         // prior prompts (not just lines typed in the current run). readline history
         // is newest-first; unshift in chronological order so the session's newest
         // prompt lands at the front (first ↑). Skip injected/framed messages.
         const rli = rl as unknown as { history?: string[] };
         if (Array.isArray(rli.history)) {
-          const priorPrompts = history
-            .filter(m => m.role === "user")
-            .map(m => String(m.content ?? "").trim())
-            .filter(c => c && !c.startsWith("Tool [") && !c.startsWith("[mid-turn steering") && !c.startsWith("[Earlier conversation summary]"));
-          for (const p of priorPrompts) {
-            if (rli.history[0] !== p) rli.history.unshift(p);
-          }
+          rli.history.splice(0, rli.history.length, ...sessionPromptHistory(timeline.filter(e => e.type === "message").map(e => e.message)));
         }
         // Clean restore: wipe the screen + scrollback BEFORE replaying the
         // transcript so it can't collide with picker remnants, the prior
@@ -226,9 +294,9 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
         logLines([
           sep,
-          `resumed session ${rid} · ${messages.length} message(s) (/history all for the full transcript)`,
+          `resumed session ${rid} · ${messages.length} message(s)`,
           sep,
-          ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
+          ...renderSessionTimeline(timeline, !!process.stdout.isTTY),
           sep,
         ]);
       } catch (err) {
@@ -387,13 +455,13 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         if (action.kind === "resume") { await applyResume(action.id); break; }
         // Delete: drop the file, refresh the pool, and re-open the picker.
         const delId = action.id;
+        if (delId === sessionId && (!maySwitch() || !await startFreshSession("dropped current session"))) break;
         try {
           const removed = await deleteSession(delId, cwd);
           console.log(removed ? `(deleted session ${delId})` : `(session ${delId} already gone)`);
         } catch (err) {
           console.log(`! delete failed: ${(err as Error).message}`);
         }
-        if (delId === sessionId) await startFreshSession("dropped current session");
         pool = pool.filter(s => s.id !== delId);
         if (pool.length === 0) { console.log("(no saved sessions with history)"); break; }
       }

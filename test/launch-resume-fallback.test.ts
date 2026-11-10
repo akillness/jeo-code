@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createSession, appendMessage } from "../src/agent/session";
+import { createSession, appendMessage, appendSubagentEvent, appendSubagentMessage } from "../src/agent/session";
 
 // Regression test for a real bug found while verifying "/resume screen
 // reproduction" live: the bare `--resume`/`-r` (no value) cold-startup path,
@@ -84,6 +84,29 @@ test("bare --resume (no TTY): with no prior session at all, falls back to a fres
 
     const files = await fs.readdir(path.join(projectDir, ".jeo", "sessions"));
     expect(files.length).toBe(1); // the safe-default fresh session
+  } finally {
+    await fs.rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("bare --resume after restart replays the complete recorded timeline in order", async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-resume-restart-"));
+  try {
+    const { id } = await createSession(projectDir, undefined, "test-model");
+    await appendMessage(id, { role: "user", content: "Original task before restart" }, projectDir);
+    await appendSubagentEvent(id, { runId: "restart-review", role: "reviewer", kind: "start", detail: "Review before restart" }, projectDir);
+    await appendSubagentMessage(id, { runId: "restart-review", role: "reviewer", message: { role: "assistant", content: "Persisted reviewer finding" } }, projectDir);
+    await appendSubagentEvent(id, { runId: "restart-review", role: "reviewer", kind: "done", detail: "Review finished", success: true }, projectDir);
+    await appendMessage(id, { role: "assistant", content: "Original answer before restart" }, projectDir);
+    const { stdout, exitCode } = await runBareResume(projectDir);
+    expect(exitCode).toBe(0);
+    const markers = ["Original task before restart", "Review before restart", "Persisted reviewer finding", "Review finished", "Original answer before restart"];
+    let previous = -1;
+    for (const marker of markers) {
+      const index = stdout.indexOf(marker);
+      expect(index).toBeGreaterThan(previous);
+      previous = index;
+    }
   } finally {
     await fs.rm(projectDir, { recursive: true, force: true });
   }

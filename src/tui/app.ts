@@ -45,6 +45,41 @@ import type { ImageAttachment } from "../ai/types";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
+/** Render persisted activity as history, never as a live worker. */
+export function renderSubagentHistory(events: readonly TaskSubEvent[], opts: { cols?: number; unicode?: boolean; color?: boolean } = {}): string[] {
+  const runs = new Map<string, TaskSubEvent[]>();
+  for (const event of events) {
+    if (event.kind === "thinking") continue;
+    const key = event.runId ?? event.detachedId ?? `${event.role}:${event.index ?? 0}`;
+    const run = runs.get(key) ?? [];
+    run.push(event);
+    runs.set(key, run);
+  }
+  const out: string[] = [];
+  const allRuns = [...runs.values()];
+  const shownRuns = allRuns.slice(-6);
+  if (allRuns.length > shownRuns.length) out.push(`… ${allRuns.length - shownRuns.length} earlier subagent runs`);
+  const width = scaleForgeWidth((opts.cols ?? 80) - 1);
+  for (const run of shownRuns) {
+    const first = run[0]!;
+    const last = run[run.length - 1]!;
+    const state = last.kind === "done" ? (last.success === false ? "incomplete" : "done") : last.kind === "error" ? "failed" : "no completion observed";
+    const shown = run.length > 8 ? [first, ...run.slice(-7)] : run;
+    const lines = shown.map(event => {
+      const detail = sanitizeForFrame((event.detail ?? "").split("\n")[0] ?? "").trim();
+      const summary = sanitizeForFrame(event.summary ?? "").replace(/\s+/g, " ").trim();
+      return truncateToWidth(`${event.kind}${event.success === false ? " (failed)" : ""}${detail ? `: ${detail}` : ""}${summary ? ` — ${summary}` : ""}`, Math.max(1, width - 3));
+    });
+    if (run.length > shown.length) lines.splice(1, 0, `… ${run.length - shown.length} earlier events`);
+    if (out.length) out.push("");
+    out.push(...formatForgeBox({ title: `subagent ${sanitizeForFrame(first.role)} · ${state}`, lines }, {
+      width, maxLines: 9,
+      unicode: opts.unicode, color: opts.color ?? false, dim: opts.color === true && state === "done",
+    }));
+  }
+  return out;
+}
+
 /** Stable signature of a highlight range list — offsets plus the painted color
  *  (probed with a sentinel char) — so equal-length but differently-colored
  *  re-highlights (valid↔unknown at the same span) still trigger a redraw. */
@@ -286,6 +321,7 @@ export class LaunchTui {
   // else fixed key 0 for single foreground runs. `subagentLiveOrder` tracks touch order
   // so the status row can show the MOST RECENTLY active slot plus a "+N more" count.
   private readonly subagentLiveSlots = new Map<number | string, string>();
+  private readonly detachedSubagentSlots = new Set<number | string>();
   private readonly subagentLiveOrder: (number | string)[] = [];
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
   // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
@@ -609,10 +645,9 @@ export class LaunchTui {
             this.turnTitleRefined = true;
             this.emitPaneTitle();
           }
-          // Light tools (read/find/search/…) never get a live card — their completion
-          // is a single ✓ ledger line (gjc parity). Heavier tools show the invocation
-          // card live, and the completed card is flushed into scrollback on result.
-          if (LIGHT_TOOLS.has(toolName.toLowerCase())) {
+          // Internal skill reads deserve a content preview, rather than disappearing
+          // into the single-line file-read ledger.
+          if (LIGHT_TOOLS.has(toolName.toLowerCase()) && !summary.title.startsWith("Read skill://")) {
             this.pendingForge = null;
           } else {
             this.pendingForge = summary;
@@ -665,6 +700,10 @@ export class LaunchTui {
           // note, under one ✓/✗-marked header — mutated in place so the live frame and
           // the non-TTY summary both show the merged card.
           card.title = `${paintedMark} Bash${durSuffix}`;
+          card.lines.push(...result.lines);
+          this.flushForgeCard(card, success);
+        } else if (card && t === "read" && target.startsWith("Read skill://")) {
+          card.title = `${paintedMark} ${card.title}${durSuffix}`;
           card.lines.push(...result.lines);
           this.flushForgeCard(card, success);
         } else if (card && t === "web_search" && success && webSearchCardLines(output, { unicode: this.unicode })) {
@@ -899,8 +938,8 @@ export class LaunchTui {
    *  A line longer than the terminal hard-wraps into 2+ PHYSICAL rows, which breaks
    *  the renderer's 1-line=1-row reservation math — the live frame then repaints at
    *  the wrong rows (the "screen tearing + garbled scrollback" corruption). */
-  private appendLedger(text: string, kind = "line"): void {
-    this.recordActivity(text);
+  private appendLedger(text: string, kind = "line", activity = text): void {
+    this.recordActivity(activity);
     const needsGap = this.lastLedgerKind !== null && (kind !== this.lastLedgerKind || kind === "card");
     this.lastLedgerKind = kind;
     const body0 = needsGap ? `\n${text}` : text;
@@ -1074,12 +1113,12 @@ export class LaunchTui {
     const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
-    // Slot key: stable `detachedId` when present (detached background task),
-    // else fan-out 1-based `index` (concurrent batch worker),
-    // else fixed key 0 (single foreground run).
-    const slot: number | string = e.detachedId ?? e.index ?? 0;
+    // runId distinguishes simultaneous foreground, fan-out and detached runs.
+    // Older emitters may still provide only their existing slot identifiers.
+    const slot: number | string = e.runId ?? e.detachedId ?? e.index ?? 0;
     const touchSlot = (line: string) => {
       this.subagentLiveSlots.set(slot, line);
+      if (e.detachedId) this.detachedSubagentSlots.add(slot);
       const at = this.subagentLiveOrder.indexOf(slot);
       if (at !== -1) this.subagentLiveOrder.splice(at, 1);
       this.subagentLiveOrder.push(slot);
@@ -1101,29 +1140,36 @@ export class LaunchTui {
         touchSlot(`${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
-      case "error":
-        touchSlot(`${roleLabel} ${bad} ${detail || "error"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
-        break;
       case "thinking":
         // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
         // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
         touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`);
         break;
+      case "error":
       case "done":
         // Clear ONLY this slot — a fan-out batch where one worker finishes early
         // must keep showing its still-running siblings, not drop the `(sub)`
         // marker for the whole batch (the bug this per-slot map fixes).
         this.subagentLiveSlots.delete(slot);
+        this.detachedSubagentSlots.delete(slot);
         {
           const at = this.subagentLiveOrder.indexOf(slot);
           if (at !== -1) this.subagentLiveOrder.splice(at, 1);
         }
         this.subagentActive = this.subagentLiveSlots.size > 0;
-        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
+        this.appendSubagentCard(e.kind === "error" ? `${badge} ${last} ${roleLabel} failed` : `${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}`, detail, e.kind !== "error" && e.success !== false);
         break;
     }
     this.draw();
+  }
+
+  private appendSubagentCard(title: string, detail: string, success: boolean): void {
+    const paint = this.theme.color ? (success ? chalk.dim : chalk.red) : (s: string) => s;
+    const lines = formatForgeBox({ title, lines: detail ? [detail] : [] }, {
+      width: scaleForgeWidth(size().cols - 1), maxLines: 6, unicode: this.unicode,
+      color: this.theme.color, paint, paintShadow: paint, dim: success && this.theme.color,
+    });
+    this.appendLedger(lines.join("\n") + "\n", "subagent", `${title}: ${detail}`);
   }
 
   start(): void {
@@ -1134,6 +1180,7 @@ export class LaunchTui {
     this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
     this.livePromptHighlight = undefined; // fresh turn: no active trigger token
     this.subagentLiveSlots.clear(); this.subagentLiveOrder.length = 0; this.subagentActive = false; // fresh turn: no nested subagent in flight
+    this.detachedSubagentSlots.clear();
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
     // completed ledger lines are flushed into normal scrollback as they happen, so a
@@ -1281,6 +1328,13 @@ export class LaunchTui {
    *  pass `ok:false` so the checklist truthfully keeps any unfinished items. */
   finish(reply: string, opts: { ok?: boolean } = {}): void {
     const ok = opts.ok !== false;
+    for (const [slot, line] of this.subagentLiveSlots) {
+      if (!this.detachedSubagentSlots.has(slot)) this.appendSubagentCard("subagent · no completion observed", line, false);
+    }
+    this.subagentLiveSlots.clear();
+    this.detachedSubagentSlots.clear();
+    this.subagentLiveOrder.length = 0;
+    this.subagentActive = false;
     this.finished = true;
     this.hudPhase = "done";
     if (this.timer) {
@@ -1480,41 +1534,25 @@ export class LaunchTui {
   }
 
 
-  /** Build a live, DIMMED streaming block (the `Thinking` reasoning trace or a tool's
-   *  `Output` tail). Sized to its ACTUAL content and the terminal height — no fixed
-   *  blank-row padding. The old fixed-height region (`ROWS` constant, blank-padded at
-   *  the top) reserved a constant rectangle: a short stream left dead rows that read as
-   *  a torn "hole", and on a short terminal it stole rows the heartbeat needed. Now the
-   *  block shows only the most-recent lines, capped at ~30% of the screen height (a
-   *  ceiling guards a tall terminal), so it grows with the stream and shrinks with the
-   *  viewport. Returns [] when there is nothing to show. */
-  /** gjc-parity multi-line parallel-subagent panel: when a fan-out `task` batch has
-   *  MORE THAN ONE concurrent slot live, render one status line PER active slot
-   *  (most-recently-touched first) instead of collapsing everything into a single
-   *  "+N more running" summary line (see `currentActivity()`). A single/detached
-   *  subagent still uses the plain status-line path — this panel exists specifically
-   *  to make a truly PARALLEL batch visibly read as parallel: every worker's latest
-   *  activity is on screen at once, capped so a large fan-out can't blow the frame. */
+  /** Active workers share a bounded live panel; completed workers go to the ledger. */
   private static readonly SUBAGENT_PANEL_MAX_ROWS = 6;
   private renderSubagentPanel(cols: number): string[] {
-    if (this.subagentLiveSlots.size <= 1) return [];
-    const dim = this.theme.color ? chalk.dim : (s: string) => s;
-    const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
-    const spin = this.theme.color ? accent(this.spinner.current()) : this.spinner.current();
+    if (this.subagentLiveSlots.size === 0) return [];
+    const spin = this.spinner.current();
     const order = [...this.subagentLiveOrder].reverse();
     const shown = order.slice(0, LaunchTui.SUBAGENT_PANEL_MAX_ROWS);
     const extra = order.length - shown.length;
-    const wrapW = Math.max(8, cols - 4);
-    const lines = shown.map(slot => {
-      const raw = this.subagentLiveSlots.get(slot) ?? "";
-      return `  ${spin} ${dim(truncateToWidth(raw, wrapW))}`;
+    const lineWidth = Math.max(1, scaleForgeWidth(cols) - 3);
+    const lines = shown.map(slot => truncateToWidth(`${spin} ${this.subagentLiveSlots.get(slot) ?? ""}`, lineWidth));
+    if (extra > 0) lines.push(`${this.unicode ? "…" : "..."} +${extra} more running`);
+    return formatForgeBox({ title: `subagents · ${this.subagentLiveSlots.size} running`, lines }, {
+      width: scaleForgeWidth(cols), maxLines: LaunchTui.SUBAGENT_PANEL_MAX_ROWS + 1,
+      unicode: this.unicode, color: this.theme.color,
+      paint: this.theme.color ? accentPaint(this.theme) : (s: string) => s,
     });
-    const header = dim(`parallel · ${this.subagentLiveSlots.size} running`);
-    const rows = [header, ...lines];
-    if (extra > 0) rows.push(dim(`  … +${extra} more running`));
-    return rows;
   }
 
+  /** Render a bounded, dimmed tail for live reasoning or tool output. */
   private renderLiveBlock(label: string, text: string, cols: number, rows: number, ceiling: number, cacheKey = label): string[] {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];

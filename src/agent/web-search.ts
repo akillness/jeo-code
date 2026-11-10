@@ -25,6 +25,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolveCredential, type Credential } from "../auth";
 import { jeoEnv } from "../util/env";
+import { getClaudeCodeVersion, parseRequiredClaudeCodeVersion, raiseClaudeCodeVersion } from "../ai/claude-code-version";
 import type { ToolResult } from "./tools";
 
 // ── Unified response shape ───────────────────────────────────────────────────
@@ -76,7 +77,6 @@ const SEARCH_SYSTEM_PROMPT =
 
 // Claude Code OAuth request shape (mirrors src/ai/providers/anthropic.ts —
 // Anthropic OAuth tokens are scoped to Claude Code-shaped requests).
-const CLAUDE_CODE_VERSION = "2.1.289";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const ANTHROPIC_OAUTH_BETA = [
   "claude-code-20250219",
@@ -93,7 +93,7 @@ function anthropicSearchHeaders(credential: Credential): Record<string, string> 
       "anthropic-version": "2023-06-01",
       "anthropic-beta": ANTHROPIC_OAUTH_BETA,
       "anthropic-dangerous-direct-browser-access": "true",
-      "user-agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
+      "user-agent": `claude-cli/${getClaudeCodeVersion()} (external, cli)`,
       "x-app": "cli",
     };
   }
@@ -108,7 +108,7 @@ function anthropicSearchHeaders(credential: Credential): Record<string, string> 
 function billingHeaderBlock(systemPrompt: string): string {
   const cch = createHash("sha256").update(JSON.stringify({ system: [systemPrompt] })).digest("hex").slice(0, 5);
   const buildHash = randomBytes(2).toString("hex").slice(0, 3);
-  return `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.${buildHash}; cc_entrypoint=cli; cch=${cch};`;
+  return `x-anthropic-billing-header: cc_version=${getClaudeCodeVersion()}.${buildHash}; cc_entrypoint=cli; cch=${cch};`;
 }
 
 function anthropicSystemBlocks(credential: Credential): { type: "text"; text: string }[] {
@@ -190,21 +190,31 @@ async function searchAnthropic(req: SearchRequest): Promise<WebSearchResponse> {
     messages: [{ role: "user", content: effectiveQuery }],
     tools: [{ type: WEB_SEARCH_TOOL_TYPE, name: "web_search" }],
   };
-  const response = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers: anthropicSearchHeaders(credential),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(HARD_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    const detail = (await response.text().catch(() => "")).slice(0, 300);
-    throw new Error(`Anthropic API error (${response.status}): ${detail}`);
+  let bumpedVersion = false;
+  for (;;) {
+    const response = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers: anthropicSearchHeaders(credential),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HARD_TIMEOUT_MS),
+    });
+    if (response.ok) {
+      const parsed = parseAnthropicSearchResponse(await response.json().catch(() => null));
+      if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+        parsed.sources = parsed.sources.slice(0, req.limit);
+      }
+      return parsed;
+    }
+    const detail = await response.text().catch(() => "");
+    // Self-heal `claude_code_version_too_old`: raise the advertised Claude Code version to the
+    // server's stated minimum and re-send once (mirrors postAnthropic in providers/anthropic.ts).
+    const requiredVersion = parseRequiredClaudeCodeVersion(detail);
+    if (!bumpedVersion && requiredVersion && raiseClaudeCodeVersion(requiredVersion)) {
+      bumpedVersion = true;
+      continue;
+    }
+    throw new Error(`Anthropic API error (${response.status}): ${detail.slice(0, 300)}`);
   }
-  const parsed = parseAnthropicSearchResponse(await response.json().catch(() => null));
-  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
-    parsed.sources = parsed.sources.slice(0, req.limit);
-  }
-  return parsed;
 }
 
 // ── OpenAI provider (Responses API `web_search` hosted tool) ─────────────────

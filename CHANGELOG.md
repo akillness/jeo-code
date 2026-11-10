@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Fixed
+- **Anthropic OAuth: newer models (e.g. `claude-fable-5-2`) rejected with HTTP 400 `claude_code_version_too_old`** (`src/ai/claude-code-version.ts`, `src/ai/providers/anthropic.ts`, `src/agent/web-search.ts`) — the advertised Claude Code version was a stale constant (`2.1.289`) duplicated in two files. It is now a single module: baseline bumped to `2.1.322`, the locally installed `claude --version` is used when newer, `JEO_CLAUDE_CODE_VERSION` overrides everything, and on a `claude_code_version_too_old` 400 the provider raises the advertised version to the server's stated minimum and re-sends once — so future gates no longer need a jeo release.
+
 ## [0.12.33] - 2026-11-10
 
 ### Fixed

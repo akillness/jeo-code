@@ -78,7 +78,7 @@ test("/session resume surfaces a saved draft in the result for the REPL to prefi
   }
 });
 
-test("/session resume omits `draft` from the result when the session had none", async () => {
+test("/session resume clears the draft when the session had none", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-draft-"));
   try {
     const { id } = await createSession(tempDir);
@@ -99,13 +99,13 @@ test("/session resume omits `draft` from the result when the session had none", 
     });
 
     expect(result.sessionId).toBe(id);
-    expect(result.draft).toBeUndefined();
+    expect(result.draft).toBe("");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("/session resume does not restore the model saved in the session header", async () => {
+test("/session resume restores the model saved in the session header", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-draft-"));
   try {
     const { id } = await createSession(tempDir, undefined, "gpt-4o");
@@ -127,7 +127,7 @@ test("/session resume does not restore the model saved in the session header", a
     });
 
     expect(result.sessionId).toBe(id);
-    expect(result.sessionModel).toBeUndefined();
+    expect(result.sessionModel).toBe("gpt-4o");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

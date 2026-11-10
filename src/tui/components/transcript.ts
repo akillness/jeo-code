@@ -15,6 +15,7 @@ import chalk from "chalk";
 import type { Message } from "../../ai/types";
 import { summarizeForgeInvocation } from "./forge";
 import { tryExtractJsonObject } from "../../agent/json";
+import { sanitizeForTerminal } from "./code-view";
 
 export interface TranscriptOptions {
   color?: boolean;
@@ -23,13 +24,16 @@ export interface TranscriptOptions {
   maxTurns?: number;
   /** Cap body lines per prompt/reply block. */
   bodyLines?: number;
+  /** Extra persisted activity before each message, in storage order. */
+  beforeMessage?: (index: number) => string[];
+  trailingLines?: string[];
 }
 
 const TOOL_RESULT_RE = /^Tool \[([^\]]+)\] result \((ok|fail)\):/;
 const BOUNCE_PREFIXES = ["Your last reply", "The budget for this turn is exhausted", "The step budget for this turn is exhausted", "You are cycling through the same"];
 
 function clipBody(text: string, cap: number): string[] {
-  const rows = text.replace(/\r/g, "").split("\n");
+  const rows = sanitizeForTerminal(text).replace(/\r/g, "").split("\n");
   const trimmed = rows.length > cap ? rows.slice(0, cap) : rows;
   const out = trimmed.map(r => `  ${r}`);
   if (rows.length > cap) out.push(`  … (+${rows.length - cap} more lines)`);
@@ -38,7 +42,7 @@ function clipBody(text: string, cap: number): string[] {
 
 function firstToolResultLine(text: string | undefined): string {
   if (!text) return "";
-  return text
+  return sanitizeForTerminal(text)
     .replace(TOOL_RESULT_RE, "")
     .split("\n")
     .map(l => l.trim())
@@ -86,13 +90,14 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
   });
   const promptNumber = new Map(promptIdx.map((idx, i) => [idx, i + 1]));
   const totalTurns = promptIdx.length;
-  if (totalTurns === 0) return [dim("(no worked history yet — ask something first)")];
-  const keep = Math.max(1, Math.min(totalTurns, opts.maxTurns ?? totalTurns));
-  const start = promptIdx[totalTurns - keep]!;
+  if (totalTurns === 0 && !opts.beforeMessage) return [dim("(no worked history yet — ask something first)")];
+  const keep = Math.min(totalTurns, Math.max(1, opts.maxTurns ?? totalTurns));
+  const start = opts.beforeMessage && keep === totalTurns ? 0 : (promptIdx[totalTurns - keep] ?? 0);
 
   const lines: string[] = [];
   if (keep < totalTurns) lines.push(dim(`… ${totalTurns - keep} earlier turn(s) hidden — /history all shows everything`));
   for (let i = start; i < messages.length; i++) {
+    if (opts.beforeMessage) lines.push(...opts.beforeMessage(i));
     const m = messages[i]!;
     if (m.role === "system") continue;
     if (m.role === "user") {
@@ -140,9 +145,9 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       const verdicts = next?.role === "user" ? parseToolVerdicts(next.content) : [];
       toolCalls.forEach((c, ci) => {
         const v = verdicts[ci] ?? verdicts.find(x => x.tool === c.tool);
-        const mark = v?.status === "fail" ? red(bad) : green(ok);
-        const title = summarizeForgeInvocation(c.tool, c.arguments).title;
-        const suffix = v?.firstLine ? dim(` — ${v.firstLine}`) : "";
+        const mark = !v ? dim(unicode ? "…" : "?") : v.status === "fail" ? red(bad) : green(ok);
+        const title = sanitizeForTerminal(summarizeForgeInvocation(c.tool, c.arguments).title);
+        const suffix = !v ? dim(" (no result recorded)") : v.firstLine ? dim(` — ${v.firstLine}`) : "";
         lines.push(`  ${mark} ${title}${suffix}`);
       });
       continue;
@@ -169,5 +174,6 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
     lines.push(`${magentaBold(`jeo ${jeoMark}`)}`);
     lines.push(...clipBody(reason.trim(), bodyCap));
   }
+  if (opts.trailingLines) lines.push(...opts.trailingLines);
   return lines;
 }

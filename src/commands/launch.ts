@@ -68,7 +68,8 @@ import { runAgySessionTurn } from "./launch/agy-turn";
 import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { resolveStartupDefaultModel } from "../agent/session-model";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable } from "../ai";
+import { modelServableWithDiscovery } from "../ai/model-manager";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { GoalStateCorruptError, readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate, applyPendingEvidence, type GoalState } from "../agent/goal-verifier";
@@ -569,6 +570,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     }
   } catch {}
   const cfg = await readGlobalConfig();
+  // Restore account-scoped model lists before selection and live discovery, so
+  // a later disk restore cannot overwrite fresher results from this launch.
+  await rehydrateLiveModels().catch(() => null);
   let initialSessionModel =
     flags.model ??
     (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
@@ -1527,39 +1531,40 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           })
           .filter(model => !excludedSafetyProviders.has(resolveProvider(model)))
           .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
-      let candidates = poolCandidates();
+      const chooseUsableCandidate = async (): Promise<string | null> => {
+        const candidates = poolCandidates();
+        if (candidates.length === 0) return null;
+        const selected = selectFromPool(candidates, sessionId ? `${sessionId}:fallback:${decision.model}:${reason}` : undefined);
+        const start = Math.max(0, candidates.indexOf(selected));
+        const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
+        for (const candidate of ordered) {
+          const { resolved, provider } = await describeModel(candidate, turnConfig);
+          const status = await describeProvider(provider, turnConfig);
+          if (!status.ready || !await modelServableWithDiscovery(provider, resolved, turnConfig)) continue;
+          if (provider === "ollama" || provider === "lmstudio") {
+            const localBaseUrl = provider === "ollama"
+              ? (turnConfig.ollamaBaseUrl ?? "http://localhost:11434")
+              : (turnConfig.lmstudioBaseUrl ?? "http://localhost:1234/v1");
+            if (!await isLocalProviderReachable(provider, localBaseUrl)) continue;
+          }
+          return candidate;
+        }
+        return null;
+      };
+      const existing = await chooseUsableCandidate();
+      if (existing) return existing;
       // The static MODEL_CATALOG only lists a couple of OpenAI-compatible clouds by
       // name (tencent, xai) — every other API-key provider (groq, deepseek, mistral,
       // openrouter, …) only enters `tierModelPool` once its `/models` endpoint has
       // been discovered THIS session (`recordLiveProviderModels`, driven by
       // `getLiveModels`). Interactive sessions warm that cache in the background at
       // startup, but a ONE-SHOT invocation (`jeo -p`/piped input) never calls
-      // `getLiveModels()` at all — so a credentialed-but-undiscovered API provider
-      // had ZERO fallback candidates even though the user's key works. Warming here
-      // is cheap: `getLiveModels()` caches its result (`liveModelsCache`), so this
+      // `getLiveModels()` at all, potentially leaving no usable fallback candidates.
+      // Warming is cheap: `getLiveModels()` caches its result (`liveModelsCache`), so this
       // only pays real discovery latency once per cold session, exactly when the
       // primary model already failed and a fallback is genuinely needed.
-      if (candidates.length === 0) {
-        await getLiveModels().catch(() => []);
-        candidates = poolCandidates();
-      }
-      if (candidates.length === 0) return null;
-      const selected = selectFromPool(candidates, sessionId ? `${sessionId}:fallback:${decision.model}:${reason}` : undefined);
-      const start = Math.max(0, candidates.indexOf(selected));
-      const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
-      for (const candidate of ordered) {
-        const { resolved, provider } = await describeModel(candidate, turnConfig);
-        const status = await describeProvider(provider, turnConfig);
-        if (!status.ready || !modelServableWithConfig(provider, resolved, turnConfig)) continue;
-        if (provider === "ollama" || provider === "lmstudio") {
-          const localBaseUrl = provider === "ollama"
-            ? (turnConfig.ollamaBaseUrl ?? "http://localhost:11434")
-            : (turnConfig.lmstudioBaseUrl ?? "http://localhost:1234/v1");
-          if (!await isLocalProviderReachable(provider, localBaseUrl)) continue;
-        }
-        return candidate;
-      }
-      return null;
+      await getLiveModels().catch(() => []);
+      return chooseUsableCandidate();
     };
     const fallbackDecision = async (decision: RouteDecision, reason: string, noticeKey: string, notice: string): Promise<RouteDecision | null> => {
       const fallback = await equivalentRouteFallback(decision, reason);
@@ -1611,11 +1616,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           `prompt-router:provider-not-ready:${routedProvider}`,
           `[route] routed to '${routed.model}' (${routedProvider}) but that provider has no usable credential. Run 'jeo auth login ${routedProvider}' or reconfigure routing.tiers/roles for a provider you're logged into.`,
         );
-      } else if (!modelServableWithConfig(routedProvider, routedResolved, turnConfig)) {
-        // Provider readiness is necessary but not sufficient: an OAuth login only
-        // serves specific models (auth matrix on modelServableWithConfig). Only
-        // user-pinned routing.tiers/roles models can hit this branch —
-        // auto-selected models already passed the same predicate.
+      } else if (!await modelServableWithDiscovery(routedProvider, routedResolved, turnConfig)) {
+        // OAuth model availability must be confirmed for the current account,
+        // including models discovered dynamically rather than in the static catalog.
         routed = await fallbackDecision(
           routed,
           `(${routedProvider}) is not servable by the stored ${routedProvider} credential this turn`,
@@ -3076,15 +3079,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
   //
-  // Disk rehydration runs FIRST and synchronously-awaited: it costs one small file
-  // read but makes the account's real model set (including ids newer than the
-  // maintained static snapshot) available to the picker, autocomplete, routing, and
-  // the OAuth Codex gate from the first keystroke, instead of only after the network
-  // discovery below happens to land.
+  // The account-scoped disk cache was restored before startup model selection.
   const aliasNames = Object.keys(await listAliases());
-  await rehydrateLiveModels().catch(() => null);
   const completionConfig = await readGlobalConfig();
-  const cachedCompletionModels = liveProviderCatalogModels({ openaiBaseUrl: completionConfig.openaiBaseUrl ?? process.env.OPENAI_BASE_URL });
+  const cachedCompletionModels = liveProviderCatalogModels({
+    openaiBaseUrl: completionConfig.openaiBaseUrl ?? process.env.OPENAI_BASE_URL,
+    ollamaBaseUrl: completionConfig.ollamaBaseUrl,
+    lmstudioBaseUrl: completionConfig.lmstudioBaseUrl,
+  });
   void getLiveModels()
     .then(r => {
       liveModelsCache ??= r;

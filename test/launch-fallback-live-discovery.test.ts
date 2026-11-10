@@ -1,6 +1,6 @@
-import { test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
-import { resetPromptRouterWarnings } from "../src/agent/prompt-router";
-import { recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
+import { test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from "bun:test";
+import { resetPromptRouterWarnings, tierModelPool } from "../src/agent/prompt-router";
+import { recordLiveProviderModels, resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 import type * as AiModule from "../src/ai";
 import type { ProviderModelsResult } from "../src/ai";
@@ -31,10 +31,17 @@ let runAgentLoopDelegate: (history: unknown, opts: AgentLoopOptions) => Promise<
 let discoverModelsCalls = 0;
 let discoverModelsResult: ProviderModelsResult[] = [];
 let discoverModelsShouldThrow = false;
+let unavailableProvider: string | undefined;
+let deferDiscovery = false;
+let completionResults: Record<string, [string[], string]> = {};
+let completionInputs: string[] = [];
 
 mock.module("node:readline/promises", () => ({
-  createInterface: () => ({
-    question: mock(async () => mockQuestions[mockIndex++] ?? "/exit"),
+  createInterface: (opts: { completer?: (line: string) => [string[], string] }) => ({
+    question: mock(async () => {
+      for (const input of completionInputs) completionResults[input] = opts.completer!(input);
+      return mockQuestions[mockIndex++] ?? "/exit";
+    }),
     close: mock(() => {}),
     on: mock(() => {}),
     pause: mock(() => {}),
@@ -52,11 +59,16 @@ mock.module("../src/agent/engine", () => ({
 
 mock.module("../src/ai", () => ({
   ...realAI,
+  describeProvider: async (...args: Parameters<typeof realAI.describeProvider>) => {
+    const status = await realAI.describeProvider(...args);
+    return status.name === unavailableProvider ? { ...status, ready: false } : status;
+  },
   discoverModels: mock(async () => {
     discoverModelsCalls++;
     if (discoverModelsShouldThrow) throw new Error("discovery transport error (simulated)");
     // Mirror the REAL discoverModels' contract: a successful discovery call has the
     // side effect of recording live provider models (via listProviderModels ->
+    if (deferDiscovery) return new Promise<ProviderModelsResult[]>(() => {});
     // recordLiveProviderModels), which is what actually feeds `tierModelPool`.
     for (const r of discoverModelsResult) {
       if (r.ok) recordLiveProviderModels(r.provider, r.models, { source: r.source === "none" ? undefined : r.source });
@@ -89,8 +101,13 @@ beforeEach(() => {
   discoverModelsCalls = 0;
   discoverModelsResult = [];
   discoverModelsShouldThrow = false;
+  unavailableProvider = undefined;
   resetPromptRouterWarnings();
+  resetLiveCodexModels();
   resetLiveProviderModels();
+  deferDiscovery = false;
+  completionInputs = [];
+  completionResults = {};
   for (const k of PROVIDER_ENV_KEYS) {
     savedProviderEnv[k] = process.env[k];
     delete process.env[k];
@@ -98,6 +115,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetLiveCodexModels();
   process.stdin.isTTY = originalIsTTY as boolean;
   for (const [k, v] of Object.entries(savedProviderEnv)) {
     if (v === undefined) delete process.env[k];
@@ -313,4 +331,81 @@ test("equivalentRouteFallback: does not re-warm discovery on a SECOND reroute at
   // attempt's `poolCandidates()` is already non-empty from the first call's
   // cache-warming side effect, so its `candidates.length === 0` guard never fires.
   expect(discoverCalls).toBe(1);
+});
+
+test("fallback discovers a usable model after every existing candidate is unusable", async () => {
+  recordLiveProviderModels("mistral", ["mistral-small-latest"], { source: "api_key" });
+  unavailableProvider = "mistral";
+  discoverModelsResult = [{ provider: "groq", models: ["llama-3.1-8b-instant"], ok: true, source: "api_key" }];
+  expect(tierModelPool("trivial", { defaultModel: "gpt-4o-mini", roles: {}, providers: { mistral: "test-mistral-key" } })).toContain("mistral/mistral-small-latest");
+  runAgentLoopDelegate = async (_history, opts) => opts.model === "gpt-4o-mini"
+    ? { done: false, steps: 1, doneReason: "Error: OpenAI hit a rate limit (HTTP 429). Retry later." }
+    : { done: true, steps: 1, doneReason: "ok" };
+
+  const { calls, discoverCalls } = await runOneShotWithLogs({
+    providers: { groq: "test-groq-key", mistral: "test-mistral-key" },
+    defaultModel: "gpt-4o-mini",
+    routing: { enabled: true, tiers: { trivial: { model: "gpt-4o-mini" } } },
+  }, "what is this?");
+
+  expect(discoverCalls).toBe(1);
+  expect(calls.map(c => c.model)).toEqual(["groq/llama-3.1-8b-instant"]);
+});
+
+for (const scenario of [
+  { name: "confirmed", response: () => new Response(JSON.stringify({ models: [{ slug: "gpt-account-only", visibility: "list" }] })), accepted: true },
+  { name: "absent", response: () => new Response(JSON.stringify({ models: [{ slug: "gpt-other", visibility: "list" }] })), accepted: false },
+  { name: "rejected", response: () => new Response("unauthorized", { status: 401 }), accepted: false },
+]) {
+  test(`routing dispatches an account-only OpenAI model only when ${scenario.name}`, async () => {
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () => scenario.response());
+    try {
+      const { calls } = await runOneShotWithLogs({
+        providers: { anthropic: "test-anthropic-key" },
+        oauth: { openai: { access: "opaque-token", accountId: "route-account" } },
+        defaultModel: "claude-haiku-4-5",
+        routing: { enabled: true, tiers: { trivial: { model: "openai/gpt-account-only" } } },
+      }, "what is this?");
+      expect(calls).toHaveLength(1);
+      if (scenario.accepted) expect(calls[0]?.model).toBe("openai/gpt-account-only");
+      else expect(calls[0]?.model).not.toBe("openai/gpt-account-only");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+}
+
+test("launch completion shows cached local models for the configured endpoints, not old hosts", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-launch-completion-"));
+  const previousDir = process.env.JEO_CONFIG_DIR;
+  const previousLog = console.log;
+  console.log = () => {};
+  process.env.JEO_CONFIG_DIR = dir;
+  deferDiscovery = true;
+  completionInputs = ["/model ollama/", "/model lmstudio/"];
+  mockQuestions = ["/exit"];
+  try {
+    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({
+      defaultModel: "claude-haiku-4-5", providers: { anthropic: "test-key" },
+      ollamaBaseUrl: "http://localhost:23451", lmstudioBaseUrl: "http://localhost:23452/v1",
+    }));
+    await fs.writeFile(path.join(dir, "model-catalog-cache.json"), JSON.stringify({
+      version: 3, updatedAt: Date.now(), providers: [
+        { provider: "ollama", source: "keyless", baseUrl: "http://localhost:23451", models: ["current-ollama"] },
+        { provider: "ollama", source: "keyless", baseUrl: "http://localhost:11111", models: ["old-ollama"] },
+        { provider: "lmstudio", source: "keyless", baseUrl: "http://localhost:23452/v1", models: ["current-lmstudio"] },
+        { provider: "lmstudio", source: "keyless", baseUrl: "http://localhost:11112/v1", models: ["old-lmstudio"] },
+      ],
+    }));
+    // Load after the readline and discovery mocks so the launch binds to the test boundaries.
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    expect(completionResults["/model ollama/"]?.[0]).toEqual(["ollama/current-ollama"]);
+    expect(completionResults["/model lmstudio/"]?.[0]).toEqual(["lmstudio/current-lmstudio"]);
+  } finally {
+    console.log = previousLog;
+    if (previousDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = previousDir;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

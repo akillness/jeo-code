@@ -7,6 +7,7 @@ import { parseSeedAcceptanceCriteria, parseSeedList } from "./seed";
 import type { AuthProvider } from "../auth/storage";
 import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { resolveCustomApiKey, setCustomProviders, type CustomProviderConfig } from "../ai/providers/custom-providers";
+import { setLocalModelEndpoints } from "../ai/model-catalog";
 import { jeoEnv } from "../util/env";
 import type { SandboxConfig } from "./sandbox/types";
 import { currentSandboxExecution } from "./hooks";
@@ -380,6 +381,10 @@ function withEnvOverlay(cfg: Config): Config {
     const resolved = resolveCustomApiKey(def);
     if (!providerKeys[def.name] && resolved) providerKeys[def.name] = resolved;
   }
+  setLocalModelEndpoints({
+    ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST,
+    lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL,
+  });
   return {
     ...cfg,
     providers,

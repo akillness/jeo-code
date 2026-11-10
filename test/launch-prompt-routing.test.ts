@@ -1,7 +1,7 @@
 import { test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
 import { resetPromptRouterWarnings, credentialScopeFor } from "../src/agent/prompt-router";
 import { OPENAI_COMPAT_PROVIDERS } from "../src/ai/providers/openai-compatible-catalog";
-import { recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
+import { recordLiveProviderModels, resetLiveKimiCodeModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 import { ProviderStreamError } from "../src/ai/providers/errors";
 import { friendlyProviderError } from "../src/util/provider-error";
@@ -594,6 +594,37 @@ test("servability veto: does NOT fire for a Codex id the OAuth login serves (gat
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[0].model).toBe("gpt-5.5"); // routing engaged normally — no veto
     expect(logs.some(l => l.includes("cannot serve") || l.includes("not servable"))).toBe(false);
+  });
+});
+
+test.each(["present", "absent", "rejected"] as const)("Kimi OAuth routing uses cold account discovery when model is %s", async scenario => {
+  await withRoutingProviderEnvCleared(async () => {
+    const savedKey = process.env.KIMI_API_KEY;
+    const savedToken = process.env.KIMI_OAUTH_TOKEN;
+    delete process.env.KIMI_API_KEY;
+    delete process.env.KIMI_OAUTH_TOKEN;
+    resetLiveKimiCodeModels();
+    try {
+      const requests: string[] = [];
+      await withMockedFetch((async (input: string | URL | Request) => {
+        requests.push(String(input));
+        if (scenario === "rejected") return new Response("denied", { status: 401 });
+        return new Response(JSON.stringify({ data: scenario === "present" ? [{ id: "kimi-launch-new" }] : [{ id: "kimi-other" }] }), { status: 200 });
+      }) as typeof fetch, async () => {
+        const { calls } = await runOneTurnWithLogs({
+          providers: { anthropic: "test-anthropic-key" },
+          oauth: { kimi: `oauth-${scenario}` },
+          defaultModel: "claude-sonnet-4-6",
+          routing: { enabled: true, tiers: { trivial: { model: "kimi/kimi-launch-new" } } },
+        }, "what is this?");
+        expect(calls[0]?.model === "kimi/kimi-launch-new").toBe(scenario === "present");
+        expect(requests).toContain("https://api.kimi.com/coding/v1/models");
+      });
+    } finally {
+      if (savedKey === undefined) delete process.env.KIMI_API_KEY; else process.env.KIMI_API_KEY = savedKey;
+      if (savedToken === undefined) delete process.env.KIMI_OAUTH_TOKEN; else process.env.KIMI_OAUTH_TOKEN = savedToken;
+      resetLiveKimiCodeModels();
+    }
   });
 });
 

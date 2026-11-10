@@ -6,15 +6,16 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel, hasConfirmedCodexCatalog, isLiveProviderModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel, hasConfirmedCodexCatalog, isLiveProviderModel, setKimiAccountScope } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
+import { customProviderDef, resolveCustomApiKey } from "./providers/custom-providers";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
 import { listProviderModels } from "./model-discovery";
 import type { ProviderModelsResult } from "./model-discovery";
-import { openAIOauthAccountScope } from "./model-cache";
+import { kimiOauthAccountScope, openAIOauthAccountScope } from "./model-cache";
 
 
 
@@ -358,6 +359,7 @@ export function modelServableWithConfig(provider: ProviderName, model: string, c
   if (provider === "agy") return false;
   if (provider === "ollama" || provider === "lmstudio") return true;
   if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini);
+  if (customProviderDef(provider)) return true;
   if (provider === "openai" && config.openaiBaseUrl) return true;
   const auth = provider as AuthProvider;
   if (config.providers?.[auth]) return true;
@@ -408,6 +410,70 @@ interface Resolved {
 }
 
 const codexCatalogInFlight = new Map<string, Promise<ProviderModelsResult>>();
+const kimiCatalogInFlight = new Map<string, Promise<ProviderModelsResult>>();
+
+/** Resolve an unknown Kimi subscription model against the current account only. */
+async function discoverKimiModel(model: string, config: Config, credential: Credential, signal?: AbortSignal): Promise<boolean> {
+  const scope = await kimiOauthAccountScope(credential);
+  setKimiAccountScope(scope);
+  if (!scope) return false;
+  if (isKimiCodeModel(model)) return true;
+  let discovery = kimiCatalogInFlight.get(scope);
+  if (!discovery) {
+    discovery = listProviderModels("kimi", { config, preferOAuth: true });
+    kimiCatalogInFlight.set(scope, discovery);
+    void discovery.finally(() => kimiCatalogInFlight.delete(scope)).catch(() => {});
+  }
+  let result: ProviderModelsResult;
+  if (signal) {
+    const aborted = Promise.withResolvers<never>();
+    const onAbort = () => aborted.reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      signal.throwIfAborted();
+      result = await Promise.race([discovery, aborted.promise]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  } else {
+    result = await discovery;
+  }
+  if (await kimiOauthAccountScope() !== scope) return false;
+  return result.ok && result.source === "oauth" && result.accountId === scope && isKimiCodeModel(model);
+}
+
+/** Async counterpart for startup and routing gates with account-scoped discovery. */
+export async function modelServableWithDiscovery(provider: ProviderName, model: string, config: Config): Promise<boolean> {
+  if (provider === "openai") {
+    if (config.openaiBaseUrl || config.providers?.openai) return modelServableWithConfig(provider, model, config);
+    const credential = await resolveCredential("openai");
+    if (credential.kind !== "oauth") return modelServableWithConfig(provider, model, config);
+    const scope = await openAIOauthAccountScope(credential);
+    if (!scope) return false;
+    if (isCodexModel(model, scope)) return true;
+    if (hasConfirmedCodexCatalog(scope)) return false;
+    let discovery = codexCatalogInFlight.get(scope);
+    if (!discovery) {
+      discovery = listProviderModels("openai", { config, codexCatalog: true });
+      codexCatalogInFlight.set(scope, discovery);
+      void discovery.finally(() => codexCatalogInFlight.delete(scope)).catch(() => {});
+    }
+    const result = await discovery;
+    if (await openAIOauthAccountScope() !== scope) return false;
+    return result.ok && result.source === "oauth" && result.accountId === scope
+      && hasConfirmedCodexCatalog(scope) && isCodexModel(model, scope);
+  }
+  if (provider !== "kimi") return modelServableWithConfig(provider, model, config);
+  const credential = await resolveCredential("kimi");
+  if (credential.kind !== "oauth") {
+    setKimiAccountScope(undefined);
+    return modelServableWithConfig(provider, model, config);
+  }
+  const scope = await kimiOauthAccountScope(credential);
+  setKimiAccountScope(scope);
+  if (modelServableWithConfig(provider, model, config)) return true;
+  return discoverKimiModel(model, config, credential);
+}
 
 /**
  * The credential to actually use for a provider call. A configured local OpenAI-compatible base
@@ -505,17 +571,35 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     return { adapter, callOptions, credential, retry, provider, baseUrl };
   }
 
+  const custom = customProviderDef(provider);
+  if (custom) {
+    const key = resolveCustomApiKey(custom);
+    const credential: Credential = key
+      ? { kind: "api_key", provider: provider as AuthProvider, token: key }
+      : { kind: "none", provider: provider as AuthProvider };
+    return { adapter, callOptions, credential, retry, provider, baseUrl: baseUrl ?? custom.baseUrl };
+  }
+
   const credentialProvider = provider as AuthProvider;
   const credential = await resolveCredential(credentialProvider);
-  const effective = effectiveCredentialForProvider(credentialProvider, credential, config, model);
-  // A subscription catalog is independent of a configured OpenAI-compatible
-  // endpoint. Keep its OAuth transport rather than replacing it with "no-key".
-  // Explicit endpoint overrides, proxy keys and endpoint-discovered models win.
-  if (provider === "openai" && baseUrl && options.baseUrl === undefined
-    && effective.kind === "oauth" && !config.providers.openai
-    && !isLiveProviderModel("openai", model, { openaiBaseUrl: baseUrl })) {
+  if (provider === "kimi") {
+    const scope = await kimiOauthAccountScope(credential);
+    setKimiAccountScope(scope);
+    if (credential.kind === "oauth" && !baseUrl && !config.providers.kimi && !isKimiCodeModel(model)) {
+      options.signal?.throwIfAborted();
+      await discoverKimiModel(model, config, credential, options.signal);
+      options.signal?.throwIfAborted();
+      if (await kimiOauthAccountScope() !== scope) throw new Error("Kimi credential changed during model discovery; retry the request.");
+    }
+  }
+  // Discover unknown OAuth models before rejecting them. A subscription catalog
+  // is also independent of a configured OpenAI-compatible endpoint.
+  if (provider === "openai" && credential.kind === "oauth"
+    && ((!baseUrl && !oauthServesModel("openai", model))
+      || (baseUrl && !config.providers.openai && options.baseUrl === undefined
+        && !isLiveProviderModel("openai", model, { openaiBaseUrl: baseUrl })))) {
     options.signal?.throwIfAborted();
-    const accountScope = await openAIOauthAccountScope(effective);
+    const accountScope = await openAIOauthAccountScope(credential);
     if (accountScope && !hasConfirmedCodexCatalog(accountScope)) {
       let discovery = codexCatalogInFlight.get(accountScope);
       if (!discovery) {
@@ -549,6 +633,9 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
       callOptions.baseUrl = undefined;
     }
   }
+  const effective = provider === "kimi" && baseUrl && credential.kind === "oauth"
+    ? (config.providers.kimi ? { kind: "api_key" as const, provider: "kimi" as const, token: config.providers.kimi } : { kind: "none" as const, provider: "kimi" as const })
+    : effectiveCredentialForProvider(credentialProvider, credential, config, model);
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
   if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !oauthServesModel("openai", model)) {
     throw new Error(
@@ -560,7 +647,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
       `Kimi OAuth (Kimi Code subscription) serves only the Kimi Code models (${KIMI_CODE_MODELS.join(", ")}). Set KIMI_API_KEY for Moonshot API models, or pick a Kimi Code model with /model.`,
     );
   }
-  if (effective.kind === "none" && !isLocalOpenAi) {
+  if (effective.kind === "none" && !isLocalOpenAi && !(provider === "kimi" && baseUrl)) {
     throw new Error(
       `No credential for provider '${provider}'. Run 'jeo setup', 'jeo auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );

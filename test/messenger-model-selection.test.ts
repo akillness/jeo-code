@@ -97,6 +97,32 @@ test("explicit local model accepts a matching keyless live catalog", async () =>
   await expect(selectDiscordModel("ollama/missing", { config: config("gpt-5"), list })).rejects.toThrow();
 });
 
+test("Discord accepts only models discovered at the configured keyless OpenAI endpoint", async () => {
+  const cfg = { ...config("gpt-local"), openaiBaseUrl: "https://proxy.example/v1" };
+  const list = async (provider: ProviderModelsResult["provider"]) => ({ provider, models: ["gpt-local"], ok: true, source: "keyless" as const, baseUrl: "https://proxy.example/v1" });
+  expect(await selectDiscordModel("gpt-local", { config: cfg, list })).toBe("gpt-local");
+  await expect(selectDiscordModel("gpt-missing", { config: cfg, list })).rejects.toThrow();
+});
+
+test("Discord discovers local models at each configured host", async () => {
+  const previousFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requests.push(String(input));
+    return new Response(JSON.stringify(String(input).includes("ollama")
+      ? { models: [{ name: "local-ollama" }] }
+      : { data: [{ id: "local-studio" }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const cfg = { ...config("gpt-5"), ollamaBaseUrl: "https://ollama.example", lmstudioBaseUrl: "https://studio.example/v1" };
+    expect(await selectDiscordModel("ollama/local-ollama", { config: cfg })).toBe("ollama/local-ollama");
+    expect(await selectDiscordModel("lmstudio/local-studio", { config: cfg })).toBe("lmstudio/local-studio");
+    expect(requests).toEqual(["https://ollama.example/api/tags", "https://studio.example/v1/models"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("Discord resolves user aliases before provider routing and validates explicit aliases live", async () => {
   const cfg = { ...config("my-fast"), modelAliases: { "my-fast": "gpt-6.1-terra", missing: "gpt-7-terra" } };
   const seen: string[] = [];

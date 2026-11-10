@@ -158,16 +158,15 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   const custom = customProviderDef(name);
   if (custom) {
     const source = credentialSourceOf(custom);
-    const ready = source !== "none";
     return {
       name,
-      kind: ready ? "api_key" : "none",
-      label: ready
-        ? `API key (${source === "env" ? custom.apiKeyEnv : "stored in config"}) · custom${custom.preset ? ` · preset ${custom.preset}` : ""}`
-        : `none (set ${custom.apiKeyEnv}, or 'jeo provider key ${name} <key>')`,
+      kind: source === "none" ? "keyless" : "api_key",
+      label: source === "none"
+        ? "keyless · custom"
+        : `API key (${source === "env" ? custom.apiKeyEnv : "stored in config"}) · custom${custom.preset ? ` · preset ${custom.preset}` : ""}`,
       baseUrl: custom.baseUrl,
       envVar: custom.apiKeyEnv,
-      ready,
+      ready: true,
       custom: true,
     };
   }

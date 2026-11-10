@@ -9,6 +9,12 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.33] - 2026-11-10
+
+### Fixed
+- Discover account-supported OAuth models before rejecting new OpenAI and Kimi model IDs, and isolate cached Kimi models by credential.
+- Respect configured provider endpoints when discovering and selecting models, including keyless custom hosts and Discord sessions.
+
 ## [0.12.32] - 2026-11-08
 _Refresh the embedded sandbox runtime for npm consumers._
 

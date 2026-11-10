@@ -96,7 +96,7 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   const base = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
   return {
     url: `${base}/chat/completions`,
-    headers: { "content-type": "application/json", Authorization: `Bearer ${bearerFor(credential)}` },
+    headers: { "content-type": "application/json", ...(credential.kind === "none" ? {} : { Authorization: `Bearer ${credential.token}` }) },
     body: JSON.stringify(sanitizeJsonStrings(payload)),
   };
 }
@@ -359,8 +359,3 @@ function parseOpenaiToolCalls(toolCalls: { function?: { name?: string; arguments
   return out;
 }
 
-function bearerFor(credential: Credential): string {
-  if (credential.kind === "oauth") return credential.token;
-  if (credential.kind === "api_key") return credential.token;
-  return "no-key";
-}

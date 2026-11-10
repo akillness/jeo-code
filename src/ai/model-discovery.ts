@@ -11,23 +11,24 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import { listAgyModels } from "../agent/antigravity-cli";
 import type { ProviderName } from "./types";
-import { PROVIDER_NAMES } from "./provider-status";
+import { allProviderNames } from "./provider-status";
 import {
   catalogByProvider,
-  KIMI_CODE_MODELS,
   recordLiveCodexModels,
   recordLiveKimiCodeModels,
   recordLiveProviderModels,
   setOpenAIOauthAccountScope,
   setAntigravityAccountScope,
+  setKimiAccountScope,
 } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { getStoredOAuth } from "../auth/storage";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
-import { antigravityAccountScope, openAIOauthAccountScope } from "./model-cache";
+import { antigravityAccountScope, kimiOauthAccountScope, openAIOauthAccountScope } from "./model-cache";
 import { getAntigravityUserAgent, resolveAntigravityProjectId } from "./providers/antigravity";
 import { discoverGoogleProjectId, ANTIGRAVITY_DISCOVERY_METADATA } from "../auth/flows/google-project";
 import { getKimiCommonHeaders } from "../auth/flows/kimi";
+import { customProviderDef, resolveCustomApiKey } from "./providers/custom-providers";
 export interface ProviderModelsResult {
   provider: ProviderName;
   /** Discovered model ids (provider-qualified where the router expects it). */
@@ -133,7 +134,7 @@ export function discoveryRequest(
     const base = (baseUrl ?? compat.baseUrl).replace(/\/$/, "");
     const token = cred?.kind === "api_key" || cred?.kind === "oauth" ? cred.token : "";
     if (compat.protocol === "anthropic") {
-      return { url: `${base}/v1/models`, headers: token ? { "x-api-key": token, "anthropic-version": "2023-06-01" } : {} };
+      return { url: `${base}/v1/models`, headers: { "anthropic-version": "2023-06-01", ...(token ? { "x-api-key": token } : {}) } };
     }
     return { url: `${base}/models`, headers: token ? { Authorization: `Bearer ${token}` } : {} };
   }
@@ -188,6 +189,10 @@ export function discoveryRequest(
       return { url: "https://api.x.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
     }
     case "kimi": {
+      if (baseUrl) {
+        const token = cred?.kind === "api_key" ? cred.token : "";
+        return { url: `${baseUrl.replace(/\/+$/, "")}/models`, headers: token ? { Authorization: `Bearer ${token}` } : {} };
+      }
       if (cred?.kind === "oauth") {
         return {
           url: "https://api.kimi.com/coding/v1/models",
@@ -362,6 +367,7 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   // No catalog-fallback for oauth-sourced gemini failures: OAuth can LIST but
   // not SERVE gemini models (see listProviderModels' gemini gate).
   if (result.provider === "gemini" && result.source === "oauth") return result;
+  if (result.provider === "kimi" && result.source === "oauth") return result;
   // Other OAuth providers fall back to their static catalog. API-key providers
   // only fall back when the provider has NO
   // models-list endpoint at all (HTTP 404 / not found) — never for an auth
@@ -369,11 +375,7 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   const eligible = result.source === "oauth"
     || (result.source === "api_key" && isMissingModelsEndpoint(result.error));
   if (!eligible) return result;
-  const ids = result.provider === "kimi" && result.source === "oauth"
-      // Kimi OAuth (Kimi Code subscription) serves ONLY the Kimi Code catalog —
-      // moonshot API-platform ids would 404 against api.kimi.com/coding.
-      ? KIMI_CODE_MODELS.map(id => `kimi/${id}`)
-      : catalogByProvider(result.provider).map(m => m.providerModel);
+  const ids = catalogByProvider(result.provider).map(m => m.providerModel);
   if (ids.length === 0) return result;
   return { ...result, models: ids, ok: true, fallback: true };
 }
@@ -404,8 +406,13 @@ export async function listProviderModels(
     }
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
+  const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" || provider === "kimi" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
   let baseUrl = opts.baseUrl;
+  if (provider === "ollama" || provider === "lmstudio") {
+    const config = opts.config ?? await readGlobalConfig();
+    baseUrl ??= provider === "ollama" ? config.ollamaBaseUrl : config.lmstudioBaseUrl;
+    baseUrl ??= provider === "ollama" ? "http://localhost:11434" : "http://localhost:1234/v1";
+  }
   // An explicit Codex-catalog request (discoverModels' second pass, the
   // post-login report) ignores every custom base URL: the subscription
   // catalog lives at ChatGPT, never at the proxy. Function-scoped (not
@@ -416,6 +423,7 @@ export async function listProviderModels(
   let oauthAccountId: string | undefined;
   let oauthCatalogScope: string | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
+  const custom = customProviderDef(provider);
   if (provider === "xai") {
     // xAI (Grok) is API-key only and not an OAuth AuthProvider: resolve its key
     // directly from config/env instead of the AuthProvider credential store.
@@ -423,6 +431,11 @@ export async function listProviderModels(
     if (!key) return { provider, models: [], ok: false, source: "none", error: "not logged in" };
     cred = { kind: "api_key", provider: "openai", token: key };
     source = "api_key";
+  } else if (custom) {
+    baseUrl ??= custom.baseUrl;
+    const key = resolveCustomApiKey(custom);
+    cred = key ? { kind: "api_key", provider: provider as AuthProvider, token: key } : { kind: "none", provider: provider as AuthProvider };
+    source = key ? "api_key" : "keyless";
   } else if (provider !== "ollama" && provider !== "lmstudio") {
     const authProvider = authProviderFor(provider);
     const raw = await resolveCredential(authProvider!);
@@ -466,12 +479,21 @@ export async function listProviderModels(
       cred = key ? { kind: "api_key", provider: "openai", token: key } : { kind: "none", provider: "openai" };
       source = key ? "api_key" : "keyless";
     }
+    if (provider === "kimi" && baseUrl && cred.kind === "oauth") {
+      const key = config.providers?.kimi;
+      cred = key ? { kind: "api_key", provider: "kimi", token: key } : { kind: "none", provider: "kimi" };
+      source = key ? "api_key" : "keyless";
+    }
     if (provider === "openai" && source === "oauth" && cred.kind === "oauth") {
       const stored = await getStoredOAuth("openai").catch(() => undefined);
       const jwtAccountId = extractChatgptAccountId(cred.token);
       oauthAccountId = jwtAccountId || (stored?.access === cred.token ? stored.accountId : undefined);
       oauthCatalogScope = await openAIOauthAccountScope(cred);
       setOpenAIOauthAccountScope(oauthCatalogScope);
+    }
+    if (provider === "kimi" && source === "oauth" && cred.kind === "oauth") {
+      oauthCatalogScope = await kimiOauthAccountScope(cred);
+      setKimiAccountScope(oauthCatalogScope);
     }
     // Gemini models are exposed ONLY under API-key auth: a gemini OAuth token can
     // still list models from generativelanguage.googleapis.com, but it can no
@@ -483,6 +505,8 @@ export async function listProviderModels(
       return { provider, models: [], ok: false, source, error: "OAuth cannot serve gemini models — set GEMINI_API_KEY, or use antigravity/* (Cloud Code Assist)" };
     }
     const isLocalOpenAi = provider === "openai" && !!baseUrl;
+    if (provider === "kimi" && baseUrl && source === "none") source = "keyless";
+    if (isLocalOpenAi && source === "none") source = "keyless";
     if (source === "none" && !isLocalOpenAi) {
       return { provider, models: [], ok: false, source, error: "not logged in" };
     }
@@ -566,6 +590,12 @@ export async function listProviderModels(
         return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
       }
     }
+    if (provider === "kimi" && source === "oauth") {
+      const data = (body as { data?: unknown } | null)?.data;
+      if (!Array.isArray(data) || data.some(row => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.trim())) {
+        return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
+      }
+    }
     let ids = parseModelsBody(provider, body, { openaiCompatible: provider === "openai" && !!baseUrl });
     const displayNames: Record<string, string> = {};
     if (provider === "antigravity" && body && typeof body === "object" && "models" in body && body.models && typeof body.models === "object") {
@@ -604,17 +634,23 @@ export async function listProviderModels(
       }
       setAntigravityAccountScope(scope.accountId);
     }
+    if (provider === "kimi" && source === "oauth") {
+      if (await kimiOauthAccountScope() !== oauthCatalogScope) {
+        return { provider, models: [], ok: false, source, error: "account changed during model discovery", ...scope };
+      }
+      setKimiAccountScope(oauthCatalogScope);
+    }
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery
     // must not make OAuth Codex calls accept unrelated API models.
     recordLiveProviderModels(provider, allModels, {
       source,
       baseUrl,
-      replace: provider === "openai" || provider === "antigravity",
+      replace: provider === "openai" || provider === "antigravity" || (provider === "kimi" && source === "oauth"),
       ...(source === "oauth" && scope.accountId ? { accountId: scope.accountId } : {}),
     });
     if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthCatalogScope);
-    if (provider === "kimi" && source === "oauth") recordLiveKimiCodeModels(allModels);
+    if (provider === "kimi" && source === "oauth") recordLiveKimiCodeModels(allModels, oauthCatalogScope);
     return {
       provider,
       models,
@@ -662,7 +698,7 @@ export async function discoverModels(
   opts: DiscoveryOptions & { providers?: ProviderName[]; config?: Config; catalogFallback?: boolean } = {},
 ): Promise<ProviderModelsResult[]> {
   const cfg = opts.config ?? (await readGlobalConfig());
-  const providers = opts.providers ?? [...PROVIDER_NAMES];
+  const providers = opts.providers ?? [...allProviderNames()];
   const agyExplicit = opts.providers?.includes("agy") ?? false;
   const agyDefault = typeof cfg.defaultModel === "string" && cfg.defaultModel.trim().toLowerCase().startsWith("agy/");
   const useFallback = opts.catalogFallback !== false;
@@ -690,7 +726,7 @@ export async function discoverModels(
           return [primary, await listProviderModels(p, { ...discoveryOpts, baseUrl: undefined, preferOAuth: true, codexCatalog: true })];
         }
       }
-      if (p === "kimi" && primary.source !== "oauth") {
+      if (p === "kimi" && !discoveryOpts.baseUrl && primary.source !== "oauth") {
         const credential = await resolveCredential("kimi");
         if (credential.kind === "oauth") {
           return [primary, await listProviderModels(p, { ...discoveryOpts, preferOAuth: true })];

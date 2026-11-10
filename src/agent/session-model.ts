@@ -10,7 +10,7 @@
  *
  * Fail-open: a probe that throws keeps the configured default.
  */
-import { describeModel, modelServableWithConfig } from "../ai/model-manager";
+import { describeModel, modelServableWithDiscovery } from "../ai/model-manager";
 import { describeProvider } from "../ai/provider-status";
 import { customProviderDef } from "../ai/providers/custom-providers";
 import type { Config } from "./state";
@@ -38,7 +38,7 @@ export const isModelAuthenticated: ModelAuthCheck = async (model, cfg) => {
   const status = await describeProvider(provider, cfg);
   if (!status.ready) return false;
   if (provider === "agy" || customProviderDef(provider)) return true;
-  return modelServableWithConfig(provider, resolved, cfg);
+  return modelServableWithDiscovery(provider, resolved, cfg);
 };
 
 const FALLBACK_ROLES = ["medium", "high", "smol", "xhigh", "slow", "plan"] as const;

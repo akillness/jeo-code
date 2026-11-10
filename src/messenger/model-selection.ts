@@ -3,6 +3,7 @@ import { listProviderModels } from "../ai/model-discovery";
 import { credentialForCall, effectiveCredentialForProvider, qualifyModelId, resolveProvider } from "../ai/model-manager";
 import { resolveModelId } from "../ai/model-registry";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { customProviderDef, normalizeCustomBaseUrl, normalizeProviderId } from "../ai/providers/custom-providers";
 
 export class DiscordModelSelectionError extends Error {
   constructor(cause: unknown) {
@@ -34,19 +35,25 @@ async function selectDiscordModelFromCatalog(
   if (!requested && provider !== "anthropic" && provider !== "openai" && provider !== "antigravity") {
     throw new Error(`Discord automatic model selection does not support provider ${provider}; configure an explicit model`);
   }
-  const result = await (opts.list ?? listProviderModels)(provider, { config, signal: opts.signal, limit: Number.POSITIVE_INFINITY, preferOAuth: true });
+  const result = await (opts.list ?? listProviderModels)(provider, { config, signal: opts.signal, limit: Number.POSITIVE_INFINITY, preferOAuth: provider !== "gemini" });
   if (opts.signal?.aborted) throw new Error("Messenger request aborted");
-  if (!result.ok || result.fallback || result.source === "none" || (result.source === "keyless" && (!requested || (provider !== "ollama" && provider !== "lmstudio"))) || !result.models.length) {
+  const custom = customProviderDef(provider);
+  const configuredCustom = custom && Object.entries(config.customProviders ?? {}).some(([id, entry]) => {
+    if (normalizeProviderId(id) !== provider) return false;
+    try { return normalizeCustomBaseUrl(entry.baseUrl) === custom.baseUrl; } catch { return false; }
+  });
+  const keylessAllowed = !!requested && (provider === "ollama" || provider === "lmstudio" || (provider === "openai" && !!config.openaiBaseUrl) || !!configuredCustom);
+  if (!result.ok || result.fallback || result.source === "none" || (result.source === "keyless" && !keylessAllowed) || !result.models.length) {
     throw new Error(`Discord cannot verify available models for ${provider}; check login and live model discovery`);
   }
   const canonical = (model: string) => qualifyModelId(model, provider);
   const verified = async (model: string): Promise<string> => {
-    const authProvider: AuthProvider | undefined = provider === "anthropic" ? "anthropic" : provider === "openai" ? "openai" : undefined;
-    if (authProvider && config.providers[authProvider]) {
+    const authProvider: AuthProvider | undefined = provider === "anthropic" ? "anthropic" : provider === "openai" ? "openai" : provider === "gemini" ? "gemini" : undefined;
+    if (authProvider && (config.providers[authProvider] || result.source === "keyless" && provider === "openai")) {
       const credential: Credential = await (opts.credential ?? resolveCredential)(authProvider);
       const effective = effectiveCredentialForProvider(authProvider, credential, config, model);
       const actual = credentialForCall(provider, effective, config, provider === "openai" ? config.openaiBaseUrl : undefined);
-      if (actual.kind !== result.source) {
+      if ((actual.kind === "none" ? "keyless" : actual.kind) !== result.source) {
         throw new Error(`Discord cannot verify ${provider} model access for the credential used at runtime`);
       }
     }

@@ -7,7 +7,8 @@
  * catalog annotates known ids with capabilities.
  */
 import type { ProviderName } from "./types";
-import { openaiCompatDef } from "./providers/openai-compatible-catalog";
+import { openaiCompatDef, isBuiltinCompatProvider } from "./providers/openai-compatible-catalog";
+import { customProviderDef } from "./providers/custom-providers";
 
 export type ThinkLevel = "low" | "medium" | "high" | "xhigh";
 
@@ -195,6 +196,8 @@ const EPHEMERAL_OPENAI_OAUTH_SCOPE = "__jeo-openai-oauth-ephemeral__";
 let activeOpenAIOauthScope = EPHEMERAL_OPENAI_OAUTH_SCOPE;
 const liveCodexModels = new Map<string, Set<string>>();
 let activeAntigravityAccountScope: string | undefined;
+let activeKimiAccountScope: string | undefined;
+let kimiCatalogConfirmed = false;
 
 function normalizeOpenAIOauthScope(scope: string | undefined): string {
   return typeof scope === "string" ? scope.trim() : "";
@@ -237,6 +240,21 @@ export function setAntigravityAccountScope(accountId: string | undefined): void 
     if (record.row.provider === "antigravity" && record.source === "oauth"
       && normalizeOpenAIOauthScope(record.accountId) !== nextScope) {
       removeLiveProviderRecord(recordKey, record);
+    }
+  }
+}
+
+/** Select the Kimi OAuth identity and discard another identity's observations. */
+export function setKimiAccountScope(accountId: string | undefined): void {
+  const next = normalizeOpenAIOauthScope(accountId) || undefined;
+  if (activeKimiAccountScope !== next) {
+    liveKimiCodeModels.clear();
+    kimiCatalogConfirmed = false;
+  }
+  activeKimiAccountScope = next;
+  for (const [key, record] of liveProviderModels) {
+    if (record.row.provider === "kimi" && record.source === "oauth" && record.accountId !== next) {
+      removeLiveProviderRecord(key, record);
     }
   }
 }
@@ -314,6 +332,17 @@ function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
   return baseUrl?.replace(/\/+$/, "");
 }
 
+type LiveModelConfig = { openaiBaseUrl?: string; openaiOauthScope?: string; ollamaBaseUrl?: string; lmstudioBaseUrl?: string; kimiBaseUrl?: string };
+let localModelEndpoints = { ollama: "http://localhost:11434", lmstudio: "http://localhost:1234/v1" };
+
+/** Keep config-less model lookups aligned with the most recently loaded local endpoints. */
+export function setLocalModelEndpoints(config: LiveModelConfig): void {
+  localModelEndpoints = {
+    ollama: normalizeBaseUrl(config.ollamaBaseUrl) ?? "http://localhost:11434",
+    lmstudio: normalizeBaseUrl(config.lmstudioBaseUrl) ?? "http://localhost:1234/v1",
+  };
+}
+
 function stripProviderPrefix(provider: ProviderName, id: string): string {
   const prefix = `${provider}/`;
   if (id.startsWith(prefix)) return id.slice(prefix.length);
@@ -349,8 +378,8 @@ function liveModelRecordKey(
   accountId?: string,
   source?: LiveProviderModelSource,
 ): string {
-  const normalizedAccountId = (provider === "openai" || provider === "antigravity") ? normalizeOpenAIOauthScope(accountId) : "";
-  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${provider === "openai" || provider === "antigravity" ? source ?? "none" : ""}\u0000${canonical}`;
+  const normalizedAccountId = (provider === "openai" || provider === "antigravity" || provider === "kimi") ? normalizeOpenAIOauthScope(accountId) : "";
+  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${provider === "openai" || provider === "antigravity" || provider === "kimi" ? source ?? "none" : ""}\u0000${canonical}`;
 }
 
 function liveModelFallbackRow(provider: ProviderName, canonical: string, providerModel: string): CatalogModel {
@@ -378,7 +407,7 @@ export function recordLiveProviderModels(
 ): void {
   const source = opts.source ?? "none";
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
-  const scopedAccountId = (provider === "openai" || provider === "antigravity") && source === "oauth"
+  const scopedAccountId = (provider === "openai" || provider === "antigravity" || provider === "kimi") && source === "oauth"
     ? normalizeOpenAIOauthScope(opts.accountId) || undefined
     : undefined;
   // A complete discovery refresh must not reactivate an account that was
@@ -386,15 +415,16 @@ export function recordLiveProviderModels(
   // remain hidden until that account is explicitly selected.
   if (provider === "antigravity" && (!scopedAccountId || source !== "oauth")) return;
   if (provider === "antigravity" && opts.replace && scopedAccountId !== activeAntigravityAccountScope) return;
+  if (provider === "kimi" && source === "oauth" && (!scopedAccountId || scopedAccountId !== activeKimiAccountScope)) return;
   if (provider === "openai" && source === "oauth" && scopedAccountId) {
     setOpenAIOauthAccountScope(scopedAccountId);
   }
-  const shouldReplace = provider === "antigravity" || provider === "agy" || (provider === "openai" && !!opts.replace);
+  const shouldReplace = provider === "antigravity" || provider === "agy" || ((provider === "openai" || provider === "kimi") && !!opts.replace);
   if (shouldReplace) {
     for (const [key, record] of liveProviderModels) {
       const sameScope = provider === "openai"
         ? oauthScope(record.accountId) === oauthScope(scopedAccountId)
-        : provider === "antigravity"
+        : provider === "antigravity" || provider === "kimi"
           ? normalizeOpenAIOauthScope(record.accountId) === normalizeOpenAIOauthScope(scopedAccountId)
           : true;
       if (record.row.provider === provider && record.source === source && record.baseUrl === baseUrl && sameScope) {
@@ -424,12 +454,28 @@ export function recordLiveProviderModels(
 
 function liveRecordMatchesConfig(
   record: LiveProviderModelRecord,
-  config?: { openaiBaseUrl?: string; openaiOauthScope?: string },
+  config?: LiveModelConfig,
 ): boolean {
   if (record.row.provider === "antigravity") {
     return record.source === "oauth" && activeAntigravityAccountScope !== undefined
       && normalizeOpenAIOauthScope(record.accountId) === activeAntigravityAccountScope;
   }
+  if (record.row.provider === "kimi" && record.source === "oauth") {
+    return !!activeKimiAccountScope && record.accountId === activeKimiAccountScope;
+  }
+  if (record.row.provider === "kimi") {
+    return normalizeBaseUrl(record.baseUrl) === normalizeBaseUrl(config?.kimiBaseUrl);
+  }
+  if (record.row.provider === "ollama" || record.row.provider === "lmstudio") {
+    const provider = record.row.provider;
+    const requested = provider === "ollama" ? config?.ollamaBaseUrl : config?.lmstudioBaseUrl;
+    const active = provider === "ollama" ? localModelEndpoints.ollama : localModelEndpoints.lmstudio;
+    return normalizeBaseUrl(record.baseUrl) === (normalizeBaseUrl(requested) ?? active);
+  }
+  const custom = customProviderDef(record.row.provider);
+  if (custom) return normalizeBaseUrl(record.baseUrl) === normalizeBaseUrl(custom.baseUrl);
+  if (!isBuiltinCompatProvider(record.row.provider)
+    && !["openai", "anthropic", "gemini", "kimi", "xai", "agy"].includes(record.row.provider)) return false;
   if (record.row.provider !== "openai") return true;
   const wanted = normalizeBaseUrl(config?.openaiBaseUrl);
   if (wanted || record.baseUrl) {
@@ -441,26 +487,20 @@ function liveRecordMatchesConfig(
 }
 
 /** Live-discovered catalog rows usable for routing under the current config. */
-export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string; openaiOauthScope?: string }): CatalogModel[] {
+export function liveProviderCatalogModels(config?: LiveModelConfig): CatalogModel[] {
   return [...liveProviderModels.values()]
     .filter(record => liveRecordMatchesConfig(record, config))
     .map(record => record.row);
 }
 
-/** Live-discovered catalog row for `canonical`, regardless of config/base-URL scope —
- *  used by `resolveProvider` to recover a live-discovered model's ALREADY-CORRECT
- *  `.provider` tag when the static catalog and substring heuristics both miss it (e.g.
- *  a brand-neutral id from an OpenAI-compatible aggregator, or any future provider
- *  rename). Deliberately NOT config-scoped like `liveProviderCatalogModels`/
- *  `isLiveProviderModel` — a model discovered under one base URL is still THE model
- *  `resolveProvider` needs to route correctly, independent of THIS call's routing-
- *  eligibility (config). Live model count is bounded by session discovery (never
- *  large), so a linear scan is cheap — same access pattern as `liveProviderCatalogModels`. */
+/** Recover a live model's provider for routing. Account-scoped OAuth rows and
+ * local/custom rows are visible only for the active account or endpoint; OpenAI
+ * non-OAuth rows retain their provider tag across endpoint changes. */
 export function findLiveCatalogModel(canonical: string): CatalogModel | undefined {
   for (const record of liveProviderModels.values()) {
     if (record.row.canonical !== canonical) continue;
     if ((record.row.provider === "openai" && record.source === "oauth" && !liveRecordMatchesConfig(record))
-      || (record.row.provider === "antigravity" && !liveRecordMatchesConfig(record))) continue;
+      || (record.row.provider !== "openai" && !liveRecordMatchesConfig(record))) continue;
     return record.row;
   }
   return undefined;
@@ -470,7 +510,7 @@ export function findLiveCatalogModel(canonical: string): CatalogModel | undefine
  *  O(1) average case via `liveModelIdIndex` — see that Map's doc comment for why
  *  this must not be an O(n) scan over every live-discovered model (it runs once
  *  per STATIC catalog row inside `isAutoSelectCandidate`). */
-export function isLiveProviderModel(provider: ProviderName, model: string, config?: { openaiBaseUrl?: string; openaiOauthScope?: string }): boolean {
+export function isLiveProviderModel(provider: ProviderName, model: string, config?: LiveModelConfig): boolean {
   const candidates = new Set([model, liveCanonicalId(provider, model), stripProviderPrefix(provider, model)]);
   for (const candidate of candidates) {
     const recordKeys = liveModelIdIndex.get(liveIndexKey(provider, candidate));
@@ -510,11 +550,12 @@ const liveKimiCodeModels = new Set<string>();
 
 /** Record ids confirmed by the Kimi Code OAuth `/v1/models` endpoint so brand-new
  *  subscription models work immediately without waiting for a static catalog release. */
-export function recordLiveKimiCodeModels(ids: readonly string[]): void {
+export function recordLiveKimiCodeModels(ids: readonly string[], accountId?: string): void {
+  if (!accountId || accountId !== activeKimiAccountScope) return;
+  liveKimiCodeModels.clear();
+  kimiCatalogConfirmed = true;
   for (const id of ids) {
-    const trimmed = id.trim();
-    if (!trimmed) continue;
-    const wire = trimmed.startsWith("kimi/") ? trimmed.slice(5) : trimmed;
+    const wire = id.trim().replace(/^kimi\//, "");
     if (wire) liveKimiCodeModels.add(wire);
   }
 }
@@ -522,12 +563,14 @@ export function recordLiveKimiCodeModels(ids: readonly string[]): void {
 /** Whether `model` is served by the Kimi Code OAuth subscription endpoint. */
 export function isKimiCodeModel(model: string): boolean {
   const wire = model.startsWith("kimi/") ? model.slice(5) : model;
-  return KIMI_CODE_MODELS.includes(wire) || liveKimiCodeModels.has(wire);
+  return kimiCatalogConfirmed ? liveKimiCodeModels.has(wire) : KIMI_CODE_MODELS.includes(wire);
 }
 
 /** Test-only reset for live Kimi Code observations. */
 export function resetLiveKimiCodeModels(): void {
   liveKimiCodeModels.clear();
+  activeKimiAccountScope = undefined;
+  kimiCatalogConfirmed = false;
 }
 
 /** Recency compare for `releaseDate` ("YYYY-MM"): `>0` when `a` is newer; a

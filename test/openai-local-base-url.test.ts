@@ -132,6 +132,50 @@ test("resolveCall cold-start discovery: configured proxy plus OAuth confirms a f
     expect(requests).toEqual([CODEX_MODELS_URL, CODEX_RESPONSES_URL]);
   });
 });
+test("resolveCall OAuth-only discovers gpt-6.1-terra for request and stream", async () => {
+  for (const kind of ["request", "stream"] as const) {
+    await withConfigSandbox({ providers: {}, oauth: { openai: { access: oauth.token } } }, async () => {
+      const requests: string[] = [];
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        requests.push(url);
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${oauth.token}`);
+        if (url === CODEX_MODELS_URL) return new Response(JSON.stringify({ models: [{ slug: "gpt-6.1-terra" }] }), { status: 200 });
+        expect(url).toBe(CODEX_RESPONSES_URL);
+        expect(JSON.parse(String(init?.body)).model).toBe("gpt-6.1-terra");
+        return sseResponse([{ type: "response.output_text.delta", delta: "terra-ok" }]);
+      }) as typeof fetch;
+      const resolved = await resolveCall({ model: "gpt-6.1-terra" }, kind);
+      expect(resolved.credential).toEqual(oauth);
+      let text = "";
+      if (kind === "request") text = await resolved.adapter.call([{ role: "user", content: "hi" }], resolved.callOptions, resolved.credential);
+      else for await (const chunk of resolved.adapter.stream!([{ role: "user", content: "hi" }], resolved.callOptions, resolved.credential)) text += chunk;
+      expect(text).toBe("terra-ok");
+      expect(requests).toEqual([CODEX_MODELS_URL, CODEX_RESPONSES_URL]);
+    });
+  }
+});
+
+test("resolveCall OAuth-only rejects gpt-6.1-terra if discovery fails or omits it", async () => {
+  for (const kind of ["request", "stream"] as const) {
+    for (const catalog of ["failed", "missing"] as const) {
+      await withConfigSandbox({ providers: {}, oauth: { openai: { access: oauth.token } } }, async () => {
+        const requests: string[] = [];
+        globalThis.fetch = (async input => {
+          const url = String(input);
+          requests.push(url);
+          expect(url).toBe(CODEX_MODELS_URL);
+          return catalog === "failed"
+            ? new Response("unavailable", { status: 503 })
+            : new Response(JSON.stringify({ models: [{ slug: "gpt-5.5" }] }), { status: 200 });
+        }) as typeof fetch;
+        await expect(resolveCall({ model: "gpt-6.1-terra" }, kind)).rejects.toThrow("OpenAI OAuth");
+        expect(requests).toEqual([CODEX_MODELS_URL]);
+      });
+    }
+  }
+});
+
 test("resolveCall discovery forwards a real JWT account id but never derives one from opaque tokens", async () => {
   const accountId = "acct-real-codex";
   const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url");

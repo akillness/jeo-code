@@ -137,6 +137,25 @@ test("isCodexModel / oauthServesModel self-heal: a model OpenAI's live Codex end
   resetLiveCodexModels();
 });
 
+test("OpenAI OAuth: gpt-6.1-terra requires account catalog confirmation and is revoked when absent", () => {
+  resetLiveCodexModels();
+  const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
+  const oauth: Credential = { kind: "oauth", provider: "openai", token: "tok" };
+  try {
+    expect(modelServableWithConfig("openai", "gpt-6.1-terra", oauthOnly)).toBe(false);
+    recordLiveCodexModels(["gpt-6.1-terra"], "account-a");
+    for (const model of ["gpt-6.1-terra", "openai/gpt-6.1-terra"]) {
+      expect(modelServableWithConfig("openai", model, oauthOnly)).toBe(true);
+      expect(effectiveCredentialForProvider("openai", oauth, { providers: { openai: "sk-oai" } }, model).kind).toBe("oauth");
+    }
+    expect(modelServableWithConfig("openai", "gpt-6.1-other", oauthOnly)).toBe(false);
+    recordLiveCodexModels(["gpt-5.5"], "account-a");
+    expect(modelServableWithConfig("openai", "gpt-6.1-terra", oauthOnly)).toBe(false);
+  } finally {
+    resetLiveCodexModels();
+  }
+});
+
 test("recordLiveCodexModels: a refreshed account catalog revokes models absent from the new list", () => {
   resetLiveCodexModels();
   const oauthOnly = { providers: {}, oauth: { openai: "tok" } };

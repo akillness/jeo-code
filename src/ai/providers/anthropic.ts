@@ -751,5 +751,12 @@ function headersFor(credential: Credential, stream: boolean, model: string, base
       "anthropic-beta": anthropicBetaHeader(betas, model),
     };
   }
+  if (baseUrl) {
+    return {
+      accept: stream ? "text/event-stream" : "application/json",
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+    };
+  }
   throw new Error("anthropic adapter requires a credential");
 }

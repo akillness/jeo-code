@@ -19,7 +19,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { jeoEnv } from "../util/env";
-import { recordLiveCodexModels, recordLiveKimiCodeModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope } from "./model-catalog";
+import { recordLiveCodexModels, recordLiveKimiCodeModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope, setKimiAccountScope } from "./model-catalog";
 import type { Credential } from "../auth";
 import { getStoredOAuth, snapshotProvider } from "../auth/storage";
 import { getAntigravityUserAgent } from "./providers/antigravity";
@@ -75,6 +75,18 @@ export async function openAIOauthAccountScope(credential?: Credential): Promise<
   return accountId || `token:${createHash("sha256").update(selected.token).digest("hex")}`;
 }
 
+/** Kimi has no verified stable account ID; bind observations to the exact bearer. */
+export async function kimiOauthAccountScope(credential?: Credential): Promise<string | undefined> {
+  let selected = credential;
+  if (!selected) {
+    const snapshot = await snapshotProvider("kimi");
+    if (!snapshot.oauth) return undefined;
+    selected = { kind: "oauth", provider: "kimi", token: snapshot.oauth };
+  }
+  if (selected.kind !== "oauth" || selected.provider !== "kimi") return undefined;
+  return `token:${createHash("sha256").update(selected.token).digest("hex")}`;
+}
+
 /** Peek at the selected OAuth account without importing or refreshing credentials. */
 export async function antigravityAccountScope(credential?: Credential): Promise<string | undefined> {
   try {
@@ -121,11 +133,11 @@ export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
       row.source === "oauth" || row.source === "api_key" || row.source === "keyless" || row.source === "none" ? row.source : "none";
     const baseUrl = typeof row.baseUrl === "string" ? row.baseUrl.replace(/\/+$/, "") : undefined;
     const accountId = typeof row.accountId === "string" ? row.accountId.trim() : "";
-    const isScopedOAuth = (provider === "openai" || provider === "antigravity") && source === "oauth";
+    const isScopedOAuth = (provider === "openai" || provider === "antigravity" || provider === "kimi") && source === "oauth";
     if ((isScopedOAuth && !accountId) || (provider === "antigravity" && source !== "oauth")) continue;
     const models = row.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
-      .slice(0, provider === "openai" || provider === "antigravity" ? undefined : MAX_MODELS_PER_PROVIDER);
-    if (models.length === 0 && provider !== "openai" && provider !== "antigravity") continue;
+      .slice(0, provider === "openai" || provider === "antigravity" || provider === "kimi" ? undefined : MAX_MODELS_PER_PROVIDER);
+    if (models.length === 0 && provider !== "openai" && provider !== "antigravity" && !(provider === "kimi" && source === "oauth")) continue;
     out.push({
       provider,
       models,
@@ -171,7 +183,7 @@ export function mergeCacheEntries(
 ): CachedProviderModels[] {
   const byKey = new Map<string, CachedProviderModels>();
   const isScopedOAuth = (provider: ProviderName, source: ModelCacheSource): boolean =>
-    (provider === "openai" || provider === "antigravity") && source === "oauth";
+    (provider === "openai" || provider === "antigravity" || provider === "kimi") && source === "oauth";
   const keyOf = (provider: ProviderName, baseUrl?: string, accountId?: string, source?: ModelCacheSource) =>
     `${provider}\u0000${baseUrl?.replace(/\/+$/, "") ?? ""}\u0000${isScopedOAuth(provider, source ?? "none") ? accountId ?? "" : ""}\u0000${provider === "openai" || provider === "antigravity" || provider === "kimi" ? source ?? "none" : ""}`;
   for (const entry of previous) {
@@ -188,10 +200,10 @@ export function mergeCacheEntries(
     const baseUrl = typeof result.baseUrl === "string" ? result.baseUrl.replace(/\/+$/, "") : undefined;
     const accountId = typeof result.accountId === "string" ? result.accountId.trim() : "";
     if ((scoped && !accountId) || (isAntigravity && source !== "oauth")) continue;
-    if (!result.ok || result.fallback || (result.models.length === 0 && result.provider !== "openai" && !isAntigravity)) continue;
+    if (!result.ok || result.fallback || (result.models.length === 0 && result.provider !== "openai" && !isAntigravity && !(result.provider === "kimi" && scoped))) continue;
     byKey.set(keyOf(result.provider, baseUrl, accountId, source), {
       provider: result.provider,
-      models: [...result.models].slice(0, result.provider === "openai" || isAntigravity ? undefined : MAX_MODELS_PER_PROVIDER),
+      models: [...result.models].slice(0, result.provider === "openai" || isAntigravity || result.provider === "kimi" ? undefined : MAX_MODELS_PER_PROVIDER),
       source,
       ...(baseUrl ? { baseUrl } : {}),
       ...(scoped ? { accountId } : {}),
@@ -213,6 +225,7 @@ export async function writeModelCache(
     if (!result.ok || result.fallback) return false;
     if (result.provider === "antigravity") return result.source === "oauth" && !!result.accountId?.trim();
     if (result.provider === "openai") return result.models.length > 0 || !(result.source === "oauth" && !result.accountId?.trim());
+    if (result.provider === "kimi" && result.source === "oauth") return !!result.accountId?.trim();
     return result.models.length > 0;
   });
   if (!hasFreshResult) return;
@@ -233,30 +246,33 @@ export async function writeModelCache(
  * routing, and — critically — the OAuth Codex gate know the account's real models
  * BEFORE the first network call of this launch. Returns the number of ids applied.
  */
-export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccountId?: string, antigravityAccountId?: string): number {
+export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccountId?: string, antigravityAccountId?: string, kimiAccountId?: string): number {
   const openAIScope = typeof openAIOauthAccountId === "string" ? openAIOauthAccountId.trim() : "";
   const antigravityScope = typeof antigravityAccountId === "string" ? antigravityAccountId.trim() : "";
   setAntigravityAccountScope(antigravityScope);
+  setKimiAccountScope(kimiAccountId);
   if (!cache) return 0;
   let applied = 0;
   for (const entry of cache.providers) {
     if (entry.provider === "agy") continue;
     const isOpenAIOAuth = entry.provider === "openai" && entry.source === "oauth";
     const isAntigravityOAuth = entry.provider === "antigravity" && entry.source === "oauth";
+    const isKimiOAuth = entry.provider === "kimi" && entry.source === "oauth";
     if (isOpenAIOAuth && (!openAIScope || entry.accountId !== openAIScope)) continue;
     if (isAntigravityOAuth && (!antigravityScope || entry.accountId !== antigravityScope)) continue;
+    if (isKimiOAuth && (!kimiAccountId || entry.accountId !== kimiAccountId)) continue;
     if (entry.provider === "antigravity" && !isAntigravityOAuth) continue;
     recordLiveProviderModels(entry.provider, entry.models, {
       source: entry.source,
       baseUrl: entry.baseUrl,
-      replace: entry.provider === "openai" || entry.provider === "antigravity",
-      ...(isOpenAIOAuth || isAntigravityOAuth ? { accountId: entry.accountId } : {}),
+      replace: entry.provider === "openai" || entry.provider === "antigravity" || isKimiOAuth,
+      ...(isOpenAIOAuth || isAntigravityOAuth || isKimiOAuth ? { accountId: entry.accountId } : {}),
     });
     if (isOpenAIOAuth && entry.accountId && !entry.baseUrl) {
       recordLiveCodexModels(entry.models, entry.accountId);
     }
-    if (entry.provider === "kimi" && entry.source === "oauth") {
-      recordLiveKimiCodeModels(entry.models);
+    if (isKimiOAuth) {
+      recordLiveKimiCodeModels(entry.models, entry.accountId);
     }
     applied += entry.models.length;
   }
@@ -268,8 +284,9 @@ export async function rehydrateLiveModels(): Promise<ModelCacheFile | null> {
   const cache = await readModelCache();
   const accountId = await openAIOauthAccountScope();
   const antigravityAccountId = await antigravityAccountScope();
+  const kimiAccountId = await kimiOauthAccountScope();
   setOpenAIOauthAccountScope(accountId);
   setAntigravityAccountScope(antigravityAccountId);
-  applyCachedModels(cache, accountId, antigravityAccountId);
+  applyCachedModels(cache, accountId, antigravityAccountId, kimiAccountId);
   return cache;
 }

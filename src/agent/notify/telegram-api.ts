@@ -282,44 +282,26 @@ export class TelegramApi {
   }
 
   /** Resolve a `file_id` to a short-lived `file_path` for use with {@link downloadFile}. */
-  async getFile(fileId: string): Promise<{ ok: boolean; result?: { file_path?: string } }> {
-    return this.postJson<{ ok: boolean; result?: { file_path?: string } }>("getFile", { file_id: fileId });
+  async getFile(fileId: string): Promise<{ ok: boolean; error_code?: number; result?: { file_path?: string } }> {
+    return this.postJson<{ ok: boolean; error_code?: number; result?: { file_path?: string } }>("getFile", { file_id: fileId });
   }
 
-  /**
-   * Download a file resolved via {@link getFile}. `filePath` is untrusted
-   * remote metadata from a Bot API response, not something jeo controls —
-   * reject any `..`, leading `/`, or `\` segment before building the URL
-   * (guards against path-traversal/SSRF via a malicious `file_path`) and
-   * percent-encode each path segment. Best-effort: returns `undefined` on
-   * rejection, fetch failure, or a non-ok response instead of throwing,
-   * since this is new network I/O every caller must treat as fallible
-   * (gjc `downloadTelegramFile` parity, minus the retry logic gjc layers on
-   * top at the daemon level).
-   *
-   * Bounded by `maxBytes` (default {@link MAX_TELEGRAM_DOWNLOAD_BYTES}):
-   * a `content-length` over the cap short-circuits before any read, and
-   * the body is otherwise streamed and counted chunk-by-chunk so a
-   * remote server that lies about (or omits) `content-length` still can't
-   * buffer past the cap — the read is aborted and `undefined` returned the
-   * moment the running total exceeds it, never after buffering the whole
-   * oversized body first. ALSO short-circuits (returns `undefined` without
-   * calling `fetchImpl`) during an active bot-wide cooldown — the same
-   * non-polling exemption every other call gets.
-   */
-  async downloadFile(filePath: string, maxBytes: number = MAX_TELEGRAM_DOWNLOAD_BYTES): Promise<Uint8Array | undefined> {
-    if (this.isCoolingDown()) return undefined;
-    if (filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) return undefined;
+  /** Download with bounded memory and distinguish permanent rejection from retryable failures. */
+  async downloadFile(filePath: string, maxBytes: number = MAX_TELEGRAM_DOWNLOAD_BYTES): Promise<
+    { status: "ok"; bytes: Uint8Array } | { status: "oversize" | "invalid" | "retry" }
+  > {
+    if (this.isCoolingDown()) return { status: "retry" };
+    if (filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) return { status: "invalid" };
     const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
     const url = `https://api.telegram.org/file/bot${this.token}/${encodedPath}`;
     try {
       const res = await this.fetchImpl(url);
-      if (!res.ok) return undefined;
+      if (!res.ok) return { status: res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429 ? "invalid" : "retry" };
       const declaredLength = Number(res.headers?.get?.("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return { status: "oversize" };
       if (!res.body) {
         const bytes = new Uint8Array(await res.arrayBuffer());
-        return bytes.byteLength > maxBytes ? undefined : bytes;
+        return bytes.byteLength > maxBytes ? { status: "oversize" } : { status: "ok", bytes };
       }
       const reader = res.body.getReader();
       const chunks: Uint8Array[] = [];
@@ -330,8 +312,8 @@ export class TelegramApi {
         if (!value) continue;
         total += value.byteLength;
         if (total > maxBytes) {
-          await reader.cancel();
-          return undefined;
+          await reader.cancel().catch(() => {});
+          return { status: "oversize" };
         }
         chunks.push(value);
       }
@@ -341,9 +323,9 @@ export class TelegramApi {
         out.set(chunk, offset);
         offset += chunk.byteLength;
       }
-      return out;
+      return { status: "ok", bytes: out };
     } catch {
-      return undefined;
+      return { status: "retry" };
     }
   }
 

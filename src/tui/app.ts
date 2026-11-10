@@ -321,6 +321,8 @@ export class LaunchTui {
   // else fixed key 0 for single foreground runs. `subagentLiveOrder` tracks touch order
   // so the status row can show the MOST RECENTLY active slot plus a "+N more" count.
   private readonly subagentLiveSlots = new Map<number | string, string>();
+  // Last persistable preview, separate from transient thinking text.
+  private readonly subagentRecordedSlots = new Map<number | string, string>();
   private readonly detachedSubagentSlots = new Set<number | string>();
   private readonly subagentLiveOrder: (number | string)[] = [];
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
@@ -1116,8 +1118,9 @@ export class LaunchTui {
     // runId distinguishes simultaneous foreground, fan-out and detached runs.
     // Older emitters may still provide only their existing slot identifiers.
     const slot: number | string = e.runId ?? e.detachedId ?? e.index ?? 0;
-    const touchSlot = (line: string) => {
+    const touchSlot = (line: string, transient = false) => {
       this.subagentLiveSlots.set(slot, line);
+      if (!transient) this.subagentRecordedSlots.set(slot, line);
       if (e.detachedId) this.detachedSubagentSlots.add(slot);
       const at = this.subagentLiveOrder.indexOf(slot);
       if (at !== -1) this.subagentLiveOrder.splice(at, 1);
@@ -1143,7 +1146,7 @@ export class LaunchTui {
       case "thinking":
         // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
         // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
-        touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`);
+        touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`, true);
         break;
       case "error":
       case "done":
@@ -1151,6 +1154,7 @@ export class LaunchTui {
         // must keep showing its still-running siblings, not drop the `(sub)`
         // marker for the whole batch (the bug this per-slot map fixes).
         this.subagentLiveSlots.delete(slot);
+        this.subagentRecordedSlots.delete(slot);
         this.detachedSubagentSlots.delete(slot);
         {
           const at = this.subagentLiveOrder.indexOf(slot);
@@ -1180,6 +1184,7 @@ export class LaunchTui {
     this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
     this.livePromptHighlight = undefined; // fresh turn: no active trigger token
     this.subagentLiveSlots.clear(); this.subagentLiveOrder.length = 0; this.subagentActive = false; // fresh turn: no nested subagent in flight
+    this.subagentRecordedSlots.clear();
     this.detachedSubagentSlots.clear();
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
@@ -1328,10 +1333,11 @@ export class LaunchTui {
    *  pass `ok:false` so the checklist truthfully keeps any unfinished items. */
   finish(reply: string, opts: { ok?: boolean } = {}): void {
     const ok = opts.ok !== false;
-    for (const [slot, line] of this.subagentLiveSlots) {
-      if (!this.detachedSubagentSlots.has(slot)) this.appendSubagentCard("subagent · no completion observed", line, false);
+    for (const slot of this.subagentLiveSlots.keys()) {
+      if (!this.detachedSubagentSlots.has(slot)) this.appendSubagentCard("subagent · no completion observed", this.subagentRecordedSlots.get(slot) ?? "", false);
     }
     this.subagentLiveSlots.clear();
+    this.subagentRecordedSlots.clear();
     this.detachedSubagentSlots.clear();
     this.subagentLiveOrder.length = 0;
     this.subagentActive = false;

@@ -169,12 +169,9 @@ class FakeTelegramApi {
     this.filesFetched.push(fileId);
     return { ok: true, result: { file_path: `photos/${fileId}.jpg` } };
   }
-  /** Overridable per-test to simulate an oversized/rejected download (mirrors
-   *  `TelegramApi.downloadFile` returning `undefined` when the response exceeds
-   *  its byte cap) without needing real network bytes here. */
-  downloadFileImpl: (filePath: string, maxBytes?: number) => Promise<Uint8Array | undefined> =
-    async () => VALID_PNG_BYTES.slice();
-  async downloadFile(filePath: string, maxBytes?: number): Promise<Uint8Array | undefined> {
+  downloadFileImpl: (filePath: string, maxBytes?: number) => Promise<{ status: "ok"; bytes: Uint8Array } | { status: "oversize" | "invalid" | "retry" }> =
+    async () => ({ status: "ok", bytes: VALID_PNG_BYTES.slice() });
+  async downloadFile(filePath: string, maxBytes?: number) {
     this.filesDownloaded.push(filePath);
     return this.downloadFileImpl(filePath, maxBytes);
   }
@@ -821,15 +818,9 @@ test("in-thread config command ('/verbose') routes as a config_command frame ins
   expect(telegram.reactions.length).toBe(0);
 });
 
-test("a photo attachment in a session's topic is downloaded (getFile+downloadFile) and relayed as user_message with imagePaths via an injected writeTempFile", async () => {
+test("a topic photo downloads and forwards validated bytes to its session", async () => {
   const telegram = new FakeTelegramApi();
-  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    writeTempFile: async (bytes, suggestedName) => {
-      written.push({ bytes, suggestedName });
-      return `/tmp/fake/${suggestedName}`;
-    },
-  });
+  const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -851,23 +842,19 @@ test("a photo attachment in a session's topic is downloaded (getFile+downloadFil
 
   expect(telegram.filesFetched).toEqual(["big-1"]);
   expect(telegram.filesDownloaded).toEqual(["photos/big-1.jpg"]);
-  expect(written.length).toBe(1);
-  expect(written[0]!.suggestedName).toBe("photo-big-1.jpg");
+  expect(telegram.reactions).toHaveLength(1);
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
   expect(frame.type).toBe("user_message");
   expect(frame.sessionId).toBe(conn.sessionId);
   expect(frame.text).toBe("");
-  expect(frame.imagePaths).toEqual(["/tmp/fake/photo-big-1.jpg"]);
+  expect(frame.images).toEqual([{ mediaType: "image/png", data: Buffer.from(VALID_PNG_BYTES).toString("base64") }]);
+  expect(frame.imagePaths).toBeUndefined();
 });
 
-test("a successfully acknowledged inbound image unlinks its temporary path after forwarding", async () => {
+test("an acknowledged inbound image forwards bytes exactly once", async () => {
   const telegram = new FakeTelegramApi();
-  const unlinked: string[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    writeTempFile: async () => "/tmp/fake/forwarded-success.png",
-    unlink: async filePath => { unlinked.push(filePath); },
-  });
+  const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -882,16 +869,15 @@ test("a successfully acknowledged inbound image unlinks its temporary path after
       photo: [{ file_id: "success-image", width: 800, height: 800 }],
     },
   });
-  expect(unlinked).toEqual(["/tmp/fake/forwarded-success.png"]);
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const messages = ws.sent.map(raw => JSON.parse(raw)).filter(frame => frame.type === "user_message");
+  expect(messages).toHaveLength(1);
+  expect(messages[0].images).toEqual([{ mediaType: "image/png", data: Buffer.from(VALID_PNG_BYTES).toString("base64") }]);
 });
 
-test("an inbound image whose session ACK is false still unlinks its temporary path", async () => {
+test("a rejected inbound image ACK does not report success", async () => {
   const telegram = new FakeTelegramApi();
-  const unlinked: string[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    writeTempFile: async () => "/tmp/fake/forwarded-failure.png",
-    unlink: async filePath => { unlinked.push(filePath); },
-  });
+  const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -915,18 +901,13 @@ test("an inbound image whose session ACK is false still unlinks its temporary pa
     },
   });
   expect(accepted).toBe(false);
-  expect(unlinked).toEqual(["/tmp/fake/forwarded-failure.png"]);
+  expect(telegram.reactions).toHaveLength(0);
 });
 
-test("stopping while an inbound image ACK is pending still unlinks its temporary path", async () => {
+test("stopping while an inbound image ACK is pending settles the update", async () => {
   const telegram = new FakeTelegramApi();
-  const unlinked: string[] = [];
   const requestSent = Promise.withResolvers<void>();
-  const daemon = makePerSessionDaemon(telegram, {
-    ackTimeoutMs: 30_000,
-    writeTempFile: async () => "/tmp/fake/forwarded-stop.png",
-    unlink: async filePath => { unlinked.push(filePath); },
-  });
+  const daemon = makePerSessionDaemon(telegram, { ackTimeoutMs: 30_000 });
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -948,18 +929,11 @@ test("stopping while an inbound image ACK is pending still unlinks its temporary
   await requestSent.promise;
   daemon.stop();
   expect(await pending).toBe(false);
-  expect(unlinked).toEqual(["/tmp/fake/forwarded-stop.png"]);
 });
 
-test("an image document attachment (sent 'as file') in a session's topic is also downloaded and relayed as user_message with imagePaths", async () => {
+test("an image document is downloaded and relayed as image bytes", async () => {
   const telegram = new FakeTelegramApi();
-  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    writeTempFile: async (bytes, suggestedName) => {
-      written.push({ bytes, suggestedName });
-      return `/tmp/fake/${suggestedName}`;
-    },
-  });
+  const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -979,24 +953,18 @@ test("an image document attachment (sent 'as file') in a session's topic is also
 
   expect(telegram.filesFetched).toEqual(["doc-1"]);
   expect(telegram.filesDownloaded).toEqual(["photos/doc-1.jpg"]);
-  expect(written[0]!.suggestedName).toBe("diagram.png");
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
   expect(frame.type).toBe("user_message");
   expect(frame.text).toBe("a diagram");
-  expect(frame.imagePaths).toEqual(["/tmp/fake/diagram.png"]);
+  expect(frame.images).toEqual([{ mediaType: "image/png", data: Buffer.from(VALID_PNG_BYTES).toString("base64") }]);
+  expect(frame.imagePaths).toBeUndefined();
 });
 
-test("malformed image bytes are relayed as text-only without writing a temp attachment", async () => {
+test("malformed image bytes are reported and the caption is relayed without an image", async () => {
   const telegram = new FakeTelegramApi();
-  telegram.downloadFileImpl = async () => new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-  const written: string[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    writeTempFile: async (_bytes, suggestedName) => {
-      written.push(suggestedName);
-      return `/tmp/fake/${suggestedName}`;
-    },
-  });
+  telegram.downloadFileImpl = async () => ({ status: "ok", bytes: new Uint8Array([0xde, 0xad, 0xbe, 0xef]) });
+  const daemon = makePerSessionDaemon(telegram);
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -1014,31 +982,42 @@ test("malformed image bytes are relayed as text-only without writing a temp atta
     },
   });
 
-  expect(written).toEqual([]);
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
   expect(frame.type).toBe("user_message");
   expect(frame.text).toBe("not actually an image");
-  expect(frame.imagePaths).toBeUndefined();
+  expect(frame.images).toBeUndefined();
+  expect(telegram.sent.some(message => /image|attachment/i.test(message.text))).toBe(true);
+  expect(telegram.sent.find(message => /image|attachment/i.test(message.text))?.options?.messageThreadId).toBe(1000);
+});
+
+test("a transient attachment download failure is retried without forwarding its caption", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.downloadFileImpl = async () => ({ status: "retry" });
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
+  const accepted = await daemon.handleUpdate({
+    update_id: 10,
+    message: { message_id: 10, date: 0, from: { id: 999, is_bot: false }, chat: { id: 999, type: "private" }, message_thread_id: 1000, caption: "retry photo", photo: [{ file_id: "retry-image", width: 1, height: 1 }] },
+  });
+  expect(accepted).toBe(false);
+  const ws = conn.ws as unknown as FakeWebSocket;
+  expect(ws.sent.map(raw => JSON.parse(raw)).some(frame => frame.type === "user_message")).toBe(false);
+  expect(telegram.reactions).toHaveLength(0);
 });
 
 // ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
 
-test("an oversized inbound photo (downloadFile rejected) still delivers as text-only, with no imagePaths and no written temp file", async () => {
+test("an oversized inbound photo reports failure and delivers its caption without an image", async () => {
   const telegram = new FakeTelegramApi();
   let seenMaxBytes: number | undefined;
   telegram.downloadFileImpl = async (_filePath, maxBytes) => {
     seenMaxBytes = maxBytes; // confirms opts.maxAttachmentBytes actually threads through to TelegramApi.downloadFile
-    return undefined; // simulates TelegramApi.downloadFile rejecting an over-cap response
+    return { status: "oversize" };
   };
-  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
-  const daemon = makePerSessionDaemon(telegram, {
-    maxAttachmentBytes: 1024,
-    writeTempFile: async (bytes, suggestedName) => {
-      written.push({ bytes, suggestedName });
-      return `/tmp/fake/${suggestedName}`;
-    },
-  });
+  const daemon = makePerSessionDaemon(telegram, { maxAttachmentBytes: 1024 });
   const conn = sessionConn();
   daemon.sessions.set(conn.sessionId, conn);
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: conn.sessionId, pid: conn.pid, subagents: [rec({ status: "running" })] }));
@@ -1059,12 +1038,12 @@ test("an oversized inbound photo (downloadFile rejected) still delivers as text-
   expect(seenMaxBytes).toBe(1024);
   expect(telegram.filesFetched).toEqual(["huge-1"]);
   expect(telegram.filesDownloaded).toEqual(["photos/huge-1.jpg"]);
-  expect(written.length).toBe(0); // never reached writeTempFile — the oversized download was rejected first
   const ws = conn.ws as unknown as FakeWebSocket;
   const frame = JSON.parse(ws.sent.at(-1)!);
   expect(frame.type).toBe("user_message");
   expect(frame.text).toBe("a screenshot");
-  expect(frame.imagePaths).toBeUndefined();
+  expect(frame.images).toBeUndefined();
+  expect(telegram.sent.some(message => /image|attachment/i.test(message.text))).toBe(true);
 });
 
 test("a plain-text inbound message that routes as user_message gets a 👀 reaction (setMessageReaction) confirming delivery", async () => {

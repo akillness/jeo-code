@@ -19,11 +19,13 @@ async function withIsolatedEnv(
 
   const prevHome = process.env.HOME;
   const prevConfig = process.env.JEO_CONFIG_DIR;
+  const prevSessionDir = process.env.JEO_SESSION_DIR;
   const prevAnthropic = process.env.ANTHROPIC_API_KEY;
   const prevOpenai = process.env.OPENAI_API_KEY;
 
   process.env.HOME = homeDir;
   process.env.JEO_CONFIG_DIR = configDir;
+  process.env.JEO_SESSION_DIR = path.join(root, "sessions");
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.OPENAI_API_KEY;
 
@@ -34,6 +36,8 @@ async function withIsolatedEnv(
     else process.env.HOME = prevHome;
     if (prevConfig === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = prevConfig;
+    if (prevSessionDir === undefined) delete process.env.JEO_SESSION_DIR;
+    else process.env.JEO_SESSION_DIR = prevSessionDir;
     if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = prevAnthropic;
     if (prevOpenai === undefined) delete process.env.OPENAI_API_KEY;
@@ -43,6 +47,26 @@ async function withIsolatedEnv(
 }
 
 describe("credential-free status DTO and CLI (Tier 2 #7)", () => {
+  test("isolates sessions from an existing override and restores it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-status-external-"));
+    const previous = process.env.JEO_SESSION_DIR;
+    const external = path.join(root, "sessions");
+    try {
+      process.env.JEO_SESSION_DIR = external;
+      await withIsolatedEnv(async ({ cwd }) => {
+        await createSession(cwd, "external-session", "model", external);
+        expect((await buildStatusDto(cwd)).sessions.total).toBe(0);
+        await createSession(cwd, "isolated-session", "model");
+        expect((await buildStatusDto(cwd)).sessions.total).toBe(1);
+      });
+      expect(process.env.JEO_SESSION_DIR).toBe(external);
+    } finally {
+      if (previous === undefined) delete process.env.JEO_SESSION_DIR;
+      else process.env.JEO_SESSION_DIR = previous;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("buildStatusDto returns session, workflow, goal, and provider metadata while excluding all secrets", async () => {
     await withIsolatedEnv(async ({ cwd, configDir }) => {
       const secretApiKey = "sk-ant-SUPER-SECRET-KEY-99999";

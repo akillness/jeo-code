@@ -406,7 +406,7 @@ test("sendTurnStream: a connected client receives the finalized turn_stream fram
   });
 });
 
-test("onUserMessage: fires with {text, imagePaths} for a user_message frame sent from the client (callback set BEFORE connect)", async () => {
+test("onUserMessage: forwards authenticated image bytes to the callback", async () => {
   endpoint = new SessionNotifyEndpoint("/tmp/proj");
   const { promise, resolve } = Promise.withResolvers<RemoteUserMessage>();
   endpoint.onUserMessage = resolve;
@@ -415,12 +415,13 @@ test("onUserMessage: fires with {text, imagePaths} for a user_message frame sent
   const ws = connect(discovery);
   await waitForMessage(ws, m => m.type === "snapshot");
 
-  ws.send(JSON.stringify({ type: "user_message", text: "hello", imagePaths: ["/tmp/a.png"] }));
+  const image = { mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXkAAAAASUVORK5CYII=" };
+  ws.send(JSON.stringify({ type: "user_message", text: "hello", images: [image] }));
   const msg = await promise;
-  expect(msg).toEqual({ text: "hello", imagePaths: ["/tmp/a.png"] });
+  expect(msg).toEqual({ text: "hello", images: [image] });
 });
 
-test("onUserMessage: fires correctly when registered AFTER connect, and a frame with no imagePaths yields imagePaths: undefined", async () => {
+test("onUserMessage: a frame with no images yields images: undefined", async () => {
   endpoint = new SessionNotifyEndpoint("/tmp/proj");
   await endpoint.start();
   const discovery = await readDiscovery(endpoint.sessionId);
@@ -432,7 +433,25 @@ test("onUserMessage: fires correctly when registered AFTER connect, and a frame 
   ws.send(JSON.stringify({ type: "user_message", text: "no images here" }));
   const msg = await promise;
   expect(msg.text).toBe("no images here");
-  expect(msg.imagePaths).toBeUndefined();
+  expect(msg.images).toBeUndefined();
+});
+
+test("a remote user message containing Ctrl-C is rejected without reaching the handler", async () => {
+  endpoint = new SessionNotifyEndpoint("/tmp/proj");
+  const received: RemoteUserMessage[] = [];
+  endpoint.onUserMessage = message => { received.push(message); };
+  await endpoint.start();
+  const discovery = await readDiscovery(endpoint.sessionId);
+  const ws = connect(discovery);
+  await waitForMessage(ws, m => m.type === "snapshot");
+  const rejected = waitForMessage(ws, m => m.type === "ack" && m.reqId === "ctrl-c");
+  ws.send(JSON.stringify({ type: "user_message", text: "prefix\u0003suffix", reqId: "ctrl-c" }));
+  expect(await rejected).toEqual({ type: "ack", reqId: "ctrl-c", ok: false });
+  expect(received).toEqual([]);
+  const accepted = waitForMessage(ws, m => m.type === "ack" && m.reqId === "normal");
+  ws.send(JSON.stringify({ type: "user_message", text: "normal", reqId: "normal" }));
+  expect(await accepted).toEqual({ type: "ack", reqId: "normal", ok: true });
+  expect(received).toEqual([{ text: "normal", images: undefined }]);
 });
 
 test("onConfigCommand: fires with the correct partial RemoteConfigCommand shape for verbosity and for redact separately", async () => {

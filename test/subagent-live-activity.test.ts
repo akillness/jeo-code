@@ -33,12 +33,33 @@ test("status activity mirrors the latest subagent event while a task runs", () =
     expect(live).toContain("read src/agent/engine.ts");
 
     tui.onSubagentEvent({ kind: "error", role: "executor", detail: "edit failed" });
-    expect(strip(internals.currentActivity())).toContain("edit failed");
+    expect(strip(internals.currentActivity())).not.toContain("EXECUTOR");
+    expect(tui.recentActivity().join("\n")).toContain("edit failed");
   } finally {
     clearInterval(internals.timer);
     tui.finish("done");
   }
 });
+test("a subagent error clears its running slot and persists a failed card", () => {
+  const { tui, internals } = makeTui();
+  const logged: string[] = [];
+  const originalLog = console.log;
+  try {
+    tui.onSubagentEvent({ kind: "start", role: "executor", detail: "inspect engine.ts" });
+    tui.onSubagentEvent({ kind: "error", role: "executor", detail: "edit failed" });
+    expect(strip(internals.currentActivity())).not.toContain("EXECUTOR");
+    clearInterval(internals.timer);
+    console.log = (...args: unknown[]) => logged.push(args.join(" "));
+    tui.finish("done");
+    const final = strip(logged.join("\n"));
+    expect(final).toContain("EXECUTOR failed");
+    expect(final).toContain("edit failed");
+  } finally {
+    console.log = originalLog;
+    clearInterval(internals.timer);
+  }
+});
+
 
 test("subagent done clears the live activity back to the parent view", () => {
   const { tui, internals } = makeTui();
@@ -78,10 +99,8 @@ test("concurrent fan-out: status shows the most recently active slot plus a runn
 });
 
 // ── Parallel subagent panel (gjc TUI-exposure parity) ───────────────────────
-// A fan-out `task` batch with MORE THAN ONE concurrent slot live renders its own
-// multi-line panel — one row PER active worker — instead of collapsing every
-// worker into a single "+N more running" line. Pins the actual rendered frame,
-// not just the internal currentActivity() string.
+// Every live subagent renders a panel, with one row per active worker.
+// Pin the rendered frame rather than only the currentActivity() string.
 
 test("parallel subagent panel: a 3-worker fan-out renders one status line per worker in the live frame", () => {
   const out: string[] = [];
@@ -92,7 +111,7 @@ test("parallel subagent panel: a 3-worker fan-out renders one status line per wo
   tui.onSubagentEvent({ kind: "start", role: "executor", index: 3, total: 3, detail: "task C" });
   const frame = strip(out.join(""));
   try {
-    expect(frame).toContain("parallel · 3 running");
+    expect(frame).toContain("subagents · 3 running");
     expect(frame).toContain("task A");
     expect(frame).toContain("task B");
     expect(frame).toContain("task C");
@@ -102,14 +121,15 @@ test("parallel subagent panel: a 3-worker fan-out renders one status line per wo
   }
 });
 
-test("parallel subagent panel: a single (non-fan-out) subagent does NOT render the panel", () => {
+test("subagent panel: a single subagent renders its own live panel", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   tui.start();
   tui.onSubagentEvent({ kind: "start", role: "executor", detail: "solo task" });
   const frame = strip(out.join(""));
   try {
-    expect(frame).not.toContain("parallel ·");
+    expect(frame).toContain("subagents · 1 running");
+    expect(frame).toContain("solo task");
   } finally {
     clearInterval((tui as unknown as TuiInternals).timer);
     tui.finish("done");
@@ -157,7 +177,7 @@ test("detached subagent events keep distinct identities while settling independe
     });
 
     const frame = strip(out.join(""));
-    expect(frame).toContain("parallel · 2 running");
+    expect(frame).toContain("subagents · 2 running");
     expect(frame).toContain("EXECUTOR[executor-1]");
     expect(frame).toContain("first detached task");
     expect(frame).toContain("EXECUTOR[executor-2]");

@@ -6,9 +6,8 @@ import * as realReadline from "node:readline/promises";
 import * as realEngine from "../src/agent/engine";
 import { createSession, newSessionId } from "../src/agent/session";
 
-// Launch-level contract: a session opens on the configured default model, or, when the stored
-// login cannot serve it, on an authenticated model (session-local, saved config untouched).
-// A resumed session does not restore its saved model either; it opens on the same default.
+// Launch-level contract: an explicit model pin wins over the saved session model,
+// which wins over the authenticated startup default. Config remains unchanged.
 
 const originalReadline = { ...realReadline };
 const originalEngine = { ...realEngine };
@@ -110,7 +109,7 @@ test("an explicit --model pin still wins over the default and the login fallback
   expect(model).toBe("claude-3-5-haiku");
 });
 
-test("a resumed session opens on the configured default, not the model saved in its header", async () => {
+test("a resumed session restores the model saved in its header", async () => {
   const id = newSessionId();
   const { model } = await launchedModel(
     { defaultModel: "claude-haiku-5-5", providers: { anthropic: "sk-ant" } },
@@ -119,6 +118,34 @@ test("a resumed session opens on the configured default, not the model saved in 
       const sessions = path.join(dir, "sessions");
       process.env.JEO_SESSION_DIR = sessions;
       await createSession(dir, id, "gpt-4o", sessions);
+    },
+  );
+  expect(model).toBe("gpt-4o");
+});
+
+test("an explicit model pin overrides a resumed session's saved model", async () => {
+  const id = newSessionId();
+  const { model } = await launchedModel(
+    { defaultModel: "claude-haiku-5-5", providers: { anthropic: "sk-ant" } },
+    ["--resume", id, "--model", "claude-3-5-haiku"],
+    async dir => {
+      const sessions = path.join(dir, "sessions");
+      process.env.JEO_SESSION_DIR = sessions;
+      await createSession(dir, id, "gpt-4o", sessions);
+    },
+  );
+  expect(model).toBe("claude-3-5-haiku");
+});
+
+test("a resumed session without a saved model uses the authenticated startup default", async () => {
+  const id = newSessionId();
+  const { model } = await launchedModel(
+    { defaultModel: "claude-haiku-5-5", providers: { anthropic: "sk-ant" } },
+    ["--resume", id],
+    async dir => {
+      const sessions = path.join(dir, "sessions");
+      process.env.JEO_SESSION_DIR = sessions;
+      await createSession(dir, id, undefined, sessions);
     },
   );
   expect(model).toBe("claude-haiku-5-5");

@@ -212,8 +212,7 @@ test("downloadFile fetches from the FILE api base path (distinct from the bot AP
   const { calls, fetch } = fakeBytesFetch(bytes);
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file_1.jpg");
-  expect(result).toBeInstanceOf(Uint8Array);
-  expect(Array.from(result!)).toEqual([1, 2, 3, 4]);
+  expect(result).toEqual({ status: "ok", bytes });
   expect(calls[0]).toBe("https://api.telegram.org/file/botTOKEN123/photos/file_1.jpg");
   expect(calls[0]).not.toBe("https://api.telegram.org/botTOKEN123/photos/file_1.jpg");
 });
@@ -222,7 +221,7 @@ test("downloadFile rejects a path-traversal filePath WITHOUT ever calling fetch"
   const { calls, fetch } = fakeBytesFetch(new Uint8Array());
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("../../etc/passwd");
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "invalid" });
   expect(calls.length).toBe(0);
 });
 
@@ -230,7 +229,7 @@ test("downloadFile rejects a leading-slash filePath WITHOUT ever calling fetch",
   const { calls, fetch } = fakeBytesFetch(new Uint8Array());
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("/etc/passwd");
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "invalid" });
   expect(calls.length).toBe(0);
 });
 
@@ -238,7 +237,7 @@ test("downloadFile rejects a filePath containing a backslash WITHOUT ever callin
   const { calls, fetch } = fakeBytesFetch(new Uint8Array());
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos\\file.jpg");
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "invalid" });
   expect(calls.length).toBe(0);
 });
 
@@ -249,18 +248,22 @@ test("downloadFile percent-encodes a special character within a path segment in 
   expect(calls[0]).toBe(`https://api.telegram.org/file/botTOKEN123/photos/${encodeURIComponent("file #1 name.jpg")}`);
 });
 
-test("downloadFile returns undefined (not a throw) when fetch itself throws", async () => {
+test("downloadFile classifies a network failure as retryable", async () => {
   const { fetch } = fakeBytesFetch(new Uint8Array(), { throws: true });
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file.jpg");
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "retry" });
 });
 
-test("downloadFile returns undefined (not a throw) on a non-ok response", async () => {
-  const { fetch } = fakeBytesFetch(new Uint8Array(), { ok: false });
-  const api = new TelegramApi("TOKEN123", fetch);
-  const result = await api.downloadFile("photos/file.jpg");
-  expect(result).toBeUndefined();
+test("downloadFile classifies permanent HTTP client errors separately from retryable failures", async () => {
+  for (const status of [400, 401, 403, 404, 413]) {
+    const fetch = (async () => new Response(null, { status })) as typeof globalThis.fetch;
+    expect(await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg")).toEqual({ status: "invalid" });
+  }
+  for (const status of [408, 429, 500, 503]) {
+    const fetch = (async () => new Response(null, { status })) as typeof globalThis.fetch;
+    expect(await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg")).toEqual({ status: "retry" });
+  }
 });
 
 // ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
@@ -270,7 +273,7 @@ test("downloadFile rejects a response whose body exceeds an injected maxBytes ca
   const { fetch } = fakeBytesFetch(bytes);
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file.jpg", 1024);
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "oversize" });
 });
 
 test("downloadFile returns the full bytes for a normal image within an injected maxBytes cap", async () => {
@@ -278,8 +281,7 @@ test("downloadFile returns the full bytes for a normal image within an injected 
   const { fetch } = fakeBytesFetch(bytes);
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file.jpg", 1024);
-  expect(result).toBeInstanceOf(Uint8Array);
-  expect(Array.from(result!)).toEqual([1, 2, 3, 4, 5]);
+  expect(result).toEqual({ status: "ok", bytes });
 });
 
 // Real filesystem/bytes analogue of test/file-attachment.test.ts's oversized-source
@@ -291,7 +293,50 @@ test("downloadFile rejects a response over the default MAX_TELEGRAM_DOWNLOAD_BYT
   const { fetch } = fakeBytesFetch(bytes);
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/huge.jpg");
-  expect(result).toBeUndefined();
+  expect(result).toEqual({ status: "oversize" });
+});
+
+test("downloadFile rejects an oversized declared length before consuming the body", async () => {
+  let pulled = false;
+  const body = new ReadableStream<Uint8Array>({ pull() { pulled = true; } }, { highWaterMark: 0 });
+  const fetch = (async () => new Response(body, { headers: { "content-length": "5" } })) as typeof globalThis.fetch;
+  const result = await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg", 4);
+  expect(result).toEqual({ status: "oversize" });
+  expect(pulled).toBe(false);
+});
+
+test("downloadFile enforces the streamed limit even when content-length understates it", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4, 5])); },
+    cancel() { cancelled = true; throw new Error("cancel failed"); },
+  });
+  const fetch = (async () => new Response(body, { headers: { "content-length": "1" } })) as typeof globalThis.fetch;
+  const result = await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg", 4);
+  expect(result).toEqual({ status: "oversize" });
+  expect(cancelled).toBe(true);
+});
+
+test("downloadFile preserves bytes at the exact limit across multiple chunks", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]));
+      controller.enqueue(new Uint8Array([3, 4]));
+      controller.close();
+    },
+  });
+  const fetch = (async () => new Response(body)) as typeof globalThis.fetch;
+  const result = await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg", 4);
+  expect(result).toEqual({ status: "ok", bytes: new Uint8Array([1, 2, 3, 4]) });
+});
+
+test("downloadFile classifies an interrupted response stream as retryable", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) { controller.error(new Error("connection interrupted")); },
+  });
+  const fetch = (async () => new Response(body)) as typeof globalThis.fetch;
+  const result = await new TelegramApi("TOKEN123", fetch).downloadFile("photos/file.jpg", 4);
+  expect(result).toEqual({ status: "retry" });
 });
 
 // ── Bot-wide 429 cooldown, injectable clock (jeo-native subset of GJC v0.11.10 PR #3048) ──
@@ -398,7 +443,7 @@ test("an active cooldown suppresses EVERY non-polling method (getMe, sendPhoto, 
   expect(file.ok).toBe(false);
   expect(chat.ok).toBe(false);
   expect(reaction.ok).toBe(false);
-  expect(downloaded).toBeUndefined();
+  expect(downloaded).toEqual({ status: "retry" });
   expect(calls.length).toBe(1); // still just the original 429 call — nothing else reached fetch
 });
 

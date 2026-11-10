@@ -7,6 +7,7 @@ import * as updateModule from "../src/util/update-check";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
+const TEST_IMAGE = { mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXkAAAAASUVORK5CYII=" };
 
 /** Env vars that could let a spawned/in-process CLI reach a REAL provider —
  *  always stripped so this suite never depends on (or burns) the host
@@ -335,13 +336,11 @@ mock.module("../src/agent/engine", () => ({
  *  entry is fine to leave dangling when a remote injection wins the
  *  `Promise.race` in `promptInput()` first — nothing is left listening on it. */
 let questionCalls: { resolve: (v: string) => void }[] = [];
+let readlineLine = "";
 
 mock.module("node:readline/promises", () => ({
   createInterface: () => ({
-    // `line: ""` mirrors a real idle readline buffer — required for the
-    // `rli.line === ""` gate in launch.ts's onUserMessage handler to permit
-    // direct injection instead of falling back to the pendingStdinLines queue.
-    line: "",
+    get line() { return readlineLine; },
     question: mock(() => {
       const { promise, resolve } = Promise.withResolvers<string>();
       questionCalls.push({ resolve });
@@ -378,6 +377,7 @@ beforeEach(() => {
   originalIsTTY = process.stdin.isTTY;
   process.stdin.isTTY = true;
   questionCalls = [];
+  readlineLine = "";
   capturedTurnHistories.length = 0;
   runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "test" });
   logs = [];
@@ -603,10 +603,156 @@ test("a user_message while idle at the prompt is injected as the next turn's inp
   await done;
 }, 45_000);
 
-test("an inbound image received during an active turn is delivered exactly once with the next prompt", async () => {
+test("a text-only message during an active turn steers that turn exactly once", async () => {
+  const started = Promise.withResolvers<void>();
+  const drain = Promise.withResolvers<void>();
+  let steered: string[] = [];
+  runAgentLoopDelegate = async (_history, options) => {
+    started.resolve();
+    await drain.promise;
+    steered = options.steer?.() ?? [];
+    return { done: true, steps: 1, doneReason: "test" };
+  };
+  const { done, configDir } = await runInteractiveWithNotify();
+  const discovery = await findDiscoveryInProcess(configDir);
+  const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+  sockets.push(ws);
+  const frames: Record<string, unknown>[] = [];
+  ws.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+  await waitForCondition(() => frames.some(m => m.type === "snapshot") && questionCalls.length >= 1, 10_000);
+  questionCalls[0]!.resolve("initial request");
+  await started.promise;
+  ws.send(JSON.stringify({ type: "user_message", text: "steer this turn", reqId: "busy-text" }));
+  await waitForCondition(() => frames.some(m => m.type === "ack" && m.reqId === "busy-text"), 10_000);
+  expect(frames.find(m => m.type === "ack" && m.reqId === "busy-text")).toEqual({ type: "ack", reqId: "busy-text", ok: true });
+  drain.resolve();
+  await waitForCondition(() => questionCalls.length >= 2, 10_000);
+  expect(steered).toEqual(["steer this turn"]);
+  expect(capturedTurnHistories).toHaveLength(1);
+  questionCalls[questionCalls.length - 1]!.resolve("/exit");
+  await done;
+}, 45_000);
+
+test("busy image queue accepts eight turns in FIFO order and rejects the ninth", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seen: string[] = [];
+  runAgentLoopDelegate = async history => {
+    const users = history.filter((entry): entry is { role: string; content: string } => !!entry && typeof entry === "object" && "role" in entry && entry.role === "user" && "content" in entry && typeof entry.content === "string");
+    seen.push(users.at(-1)?.content ?? "");
+    if (seen.length === 1) { started.resolve(); await release.promise; }
+    return { done: true, steps: 1, doneReason: "test" };
+  };
+  const { done, configDir } = await runInteractiveWithNotify();
+  const discovery = await findDiscoveryInProcess(configDir);
+  const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+  sockets.push(ws);
+  const frames: Record<string, unknown>[] = [];
+  ws.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+  try {
+    await waitForCondition(() => frames.some(m => m.type === "snapshot") && questionCalls.length >= 1, 10_000);
+    questionCalls[0]!.resolve("initial request");
+    await started.promise;
+    for (let i = 1; i <= 9; i++) {
+      const reqId = `queue-${i}`;
+      ws.send(JSON.stringify({ type: "user_message", text: `image ${i}`, images: [TEST_IMAGE], reqId }));
+      await waitForCondition(() => frames.some(m => m.type === "ack" && m.reqId === reqId), 10_000);
+      expect(frames.find(m => m.type === "ack" && m.reqId === reqId)).toEqual(i <= 8
+        ? { type: "ack", reqId, ok: true }
+        : { type: "ack", reqId, ok: false, reason: "queue_full" });
+    }
+    release.resolve();
+    await waitForCondition(() => seen.length === 9, 15_000);
+    expect(seen).toEqual(["initial request", ...Array.from({ length: 8 }, (_, i) => `image ${i + 1}`)]);
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[questionCalls.length - 1]!.resolve("/exit");
+    await done;
+  } finally {
+    release.resolve();
+  }
+}, 45_000);
+
+test("busy image queue accepts 50 MiB and rejects bytes beyond that limit", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let calls = 0;
+  runAgentLoopDelegate = async () => {
+    calls++;
+    if (calls === 1) { started.resolve(); await release.promise; }
+    return { done: true, steps: 1, doneReason: "test" };
+  };
+  const { done, configDir } = await runInteractiveWithNotify();
+  const discovery = await findDiscoveryInProcess(configDir);
+  const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+  sockets.push(ws);
+  const frames: Record<string, unknown>[] = [];
+  ws.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+  try {
+    await waitForCondition(() => frames.some(m => m.type === "snapshot") && questionCalls.length >= 1, 10_000);
+    questionCalls[0]!.resolve("initial request");
+    await started.promise;
+    const bytes = Buffer.alloc(25 * 1024 * 1024);
+    Buffer.from(TEST_IMAGE.data, "base64").copy(bytes);
+    const image = { mediaType: "image/png", data: bytes.toString("base64") };
+    for (let i = 1; i <= 3; i++) {
+      const reqId = `bytes-${i}`;
+      ws.send(JSON.stringify({ type: "user_message", text: `image ${i}`, images: [i === 3 ? TEST_IMAGE : image], reqId }));
+      await waitForCondition(() => frames.some(m => m.type === "ack" && m.reqId === reqId), 20_000);
+      expect(frames.find(m => m.type === "ack" && m.reqId === reqId)).toEqual(i <= 2
+        ? { type: "ack", reqId, ok: true }
+        : { type: "ack", reqId, ok: false, reason: "queue_full" });
+    }
+    release.resolve();
+    await waitForCondition(() => calls === 3, 20_000);
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[questionCalls.length - 1]!.resolve("/exit");
+    await done;
+  } finally {
+    release.resolve();
+  }
+}, 90_000);
+
+test("a remote image waits for a local draft and never attaches to the local turn", async () => {
+  const imageDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-draft-image-"));
+  const imagePath = path.join(imageDir, "remote.png");
+  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { mode: 0o600 });
+  try {
+    const { done, configDir } = await runInteractiveWithNotify();
+    const discovery = await findDiscoveryInProcess(configDir);
+    const ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+    sockets.push(ws);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+    await waitForCondition(() => frames.some(m => m.type === "snapshot") && questionCalls.length >= 1, 10_000);
+    readlineLine = "unfinished local draft";
+    ws.send(JSON.stringify({ type: "user_message", text: "remote image request", images: [TEST_IMAGE], reqId: "draft-image" }));
+    await waitForCondition(() => frames.some(m => m.type === "ack" && m.reqId === "draft-image"), 10_000);
+    expect(frames.find(m => m.type === "ack" && m.reqId === "draft-image")).toEqual({ type: "ack", reqId: "draft-image", ok: true });
+    expect(capturedTurnHistories).toHaveLength(0);
+    readlineLine = "";
+    questionCalls[0]!.resolve("unfinished local draft");
+    await waitForCondition(() => capturedTurnHistories.length >= 2, 10_000);
+    const localHistory = capturedTurnHistories[0] as { role?: unknown; content?: unknown; images?: unknown }[];
+    const local = localHistory.find(m => m.role === "user" && m.content === "unfinished local draft");
+    expect(local).toBeDefined();
+    expect(local!.images).toBeUndefined();
+    const remoteHistory = capturedTurnHistories[1] as { role?: unknown; content?: unknown; images?: unknown }[];
+    const remote = remoteHistory.filter(m => m.role === "user" && m.content === "remote image request");
+    expect(remote).toHaveLength(1);
+    expect(remote[0]!.images).toHaveLength(1);
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[questionCalls.length - 1]!.resolve("/exit");
+    await done;
+  } finally {
+    readlineLine = "";
+    await fs.rm(imageDir, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("a busy inbound image and text run together once as a remote-owned turn", async () => {
   const imageDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-busy-image-"));
   const imagePath = path.join(imageDir, "remote.png");
-  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { mode: 0o600 });
   const firstTurnStarted = Promise.withResolvers<void>();
   const releaseFirstTurn = Promise.withResolvers<void>();
   let turnCalls = 0;
@@ -638,12 +784,11 @@ test("an inbound image received during an active turn is delivered exactly once 
     questionCalls[0]!.resolve("initial request");
     await firstTurnStarted.promise;
     const ack = waitMsg(m => m.type === "ack" && m.reqId === "busy-image");
-    ws.send(JSON.stringify({ type: "user_message", text: "follow-up with image", imagePaths: [imagePath], reqId: "busy-image" }));
+    ws.send(JSON.stringify({ type: "user_message", text: "follow-up with image", images: [TEST_IMAGE], reqId: "busy-image" }));
     expect(await ack).toEqual({ type: "ack", reqId: "busy-image", ok: true });
 
     releaseFirstTurn.resolve();
-    await waitForCondition(() => questionCalls.length >= 2, 10_000);
-    questionCalls[1]!.resolve("follow-up with image");
+    // The queued remote turn runs without a matching locally typed prompt.
     await waitForCondition(() => capturedTurnHistories.length >= 2, 10_000);
 
     const secondHistory = capturedTurnHistories[1]!;
@@ -653,29 +798,34 @@ test("an inbound image received during an active turn is delivered exactly once 
     expect(imageMessages[0]!.content).toBe("follow-up with image");
     expect((imageMessages[0]!.images as unknown[])).toHaveLength(1);
 
-    await waitForCondition(() => questionCalls.length >= 3, 10_000);
-    questionCalls[2]!.resolve("after attachment");
+    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    questionCalls[questionCalls.length - 1]!.resolve("unrelated local request");
     await waitForCondition(() => capturedTurnHistories.length >= 3, 10_000);
     const thirdHistory = capturedTurnHistories[2]!;
     const thirdImageMessages = (thirdHistory as { role?: unknown; images?: unknown }[])
       .filter(entry => entry.role === "user" && Array.isArray(entry.images));
     expect(thirdImageMessages).toHaveLength(1);
+    const thirdUsers = (thirdHistory as { role?: unknown; content?: unknown; images?: unknown }[]).filter(entry => entry.role === "user");
+    const local = thirdUsers.find(entry => entry.content === "unrelated local request");
+    expect(local).toBeDefined();
+    expect(local!.images).toBeUndefined();
+    expect(thirdUsers.filter(entry => entry.content === "follow-up with image")).toHaveLength(1);
 
-    await waitForCondition(() => questionCalls.length >= 4, 10_000);
-    questionCalls[3]!.resolve("/exit");
+    await waitForCondition(() => questionCalls.length >= 3, 10_000);
+    questionCalls[questionCalls.length - 1]!.resolve("/exit");
     await done;
   } finally {
     await fs.rm(imageDir, { recursive: true, force: true });
   }
 }, 45_000);
 
-test("remote text paths are never read, while only daemon-owned images attach and arbitrary paths reject", async () => {
+test("remote text paths are never read, byte images attach, and arbitrary paths reject", async () => {
   const ownedDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-"));
   const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-remote-user-"));
   const ownedPath = path.join(ownedDir, "telegram.png");
   const outsidePath = path.join(outsideDir, "user.png");
   const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  await fs.writeFile(ownedPath, pngBytes);
+  await fs.writeFile(ownedPath, pngBytes, { mode: 0o600 });
   await fs.writeFile(outsidePath, pngBytes);
   try {
     const { done, configDir } = await runInteractiveWithNotify();
@@ -697,7 +847,7 @@ test("remote text paths are never read, while only daemon-owned images attach an
 
     const ownedAck = waitMsg(m => m.type === "ack" && m.reqId === "owned-image");
     const remoteText = `remote text ~/secret.png file://${outsidePath}`;
-    ws.send(JSON.stringify({ type: "user_message", text: remoteText, imagePaths: [ownedPath], reqId: "owned-image" }));
+    ws.send(JSON.stringify({ type: "user_message", text: remoteText, images: [TEST_IMAGE], reqId: "owned-image" }));
     expect(await ownedAck).toEqual({ type: "ack", reqId: "owned-image", ok: true });
     await waitForCondition(() => capturedTurnHistories.length >= 1, 10_000);
     const firstUserMessages = (capturedTurnHistories[0] as { role?: unknown; content?: unknown; images?: unknown }[])
@@ -749,7 +899,7 @@ test("a remote shell escape prefix is rejected before it can start a local turn"
 test("a rejected remote slash command does not retain its downloaded image for the next prompt", async () => {
   const imageDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-slash-image-"));
   const imagePath = path.join(imageDir, "remote.png");
-  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  await fs.writeFile(imagePath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { mode: 0o600 });
   try {
     const { done, configDir } = await runInteractiveWithNotify();
     const discovery = await findDiscoveryInProcess(configDir);
@@ -768,7 +918,7 @@ test("a rejected remote slash command does not retain its downloaded image for t
     await waitMsg(m => m.type === "snapshot");
     await waitForCondition(() => questionCalls.length >= 1, 10_000);
     const ack = waitMsg(m => m.type === "ack" && m.reqId === "remote-slash-image");
-    ws.send(JSON.stringify({ type: "user_message", text: "  /model untrusted", imagePaths: [imagePath], reqId: "remote-slash-image" }));
+    ws.send(JSON.stringify({ type: "user_message", text: "  /model untrusted", images: [TEST_IMAGE], reqId: "remote-slash-image" }));
     expect(await ack).toEqual({ type: "ack", reqId: "remote-slash-image", ok: false });
     expect(capturedTurnHistories).toHaveLength(0);
 

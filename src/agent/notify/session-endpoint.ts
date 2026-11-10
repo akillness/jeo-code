@@ -47,9 +47,12 @@ import { notifySessionEndpointPath, notifySessionsDir } from "./paths";
 import { resolveDiscordArtifactStage, type DiscordArtifactPaths } from "./discord-artifacts";
 import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
 import type { SandboxActor } from "../sandbox/authority";
+import type { ImageAttachment } from "../../ai/types";
+import { attachmentFromImageBytes, MAX_ATTACH_IMAGE_BYTES } from "../../util/file-attachment";
 
 const SNAPSHOT_POLL_MS = 1_200;
-const MAX_INBOUND_BYTES = 64 * 1024;
+const MAX_TEXT_FRAME_BYTES = 64 * 1024;
+const MAX_INBOUND_BYTES = 4 * Math.ceil(MAX_ATTACH_IMAGE_BYTES / 3) + MAX_TEXT_FRAME_BYTES;
 
 /** Session identity, cached and replayed as an `identity_header` on connection
  *  so a late or reconnecting daemon can name the session's forum topic. */
@@ -59,12 +62,10 @@ export interface SessionIdentity {
   cwd: string;
 }
 
-/** A free-text reply arriving in the session's topic, already resolved to
- *  local temp-file paths for any attached photos/documents (the daemon owns
- *  the download; this endpoint only relays paths onward). */
+/** A remote reply with an optional, already-downloaded image payload. */
 export interface RemoteUserMessage {
   text: string;
-  imagePaths?: string[];
+  images?: ImageAttachment[];
   actor?: SandboxActor;
 }
 
@@ -85,6 +86,7 @@ export class SessionNotifyEndpoint {
   private relayGeneration = 0;
   private discordControlEnabled = false;
   private discordControlGeneration = 0;
+  private imageRequestActive = false;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private lastSnapshotJson = "";
   /** `undefined` between turns — subagent requests report an empty registry. */
@@ -95,7 +97,7 @@ export class SessionNotifyEndpoint {
   private identityFrame: string | undefined;
 
   /** Registered by launch.ts; absent or rejected handlers return a failed ACK. */
-  onUserMessage: ((msg: RemoteUserMessage) => void | boolean | Promise<void | boolean>) | undefined;
+  onUserMessage: ((msg: RemoteUserMessage) => void | boolean | "queue_full" | Promise<void | boolean | "queue_full">) | undefined;
   onRemoteRequest: ((text: string, finish: (text?: string, artifactsAllowed?: boolean) => void, signal: AbortSignal, stage?: DiscordArtifactPaths, actor?: SandboxActor) => boolean) | undefined;
   onSandboxControl: ((text: string, actor: SandboxActor) => Promise<{ handled: boolean; output: string }>) | undefined;
   onRegistryMutation: (() => void) | undefined;
@@ -249,6 +251,7 @@ export class SessionNotifyEndpoint {
       return;
     }
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+    if (msg.type !== "user_message" && Buffer.byteLength(raw) > MAX_TEXT_FRAME_BYTES) return;
     if (msg.type !== "remote_request" && msg.sessionId !== undefined && msg.sessionId !== this.sessionId) return;
     const provenance = msg.actor;
     const actor: SandboxActor | undefined = provenance && typeof provenance === "object" && !Array.isArray(provenance) &&
@@ -341,15 +344,34 @@ export class SessionNotifyEndpoint {
     }
     if (msg.type === "user_message") {
       let ok = false;
-      const validPaths = msg.imagePaths === undefined || (Array.isArray(msg.imagePaths) && msg.imagePaths.every(x => typeof x === "string"));
-      if (typeof msg.text === "string" && !msg.text.trimStart().startsWith("/") && !msg.text.trimStart().startsWith("!") && validPaths &&
-          (msg.text.trim() || (msg.imagePaths as string[] | undefined)?.length) && this.onUserMessage) {
+      let queueFull = false;
+      let images: ImageAttachment[] | undefined;
+      let validImages = msg.imagePaths === undefined && (msg.images === undefined || (Array.isArray(msg.images) && msg.images.length <= 1 && !this.imageRequestActive));
+      if (validImages && Array.isArray(msg.images)) {
+        images = [];
+        for (const image of msg.images) {
+          if (!image || typeof image !== "object" || typeof image.data !== "string" || typeof image.mediaType !== "string" ||
+              image.data.length > 4 * Math.ceil(MAX_ATTACH_IMAGE_BYTES / 3)) { validImages = false; break; }
+          const bytes = Buffer.from(image.data, "base64");
+          const decoded = bytes.length <= MAX_ATTACH_IMAGE_BYTES ? attachmentFromImageBytes(bytes) : null;
+          if (!decoded || decoded.data !== image.data || decoded.mediaType !== image.mediaType) { validImages = false; break; }
+          images.push(decoded);
+        }
+      }
+      const hasImage = !!images?.length;
+      if (typeof msg.text === "string" && Buffer.byteLength(msg.text) <= MAX_TEXT_FRAME_BYTES && !msg.text.includes("\u0003") && !msg.text.trimStart().startsWith("/") && !msg.text.trimStart().startsWith("!") && validImages &&
+          (msg.text.trim() || hasImage) && this.onUserMessage && (!hasImage || !this.imageRequestActive)) {
+        if (hasImage) this.imageRequestActive = true;
         try {
-          ok = (await this.onUserMessage({ text: msg.text, imagePaths: msg.imagePaths as string[] | undefined, ...(actor ? { actor } : {}) })) !== false;
-        } catch {}
+          const result = await this.onUserMessage({ text: msg.text, images, ...(actor ? { actor } : {}) });
+          queueFull = result === "queue_full";
+          ok = result !== false && !queueFull;
+        } catch {} finally {
+          if (hasImage) this.imageRequestActive = false;
+        }
       }
       try {
-        ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok }));
+        ws.send(JSON.stringify({ type: "ack", reqId: msg.reqId, ok, ...(queueFull ? { reason: "queue_full" } : {}) }));
       } catch {}
       return;
     }

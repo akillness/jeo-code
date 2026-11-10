@@ -806,7 +806,8 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toMatch(/\[AGENT\] (├─|\|-) EXECUTOR/); // nested activity branch
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
-  expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
+  expect(txt).toMatch(/(└─|`-) EXECUTOR done/); // boxed result title
+  expect(txt).toContain("completed in 4 steps: guard added");
 });
 
 test("LaunchTui.onSubagentEvent: a 'thinking' event drives the live per-slot preview but is NEVER persisted to the ledger", () => {
@@ -814,6 +815,7 @@ test("LaunchTui.onSubagentEvent: a 'thinking' event drives the live per-slot pre
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
   tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Refactor the cache layer" });
+  tui.onSubagentEvent({ role: "executor", kind: "step", detail: "read cache.ts" });
   tui.onSubagentEvent({ role: "executor", kind: "thinking", detail: "weighing an LRU vs a plain Map for the cache" });
   // Live per-slot preview reflects the thinking beat (drives the status row via
   // currentActivity() regardless of TTY/inline mode — checked directly here).
@@ -835,6 +837,10 @@ test("LaunchTui.onSubagentEvent: a 'thinking' event drives the live per-slot pre
   // to the ledger/stream region at all.)
   expect(finalTxt).not.toContain("weighing an LRU vs a plain Map");
   expect(finalTxt).toContain("Refactor the cache layer"); // the "start" event DID persist
+  expect(finalTxt).toContain("no completion observed");
+  const unfinishedCard = finalTxt.split("no completion observed")[1] ?? "";
+  expect(unfinishedCard).toContain("read cache.ts");
+  expect(unfinishedCard).not.toContain("weighing an LRU vs a plain Map");
 });
 
 test("LaunchTui: native reasoning stream drives the dimmed thinking state and persists as a Thinking block on commit", () => {

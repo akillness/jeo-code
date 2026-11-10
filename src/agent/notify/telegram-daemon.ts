@@ -31,7 +31,6 @@
  * setups.
  */
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { readGlobalConfig } from "../state";
@@ -42,7 +41,8 @@ import { TopicRegistry, type TopicRegistryState } from "./topic-registry";
 import { RateLimitPool } from "./rate-limit-pool";
 import { parseInThreadConfigCommand } from "./config-commands";
 import { markdownToTelegramHtml, splitTelegramHtml } from "./telegram-html";
-import { attachmentFromImageBytes } from "../../util/file-attachment";
+import { attachmentFromImageBytes, MAX_ATTACH_IMAGE_BYTES } from "../../util/file-attachment";
+import type { ImageAttachment } from "../../ai/types";
 import type { SubagentRecord } from "../subagent-registry";
 import { parseSessionEndpoint } from "./session-discovery";
 
@@ -238,9 +238,6 @@ export interface TelegramDaemonOptions {
    *  real `setTimeout`-based sleep. Tests inject a fake to assert on the
    *  requested delays without real wall-clock waits. */
   sleep?: (ms: number) => Promise<void>;
-  /** Injectable temp-file writer for downloaded inbound attachments — defaults
-   *  to a real `os.tmpdir()` write. Returns the written file's absolute path. */
-  writeTempFile?: (bytes: Uint8Array, suggestedName: string) => Promise<string>;
   /** Injectable cap (bytes) on an inbound photo/document download, passed
    *  through to `TelegramApi.downloadFile` — defaults to that method's own
    *  conservative fixed default (`MAX_TELEGRAM_DOWNLOAD_BYTES`) when unset. */
@@ -256,7 +253,7 @@ type OutboundPayload =
 export class TelegramDaemon {
   private readonly WS: typeof WebSocket;
   readonly sessions = new Map<string, SessionConnection>();
-  private readonly pendingAcks = new Map<string, { conn: SessionConnection; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
+  private readonly pendingAcks = new Map<string, { conn: SessionConnection; resolve: (result: boolean | "queue_full") => void; timer: NodeJS.Timeout }>();
   private readonly pendingOutbound = new Set<(delivered: boolean) => void>();
   private updateOffset: number | undefined;
   private daemonStartEpochSeconds = 0;
@@ -272,8 +269,6 @@ export class TelegramDaemon {
    *  path never touches this. */
   private readonly topics: TopicRegistry | undefined;
   private readonly pool: RateLimitPool<OutboundPayload>;
-  /** Paths written by this daemon for inbound media; only these are eligible for cleanup. */
-  private readonly ownedAttachments = new Set<string>();
 
   constructor(private readonly opts: TelegramDaemonOptions) {
     this.WS = opts.WebSocketImpl ?? WebSocket;
@@ -496,35 +491,24 @@ export class TelegramDaemon {
     }
   }
 
-  /** Download a Telegram-hosted file into a local temp file for relay into a
-   *  session's `[image #N]` attachment pipeline (`attachImagePaths`, see
-   *  `src/util/file-attachment.ts`). Bounded by `opts.maxAttachmentBytes`
-   *  (or `TelegramApi.downloadFile`'s own default when unset) — an oversized
-   *  remote file is rejected there and this returns `undefined` exactly as
-   *  it would for any other download failure. Returns `undefined` on any
-   *  failure — the message still delivers as text-only rather than being
-   *  dropped entirely. */
-  private async downloadAttachment(fileId: string, suggestedName: string): Promise<string | undefined> {
+  /** Download and validate image bytes before sending them directly to the session. */
+  private async downloadAttachment(fileId: string): Promise<{ image?: ImageAttachment; retry: boolean }> {
     try {
       const got = await this.opts.telegram.getFile(fileId);
+      if (!got.ok) {
+        const code = got.error_code;
+        return { retry: !(typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429) };
+      }
       const filePath = got.result?.file_path;
-      if (!filePath) return undefined;
-      const bytes = await this.opts.telegram.downloadFile(filePath, this.opts.maxAttachmentBytes);
-      if (!bytes) return undefined;
-      if (!attachmentFromImageBytes(bytes)) return undefined;
-      const write = this.opts.writeTempFile ?? defaultWriteTempFile;
-      const writtenPath = await write(bytes, suggestedName);
-      this.ownedAttachments.add(writtenPath);
-      return writtenPath;
+      if (!filePath) return { retry: false };
+      const limit = Math.min(this.opts.maxAttachmentBytes ?? MAX_ATTACH_IMAGE_BYTES, MAX_ATTACH_IMAGE_BYTES);
+      const result = await this.opts.telegram.downloadFile(filePath, limit);
+      if (result.status === "retry") return { retry: true };
+      if (result.status !== "ok" || result.bytes.byteLength > limit) return { retry: false };
+      const image = attachmentFromImageBytes(result.bytes);
+      return image ? { image, retry: false } : { retry: false };
     } catch {
-      return undefined;
-    }
-  }
-  private async cleanupAttachments(paths: readonly string[]): Promise<void> {
-    const unlink = this.opts.unlink ?? (p => fs.unlink(p));
-    for (const filePath of paths) {
-      if (!this.ownedAttachments.delete(filePath)) continue;
-      await unlink(filePath).catch(() => {});
+      return { retry: true };
     }
   }
 
@@ -590,7 +574,7 @@ export class TelegramDaemon {
       const pending = this.pendingAcks.get(msg.reqId);
       if (pending?.conn === conn) {
         clearTimeout(pending.timer);
-        pending.resolve(msg.ok === true);
+        pending.resolve(msg.ok === true ? true : msg.reason === "queue_full" ? "queue_full" : false);
         this.pendingAcks.delete(msg.reqId);
       }
       return;
@@ -660,10 +644,14 @@ export class TelegramDaemon {
     return match;
   }
 
-  private sendRequest(conn: SessionConnection, frame: Record<string, unknown>): Promise<boolean> {
+  private async sendRequest(conn: SessionConnection, frame: Record<string, unknown>): Promise<boolean> {
+    return (await this.sendRequestResult(conn, frame)) === true;
+  }
+
+  private sendRequestResult(conn: SessionConnection, frame: Record<string, unknown>): Promise<boolean | "queue_full"> {
     if (this.stopped || !conn.verified) return Promise.resolve(false);
     const reqId = crypto.randomUUID();
-    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const { promise, resolve } = Promise.withResolvers<boolean | "queue_full">();
     const timer = setTimeout(() => {
       if (this.pendingAcks.has(reqId)) {
         this.pendingAcks.delete(reqId);
@@ -737,24 +725,25 @@ export class TelegramDaemon {
       return true;
     }
     if (typeof text !== "string" || text.trimStart().startsWith("/") || text.trimStart().startsWith("!")) return true;
-    const imagePaths: string[] = [];
+    let image: ImageAttachment | undefined;
+    let retry = false;
     if (msg.photo?.length) {
       const largest = msg.photo[msg.photo.length - 1]!;
-      const p = await this.downloadAttachment(largest.file_id, `photo-${largest.file_id}.jpg`);
-      if (p) imagePaths.push(p);
+      ({ image, retry } = await this.downloadAttachment(largest.file_id));
     } else if (msg.document && (msg.document.mime_type ?? "").startsWith("image/")) {
-      const p = await this.downloadAttachment(msg.document.file_id, msg.document.file_name ?? `document-${msg.document.file_id}`);
-      if (p) imagePaths.push(p);
+      ({ image, retry } = await this.downloadAttachment(msg.document.file_id));
     }
-    if (!text && imagePaths.length === 0) return true; // a non-image document with no caption — nothing usable to forward
-    let ok = false;
-    try {
-      ok = await this.sendRequest(conn, { type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined });
-    } finally {
-      await this.cleanupAttachments(imagePaths);
+    if (retry) return false;
+    if (hasMedia && !image && (!msg.document || (msg.document.mime_type ?? "").startsWith("image/"))) {
+      if (!await this.notify("Unable to validate the image attachment.", undefined, { topicId: msg.message_thread_id, sessionId, awaitDelivery: true })) return false;
     }
-    if (ok) await this.reactToMessage(msg.message_id, "👀");
-    return ok;
+    if (!text && !image) return true;
+    const result = await this.sendRequestResult(conn, { type: "user_message", sessionId, text, images: image ? [image] : undefined });
+    if (result === "queue_full") {
+      return await this.notify("Message not delivered: the session queue is full. Please retry later.", undefined, { topicId: msg.message_thread_id, sessionId, awaitDelivery: true });
+    }
+    if (result) await this.reactToMessage(msg.message_id, "👀");
+    return result;
   }
 
   private authorized(chat: NonNullable<TelegramUpdate["message"]>["chat"], from: TelegramCallbackQuery["from"] | undefined): boolean {
@@ -943,7 +932,6 @@ export class TelegramDaemon {
       pending.resolve(false);
     }
     this.pendingAcks.clear();
-    void this.cleanupAttachments([...this.ownedAttachments]);
     for (const conn of this.sessions.values()) {
       try {
         conn.ws.close();
@@ -998,18 +986,6 @@ async function defaultSaveUpdateOffset(nextOffset: number, botId: string | undef
   }
 }
 
-/** Default inbound-attachment temp-file writer: a private (0700-parent,
- *  0600-mode) file under the OS temp dir, named to survive filesystem
- *  weirdness (sanitized, length-capped) while staying traceable to its
- *  Telegram origin for debugging. */
-async function defaultWriteTempFile(bytes: Uint8Array, suggestedName: string): Promise<string> {
-  const safe = (suggestedName.replace(/[^\w.-]+/g, "_").slice(-128) || "file");
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-telegram-"));
-  await fs.chmod(directory, 0o700);
-  const target = path.join(directory, safe === "." || safe === ".." ? "file" : safe);
-  await fs.writeFile(target, bytes, { mode: 0o600, flag: "wx" });
-  return target;
-}
 
 async function defaultLoadTopicState(botId: string | undefined, chatId: string): Promise<TopicRegistryState> {
   if (!botId || !/^[1-9]\d*$/.test(botId)) return { topics: {} };

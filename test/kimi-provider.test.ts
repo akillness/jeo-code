@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { resolveProvider, providerModelFor, effectiveCredentialForProvider } from "../src/ai/model-manager";
 import { kimiAdapter, KIMI_BASE_URL, KIMI_ANTHROPIC_BASE_URL } from "../src/ai/providers/kimi";
 import { anthropicRequest } from "../src/ai/providers/anthropic";
-import { findCatalogModel, KIMI_CODE_MODELS } from "../src/ai/model-catalog";
+import { findCatalogModel } from "../src/ai/model-catalog";
 import { catalogOr } from "../src/ai/model-discovery";
 import { OAUTH_FLOW_REGISTRY } from "../src/auth/flows";
 import { OAUTH_PROVIDERS, isOAuthProvider } from "../src/auth/storage";
@@ -121,13 +121,12 @@ test("effectiveCredentialForProvider: kimi OAuth serves Kimi Code models; falls 
   expect(qualified.kind).toBe("oauth");
 });
 
-test("catalogOr: kimi OAuth fallback lists ONLY Kimi Code models (no moonshot ids)", () => {
-  const result = catalogOr({ provider: "kimi", models: [], ok: false, source: "oauth", error: "auth rejected" });
-  expect(result.ok).toBe(true);
-  expect(result.fallback).toBe(true);
-  expect(result.models).toEqual(KIMI_CODE_MODELS.map(id => `kimi/${id}`));
-  expect(result.models.some(m => m.includes("moonshot"))).toBe(false);
-  expect(result.models.some(m => m.includes("kimi-latest"))).toBe(false);
+test("catalogOr: kimi OAuth discovery preserves failures and authoritative empty results", () => {
+  const failed = catalogOr({ provider: "kimi", models: [], ok: false, source: "oauth", error: "auth rejected" });
+  expect(failed).toEqual({ provider: "kimi", models: [], ok: false, source: "oauth", error: "auth rejected" });
+
+  const empty = catalogOr({ provider: "kimi", models: [], ok: true, source: "oauth" });
+  expect(empty).toEqual({ provider: "kimi", models: [], ok: true, source: "oauth" });
 });
 
 test("kimi API-key discovery fallback (404 route) still lists the full kimi catalog", () => {

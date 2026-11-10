@@ -1,4 +1,8 @@
 import { test, expect, afterEach } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readGlobalConfig } from "../src/agent/state";
 import {
   assertValidProviderId,
   clearCustomProviders,
@@ -24,8 +28,8 @@ import {
 } from "../src/ai/providers/openai-compatible-catalog";
 import { providerRegistry } from "../src/ai/provider-registry";
 import { syncCustomProviderAdapters } from "../src/ai/register-providers";
-import { discoveryRequest } from "../src/ai/model-discovery";
-import { resolveProvider, qualifyModelId } from "../src/ai/model-manager";
+import { discoveryRequest, listProviderModels } from "../src/ai/model-discovery";
+import { resolveProvider, qualifyModelId, modelServableWithConfig, resolveCall } from "../src/ai/model-manager";
 import { describeProvider, allProviderNames, PROVIDER_NAMES } from "../src/ai/provider-status";
 
 // The custom-provider store is module-global (it mirrors `config.customProviders`), so
@@ -218,22 +222,44 @@ test("env wins over a literal key so a rotated shell secret takes effect immedia
 });
 
 test("provider status reports a custom provider's own env var and readiness", async () => {
-  setCustomProviders({ acme: { baseUrl: "https://api.acme.dev/v1", apiKey: "sk-abcdefghijkl" } });
-  const cfg = { providers: {} } as never;
+  const previous = process.env.ACME_API_KEY;
+  delete process.env.ACME_API_KEY;
+  try {
+    setCustomProviders({ acme: { baseUrl: "https://api.acme.dev/v1", apiKeyEnv: "ACME_API_KEY", apiKey: "sk-abcdefghijkl" } });
+    const cfg = { providers: {} } as never;
 
-  const status = await describeProvider("acme", cfg);
-  expect(status.custom).toBe(true);
-  expect(status.baseUrl).toBe("https://api.acme.dev/v1");
-  expect(status.envVar).toBe("ACME_API_KEY");
-  expect(status.ready).toBe(true);
-  expect(status.kind).toBe("api_key");
-  // The stored key itself must never appear in a user-facing label.
-  expect(status.label).not.toContain("sk-abcdefghijkl");
+    const status = await describeProvider("acme", cfg);
+    expect(status.custom).toBe(true);
+    expect(status.baseUrl).toBe("https://api.acme.dev/v1");
+    expect(status.envVar).toBe("ACME_API_KEY");
+    expect(status.ready).toBe(true);
+    expect(status.kind).toBe("api_key");
+    // The stored key itself must never appear in a user-facing label.
+    expect(status.label).not.toContain("sk-abcdefghijkl");
 
-  setCustomProviders({ acme: { baseUrl: "https://api.acme.dev/v1" } });
-  const missing = await describeProvider("acme", cfg);
-  expect(missing.ready).toBe(false);
-  expect(missing.label).toContain("ACME_API_KEY");
+    setCustomProviders({ acme: { baseUrl: "https://api.acme.dev/v1", apiKeyEnv: "ACME_API_KEY" } });
+    const missing = await describeProvider("acme", cfg);
+    expect(missing.ready).toBe(false);
+    expect(missing.kind).toBe("none");
+    expect(missing.label).toContain("ACME_API_KEY");
+
+    process.env.ACME_API_KEY = "env-secret";
+    const fromEnv = await describeProvider("acme", cfg);
+    expect(fromEnv.ready).toBe(true);
+    expect(fromEnv.kind).toBe("api_key");
+    expect(fromEnv.label).toContain("ACME_API_KEY");
+    expect(fromEnv.label).not.toContain("env-secret");
+
+    delete process.env.ACME_API_KEY;
+    setCustomProviders({ acme: { baseUrl: "https://api.acme.dev/v1" } });
+    const keyless = await describeProvider("acme", cfg);
+    expect(keyless.ready).toBe(true);
+    expect(keyless.kind).toBe("keyless");
+    expect(keyless.label).toContain("keyless");
+  } finally {
+    if (previous === undefined) delete process.env.ACME_API_KEY;
+    else process.env.ACME_API_KEY = previous;
+  }
 });
 
 test("allProviderNames appends custom providers without mutating the built-in list", () => {
@@ -252,4 +278,67 @@ test("customProviderDef lookup is case-insensitive so /model MyProxy/x still rou
   expect(customProviderDef("MyProxy")?.name).toBe("myproxy");
   expect(customProviderDef("  myproxy  ")?.name).toBe("myproxy");
   expect(customProviderDef("nope")).toBeUndefined();
+});
+
+test("custom credential requirements agree across routing, discovery and calls", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jeo-custom-credential-"));
+  const previousDir = process.env.JEO_CONFIG_DIR;
+  const previousKey = process.env.ACME_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const requests: { url: string; authorization: string | null }[] = [];
+  try {
+    process.env.JEO_CONFIG_DIR = dir;
+    delete process.env.ACME_API_KEY;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+      return new Response(JSON.stringify(url.endsWith("/models")
+        ? { data: [] }
+        : { choices: [{ message: { content: "gateway reply" }, finish_reason: "stop" }] }), { status: 200 });
+    }) as typeof fetch;
+
+    const configure = async (apiKeyEnv?: string) => {
+      await writeFile(join(dir, "config.json"), JSON.stringify({
+        defaultModel: "acme/model",
+        providers: {},
+        customProviders: { acme: { baseUrl: "https://gateway.example/v1", ...(apiKeyEnv ? { apiKeyEnv } : {}) } },
+      }));
+      return readGlobalConfig();
+    };
+
+    let config = await configure("ACME_API_KEY");
+    expect(modelServableWithConfig("acme", "acme/model", config)).toBe(false);
+    const missing = await listProviderModels("acme", { config });
+    expect(missing).toMatchObject({ ok: false, source: "none", models: [] });
+    expect(missing.error).toContain("ACME_API_KEY");
+    await expect(resolveCall({ model: "acme/model" })).rejects.toThrow(/ACME_API_KEY/);
+    expect(requests).toEqual([]);
+
+    config = await configure();
+    expect(modelServableWithConfig("acme", "acme/model", config)).toBe(true);
+    expect(await listProviderModels("acme", { config })).toMatchObject({ ok: true, source: "keyless", models: [] });
+    let resolved = await resolveCall({ model: "acme/model" });
+    expect(await resolved.adapter.call([{ role: "user", content: "hello" }], resolved.callOptions, resolved.credential)).toBe("gateway reply");
+
+    process.env.ACME_API_KEY = "env-secret";
+    config = await configure("ACME_API_KEY");
+    expect(modelServableWithConfig("acme", "acme/model", config)).toBe(true);
+    expect(await listProviderModels("acme", { config })).toMatchObject({ ok: true, source: "api_key", models: [] });
+    resolved = await resolveCall({ model: "acme/model" });
+    expect(await resolved.adapter.call([{ role: "user", content: "hello" }], resolved.callOptions, resolved.credential)).toBe("gateway reply");
+    expect(requests).toEqual([
+      { url: "https://gateway.example/v1/models", authorization: null },
+      { url: "https://gateway.example/v1/chat/completions", authorization: null },
+      { url: "https://gateway.example/v1/models", authorization: "Bearer env-secret" },
+      { url: "https://gateway.example/v1/chat/completions", authorization: "Bearer env-secret" },
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = previousDir;
+    if (previousKey === undefined) delete process.env.ACME_API_KEY;
+    else process.env.ACME_API_KEY = previousKey;
+    clearCustomProviders();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

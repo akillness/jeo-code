@@ -158,15 +158,16 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   const custom = customProviderDef(name);
   if (custom) {
     const source = credentialSourceOf(custom);
+    const missing = source === "none" && custom.requiresApiKey;
     return {
       name,
-      kind: source === "none" ? "keyless" : "api_key",
-      label: source === "none"
+      kind: missing ? "none" : source === "none" ? "keyless" : "api_key",
+      label: missing ? `missing API key (${custom.apiKeyEnv}) · custom` : source === "none"
         ? "keyless · custom"
         : `API key (${source === "env" ? custom.apiKeyEnv : "stored in config"}) · custom${custom.preset ? ` · preset ${custom.preset}` : ""}`,
       baseUrl: custom.baseUrl,
       envVar: custom.apiKeyEnv,
-      ready: true,
+      ready: !missing,
       custom: true,
     };
   }

@@ -359,7 +359,8 @@ export function modelServableWithConfig(provider: ProviderName, model: string, c
   if (provider === "agy") return false;
   if (provider === "ollama" || provider === "lmstudio") return true;
   if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini);
-  if (customProviderDef(provider)) return true;
+  const custom = customProviderDef(provider);
+  if (custom) return !custom.requiresApiKey || !!resolveCustomApiKey(custom);
   if (provider === "openai" && config.openaiBaseUrl) return true;
   const auth = provider as AuthProvider;
   if (config.providers?.[auth]) return true;
@@ -574,6 +575,9 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   const custom = customProviderDef(provider);
   if (custom) {
     const key = resolveCustomApiKey(custom);
+    if (!key && custom.requiresApiKey) {
+      throw new Error(`No credential for provider '${provider}'. Set ${custom.apiKeyEnv}.`);
+    }
     const credential: Credential = key
       ? { kind: "api_key", provider: provider as AuthProvider, token: key }
       : { kind: "none", provider: provider as AuthProvider };

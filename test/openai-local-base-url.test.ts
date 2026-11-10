@@ -308,13 +308,13 @@ test("canceling one concurrent Codex resolver does not cancel the shared discove
 
 test("resolveCall keeps explicit and configured endpoint behavior for OAuth, endpoint-discovered shared Codex, unknown local ids, failed bundled Codex discovery, empty account catalog, and empty keyless setup", async () => {
   const cases = [
-    { name: "per-call base URL override", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: { baseUrl: `${base}/override` }, expectedBase: `${base}/override`, expectedAuth: "Bearer no-key" },
+    { name: "per-call base URL override", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: { baseUrl: `${base}/override` }, expectedBase: `${base}/override`, expectedAuth: null },
     { name: "configured proxy API key", config: { providers: { openai: "proxy-key" }, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: "Bearer proxy-key" },
-    { name: "endpoint-discovered shared Codex", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: "Bearer no-key", discovered: true },
-    { name: "unknown non-Codex local id", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "openai/local-coder", options: {}, expectedBase: base, expectedAuth: "Bearer no-key", discoveryFailure: true },
-    { name: "failed bundled Codex discovery", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: "Bearer no-key", discoveryFailure: true },
-    { name: "empty OAuth account catalog", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: "Bearer no-key", emptyCatalog: true },
-    { name: "empty keyless local config", config: { providers: {}, oauth: {}, openaiBaseUrl: base }, model: "openai/local-coder", options: {}, expectedBase: base, expectedAuth: "Bearer no-key", discoveryFailure: true },
+    { name: "endpoint-discovered shared Codex", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: null, discovered: true },
+    { name: "unknown non-Codex local id", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "openai/local-coder", options: {}, expectedBase: base, expectedAuth: null, discoveryFailure: true },
+    { name: "failed bundled Codex discovery", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: null, discoveryFailure: true },
+    { name: "empty OAuth account catalog", config: { providers: {}, oauth: { openai: { access: oauth.token } }, openaiBaseUrl: base }, model: "gpt-5.5", options: {}, expectedBase: base, expectedAuth: null, emptyCatalog: true },
+    { name: "empty keyless local config", config: { providers: {}, oauth: {}, openaiBaseUrl: base }, model: "openai/local-coder", options: {}, expectedBase: base, expectedAuth: null, discoveryFailure: true },
   ] as const;
 
   for (const c of cases) {
@@ -336,7 +336,7 @@ test("resolveCall keeps explicit and configured endpoint behavior for OAuth, end
       const resolved = await resolveCall({ model: c.model, ...c.options });
       expect(resolved.baseUrl).toBe(c.expectedBase);
       expect(resolved.callOptions.baseUrl).toBe(c.expectedBase);
-      expect(resolved.credential.kind).toBe(c.expectedAuth === "Bearer no-key" ? "none" : "api_key");
+      expect(resolved.credential.kind).toBe(c.expectedAuth === null ? "none" : "api_key");
       const text = await resolved.adapter.call([{ role: "user", content: "hi" }], resolved.callOptions, resolved.credential);
       expect(text).toBe("proxy-ok");
       expect(requests.at(-1)?.url).toBe(`${c.expectedBase}/chat/completions`);

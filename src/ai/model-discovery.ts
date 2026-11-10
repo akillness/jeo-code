@@ -434,6 +434,9 @@ export async function listProviderModels(
   } else if (custom) {
     baseUrl ??= custom.baseUrl;
     const key = resolveCustomApiKey(custom);
+    if (!key && custom.requiresApiKey) {
+      return { provider, models: [], ok: false, source: "none", error: `No credential for provider '${provider}'. Set ${custom.apiKeyEnv}.` };
+    }
     cred = key ? { kind: "api_key", provider: provider as AuthProvider, token: key } : { kind: "none", provider: provider as AuthProvider };
     source = key ? "api_key" : "keyless";
   } else if (provider !== "ollama" && provider !== "lmstudio") {

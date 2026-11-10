@@ -64,6 +64,8 @@ export interface CustomProviderDef extends OpenAICompatProviderDef {
   readonly custom: true;
   /** Literal key when the user chose the "literal" credential source. */
   readonly literalApiKey?: string;
+  /** Whether the configuration explicitly names an environment credential. */
+  readonly requiresApiKey: boolean;
   /** Preset id this entry came from, when applicable. */
   readonly preset?: string;
 }
@@ -223,6 +225,7 @@ export function toCustomProviderDef(rawId: string, cfg: CustomProviderConfig): C
     protocol,
     thinkingFormat: cfg.thinkingFormat,
     literalApiKey: cfg.apiKey?.trim() || undefined,
+    requiresApiKey: !!cfg.apiKeyEnv?.trim(),
     preset: cfg.preset,
   };
 }

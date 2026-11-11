@@ -67,9 +67,18 @@ export function resolveMessengerToken(
 
 export const DEFAULT_MESSENGER_TOOLS = ["read", "find", "search", "write", "edit", "bash", "computer", "sandbox_request"];
 
+/**
+ * `{ "backend": "native" }` selects the operating system's own sandbox (no image, no daemon).
+ * `{ "image", "limits" }`, optionally with `"backend": "docker"`, selects a session container.
+ */
 export function parseMessengerSandbox(value: unknown): SandboxConfig {
 	const input = object(value, "sandbox");
-	keys(input, ["image", "limits"], "sandbox");
+	if (input.backend === "native") {
+		keys(input, ["backend"], "sandbox");
+		return { backend: "native" };
+	}
+	keys(input, ["backend", "image", "limits"], "sandbox");
+	if (input.backend !== undefined && input.backend !== "docker") throw new Error('sandbox.backend must be "native" or "docker"');
 	const limits = object(input.limits, "sandbox.limits");
 	keys(limits, ["memoryBytes", "pids", "cpus"], "sandbox.limits");
 	const config: SandboxConfig = {
@@ -126,10 +135,11 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 	) {
 		throw new Error("toolNames must be a unique list drawn from read, grep, glob, find, search, bash, edit, write, computer");
 	}
-	const sandbox = input.sandbox !== undefined || platforms.discord ? parseMessengerSandbox(input.sandbox) : undefined;
+	// Discord's default is selected per request, without imposing it on other platforms.
+	const sandbox: SandboxConfig | undefined = input.sandbox !== undefined ? parseMessengerSandbox(input.sandbox) : undefined;
 	const cwd = path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd"));
 	const sessionDir = input.sessionDir === undefined ? path.join(notifyDir(), "messenger-sessions") : path.resolve(baseDir, string(input.sessionDir, "sessionDir"));
-	if (sandbox && (sandboxPathContains(cwd, sessionDir) || sandboxPathContains(sessionDir, cwd))) {
+	if ((sandbox || platforms.discord) && (sandboxPathContains(cwd, sessionDir) || sandboxPathContains(sessionDir, cwd))) {
 		throw new Error("sessionDir must be outside and disjoint from the sandbox workspace");
 	}
 	return {

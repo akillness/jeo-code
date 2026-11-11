@@ -23,7 +23,7 @@ describe("messenger security and configuration", () => {
 	test("requires exact explicit allowlists and rejects unknown or unsafe configuration", () => {
 		const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } };
 		const layout = { cwd: "ws", sessionDir: "private", sandbox };
-		expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow("sandbox must be an object");
+		expect(parseMessengerConfig({ cwd: "ws", sessionDir: "private", platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").sandbox).toBeUndefined();
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: [] } } }, "/tmp")).toThrow();
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["*"] } } }, "/tmp")).toThrow();
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["1"], surprise: true } } }, "/tmp")).toThrow("unknown setting");

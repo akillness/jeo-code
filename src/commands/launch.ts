@@ -33,7 +33,7 @@ import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots, skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { snapshotSandboxSkillAssets, prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots, skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { routeSkillsForTask, skillAdvisoryRoutingNote } from "../agent/skill-router";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
@@ -61,6 +61,7 @@ import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/sta
 import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks, runPrePromptHooks, runTurnEndHooks, setHookSessionId } from "../agent/hooks";
 import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
+import { reapOrphanedNativeProcesses } from "../agent/sandbox/native";
 import { createSandboxPolicy } from "../agent/sandbox/policy";
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
 import { handleSandboxControl } from "../agent/sandbox/control";
@@ -467,7 +468,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   try {
     const flags = parseFlags(args, process.cwd());
-    const config = await readGlobalConfig();
+    const config = await readGlobalConfig({ requireValid: true });
     if (closing) throw new Error("Messenger worker stopping");
     const remoteConfig = process.env.JEO_MESSENGER_SANDBOX;
     const sandboxConfig: SandboxConfig | undefined = remoteConfig === undefined ? config.sandbox : JSON.parse(remoteConfig);
@@ -492,10 +493,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir(), ...profilePaths];
     const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
     if (closing) throw new Error("Messenger worker stopping");
-    const sessionSupervisor = createSandboxSupervisor({ policy });
+    // A host that was killed left its sandbox processes running: end them before starting this session.
+    if (policy.config.backend === "native") await reapOrphanedNativeProcesses().catch(() => undefined);
+    if (policy.config.backend !== "native" && config.sandboxSkillAssets?.length) {
+      throw new Error("SANDBOX_SKILLS: the selected backend cannot transport authorized skill assets");
+    }
+    const snapshot = policy.config.backend === "native" ? await snapshotSandboxSkillAssets(cwd, path.join(stateDirectory, "skill-assets"), policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), config.sandboxSkillAssets ?? []) : undefined;
+    const readOnlyRoots = snapshot ? [snapshot.root] : [];
+    const sessionSupervisor = createSandboxSupervisor({ policy, readOnlyRoots });
     supervisor = sessionSupervisor;
     process.env.JEO_SESSION_DIR = sessionDirectory;
-    await prepareSandboxSkillCatalog(sessionSupervisor, cwd, policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), policy.mounts.map(mount => mount.host));
+    await prepareSandboxSkillCatalog(sessionSupervisor, cwd, policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), policy.mounts.map(mount => mount.host), snapshot);
     if (closing) throw new Error("Messenger worker stopping");
     const replacePolicy = sessionSupervisor.replacePolicy;
     sessionSupervisor.replacePolicy = async nextPolicy => {
@@ -574,7 +582,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       branch = out || undefined;
     }
   } catch {}
-  const cfg = await readGlobalConfig();
+  const cfg = await readGlobalConfig({ requireValid: true });
   // Restore account-scoped model lists before selection and live discovery, so
   // a later disk restore cannot overwrite fresher results from this launch.
   await rehydrateLiveModels().catch(() => null);
@@ -893,12 +901,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // top and picks up dead ends captured earlier in the SAME session. Opt out with
   // JEO_STATIC_MEMORY=1 (freeze the session-start block); JEO_NO_MEMORY=1 still wins.
   const refreshSessionMemory = async (query: string, skillRun = false): Promise<void> => {
-    if (jeoEnv("STATIC_MEMORY") === "1") return;
     if (!history[0] || history[0].role !== "system") return;
-    try {
-      const fresh = await memoryPromptSection(cwd, query || undefined);
-      history[0] = { ...history[0], content: composeSystemPrompt(fresh, query || "", { skillRun }) };
-    } catch { /* keep the prior system prompt on any failure */ }
+    let fresh = memoryBlock;
+    if (jeoEnv("STATIC_MEMORY") !== "1") {
+      try {
+        fresh = await memoryPromptSection(cwd, query || undefined);
+      } catch { /* retain the session-start memory block */ }
+    }
+    history[0] = { ...history[0], content: composeSystemPrompt(fresh, query || "", { skillRun }) };
   };
   let sessionModel: string | undefined = initialSessionModel;
   // Session thinking-level override (`/thinking`); falls back to the config level.

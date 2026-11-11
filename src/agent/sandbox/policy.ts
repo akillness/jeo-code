@@ -13,7 +13,12 @@ export interface SandboxPolicyOptions {
 }
 
 export function validateSandboxConfig(value: SandboxConfig): void {
-  if (!value || typeof value.image !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$/.test(value.image)) {
+  if (value?.backend === "native") {
+    if (Object.keys(value).some(key => key !== "backend")) throw new Error("SANDBOX_CONFIG: the native sandbox takes no image or limits");
+    return;
+  }
+  if (!value || (value.backend !== undefined && value.backend !== "docker")) throw new Error("SANDBOX_CONFIG: backend must be native or docker");
+  if (typeof value.image !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$/.test(value.image)) {
     throw new Error("SANDBOX_CONFIG: an existing local image reference is required");
   }
   const limits = value.limits;
@@ -152,12 +157,17 @@ export async function createSandboxPolicy(options: SandboxPolicyOptions): Promis
     }
     const existing = mounts.get(host);
     const mode = existing?.mode === "rw" ? "rw" : resource.mode;
-    const guest = host === workspace ? "/workspace" : `/grants/${new Bun.CryptoHasher("sha256").update(host).digest("hex")}`;
+    // The native backend has no mount namespace: a guest path IS its host path.
+    const guest = options.config.backend === "native" ? host
+      : host === workspace ? "/workspace" : `/grants/${new Bun.CryptoHasher("sha256").update(host).digest("hex")}`;
     mounts.set(host, Object.freeze({ host, guest, mode }));
   }
   const ordered = [...mounts.values()].sort((a, b) => a.guest.localeCompare(b.guest));
-  const config = Object.freeze({ image: options.config.image, limits: Object.freeze({ ...options.config.limits }) });
-  const content = { sessionKey: options.sessionKey, revision: options.revision, mounts: ordered, config, privatePaths: Object.freeze(privatePaths) };
+  const config: SandboxConfig = options.config.backend === "native"
+    ? Object.freeze({ backend: "native" as const })
+    : Object.freeze({ image: options.config.image, limits: Object.freeze({ ...options.config.limits }) });
+  // Container policies keep their exact historical shape (and digest); only native ones name the workspace.
+  const content = { sessionKey: options.sessionKey, revision: options.revision, mounts: ordered, ...(options.config.backend === "native" ? { workspace } : {}), config, privatePaths: Object.freeze(privatePaths) };
   const digest = new Bun.CryptoHasher("sha256").update(JSON.stringify(content)).digest("hex");
   return Object.freeze({ ...content, mounts: Object.freeze(ordered), digest });
 }

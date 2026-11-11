@@ -33,7 +33,7 @@
 
 - [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
 
-**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。Discord 必须显式配置本地 Docker 沙箱；配置的工具在 Linux 客体中执行，不直接操作主机桌面或 shell。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
+**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。Discord 无需 Docker，在操作系统自带沙箱（macOS Seatbelt、Linux bubblewrap）中按会话独立运行，会话结束时该会话启动的所有进程一并终止。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
 
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
 
@@ -258,6 +258,10 @@ jeo ultragoal
 
 一个 Discord 线程保留一个持久会话，不因发送者或消息而改变。同线程请求按 FIFO 执行，其他会话可并发。会话共享所选工作区，不创建每会话 Git worktree，因此文件修改可能冲突。
 
+**原生沙箱（默认，无需 Docker）。** 未配置 `sandbox` 块时，每个 Discord 会话运行在操作系统自带沙箱中：macOS Seatbelt（`sandbox-exec`）或 Linux bubblewrap（`bwrap`，需要非特权用户命名空间）。每个会话拥有独立的 worker 和沙箱：无网络，仅可写工作区和私有临时目录，主目录及其他私有路径不可读。**会话启动的所有进程随会话一并终止。** 会话被删除或结束、worker 退出、网关停止时，沙箱会终止其全部进程，包括自行脱离（`setsid`、双重 fork）并被 launchd 接管的守护进程。未经清理就被杀死的 worker 或网关所遗留的进程，会在下次启动时回收，不会持续占用内存。在 macOS 上由内核识别会话成员（沙箱跨 fork、exec、setsid 继承）；无法证明这一点的启动会以明确错误失败关闭。限制：原生模式没有 cgroup 内存、CPU、PID 限制；需要已批准根目录之外路径的全局钩子不会在主机上运行，而是在沙箱内失败；全局技能资源仅通过 `~/.jeo/config.json` 中 `sandboxSkillAssets` 的文件白名单暴露；Linux 需要支持非特权用户命名空间的 `bwrap`，且未在 macOS 主机上验证；原生 Windows 没有原生沙箱，仍需使用下面的 Docker 块。
+
+**可选的 Docker 沙箱**（现有配置继续有效）：
+
 在消息网关配置中设置 `sandbox`；在 `~/.jeo/config.json` 中采用相同格式可隔离终端会话：
 
 ```json
@@ -460,10 +464,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)
 - **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
 - **[0.12.31]** (2026-11-08) — LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO.
-- **[0.12.30]** (2026-11-07)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

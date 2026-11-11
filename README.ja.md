@@ -33,7 +33,7 @@
 
 - [双方向メッセンジャーゲートウェイ (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。Discord には明示的なローカル Docker サンドボックスが必須で、設定されたツールはホストのデスクトップ/シェルではなく Linux ゲストで実行します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
+**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。Discord は Docker なしで OS 標準のサンドボックス（macOS Seatbelt・Linux bubblewrap）上で会話ごとに独立したセッションとして動作し、セッション終了時にそのセッションが起動した全プロセスも終了します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
 
 📖 **[使い方ガイド](docs/usage-guide.md)** — インストール、TUI操作（↑履歴、Ctrl+O、`!`シェル）、スラッシュコマンド、`/resume`、スペックファーストワークフローをデモ動画付きで解説。
 
@@ -258,6 +258,10 @@ jeo ultragoal
 
 Discord の1スレッドは送信者・メッセージに関係なく1つの永続セッションを保持します。同じスレッドは FIFO、別セッションは並行実行できます。選択したワークスペースを共有し、セッション別の Git worktree は作らないため、ファイル変更は競合し得ます。
 
+**ネイティブサンドボックス（既定、Docker 不要）。** `sandbox` ブロックがない場合、Discord の会話は OS 標準のサンドボックス（macOS Seatbelt `sandbox-exec`、または非特権ユーザー名前空間が使える Linux bubblewrap `bwrap`）で動作します。会話ごとに専用のワーカーとサンドボックスを持ち、ネットワークなし、書き込みはワークスペースと非公開スクラッチのみ、ホームやその他の非公開パスは読めません。**セッションが起動した全プロセスはセッションとともに終了します。** セッションの削除・終了、ワーカー終了、ゲートウェイ停止のいずれでも、自ら切り離され（`setsid`、二重 fork）launchd に付け替えられたデーモンを含め、サンドボックスが全プロセスを終了します。後始末なしに終了したワーカーやゲートウェイの残存プロセスは次回起動時に回収されるため、メモリを使い続けません。macOS ではカーネルがセッションの構成員を特定し（サンドボックスは fork・exec・setsid を越えて継承）、これを証明できない起動は明示的なエラーで失敗します。制約: ネイティブの cgroup によるメモリ・CPU・PID 制限なし、承認済みルート外のパスが必要なグローバルフックはホストでは実行されずサンドボックス内で失敗、グローバルスキル資産は `~/.jeo/config.json` の `sandboxSkillAssets` ファイル許可リストでのみ公開、Linux は非特権ユーザー名前空間が使える `bwrap` が必要で macOS ホストでは未検証、ネイティブ Windows にはネイティブサンドボックスがなく下記の Docker ブロックが必要です。
+
+**任意の Docker サンドボックス**（既存の設定は引き続き動作）:
+
 メッセンジャー設定に `sandbox` を指定します。`~/.jeo/config.json` にも同じ形式で設定すると、ターミナルセッションを隔離します:
 
 ```json
@@ -462,10 +466,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)
 - **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
 - **[0.12.31]** (2026-11-08) — LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO.
-- **[0.12.30]** (2026-11-07)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

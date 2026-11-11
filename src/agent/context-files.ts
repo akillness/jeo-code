@@ -309,24 +309,85 @@ export function invalidateWorkspaceScan(cwd?: string): void {
   workspaceScanCache.delete(path.resolve(cwd));
 }
 
+/** User-global rule/hook guidance under `home`, appended to `out` in precedence order. */
+async function collectHomeGuidance(home: string, out: Array<{ filePath: string; displayPath: string }>): Promise<void> {
+  for (const [dir, name] of [[".agents", "rules"], [".jeo", "rules"], [".agents", "hooks"], [".jeo", "hooks"]] as const) {
+    await collectTextFiles(path.join(home, dir, name), `~/${dir}/${name}`, 2, out);
+  }
+}
+
+// Do not follow linked host roots into unrelated files outside the guidance trees.
+async function collectSandboxHomeGuidance(home: string, out: Array<{ filePath: string; displayPath: string }>): Promise<void> {
+  for (const [dir, name] of [[".agents", "rules"], [".jeo", "rules"], [".agents", "hooks"], [".jeo", "hooks"]] as const) {
+    try {
+      if (!(await fs.lstat(path.join(home, dir))).isDirectory() ||
+          !(await fs.lstat(path.join(home, dir, name))).isDirectory()) continue;
+      await collectTextFiles(path.join(home, dir, name), `~/${dir}/${name}`, 2, out);
+    } catch { /* optional */ }
+  }
+}
+
+async function sandboxHomeAgent(home: string): Promise<ProjectContextFile | null> {
+  try {
+    for (const rel of [".jeo", ".jeo/agent", ".jeo/agent/AGENTS.md"]) {
+      if ((await fs.lstat(path.join(home, rel))).isSymbolicLink()) return null;
+    }
+    return await readContextFile(path.join(home, ".jeo", "agent", "AGENTS.md"), "~/.jeo/agent/AGENTS.md", BASE_CONTEXT_CHARS);
+  } catch { return null; }
+}
+
+/**
+ * Context for a sandboxed session. The guest's HOME is a private scratch directory, so its
+ * loader returns workspace files only. The user-global files (`~/.jeo/agent/AGENTS.md` and the
+ * home rule/hook guidance roots) are read here, in the brain, from fixed user-owned paths the
+ * sandbox can neither read nor write, so a sandboxed session follows the same global install
+ * as a local one. The total budget is the same as an unsandboxed session.
+ */
+async function loadSandboxProjectContext(cwd: string): Promise<ProjectContextFile[]> {
+  const home = resolveHomeDir();
+  const userAgent = home ? await sandboxHomeAgent(home) : null;
+  const guest = await sandboxContext("loadContext", cwd);
+  const entries = await discoverAgentGuidanceFiles(cwd);
+  const guidancePaths = new Set(entries.map(entry => entry.displayPath.toLowerCase()));
+  const base = guest.filter(file => !guidancePaths.has(file.path.toLowerCase()));
+  const guestGuidance = new Map(guest.map(file => [file.path.toLowerCase(), file]));
+  const result: ProjectContextFile[] = userAgent ? [userAgent] : [];
+  let baseChars = userAgent?.content.length ?? 0;
+  for (const file of base) {
+    const remaining = BASE_CONTEXT_CHARS - baseChars;
+    if (remaining <= 0) break;
+    const content = file.content.length > remaining ? `${file.content.slice(0, remaining)}\n…(truncated)` : file.content;
+    result.push({ path: file.path, content });
+    baseChars += content.length;
+  }
+  let guidanceChars = 0;
+  for (const entry of entries) {
+    const remaining = GUIDANCE_CONTEXT_CHARS - guidanceChars;
+    if (remaining <= 0) break;
+    const guestFile = guestGuidance.get(entry.displayPath.toLowerCase());
+    const file = entry.displayPath.startsWith("~/")
+      ? await readContextFile(entry.filePath, entry.displayPath, remaining)
+      : guestFile;
+    if (!file) continue;
+    const content = file.content.length > remaining ? `${file.content.slice(0, remaining)}\n…(truncated)` : file.content;
+    result.push({ path: file.path, content });
+    guidanceChars += content.length;
+  }
+  return result;
+}
+
 export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<Array<{ filePath: string; displayPath: string }>> {
-  if (currentSandboxExecution()) return sandboxContext("discoverGuidance", cwd);
-  const scan = await getWorkspaceScan(cwd);
-  const out: Array<{ filePath: string; displayPath: string }> = [...scan.localGuidance];
+  const sandbox = currentSandboxExecution();
+  const out = sandbox
+    ? (await sandboxContext("discoverGuidance", cwd)).filter(entry => !entry.displayPath.startsWith("~/"))
+    : [...(await getWorkspaceScan(cwd)).localGuidance];
   // No resolvable home → NO home roots. Previously this fell back to `path.join("", …)`,
   // a RELATIVE path, so the "user global" scan silently read the current working
   // directory's `.agents/rules` and presented project files as user-global config.
   const home = resolveHomeDir();
   if (home) {
-    const homeRoots = [
-      { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
-      { rootDir: path.join(home, ".jeo", "rules"), displayPrefix: "~/.jeo/rules" },
-      { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
-      { rootDir: path.join(home, ".jeo", "hooks"), displayPrefix: "~/.jeo/hooks" },
-    ];
-    for (const root of homeRoots) {
-      await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);
-    }
+    if (sandbox) await collectSandboxHomeGuidance(home, out);
+    else await collectHomeGuidance(home, out);
   }
   const seen = new Set<string>();
   return out.filter(entry => {
@@ -343,7 +404,7 @@ export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<A
 // cache. This keeps the result disk-truthful — a guidance/AGENTS.md edit is reflected on the
 // next spawn — while still avoiding the dominant per-spawn cost (re-reading every file).
 export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectContextFile[]> {
-  if (currentSandboxExecution()) return sandboxContext("loadContext", cwd);
+  if (currentSandboxExecution()) return loadSandboxProjectContext(cwd);
   const result: ProjectContextFile[] = [];
   let baseChars = 0;
   let guidanceChars = 0;

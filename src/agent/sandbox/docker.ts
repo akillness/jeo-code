@@ -94,6 +94,7 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
 
   async function preflight(config: SandboxConfig): Promise<{ imageId: string; platform: string }> {
     validateSandboxConfig(config);
+    if (config.backend === "native") throw new Error("SANDBOX_CONFIG: the Docker backend cannot run a native sandbox policy");
     const explicit = environment.DOCKER_CONTEXT ? undefined : environment.DOCKER_HOST;
     if (explicit && !/^(unix:\/\/\/|npipe:\/\/)/i.test(explicit)) throw new Error("SANDBOX_UNAVAILABLE: only local Docker endpoints are authorized");
     const context = await checked(["context", "show"], "context discovery");
@@ -191,7 +192,9 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
   }
 
   async function launch(policy: SandboxPolicy, bundlePath: string): Promise<SandboxProcess> {
-    const qualified = await preflight(policy.config);
+    const config = policy.config;
+    if (config.backend === "native") throw new Error("SANDBOX_CONFIG: the Docker backend cannot run a native sandbox policy");
+    const qualified = await preflight(config);
     const bundle = await canonicalSandboxPath(bundlePath);
     if (!(await fs.stat(bundle)).isFile()) throw new Error("SANDBOX_POLICY: hands bundle is not a regular file");
     const sources = [...policy.mounts.map(mount => mount.host), bundle];
@@ -228,7 +231,7 @@ export function createDockerBackend(options: DockerBackendOptions = {}): Sandbox
       "create", "--pull=never", "--name", name,
       "--label", `${OWNER}=${owner}`, "--label", `${SESSION}=${policy.sessionKey}`, "--label", `${REVISION}=${policy.revision}`,
       "--init", "--interactive", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-      "--pids-limit", String(policy.config.limits.pids), "--memory", String(policy.config.limits.memoryBytes), "--cpus", String(policy.config.limits.cpus),
+      "--pids-limit", String(config.limits.pids), "--memory", String(config.limits.memoryBytes), "--cpus", String(config.limits.cpus),
       "--user", user, "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777", "--workdir", "/workspace",
       "--env", "HOME=/tmp/jeo-home", "--env", "JEO_CONFIG_DIR=/tmp/jeo-home", "--env", "JEO_SANDBOX_HANDS=1",
       ...mounts, "--mount", `type=bind,source=${bundle},target=/jeo/hands.js,readonly`,

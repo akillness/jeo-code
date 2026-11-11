@@ -47,6 +47,7 @@ mock.module("../src/tui/app", () => ({
 let mockQuestions: string[] = [];
 let mockIndex = 0;
 let capturedCalls: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[] = [];
+let capturedSystemPrompts: string[] = [];
 let runAgentLoopDelegate: (history: unknown, opts: AgentLoopOptions) => Promise<AgentLoopResult> = async () => ({ done: true, steps: 1, doneReason: "ok" });
 // Rate-limit fast-fallback (opts.rateLimitFallbackAvailable): one entry per
 // runAgentLoop call, the predicate's return value at CALL TIME (undefined when
@@ -73,6 +74,7 @@ mock.module("../src/agent/engine", () => ({
   ...realEngine,
   runAgentLoop: mock(async (history: unknown, opts: AgentLoopOptions) => {
     capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, sessionKey: opts.sessionKey });
+    capturedSystemPrompts.push(String((history as { role: string; content: unknown }[])[0]?.content ?? ""));
     capturedRateLimitAvailability.push(opts.rateLimitFallbackAvailable?.());
     capturedSafetyFallbackAvailability.push(opts.safetyFallbackAvailable?.());
     return runAgentLoopDelegate(history, opts);
@@ -101,6 +103,7 @@ beforeEach(() => {
   mockQuestions = [];
   mockIndex = 0;
   capturedCalls = [];
+  capturedSystemPrompts = [];
   capturedRateLimitAvailability = [];
   capturedSafetyFallbackAvailability = [];
   capturedRoutedTiers = [];
@@ -181,6 +184,25 @@ async function runOneTurnWithLogs(
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 }
+
+test("skill advisory follows each real launch turn even with static memory", async () => {
+  const saved = process.env.JEO_STATIC_MEMORY;
+  process.env.JEO_STATIC_MEMORY = "1";
+  try {
+    await runOneTurnWithLogs(
+      { providers: { anthropic: "test-key" }, defaultModel: "claude-sonnet-4-6" },
+      ["run ralplan to plan the auth refactor", "hello there, how are you today"],
+    );
+    expect(capturedSystemPrompts).toHaveLength(2);
+    const advisory = capturedSystemPrompts[0].split("Jev advisory routing: task similarity cleared the skill gate for ")[1];
+    expect(advisory).toBeDefined();
+    expect(advisory).toContain("ralplan");
+    expect(capturedSystemPrompts[1]).not.toContain("Jev advisory routing: task similarity cleared");
+  } finally {
+    if (saved === undefined) delete process.env.JEO_STATIC_MEMORY;
+    else process.env.JEO_STATIC_MEMORY = saved;
+  }
+});
 
 test("explicit /model pin always wins: routing never overrides an explicit --model even with routing.enabled", async () => {
   const calls = await runOneTurn(

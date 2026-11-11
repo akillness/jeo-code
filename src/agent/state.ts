@@ -91,6 +91,8 @@ export interface Config {
   theme?: string;
   /** Explicit local container image and finite session resource limits; never auto-pulled. */
   sandbox?: SandboxConfig;
+  /** Individually approved absolute global skill files for sandbox sessions. */
+  sandboxSkillAssets?: string[];
   /** Terminal-bell notifications (gajae-code 0.7.8 parity). `bell` is the master
    *  toggle; per-event flags refine it. Env `JEO_NOTIFY_BELL=1/0` force-overrides. */
   notify?: {
@@ -444,20 +446,26 @@ async function readParsedConfigFile(): Promise<ParsedFile> {
   let st: { mtimeMs: number; size: number };
   try {
     st = await fs.stat(p);
-  } catch {
+  } catch (error) {
     configReadCache.delete(p);
-    return { kind: "missing" };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    throw new Error(`Cannot inspect config ${p}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
   const hit = configReadCache.get(p);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.parsed;
+  let contents: string;
+  try {
+    contents = await fs.readFile(p, "utf-8");
+  } catch (error) {
+    throw new Error(`Cannot read config ${p}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
   let parsed: ParsedFile;
   try {
-    const raw = JSON.parse(await fs.readFile(p, "utf-8"));
+    const raw = JSON.parse(contents);
     const result = parseConfig(raw);
     parsed = result.ok
       ? { kind: "ok", config: result.config as Config }
-      // Keep the raw JSON object on a schema-invalid (but JSON-valid) config so
-      // readRawGlobalConfig can salvage the credential blocks instead of dropping them.
+      // Retain credentials for non-strict runtime readers; writes reject invalid config.
       : { kind: "invalid", message: result.message, warned: false, rawObject: raw };
   } catch {
     parsed = { kind: "bad-json", warned: false };
@@ -470,10 +478,7 @@ async function readParsedConfigFile(): Promise<ParsedFile> {
   return parsed;
 }
 
-/** Overlay the `oauth` + `providers` credential blocks from a schema-invalid (but
- *  JSON-valid) config's raw object onto `base`. A single bad scalar field (e.g. a
- *  non-string defaultModel) must never cost the user their stored credentials — neither
- *  when resolving them at runtime (readGlobalConfig) nor when persisting (readRawGlobalConfig). */
+/** Preserve credentials for non-strict runtime reads of schema-invalid JSON. */
 function salvageCredentials(base: Config, parsed: ParsedFile): Config {
   if (parsed.kind !== "invalid" || !parsed.rawObject || typeof parsed.rawObject !== "object") return base;
   const ro = parsed.rawObject as Record<string, unknown>;
@@ -484,17 +489,20 @@ function salvageCredentials(base: Config, parsed: ParsedFile): Config {
   return base;
 }
 
-export async function readGlobalConfig(): Promise<Config> {
+export async function readGlobalConfig(options?: { requireValid?: boolean }): Promise<Config> {
   const parsed = await readParsedConfigFile();
   if (parsed.kind === "bad-json" || parsed.kind === "invalid") {
+    if (options?.requireValid) {
+      const detail = parsed.kind === "invalid" ? `is invalid (${parsed.message})` : "is not valid JSON";
+      throw new Error(`Config ${globalConfigPath()} ${detail}; fix the config before starting a session.`);
+    }
     // Warn once per file VERSION (mtime/size change resets the entry), not per read.
     if (!parsed.warned) {
       parsed.warned = true;
       const detail = parsed.kind === "invalid" ? ` is invalid (${parsed.message})` : " is not valid JSON";
       process.stderr.write(`[jeo] ${globalConfigPath()}${detail}; using environment defaults.\n`);
     }
-    // Credential salvage: keep oauth/providers from a JSON-valid-but-schema-invalid
-    // config so the runtime stays authenticated (and a later write repairs the file).
+    // Preserve credentials for non-strict readers without rewriting the invalid file.
     return withEnvOverlay(salvageCredentials(envDefaultConfig(), parsed));
   }
   if (parsed.kind === "missing") return withEnvOverlay(envDefaultConfig());
@@ -537,13 +545,11 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
 export async function readRawGlobalConfig(): Promise<Config> {
   const parsed = await readParsedConfigFile();
   if (parsed.kind === "ok") return structuredClone(parsed.config);
-  // CREDENTIAL SAFETY: when the on-disk config is JSON-valid but fails schema validation
-  // on some unrelated field, salvage the `oauth` + `providers` blocks. Without this, the
-  // next saveConfigPatch (e.g. an auto token refresh that patches ONE provider) bases on
-  // a clean config and silently wipes every OTHER stored credential — the "OAuth de-authed
-  // after a session" bug. The invalid scalar field is dropped (reset to default).
-  const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
-  return salvageCredentials(clean, parsed);
+  if (parsed.kind === "bad-json" || parsed.kind === "invalid") {
+    const detail = parsed.kind === "invalid" ? `is invalid (${parsed.message})` : "is not valid JSON";
+    throw new Error(`Config ${globalConfigPath()} ${detail}; fix the config before saving changes.`);
+  }
+  return { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
 }
 
 /**

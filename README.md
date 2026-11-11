@@ -52,7 +52,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Discord requires an explicit local Docker sandbox; its configured tools execute in a Linux guest, not on the host desktop or shell. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
+**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Discord runs without Docker in the operating system's own sandbox (macOS Seatbelt, Linux bubblewrap), one independent session per conversation; when a session ends, every process it started ends with it. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
 
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
@@ -315,6 +315,10 @@ Opt-in: one shared daemon watches every live `jeo` session on the machine and pu
 
 One Discord thread keeps one persistent session, irrespective of sender or message. Same-thread requests run FIFO; other sessions can run concurrently. Sessions share the selected workspace: no per-session Git worktree is created, so filesystem edits can conflict.
 
+**Native sandbox (default, no Docker).** With no `sandbox` block, each Discord conversation runs in the operating system's own sandbox: macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap` with unprivileged user namespaces). Every conversation gets its own worker and its own sandbox: no network, writes only to the workspace and a private scratch directory, and the home directory and other private paths are unreadable. **Every process a session starts dies with it.** When the session is deleted or ended, its worker exits, or the gateway stops, the sandbox kills all of its processes, including daemons that detached themselves (`setsid`, double fork) and were re-parented to launchd. A worker or gateway killed without cleanup is reaped at the next start, so nothing keeps consuming memory. On macOS the kernel names a session's members (a sandbox is inherited across fork, exec and setsid); a launch that cannot prove this fails closed with an explicit error. Limits: no native cgroup memory, CPU or PID limits; global hooks that need paths outside the approved roots fail inside the sandbox instead of running on the host; global skill assets are exposed only through an explicit `sandboxSkillAssets` allowlist of files in `~/.jeo/config.json`; Linux needs `bwrap` with unprivileged user namespaces and was not verified on a macOS host; native Windows has no native sandbox and still needs the Docker block below.
+
+**Optional Docker sandbox** (existing configurations keep working):
+
 Set `sandbox` in the messenger config; the same shape in `~/.jeo/config.json` enables terminal session isolation:
 
 ```json
@@ -506,10 +510,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)
 - **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
 - **[0.12.31]** (2026-11-08) — LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO.
-- **[0.12.30]** (2026-11-07)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

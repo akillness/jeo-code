@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { createDockerBackend, SandboxLaunchError } from "./docker";
+import { createNativeBackend } from "./native";
 import { prepareHandsBundle } from "./bundle";
 import { sandboxPathContains } from "./policy";
 import { encodeHandsFrame, parseHandsResponse, readHandsFrames } from "./rpc";
@@ -18,8 +19,8 @@ interface PendingEffect {
   abort?: () => void;
 }
 
-export function createSandboxSupervisor(options: { policy: SandboxPolicy; backend?: SandboxBackend; bundlePath?: string }): SandboxSupervisor {
-  const backend = options.backend ?? createDockerBackend();
+export function createSandboxSupervisor(options: { policy: SandboxPolicy; backend?: SandboxBackend; bundlePath?: string; /** Trusted host directories a native sandbox exposes read-only. */ readOnlyRoots?: readonly string[] }): SandboxSupervisor {
+  const backend = options.backend ?? (options.policy.config.backend === "native" ? createNativeBackend({ readOnlyRoots: options.readOnlyRoots }) : createDockerBackend());
   let policy = options.policy;
   let state: "ready" | "changing" | "revoked" | "closed" | "failed" = "ready";
   let reason = "";

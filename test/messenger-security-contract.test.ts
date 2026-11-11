@@ -117,6 +117,17 @@ test("invalid Discord setup tools leave the existing config unchanged", async ()
   expect((await fs.readdir(root)).filter(name => name.endsWith(".tmp"))).toEqual([]);
 });
 
+test("Discord setup rejects an invalid explicit Docker sandbox without prompting or changing configuration", async () => {
+  const root = await directory();
+  const configPath = path.join(root, "messenger.json");
+  const original = JSON.stringify({ sandbox: { image: "invalid image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, platforms: { discord: { allowedUserIds: ["owner"] } } });
+  await fs.writeFile(configPath, original);
+  await expect(setupDiscordMessenger({ configPath, dmTest: false }, {
+    interactive: true, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
+  }, { fetch: async () => { throw new Error("Unexpected network"); } })).rejects.toThrow("SANDBOX_CONFIG");
+  expect(await fs.readFile(configPath, "utf8")).toBe(original);
+});
+
 for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh: "fresh Discord setup creates a workspace accepted by sandbox policy", migration: "Discord setup reports missing-cwd migration to a sandbox-eligible workspace", private: "Discord setup refuses a private configured workspace without replacing the config" }[scenario], async () => {
   const root = await directory();
   const script = path.join(root, "setup-check.ts");
@@ -137,7 +148,7 @@ for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh:
       await fs.writeFile(configPath, original);
     }
     const notices: string[] = [];
-    const answers = ["local-test-image", "268435456", "32", "1"];
+    const answers: string[] = [];
     const responses: Record<string, unknown> = {
       "/users/@me": { id: "bot", username: "test-bot", bot: true },
       "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
@@ -169,6 +180,8 @@ for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh:
     } else {
       await setup();
       const config = await loadMessengerConfig(configPath);
+      if (${scenario === "fresh"} && JSON.stringify(config.sandbox) !== JSON.stringify({ backend: "native" })) throw new Error("Fresh setup did not select native sandbox");
+      if (${scenario === "migration"} && JSON.stringify(config.sandbox) !== JSON.stringify({ image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } })) throw new Error("Existing Docker sandbox was not preserved");
       await createSandboxPolicy({ sessionKey: "setup-test", revision: 1, cwd: config.cwd, config: config.sandbox! });
       if (${scenario === "migration"} && !notices.some(message => message.includes('had no "cwd"') && message.includes(config.cwd))) throw new Error("Missing workspace migration notice");
     }

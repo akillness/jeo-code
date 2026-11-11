@@ -120,6 +120,9 @@ async function readSandboxLocalHooks(sandbox: SandboxExecutionScope, cwd: string
   return { kind: "fallback" };
 }
 
+/** Registry hook membership is tracked separately to preserve its protocol payload. */
+const registryHooks = new WeakSet<HookEntry>();
+
 /**
  * Effective hook list, in run order: user registry (`userHooksPath()`) first, then the
  * configured list.
@@ -133,26 +136,29 @@ async function readSandboxLocalHooks(sandbox: SandboxExecutionScope, cwd: string
  *     `config.hooks.enabled === true` (so an untrusted repo cannot enable its own hooks);
  *     the project list replaces the config list, as before, but never the user registry.
  *
- * Sandboxed sessions skip the user registry: its commands live on the host and cannot
- * run inside the sandbox.
+ * Sandboxed sessions follow the same global install. All hooks execute in the sandbox;
+ * project configuration is read through it, and project opt-out never disables the registry.
  */
 export async function loadHooks(cwd: string, signal?: AbortSignal): Promise<HookEntry[]> {
-  const config = await readGlobalConfig();
+  const config = await readGlobalConfig({ requireValid: true });
   if (config.hooks?.enabled === false) return [];
 
   const sandbox = currentSandboxExecution();
   const configHooksOn = config.hooks?.enabled === true;
-  // Sandboxed sessions read the project file only when hooks are explicitly enabled, as before.
-  if (sandbox && !configHooksOn) return [];
-  // The registry lives on the host; a sandboxed session never runs it.
-  const user = sandbox ? undefined : await readLocalHooks(userHooksPath());
-  const userHooks = user?.kind === "hooks" ? user.hooks : [];
+  const user = await readLocalHooks(userHooksPath());
+  const userHooks = user.kind === "hooks" ? user.hooks : [];
   // Common case (no registry, hooks not enabled): nothing can run, so skip the project file.
   if (!configHooksOn && userHooks.length === 0) return [];
 
-  const local = sandbox
-    ? await readSandboxLocalHooks(sandbox, cwd, signal)
-    : await readLocalHooks(path.join(cwd, ".jeo", "hooks.json"));
+  if (sandbox) {
+    for (const hook of userHooks) registryHooks.add(hook);
+    if (!configHooksOn) return userHooks;
+    const guest = await readSandboxLocalHooks(sandbox, cwd, signal);
+    const configured = guest.kind === "disabled" ? [] : guest.kind === "hooks" ? guest.hooks : config.hooks?.hooks ?? [];
+    return userHooks.length ? [...userHooks, ...configured] : configured;
+  }
+
+  const local = await readLocalHooks(path.join(cwd, ".jeo", "hooks.json"));
   if (local.kind === "disabled") return [];
 
   const configured = !configHooksOn ? [] : local.kind === "hooks" ? local.hooks : config.hooks?.hooks ?? [];
@@ -224,22 +230,26 @@ async function runHookCommand(
   payload: unknown,
   cwd: string,
   timeoutMs = 30000,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  registry = false,
 ): Promise<HookRunResult> {
-  if (signal?.aborted) {
+  const sandbox = currentSandboxExecution();
+  if (signal?.aborted || sandbox?.signal?.aborted) {
     return { stdout: "", stderr: "", output: "", exitCode: null, timedOut: false, aborted: true };
   }
-  const sandbox = currentSandboxExecution();
   if (sandbox) {
     const timeout = AbortSignal.timeout(timeoutMs);
-    const result = await sandbox.supervisor.exec(["/bin/sh", "-c", runCmd], {
-      cwd, stdin: JSON.stringify(payload), signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    const signals = [signal, sandbox.signal, timeout].filter((item): item is AbortSignal => !!item);
+    const result = await sandbox.supervisor.exec([registry ? "/bin/bash" : "/bin/sh", "-c", runCmd], {
+      cwd, stdin: JSON.stringify(payload), signal: AbortSignal.any(signals),
     });
-    if (result.exitCode === undefined) throw new Error(result.error || "Malformed sandbox hook result: missing exitCode");
+    const timedOut = result.timedOut === true || timeout.aborted;
+    const aborted = result.aborted === true || signal?.aborted === true || sandbox.signal?.aborted === true;
+    if (result.exitCode === undefined && !timedOut && !aborted) throw new Error(result.error || "Malformed sandbox hook result: missing exitCode");
+    if (!result.success && result.exitCode === 0) throw new Error(result.error || "Malformed sandbox hook result: unsuccessful exit 0");
     return {
       stdout: result.stdout ?? result.output, stderr: result.stderr ?? "", output: result.output,
-      exitCode: result.exitCode, timedOut: result.timedOut === true || timeout.aborted,
-      aborted: result.aborted === true || signal?.aborted === true,
+      exitCode: result.exitCode ?? null, timedOut, aborted,
     };
   }
 
@@ -327,22 +337,25 @@ export function setHookSessionId(sessionId: string | undefined): void {
   hookSessionId = sessionId ?? "";
 }
 
-/**
- * Fields every hook payload carries. `event` is jeo's own name (kept for existing hooks);
- * `hook_event_name`/`session_id`/`cwd` follow the Claude hook protocol so scripts written
- * for Claude Code / Codex (`UserPromptSubmit`, `Stop`, `PreToolUse`) run unmodified.
- *
- * A sandboxed hook runs in the guest, so it gets the legacy payload only: never the host
- * `cwd` or session id.
- */
-function basePayload(event: HookEvent, claudeEvent: string, cwd: string) {
-  if (currentSandboxExecution()) return { event };
+/** Registry hooks retain the Claude protocol, but sandboxed hooks receive only a guest cwd. */
+async function basePayload(event: HookEvent, claudeEvent: string, cwd: string, registry: boolean, signal?: AbortSignal) {
+  const sandbox = currentSandboxExecution();
+  if (sandbox && !registry) return { event };
+  if (sandbox) {
+    const signals = [signal, sandbox.signal, AbortSignal.timeout(10000)].filter((item): item is AbortSignal => !!item);
+    const result = await sandbox.supervisor.exec(["/bin/pwd"], { cwd, signal: AbortSignal.any(signals) });
+    const guestCwd = (result.stdout ?? result.output).trim();
+    if (!result.success || result.exitCode !== 0 || !guestCwd.startsWith("/") || guestCwd.includes("\n")) {
+      throw new Error(`Sandbox hook cwd resolution failed: ${result.error || result.output || "invalid cwd"}`);
+    }
+    cwd = guestCwd;
+  }
   return { event, hook_event_name: claudeEvent, session_id: hookSessionId, cwd };
 }
 
-/** Claude-protocol aliases (`tool_name`/`tool_input`) for a tool call; none in a sandbox. */
-function toolAliases(tool: string, args: Record<string, unknown>) {
-  return currentSandboxExecution() ? {} : { tool_name: tool, tool_input: args };
+/** Claude-protocol aliases are available to registry hooks and unsandboxed hooks. */
+function toolAliases(tool: string, args: Record<string, unknown>, registry: boolean) {
+  return currentSandboxExecution() && !registry ? {} : { tool_name: tool, tool_input: args };
 }
 
 const MAX_HOOK_CONTEXT_CHARS = 8_000;
@@ -399,15 +412,16 @@ export async function runPreToolHooks(
     );
 
     for (const hook of preToolHooks) {
+      const registry = registryHooks.has(hook);
       const payload = {
-        ...basePayload("pre-tool", "PreToolUse", cwd),
+        ...await basePayload("pre-tool", "PreToolUse", cwd, registry, signal),
         tool,
         args,
-        ...toolAliases(tool, args),
+        ...toolAliases(tool, args, registry),
       };
 
       const timeoutMs = hook.timeoutMs || 30000;
-      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal);
+      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal, registry);
       if (result.timedOut) {
         const msg = `Pre-tool hook "${hook.run}" timed out after ${timeoutMs}ms.`;
         onNotice?.(msg);
@@ -489,9 +503,10 @@ export async function runPostTurnHooksForBatch(
     // Distinct hooks are independent commands → run them concurrently. Each hook
     // itself runs once for the whole batch (the redundancy this fix removes).
     const settled = await Promise.all(jobs.map(async ({ hook, matched }) => {
-      const base = basePayload("post-turn", "PostToolUse", cwd);
+      const registry = registryHooks.has(hook);
+      const base = await basePayload("post-turn", "PostToolUse", cwd, registry, signal);
       const payload = matched.length === 1
-        ? { ...base, tool: matched[0].tool, args: matched[0].args, ...toolAliases(matched[0].tool, matched[0].args), success: matched[0].success, output: outputPreviewOf(matched[0].output) }
+        ? { ...base, tool: matched[0].tool, args: matched[0].args, ...toolAliases(matched[0].tool, matched[0].args, registry), success: matched[0].success, output: outputPreviewOf(matched[0].output) }
         : {
             ...base,
             tool: matched.map(c => c.tool).join(","),
@@ -500,7 +515,7 @@ export async function runPostTurnHooksForBatch(
             output: outputPreviewOf(matched.map(c => c.output).join("\n")),
           };
       const timeoutMs = hook.timeoutMs || 30000;
-      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal);
+      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal, registry);
       return { hook, result };
     }));
 
@@ -556,13 +571,14 @@ export async function runPostImplementationHooks(
     let allSuccess = true;
 
     for (const hook of postImplHooks) {
+      const registry = registryHooks.has(hook);
       const payload = {
-        ...basePayload("post-implementation", "post-implementation", cwd),
+        ...await basePayload("post-implementation", "post-implementation", cwd, registry, signal),
         request,
       };
 
       const timeoutMs = hook.timeoutMs || 60000; // Implementation hooks get longer timeout
-      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal);
+      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal, registry);
       combinedOutput += result.output + "\n";
       
       if (result.exitCode !== 0) {
@@ -610,10 +626,11 @@ export async function runPrePromptHooks(
   try {
     const hooks = (await loadHooks(cwd, signal)).filter(h => h.event === "pre-prompt");
     if (hooks.length === 0 || !prompt.trim()) return { context: "", ran: 0 };
-    const payload = { ...basePayload("pre-prompt", "UserPromptSubmit", cwd), prompt: prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS) };
     const settled = await Promise.all(hooks.map(async hook => {
       try {
-        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || PRE_PROMPT_TIMEOUT_MS, signal) };
+        const registry = registryHooks.has(hook);
+        const payload = { ...await basePayload("pre-prompt", "UserPromptSubmit", cwd, registry, signal), prompt: prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS) };
+        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || PRE_PROMPT_TIMEOUT_MS, signal, registry) };
       } catch (err: unknown) {
         onNotice?.(`Pre-prompt hook "${hook.run}" failed to start (advisory): ${err instanceof Error ? err.message : String(err)}`);
         return undefined;
@@ -667,20 +684,21 @@ export async function runTurnEndHooks(
     const hooks = (await loadHooks(cwd, signal)).filter(h => h.event === "turn-end");
     if (hooks.length === 0) return { ran: 0 };
     const response = info.response.length > MAX_RESPONSE_PAYLOAD_CHARS ? info.response.slice(0, MAX_RESPONSE_PAYLOAD_CHARS) : info.response;
-    const payload = {
-      ...basePayload("turn-end", "Stop", cwd),
-      prompt: info.prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS),
-      response,
-      last_assistant_message: response,
-      assistant_output: response,
-      done: info.done,
-      steps: info.steps,
-      model: info.model ?? "",
-      stop_hook_active: false,
-    };
     const settled = await Promise.all(hooks.map(async hook => {
       try {
-        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || TURN_END_TIMEOUT_MS, signal) };
+        const registry = registryHooks.has(hook);
+        const payload = {
+          ...await basePayload("turn-end", "Stop", cwd, registry, signal),
+          prompt: info.prompt.slice(0, MAX_PROMPT_PAYLOAD_CHARS),
+          response,
+          last_assistant_message: response,
+          assistant_output: response,
+          done: info.done,
+          steps: info.steps,
+          model: info.model ?? "",
+          stop_hook_active: false,
+        };
+        return { hook, result: await runHookCommand(hook.run, payload, cwd, hook.timeoutMs || TURN_END_TIMEOUT_MS, signal, registry) };
       } catch (err: unknown) {
         onNotice?.(`Turn-end hook "${hook.run}" failed to start (advisory): ${err instanceof Error ? err.message : String(err)}`);
         return undefined;

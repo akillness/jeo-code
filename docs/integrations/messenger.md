@@ -6,7 +6,20 @@ Each conversation is a persistent worker session keyed by workspace, platform ac
 
 ## Sandbox (required for remote execution)
 
-Messenger requires an effective sandbox for every platform: a `sandbox` block in the messenger file or an inherited global `sandbox`. Discord requires the block in the messenger file itself. Every platform in the file runs its tools in session-specific containers, and sandbox failures never fall back to host execution.
+Every remote conversation runs in a sandbox, and sandbox failures never fall back to host execution. **Discord needs no Docker**: with no `sandbox` block it runs in the operating system's own sandbox (macOS Seatbelt `sandbox-exec`; Linux bubblewrap `bwrap` with unprivileged user namespaces). Other platforms use the messenger file's `sandbox` block or an inherited global one. Add a Docker block only when you want container isolation and resource limits.
+
+### Native sandbox (Discord default)
+
+- **One independent sandbox per conversation.** A Discord thread or DM routes to its own worker and its own sandbox; nothing is shared between conversations.
+- **Every process a session starts dies with it.** When the session is deleted or ended, its worker exits, or the gateway stops, the sandbox kills all of its processes, including daemons that detached themselves (`setsid`, double fork) and were re-parented to launchd. Ending a session reports success only after a fresh scan finds no member left.
+- **Crash safe.** A worker or gateway killed without cleanup leaves its sandbox processes running; the next gateway start and the next worker start reap them (the owning host pid is recorded in the session's scratch directory and a live owner's session is never touched), so nothing keeps consuming memory.
+- **How members are found.** On macOS the kernel names them: a Seatbelt sandbox is inherited across fork, exec and setsid and cannot be shed, and each session's profile allows one unique mach service name that no other profile does (`sandbox_check` from libsandbox). A launch that cannot prove this fails closed with `SANDBOX_UNAVAILABLE`. On Linux the bubblewrap PID namespace dies with its init.
+- **Boundary.** No network; writes only to the approved workspace and a private scratch directory; the home directory and other private paths are unreadable; global skills follow the installed catalog, and their support files are visible only through an explicit `sandboxSkillAssets` file allowlist in `~/.jeo/config.json`.
+- **Limits.** No cgroup memory, CPU or PID limits natively; global hooks that need paths outside the approved roots fail inside the sandbox rather than run on the host; Linux was not verified on a macOS host; native Windows has no native sandbox and needs the Docker block.
+
+### Optional Docker sandbox
+
+Existing configurations keep working. A `sandbox` block with an image selects session containers instead:
 
 ```json
 {
@@ -36,7 +49,7 @@ Requirements the sandbox enforces (`src/agent/sandbox/docker.ts`):
 - Containers run with `--network none`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, a private `/tmp`, and the configured pids/memory/cpus limits.
 - Only the workspace (`cwd`, mounted at `/workspace`) and approved grants are mounted. `sessionDir` must be outside and disjoint from `cwd`. The workspace must also be disjoint from the profile directory (the directory holding `messenger.json`, the token file and the run script), in both directions. `check`, `run` and setup refuse an overlap. An omitted `cwd` resolves to the config directory itself, which is refused under a sandbox, so set `cwd` explicitly.
 
-`setup` prompts for the image and limits unless the target config already has a valid `sandbox` block. For unattended setup, write that block first.
+`setup` no longer asks for an image or limits. With no `sandbox` block it selects the native sandbox for Discord; an existing valid `sandbox` block (Docker) is kept as is, and nothing is deleted from the user's config, workspace or Docker images.
 
 Fresh setup creates `~/jeo-discord-workspace` when the existing config has no `cwd` key; the directory is mode 0700 and marked with `.jeo-workspace`, and a re-run reuses it only when that marker is present. An unmarked existing directory is never adopted, and an explicit `cwd` is never replaced. Before writing, setup stages the config and runs the loader and the same policy admission `messenger run` performs (with a stand-in for the random authority state directory that launch creates), so an unusable workspace leaves the previous file untouched. A passing setup is not a launch proof.
 

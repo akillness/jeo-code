@@ -28,6 +28,12 @@ interface PrivacyReport {
   parentReadSentinel: boolean;
   rpc: Array<{ tool?: string; args?: { action: string }; cwd?: string }>;
   unsafeRoot?: string;
+  mapped?: string;
+  content?: string;
+  support?: string;
+  escaped?: string | null;
+  cycle?: string | null;
+  aliasRejected?: boolean;
 }
 
 async function scenario(mode: string): Promise<PrivacyReport> {
@@ -92,15 +98,89 @@ test("sandbox catalog skips an unmounted unsafe root instead of reading its pare
   expect(JSON.stringify(report.rpc)).not.toContain("PARENT-PRIVATE-CATALOG-a81e");
 }, 30_000);
 
-test("protected native agent roots and canonical .claude to .agents aliases load, but a workspace then dot-dot escape never becomes a parent read", async () => {
+test("approved native agent roots load while aliases and workspace dot-dot escapes never become parent reads", async () => {
   const report = await scenario("protected");
-  expect(report.skills.map(skill => skill.name)).toEqual(["protected-alias", "protected-store", "protected-native"]);
-  expect(report.skills[0]!.raw).toContain("Protected native alias guidance");
+  expect(report.skills.map(skill => skill.name)).toEqual(["protected-claude", "protected-store", "protected-native"]);
+  expect(report.skills[0]!.raw).toContain("Protected native Claude guidance");
   expect(report.skills[1]!.raw).toContain("Canonical protected store guidance");
   expect(report.skills[2]!.raw).toContain("Protected native install guidance");
+  expect(report.skills.some(skill => skill.name === "protected-alias")).toBe(false);
   expect(report.parentReadSentinel).toBe(false);
   expect(JSON.stringify(report.skills)).not.toContain("PARENT-PRIVATE-CATALOG-a81e");
   expect(JSON.stringify(report.rpc)).not.toContain("PARENT-PRIVATE-CATALOG-a81e");
+}, 30_000);
+
+test("global skill assets require exact file authorization and reject unsafe approval paths", async () => {
+  const report = await scenario("skill-asset-authorization") as unknown as {
+    mapped?: string;
+    skills: Array<{ name: string; raw: string }>;
+    noSnapshotSkills: string[];
+    snapshotFiles: Record<string, string>;
+    rejected: Record<string, boolean>;
+  };
+  expect(report.mapped).toBeTruthy();
+  expect(report.skills.find(skill => skill.name === "allowed")?.raw).toContain("Read references/guide.txt");
+  expect(report.skills.some(skill => skill.name === "denied")).toBe(false);
+  expect(report.noSnapshotSkills).not.toContain("allowed");
+  expect(report.noSnapshotSkills).not.toContain("denied");
+  const bytes = JSON.stringify(report.snapshotFiles);
+  expect(bytes).toContain("APPROVED-SUPPORT");
+  expect(bytes).not.toContain("UNAPPROVED-SUPPORT");
+  expect(bytes).not.toContain("PRIVATE-SKILL");
+  expect(bytes).not.toContain("PRIVATE-SECRET");
+  expect(report.rejected).toEqual({ directory: true, symlink: true, intermediateSymlink: true, hardlink: true, traversal: true, outside: true, wildcard: true, relative: true });
+}, 30_000);
+
+test("a renamed skill directory cannot inject outside bytes during snapshot", async () => {
+  const report = await scenario("skill-asset-directory-race") as unknown as { raced: boolean; rejected: boolean; content: string };
+  expect(report.raced).toBe(true);
+  expect(report.content).not.toContain("PRIVATE-RACE-CONTENT");
+  expect(report.rejected || report.content === "APPROVED-CONTENT").toBe(true);
+}, 30_000);
+
+test.skipIf(process.platform !== "darwin")("native sandbox can use approved skill assets but cannot read unapproved files or write snapshots", async () => {
+  const report = await scenario("skill-asset-authorization-native") as unknown as {
+    permitted: { success: boolean; output: string };
+    unapproved: { success: boolean }; original: { success: boolean }; escaped: { success: boolean }; write: { success: boolean };
+    resources: Array<{ source: string; snapshot: string }>;
+    task: string; support: string; snapshotRoot: string;
+  };
+  expect(report.permitted!.success).toBe(true);
+  expect(report.permitted!.output).toContain("APPROVED-SUPPORT");
+  expect(report.resources).toHaveLength(1);
+  const helper = report.resources[0]!;
+  expect(helper.source).toBe(report.support);
+  expect(path.relative(report.snapshotRoot, helper.snapshot)).not.toMatch(/^\.\./);
+  expect(report.task).toContain(`${helper.source} -> ${helper.snapshot}`);
+  expect(report.task).not.toContain("unapproved.txt");
+  for (const result of [report.unapproved, report.original, report.escaped, report.write]) expect(result.success).toBe(false);
+  expect(JSON.stringify(report)).not.toContain("PRIVATE-SKILL");
+  expect(JSON.stringify(report)).not.toContain("PRIVATE-SECRET");
+}, 30_000);
+
+test("approved skill snapshots preserve support files while rejecting aliases, external symlinks and cycles", async () => {
+  const report = await scenario("skill-assets");
+  expect(report.mapped).toBeTruthy();
+  expect(report.aliasRejected).toBe(true);
+  expect(report.content).toContain("Read references/guide.txt");
+  expect(report.support).toBe("trusted-support");
+  expect(report.escaped).toBeNull();
+  expect(report.cycle).toBeNull();
+}, 30_000);
+
+test.skipIf(process.platform !== "darwin")("native sandbox reads inherited snapshot support but cannot write it or access external secrets", async () => {
+  const report = await scenario("skill-assets-native") as unknown as {
+    sourcePath: string; snapshotRoot: string;
+    support: { success: boolean; output: string };
+    secret: { success: boolean; output: string };
+    write: { success: boolean; output: string };
+  };
+  expect(path.relative(report.snapshotRoot, report.sourcePath)).not.toMatch(/^\.\./);
+  expect(report.support.success).toBe(true);
+  expect(report.support.output).toContain("trusted-support");
+  expect(report.secret.success).toBe(false);
+  expect(report.secret.output).not.toContain("private-secret");
+  expect(report.write.success).toBe(false);
 }, 30_000);
 
 test("legacy workspace raw memory refuses sandbox startup without rewriting history or starting a worker/model", async () => {

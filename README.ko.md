@@ -41,7 +41,7 @@
 
 - [양방향 메신저 게이트웨이 (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. Discord는 명시적인 로컬 Docker 샌드박스가 필수이며, 설정된 도구는 호스트 데스크톱/셸이 아닌 Linux 게스트에서 실행됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
+**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. Discord는 Docker 없이 운영체제 자체 샌드박스(macOS Seatbelt·Linux bubblewrap)에서 대화마다 독립된 세션으로 실행되며, 세션이 끝나면 그 세션이 띄운 모든 프로세스도 함께 종료됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
 
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
 
@@ -312,6 +312,10 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 
 Discord 스레드 하나는 발신자·메시지와 무관하게 하나의 영속 세션을 유지합니다. 같은 스레드는 FIFO로 처리하고 다른 세션은 동시에 실행할 수 있습니다. 선택한 워크스페이스를 공유하며 세션별 Git worktree를 만들지 않으므로 파일 수정은 충돌할 수 있습니다.
 
+**네이티브 샌드박스(기본, Docker 불필요).** `sandbox` 블록이 없으면 Discord 대화는 운영체제 자체 샌드박스(macOS Seatbelt `sandbox-exec` 또는 Linux bubblewrap `bwrap`, 비특권 사용자 네임스페이스 필요)에서 실행됩니다. 대화마다 별도의 워커와 샌드박스를 갖습니다: 네트워크 없음, 워크스페이스와 비공개 스크래치 디렉터리에만 쓰기, 홈과 기타 비공개 경로는 읽을 수 없습니다. **세션이 시작한 모든 프로세스는 세션과 함께 종료됩니다.** 세션이 삭제·종료되거나 워커가 끝나거나 게이트웨이가 멈추면, 스스로 분리(`setsid`, 이중 fork)되어 launchd로 재부모화된 데몬까지 포함해 샌드박스가 모든 프로세스를 종료합니다. 정리 없이 종료된 워커·게이트웨이의 잔여 프로세스는 다음 시작 때 정리되어 메모리를 계속 쓰지 않습니다. macOS에서는 커널이 세션 구성원을 식별하며(샌드박스는 fork·exec·setsid를 넘어 상속됨), 이를 증명하지 못하는 실행은 명시적 오류로 닫힙니다. 제한: 네이티브 cgroup 메모리·CPU·PID 제한 없음, 승인된 루트 밖 경로가 필요한 전역 훅은 호스트에서 실행되지 않고 샌드박스 안에서 실패, 전역 스킬 자산은 `~/.jeo/config.json`의 `sandboxSkillAssets` 파일 허용 목록으로만 노출, Linux는 비특권 사용자 네임스페이스가 되는 `bwrap`이 필요하며 macOS 호스트에서는 검증하지 못함, 네이티브 Windows는 네이티브 샌드박스가 없어 아래 Docker 블록이 필요합니다.
+
+**선택 사항인 Docker 샌드박스**(기존 설정은 계속 동작):
+
 메신저 설정에 `sandbox`를 지정하세요. `~/.jeo/config.json`에도 같은 형식으로 설정하면 터미널 세션을 격리합니다:
 
 ```json
@@ -517,10 +521,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)
 - **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
 - **[0.12.31]** (2026-11-08) — LM Studio local provider & tmux recovery polish, Slack/Telegram integration documentation parity, and Tier 2 source-bound recovery, AST structural read summaries, and credential-free status DTO.
-- **[0.12.30]** (2026-11-07)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

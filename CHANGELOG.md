@@ -9,6 +9,20 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.35] - 2026-11-11
+_Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started._
+
+### Added
+- **Native session sandbox for Discord** (`src/agent/sandbox/native.ts`) — with no `sandbox` block a Discord conversation now runs in the operating system's own sandbox (macOS Seatbelt, Linux bubblewrap), with no Docker and no image to prepare. Each conversation (thread or DM) gets its own worker and its own sandbox. Existing Docker blocks keep working untouched.
+- **Every process a session starts dies with it.** Ending a session (deleted, ended, worker exit, gateway stop) kills all of its processes, including daemons that detached themselves (`setsid`, double fork) and were re-parented to launchd, and reports success only after a fresh scan finds no member left. On macOS the kernel names the members (a Seatbelt sandbox is inherited across fork, exec and setsid; each session's profile allows one unique mach service name, checked with libsandbox `sandbox_check`, with a canary against permissive third-party profiles); a launch that cannot prove this fails closed. On Linux the bubblewrap PID namespace dies with its init.
+- **Crash-safe reaping.** `reapOrphanedNativeProcesses()` kills the processes of sessions whose owning host died without cleanup (killed worker, crashed gateway) and removes their scratch; it runs at messenger start, at worker start, and when a worker exits without acknowledging shutdown. A live owner's session is never touched.
+- **Global skills in sandboxed sessions.** Conversation workers follow the globally installed skill catalog (no more `--no-skills`); skill support files are exposed only through an explicit `sandboxSkillAssets` file allowlist in `~/.jeo/config.json`, read through descriptor-relative no-follow opens and re-verified against the authorized path after the read.
+
+### Changed
+- `jeo messenger setup` no longer asks for a Docker image or limits; a valid existing `sandbox` block is preserved as is.
+- Global hooks run inside the session sandbox instead of on the host; one that needs paths outside the approved roots fails there rather than escaping.
+- Invalid global config now fails closed (no silent fallback to defaults that would drop the sandbox), and the sandbox schema accepts `{ "backend": "native" }`.
+
 ### Fixed
 - **Anthropic OAuth: newer models (e.g. `claude-fable-5-2`) rejected with HTTP 400 `claude_code_version_too_old`** (`src/ai/claude-code-version.ts`, `src/ai/providers/anthropic.ts`, `src/agent/web-search.ts`) — the advertised Claude Code version was a stale constant (`2.1.289`) duplicated in two files. It is now a single module: baseline bumped to `2.1.322`, the locally installed `claude --version` is used when newer, `JEO_CLAUDE_CODE_VERSION` overrides everything, and on a `claude_code_version_too_old` 400 the provider raises the advertised version to the server's stated minimum and re-sends once — so future gates no longer need a jeo release.
 

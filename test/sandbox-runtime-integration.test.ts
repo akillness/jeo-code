@@ -204,6 +204,7 @@ test("captured sandbox scope follows delegated work invoked outside the parent's
   const supervisor = denyingSupervisor("nested");
   supervisor.call = async (name, args) => {
     if (name === "__workflow" && args.operation === "loadContext") return { success: true, output: "[]" };
+    if (name === "__workflow" && args.operation === "discoverGuidance") return { success: true, output: "[]" };
     if (name === "__workflow" && args.operation === "memory" && args.action === "prompt") return { success: true, output: JSON.stringify("") };
     return { success: false, output: "", error: "SANDBOX_DENIED:nested" };
   };

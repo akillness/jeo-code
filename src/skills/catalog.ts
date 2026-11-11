@@ -20,6 +20,8 @@ export interface SkillDoc {
   aliases?: string[];
   /** Source SKILL.md path for discovered skills; absent for bundled skills. */
   sourcePath?: string;
+  /** Original-to-snapshot paths for explicitly approved sandbox resources. */
+  sandboxResources?: Array<{ source: string; snapshot: string }>;
   raw?: string;
 }
 
@@ -110,6 +112,7 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
     `<skill_guidance name="${skill.name}">`,
     compactSkillExecutionBrief(skill),
     `</skill_guidance>`,
+    ...(skill.sandboxResources?.length ? ["Only the following skill resource files are authorized. Use their snapshot paths instead of the original paths:", ...skill.sandboxResources.map(resource => `${resource.source} -> ${resource.snapshot}`), ""] : []),
     "",
     requested +
       (intent
@@ -229,9 +232,11 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS, currentTask?: s
 }
 
 import * as fs from "node:fs/promises";
-import type { Dirent } from "node:fs";
+import { constants as fsConstants, closeSync, fstatSync, lstatSync, readSync, realpathSync } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { dlopen } from "bun:ffi";
 
 import { jeoEnv } from "../util/env";
 import { currentSandboxExecution } from "../agent/hooks";
@@ -354,6 +359,119 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
     path.join(cwd, ".jeo", "agent", "skills"),
     ...configured,
   ];
+}
+
+/** Fixed user skill stores only: never turn a redirected root or a configured
+ * arbitrary directory into guest authority. Descendant symlinks remain subject
+ * to the sandbox's normal path restrictions. */
+export async function nativeSandboxSkillRoots(cwd: string): Promise<string[]> {
+  const home = await canonicalSandboxPath(await nativeSandboxHome());
+  const allowed = new Set([
+    path.join(home, ".claude", "skills"),
+    path.join(home, ".agents", "skills"),
+    path.join(home, ".agent-skills"),
+    path.join(home, ".jeo", "agent", "skills"),
+    path.join(home, ".jeo", "skills"),
+  ]);
+  const roots: string[] = [];
+  for (const dir of skillDirs(cwd).slice(0, 5)) {
+    const expected = path.resolve(dir);
+    if (!allowed.has(expected)) continue;
+    try {
+      const actual = await fs.realpath(expected);
+      if (actual === expected && (await fs.stat(actual)).isDirectory() && !roots.includes(actual)) roots.push(actual);
+    } catch { /* Missing or inaccessible optional store. */ }
+  }
+  return roots;
+}
+
+export interface SandboxSkillSnapshot {
+  root: string;
+  paths: Map<string, string>;
+  resources?: Map<string, string>;
+}
+
+/** Open every component without following links; never resolve an untrusted pathname after opening it. */
+function readAuthorizedSkillFile(source: string, remainingBytes: number): { data: Buffer; mode: number } {
+  const library = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : process.platform === "linux" ? "libc.so.6" : undefined;
+  if (!library || !fsConstants.O_DIRECTORY || !fsConstants.O_NOFOLLOW) throw new Error("SANDBOX_SKILLS: safe directory-relative file access is unavailable");
+  const libc = dlopen(library, {
+    open: { args: ["ptr", "i32"], returns: "i32" },
+    openat: { args: ["i32", "ptr", "i32"], returns: "i32" },
+  });
+  let fd = -1;
+  try {
+    fd = libc.symbols.open(Buffer.from("/\0"), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    if (fd < 0) throw new Error("SANDBOX_SKILLS: cannot open trusted filesystem root");
+    const components = source.slice(1).split(path.sep);
+    for (let i = 0; i < components.length; i++) {
+      const flags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (i < components.length - 1 ? fsConstants.O_DIRECTORY : fsConstants.O_NONBLOCK);
+      const next = libc.symbols.openat(fd, Buffer.from(`${components[i]}\0`), flags);
+      if (next < 0) throw new Error("SANDBOX_SKILLS: authorized path is inaccessible or traverses a symlink");
+      closeSync(fd);
+      fd = next;
+    }
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 8 * 1024 * 1024) throw new Error("SANDBOX_SKILLS: authorized resource must be a bounded regular file without hard links");
+    if (stat.size > remainingBytes) throw new Error("SANDBOX_SKILLS: snapshot limit exceeded");
+    const data = Buffer.alloc(stat.size + 1);
+    let count = 0;
+    while (count < data.length) {
+      const size = readSync(fd, data, count, data.length - count, count);
+      if (!size) break;
+      count += size;
+    }
+    if (count !== stat.size) throw new Error("SANDBOX_SKILLS: source changed during snapshot");
+    // The authorized path must still lead to the very file that was read: a directory moved away and
+    // replaced between the walk and the open would otherwise leak the moved tree's bytes. Ceiling: a
+    // same-user host process rewriting the store in the instant after this check; the sandboxed guest
+    // cannot rename host directories.
+    const end = fstatSync(fd);
+    let named: Stats | undefined;
+    try { named = lstatSync(source); } catch { /* The path no longer names a file. */ }
+    if (!named || realpathSync(source) !== source || named.dev !== stat.dev || named.ino !== stat.ino || end.nlink !== 1 || end.size !== stat.size || end.mtimeMs !== stat.mtimeMs) {
+      throw new Error("SANDBOX_SKILLS: authorized path changed during snapshot");
+    }
+    return { data: data.subarray(0, count), mode: stat.mode };
+  } finally {
+    if (fd >= 0) closeSync(fd);
+    libc.close();
+  }
+}
+
+/** Copy only individually authorized regular files from fixed global skill stores. */
+export async function snapshotSandboxSkillAssets(cwd: string, destination: string, writableRoots: readonly string[] = [], authorizedFiles: readonly string[] = []): Promise<SandboxSkillSnapshot> {
+  if (currentSandboxExecution()) throw new Error("SANDBOX_SKILLS: snapshot requires trusted initialization");
+  const stores = await nativeSandboxSkillRoots(cwd);
+  const denied = await Promise.all([cwd, ...writableRoots].map(dir => canonicalSandboxPath(dir, false)));
+  const paths = new Map<string, string>();
+  const resources = new Map<string, string>();
+  const root = await canonicalSandboxPath(destination, false);
+  if (stores.some(store => withinCatalogRoot(root, store)) || denied.some(dir => withinCatalogRoot(root, dir))) {
+    throw new Error("SANDBOX_SKILLS: snapshot destination overlaps a source or writable root");
+  }
+  await fs.mkdir(root, { mode: 0o700 });
+  let bytes = 0;
+  for (const source of new Set(authorizedFiles)) {
+    if (typeof source !== "string" || source.includes("\0") || !path.isAbsolute(source) || path.resolve(source) !== source) {
+      throw new Error("SANDBOX_SKILLS: authorized files must be normalized absolute paths");
+    }
+    const store = stores.find(dir => withinCatalogRoot(source, dir) && source !== dir);
+    if (!store || denied.some(dir => withinCatalogRoot(source, dir))) {
+      throw new Error("SANDBOX_SKILLS: authorized file is outside a permitted skill store");
+    }
+    const relative = path.relative(store, source);
+    const { data, mode } = readAuthorizedSkillFile(source, 256 * 1024 * 1024 - bytes);
+    bytes += data.length;
+    const index = skillDirs(cwd).slice(0, 5).findIndex(dir => path.resolve(dir) === store);
+    const target = path.join(root, String(index), relative);
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await fs.writeFile(target, data, { flag: "wx", mode: 0o600 | (mode & 0o100) });
+    resources.set(source, target);
+    const components = relative.split(path.sep);
+    if ((components.length === 2 && components[1] === "SKILL.md") || (components.length === 1 && components[0]!.endsWith(".md"))) paths.set(source, target);
+  }
+  return { root, paths, resources };
 }
 
 
@@ -576,18 +694,18 @@ async function traceCatalogPath(file: string, roots: string[], protectedRoots: s
 
 /** Must run before the supervisor executes any model-controlled guest code.
  * Parent skill bytes are frozen in memory, not reread after tools can mutate paths. */
-export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, cwd: string, writableRoots: readonly string[] = [], readableRoots: readonly string[] = writableRoots): Promise<void> {
+export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, cwd: string, writableRoots: readonly string[] = [], readableRoots: readonly string[] = writableRoots, snapshot?: SandboxSkillSnapshot): Promise<void> {
   if (currentSandboxExecution()) throw new Error("SANDBOX_SKILLS: snapshot requires trusted initialization");
   if (sandboxSkillCatalogs.has(supervisor)) throw new Error("SANDBOX_SKILLS: catalog already initialized");
   const roots = [...new Set([path.resolve(cwd), await fs.realpath(cwd), ...writableRoots.map(root => path.resolve(root))])];
   // These roots (and their canonical aliases) are forbidden to EVERY sandbox
   // profile, unlike runtime HOME/config directories or another session's grants.
   const nativeHome = await nativeSandboxHome();
-  const nativeRoots = [".agents", ".claude", ".jeo", ".jeopi"].map(name => path.join(nativeHome, name));
+  const nativeRoots = [".agents", ".agent-skills", ".claude", ".jeo", ".jeopi"].map(name => path.join(nativeHome, name));
   const protectedRoots = [...new Set([...nativeRoots, ...await Promise.all(nativeRoots.map(root => canonicalSandboxPath(root, false)))])];
   const authorizedRoots = [...new Set([path.resolve(cwd), await fs.realpath(cwd), ...readableRoots.map(root => path.resolve(root))])];
   const directories: CatalogDirectory[] = [];
-  for (const dir of skillDirs(cwd)) {
+  for (const [index, dir] of skillDirs(cwd).entries()) {
     let location: CatalogPath;
     try { location = await traceCatalogPath(dir, roots, protectedRoots); }
     catch {
@@ -597,34 +715,25 @@ export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, 
     const directory: CatalogDirectory = { location, entries: [] };
     directories.push(directory);
     if (guestCatalogPath(location, roots)) continue;
-    let entries: Dirent[];
-    try { entries = await fs.readdir(location.path, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      try {
-        let resolved = await traceCatalogPath(path.join(location.path, entry.name), roots, protectedRoots);
-        resolved.traversal.unshift(...location.traversal.map(root => path.join(root, entry.name)));
-        resolved.visited = [...(location.visited ?? []), ...(resolved.visited ?? [])];
-        let isDirectory = false;
-        if (!guestCatalogPath(resolved, roots)) {
-          const stat = await fs.stat(resolved.path);
-          if (stat.isDirectory()) {
-            isDirectory = true;
-            const skillFile = await traceCatalogPath(path.join(resolved.path, "SKILL.md"), roots, protectedRoots);
-            skillFile.traversal.unshift(...resolved.traversal.map(root => path.join(root, "SKILL.md")));
-            skillFile.visited = [...(resolved.visited ?? []), ...(skillFile.visited ?? [])];
-            resolved = skillFile;
-          } else if (!stat.isFile() || !entry.name.endsWith(".md")) continue;
+    if (index < 5) {
+      if (!snapshot) continue;
+      for (const [source, frozen] of snapshot.paths) {
+        const relative = path.relative(dir, source);
+        if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+        const components = relative.split(path.sep);
+        if (components.length !== 1 && !(components.length === 2 && components[1] === "SKILL.md")) continue;
+        const skillName = components[0]!.replace(/\.md$/, "");
+        const itemLocation = await traceCatalogPath(source, roots, protectedRoots);
+        if (guestCatalogPath(itemLocation, roots)) continue;
+        const doc = parseSkillMarkdown(skillName, await fs.readFile(frozen, "utf-8"), { preferMetaName: true });
+        doc.sourcePath = frozen;
+        if (components.length === 2) {
+          const skillRoot = path.dirname(source);
+          doc.sandboxResources = [...(snapshot.resources ?? new Map())].filter(([original]) => original !== source && withinCatalogRoot(original, skillRoot)).map(([original, target]) => ({ source: original, snapshot: target }));
         }
-        const item: CatalogEntry = { location: resolved, skillName: entry.name.replace(/\.md$/, "") };
-        directory.entries.push(item);
-        if (guestCatalogPath(resolved, roots)) continue;
-        const doc = parseSkillMarkdown(entry.name.replace(/\.md$/, ""), await fs.readFile(resolved.path, "utf-8"), { preferMetaName: true });
-        doc.sourcePath = path.join(dir, entry.name, ...(isDirectory ? ["SKILL.md"] : []));
-        if (isSupportedExternalSkill(doc)) item.doc = doc;
-      } catch {
-        // Absent/unreadable global docs are not part of this session's snapshot.
+        if (isSupportedExternalSkill(doc)) directory.entries.push({ location: itemLocation, skillName, doc });
       }
+      continue;
     }
   }
   sandboxSkillCatalogs.set(supervisor, { cwd: path.resolve(cwd), roots, readableRoots: authorizedRoots, directories });

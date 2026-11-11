@@ -24,7 +24,7 @@ describe("messenger model policy", () => {
     expect(() => parseMessengerConfig({ sandbox, platforms: { telegram: discord } }, ".")).toThrow();
     expect(() => parseMessengerConfig({ sandbox, platforms: { discord: { allowedUserIds: ["1"], usageFallbackModel: "terra" } } }, ".")).toThrow("requires discord.model");
   });
-  test("requires an explicit sandbox for Discord", () => {
-    expect(() => parseMessengerConfig({ platforms: { discord: { allowedUserIds: ["1"], model: "gemini" } } }, ".")).toThrow();
+  test("preserves absent sandbox configuration for per-platform defaults", () => {
+    expect(parseMessengerConfig({ cwd: "workspace", sessionDir: "sessions", platforms: { discord: { allowedUserIds: ["1"], model: "gemini" } } }, ".").sandbox).toBeUndefined();
   });
 });

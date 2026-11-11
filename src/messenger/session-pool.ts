@@ -52,6 +52,12 @@ export interface MessengerSessionPoolOptions {
 	 * environments carry no platform tokens, and the conversation key is a route digest, never message text.
 	 */
 	onDiagnostic?: (key: string, line: string) => void;
+	/**
+	 * Kills the sandbox processes a worker left behind when it exited without acknowledging shutdown (the worker's
+	 * own environment says which sandbox it used). Resolves true only when nothing is left; false or a rejection
+	 * keeps the worker's cleanup unproven.
+	 */
+	reapOrphans?: (workerEnv: Readonly<Record<string, string>>) => Promise<boolean>;
 }
 
 /** One printable, bounded line: control characters collapse to spaces. */
@@ -68,6 +74,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 	const keyTails = new Map<string, Promise<void>>();
 	const requireSandboxCleanup = options.requireSandboxCleanup === true;
 	const onDiagnostic = options.onDiagnostic;
+	const reapOrphans = options.reapOrphans;
 	const incomplete = (detail: string) => new Error(`REVOKE_INCOMPLETE: ${detail}`);
 
 	let closed = false;
@@ -276,8 +283,11 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			} else diagnose(line);
 		}).catch(() => retire(key, worker));
 		if (cleanupNonce) {
-			void Promise.all([child.exited, stderrDone, stdoutDone]).then(([code]) => {
-				if (worker.cleanupGone) cleanup.resolve(code);
+			void Promise.all([child.exited, stderrDone, stdoutDone]).then(async ([code]) => {
+				// A worker that died before acknowledging (killed, crashed) never ran its supervisor close, so the
+				// processes of its sandbox are orphans: reap them, and only a complete reap counts as cleanup proof.
+				const reaped = worker.cleanupGone || !reapOrphans ? false : await reapOrphans(env).catch(() => false);
+				if (worker.cleanupGone || reaped) cleanup.resolve(code);
 				else cleanup.reject(worker.cleanupError ?? incomplete("worker exited without supervisor cleanup acknowledgement"));
 			}, error => cleanup.reject(incomplete(`worker exit could not be verified: ${String(error)}`)));
 		}

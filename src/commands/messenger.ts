@@ -13,11 +13,13 @@ import { createMessengerSessionPool } from "../messenger/session-pool";
 import { createSlackAdapter } from "../messenger/slack";
 import { createTelegramAdapter } from "../messenger/telegram";
 import type { MessengerAdapter, MessengerConfig, MessengerReply } from "../messenger/types";
+import { reapOrphanedNativeProcesses } from "../agent/sandbox/native";
 import { createSession } from "../agent/session";
 import { selectDiscordModel } from "../messenger/model-selection";
 import type { MessengerGatewayOptions } from "../messenger/gateway";
 import { notifySessionEndpointPath } from "../agent/notify/paths";
 import { parseSessionEndpoint } from "../agent/notify/session-discovery";
+import type { SandboxConfig } from "../agent/sandbox/types";
 
 async function sendSandboxControl(config: MessengerConfig, id: string, userId: string, text: string, signal: AbortSignal): Promise<string> {
 	const file = await fs.open(notifySessionEndpointPath(id), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -115,6 +117,16 @@ function routeUuid(config: MessengerConfig, message: Parameters<MessengerReply>[
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/** Whether a worker's environment selects the Docker-free native sandbox. */
+function usesNativeSandbox(workerEnv: Readonly<Record<string, string>>): boolean {
+	const raw = workerEnv.JEO_MESSENGER_SANDBOX;
+	if (!raw) return false;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return typeof parsed === "object" && parsed !== null && "backend" in parsed && parsed.backend === "native";
+	} catch { return false; }
+}
+
 export interface MessengerCliReplyOptions {
 	/** Operator log line sink (gateway stderr); receives bounded worker diagnostics, never message text or tokens. */
 	log?: (line: string) => void;
@@ -122,15 +134,17 @@ export interface MessengerCliReplyOptions {
 
 /** Run each conversation in its own reusable agent process. */
 export function createMessengerCliReply(config: MessengerConfig, spawn: typeof Bun.spawn = Bun.spawn, selectModel: typeof selectDiscordModel = selectDiscordModel, options: MessengerCliReplyOptions = {}): MessengerReply & { close(): Promise<void>; sandboxControl: NonNullable<MessengerGatewayOptions["sandboxControl"]> } {
-	const sandbox = config.sandbox !== undefined || config.platforms.discord ? parseMessengerSandbox(config.sandbox) : undefined;
-	// Launch may inherit a global sandbox even when this platform has no local override.
 	const log = options.log;
 	const pool = createMessengerSessionPool(spawn, undefined, undefined, undefined, {
 		requireSandboxCleanup: true,
+		// A killed worker never ran its supervisor close: end the native sandbox processes it left (a container's cleanup stays with the container runtime).
+		reapOrphans: async workerEnv => usesNativeSandbox(workerEnv) && (await reapOrphanedNativeProcesses()).complete,
 		...(log ? { onDiagnostic: (key: string, line: string) => log(`worker ${key.slice(0, 8)}: ${line}`) } : {}),
 	});
 	const reply: MessengerReply = async (message, signal, onActivity) => {
 		if (signal.aborted) throw new Error("Messenger request aborted");
+		// Only Discord defaults to native; other platforms inherit their global sandbox.
+		const sandbox: SandboxConfig | undefined = config.sandbox !== undefined ? parseMessengerSandbox(config.sandbox) : message.platform === "discord" ? { backend: "native" } : undefined;
 		await validateMessengerStorage(config);
 		const id = routeUuid(config, message);
 		await fs.mkdir(config.sessionDir, { recursive: true, mode: 0o700 });
@@ -153,7 +167,8 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const platformConfig = config.platforms[message.platform];
 		const model = message.platform === "discord" ? await selectModel(platformConfig?.model, { signal }) : platformConfig?.model;
 		const modelFlags = model ? ["--model", model] : [];
-		const command = [executable, ...(sourceEntry ? ["--no-env-file", sourceEntry] : []), "launch", "--print", "--no-tui", "--no-skills", "--literal-worker", ...toolFlags, ...modelFlags, "--resume", id, "--", "worker"];
+		// No --no-skills: a conversation worker follows the globally installed skill catalog, like a local session.
+		const command = [executable, ...(sourceEntry ? ["--no-env-file", sourceEntry] : []), "launch", "--print", "--no-tui", "--literal-worker", ...toolFlags, ...modelFlags, "--resume", id, "--", "worker"];
 		const secretNames = new Set<string>();
 		for (const platform of Object.values(config.platforms)) {
 			if (!platform) continue;
@@ -230,7 +245,9 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 	catch (error) { throw new Error(error instanceof Error ? error.message : "Messenger configuration or required environment is invalid"); }
 	const platforms = Object.keys(config.platforms);
 	if (action === "check") { process.stdout.write(`Messenger configuration valid: ${platforms.join(", ")}; ${config.toolNames.length} tools enabled. No network checks performed.\n`); return; }
-	if (config.sandbox) process.stderr.write("Messenger tools execute in session-specific containers with approved workspace mounts and no network. Sandbox failures do not fall back to host execution.\n");
+	const boundary = !config.sandbox ? "the globally configured sandbox, or the operating system's own sandbox when none is configured,"
+		: config.sandbox.backend === "native" ? "the operating system's own sandbox (macOS Seatbelt or Linux bubblewrap; no Docker)" : "session-specific containers";
+	process.stderr.write(`Messenger tools execute in ${boundary} with approved workspace mounts and no network. Sandbox failures do not fall back to host execution.\n`);
 	const adapters: MessengerAdapter[] = [];
 	if (config.platforms.discord) adapters.push(createDiscordAdapter(config.platforms.discord));
 	if (config.platforms.telegram) adapters.push(createTelegramAdapter(config.platforms.telegram));
@@ -239,6 +256,9 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop); process.once("SIGTERM", stop);
 	const log = (line: string): void => { process.stderr.write(`[jeo messenger ${new Date().toISOString()}] ${line}\n`); };
+	// A previous gateway or worker that was killed left its sandbox processes running: end them before serving.
+	const orphans = await reapOrphanedNativeProcesses().catch(() => undefined);
+	if (orphans && (orphans.reaped > 0 || !orphans.complete)) log(`ended ${orphans.reaped} orphaned sandbox process(es)${orphans.complete ? "" : "; some could not be confirmed gone"}`);
 	const reply = createMessengerCliReply(config, undefined, undefined, { log });
 	const onRequestError: NonNullable<MessengerGatewayOptions["onRequestError"]> = (message, error, stage) =>
 		log(`${message.platform} request failed at ${stage} (conversation ${routeUuid(config, message).slice(0, 8)}): ${error instanceof Error ? error.message : String(error)}`);

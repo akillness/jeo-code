@@ -572,14 +572,7 @@ export async function setupDiscordMessenger(
 	const runtime: MessengerRuntime = deps.jeoCommand ? { kind: "external", command: deps.jeoCommand } : (deps.runtime ?? messengerRuntimePlan());
 	const command = messengerRuntimeCommand(directory, runtime, process.execPath);
 	const existing = await readExistingConfig(configPath);
-	const sandbox = existing?.sandbox !== undefined ? parseMessengerSandbox(existing.sandbox) : parseMessengerSandbox({
-		image: await io.ask("Existing local Linux sandbox image (no image will be pulled): "),
-		limits: {
-			memoryBytes: Number(await io.ask("Sandbox memory limit in bytes: ")),
-			pids: Number(await io.ask("Sandbox process limit: ")),
-			cpus: Number(await io.ask("Sandbox CPU limit: ")),
-		},
-	});
+	const sandbox = existing?.sandbox !== undefined ? parseMessengerSandbox(existing.sandbox) : { backend: "native" as const };
 	if (existing && Object.hasOwn(existing, "independentSessions")) {
 		delete existing.independentSessions;
 		io.say("Removed obsolete independentSessions setting. Discord threads now keep one persistent session.");

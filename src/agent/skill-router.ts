@@ -156,6 +156,20 @@ export function routeSkillsForTask(task: string, skills: SkillDoc[], topK = SKIL
   };
 }
 
+/**
+ * Render the Jev `route-skills` advisory note for a selection. Empty string when the
+ * selection cleared nothing (gate / fit miss) — the turn then answers directly, so the
+ * caller must not inject any skill suggestion. Pure, no I/O, safe to call per turn.
+ */
+export function skillAdvisoryRoutingNote(selection: SkillRouteSelection): string {
+  if (selection.topK.length === 0) return "";
+  const detail = selection.topK.map(c => `${c.name} (score ${c.score.toFixed(2)})`).join(", ");
+  return [
+    `Jev advisory routing: task similarity cleared the skill gate for ${detail}.`,
+    "Advisory only — the router proposes, never auto-executes; follow a skill only when the user invoked it via $skill or the task truly fits that workflow.",
+  ].join(" ");
+}
+
 /** One duplicate-identity report from an ECC inventory scan. */
 export interface SkillInventoryConflict {
   normalized: string;

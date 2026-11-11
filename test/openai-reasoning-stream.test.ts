@@ -182,13 +182,24 @@ test("thinkingFormat: thinking OFF (no effort) sends no enablement param", () =>
 // cloud 4000 default truncates them at finish_reason=length with EMPTY content. A custom
 // baseUrl (LM Studio, llama.cpp, …) costs nothing per token, so give it real headroom.
 test("maxTokens default: a custom baseUrl gets a larger budget than cloud OpenAI", () => {
-  const cloud = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "gpt-4o" } as never, cred, false).body);
-  expect(cloud.max_tokens).toBe(4000);
+  // Isolate from an ambient OPENAI_BASE_URL (e.g. a local mock gateway): the
+  // isLocalEndpoint default switch keys off that env, and an ambient local-proxy
+  // value would turn the CLOUD 4000 default into the local 16000 one before the
+  // explicit-baseUrl cases below can be distinguished.
+  const savedOpenAiBaseUrl = process.env.OPENAI_BASE_URL;
+  delete process.env.OPENAI_BASE_URL;
+  try {
+    const cloud = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "gpt-4o" } as never, cred, false).body);
+    expect(cloud.max_tokens).toBe(4000);
 
-  const local = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "qwen3", baseUrl: "http://localhost:1234/v1" } as never, cred, false).body);
-  expect(local.max_tokens).toBe(16000);
+    const local = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "qwen3", baseUrl: "http://localhost:1234/v1" } as never, cred, false).body);
+    expect(local.max_tokens).toBe(16000);
 
-  // an explicit caller value always wins over either default
-  const explicit = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "qwen3", baseUrl: "http://localhost:1234/v1", maxTokens: 512 } as never, cred, false).body);
-  expect(explicit.max_tokens).toBe(512);
+    // an explicit caller value always wins over either default
+    const explicit = JSON.parse(openaiRequest([{ role: "user", content: "x" }], { model: "qwen3", baseUrl: "http://localhost:1234/v1", maxTokens: 512 } as never, cred, false).body);
+    expect(explicit.max_tokens).toBe(512);
+  } finally {
+    if (savedOpenAiBaseUrl === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = savedOpenAiBaseUrl;
+  }
 });

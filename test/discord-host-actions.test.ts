@@ -20,7 +20,9 @@ async function fixture(notifyFailure = false) {
 	};
 	const notices: Array<{ run: DiscordRunRef; text: string }> = [];
 	const waiting: Array<(notice: { run: DiscordRunRef; text: string }) => void> = [];
+	let notificationCount = 0;
 	const authority = createDiscordHostAuthority(config, async (run, text) => {
+		notificationCount++;
 		const notice = { run, text };
 		const waiter = waiting.shift();
 		if (waiter) waiter(notice); else notices.push(notice);
@@ -57,7 +59,8 @@ async function fixture(notifyFailure = false) {
 	let controlId = 0;
 	const decide = (id: string, decision: "approve" | "deny" = "approve", overrides: Partial<MessengerMessage> = {}) => authority.decide(message(`/${decision} ${id}`, { messageId: `control-${++controlId}`, ...overrides }), id, decision);
 	return {
-		root, config, authority, origin, run, action, start, request, decide, notices,
+		root, config, authority, origin, run, action, start, request, decide, notices, next,
+		notificationCount: () => notificationCount,
 		effects: () => fs.readFile(effects, "utf8"),
 		async close() { authority.close(); await fs.rm(root, { recursive: true, force: true }); },
 	};
@@ -123,6 +126,198 @@ for (const [name, action] of ordinaryActions) test(`${name} proceeds without a h
 		expect(await f.effects()).toBe("effect\n");
 		expect(f.notices).toEqual([]);
 	} finally { await f.close(); }
+});
+
+const structuredTools = ["ast_grep", "ast_edit", "lsp", "lsp_rename"] as const;
+function structuredAction(root: string, tool: typeof structuredTools[number], target: string | string[]): DiscordHostAction {
+	const args = tool === "ast_grep" ? { pattern: "needle", paths: target }
+		: tool === "ast_edit" ? { pattern: "needle", replacement: "changed", paths: target }
+		: tool === "lsp" ? { action: "hover", file: target, line: 1, symbol: "needle" }
+		: { file: target, line: 1, symbol: "needle", new_name: "changed" };
+	return { kind: "tool", tool, cwd: root, args };
+}
+
+for (const tool of structuredTools) test(`${tool} refuses private targets without notification or effect`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		const privateFile = path.join(f.config.sessionDir, "synthetic.ts");
+		await fs.writeFile(privateFile, "const needle = 1;\n");
+		const target = tool.startsWith("ast_") ? ["source.ts", privateFile] : privateFile;
+		const done = f.start(structuredAction(f.root, tool, target), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+
+for (const tool of structuredTools) test(`${tool} cannot follow a workspace symlink into private sessions`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "const needle = 1;\n");
+		await fs.symlink(f.config.sessionDir, path.join(f.root, "private-link"));
+		const target = tool.startsWith("ast_") ? ["private-link/synthetic.ts"] : "private-link/synthetic.ts";
+		const done = f.start(structuredAction(f.root, tool, target), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+for (const tool of ["ast_grep", "ast_edit"] as const) test(`${tool} cannot silently scan a glob that includes private sessions`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "const needle = 1;\n");
+		const done = f.start(structuredAction(f.root, tool, ["sessions/**/*.ts"]), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+for (const tool of ["lsp", "lsp_rename"] as const) test(`${tool} fails closed when workspace TypeScript configuration includes private files`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "export const needle = 1;\n");
+		await fs.writeFile(path.join(f.root, "source.ts"), 'import { needle } from "./sessions/synthetic";\nconsole.log(needle);\n');
+		await fs.writeFile(path.join(f.root, "tsconfig.json"), JSON.stringify({ include: ["source.ts", "sessions/*.ts"] }));
+		const action = structuredAction(f.root, tool, "source.ts");
+		if (tool === "lsp") action.args = { action: "references", file: "source.ts", line: 1, symbol: "needle" };
+		const done = f.start(action, "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+for (const tool of ["lsp", "lsp_rename"] as const) for (const location of ["source.ts", "../outside-synthetic.ts"]) test(`${tool} clearly denies uncontained cross-file access for ${location}`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.writeFile(path.join(f.root, "source.ts"), "const needle = 1;\n");
+		const done = f.start(structuredAction(f.root, tool, location), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		if (outcome.result.allowed) throw new Error("Cross-file action unexpectedly allowed");
+		expect(String(outcome.result.error)).toMatch(/cross.file/i);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+
+for (const tool of ["ast_grep", "ast_edit"] as const) test(`${tool} does not let a glob through a symlink reach private sessions`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "const needle = 1;\n");
+		await fs.symlink(f.config.sessionDir, path.join(f.root, "private-link"));
+		const done = f.start(structuredAction(f.root, tool, ["private-link/**/*.ts"]), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+
+for (const tool of ["ast_grep", "ast_edit"] as const) test(`${tool} denies a workspace gitignore linked to private sessions`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		const privateFile = path.join(f.config.sessionDir, "synthetic.txt");
+		await fs.writeFile(privateFile, "synthetic\n");
+		await fs.symlink(privateFile, path.join(f.root, ".gitignore"));
+		await fs.writeFile(path.join(f.root, "source.ts"), "const needle = 1;\n");
+		const done = f.start(structuredAction(f.root, tool, ["source.ts"]), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+
+for (const tool of ["ast_grep", "ast_edit"] as const) test(`${tool} denies private paths resolved against a symlinked lexical cwd`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "const needle = 1;\n");
+		await fs.mkdir(path.join(f.root, "deep", "dir"), { recursive: true });
+		await fs.symlink(path.join(f.root, "deep", "dir"), path.join(f.root, "alias"));
+		const action = structuredAction(f.root, tool, ["../sessions/synthetic.ts"]);
+		action.cwd = path.join(f.root, "alias");
+		const done = f.start(action, "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+for (const tool of ["ast_grep", "ast_edit"] as const) for (const target of ["source.ts", ["src/**/*.ts"], ["../outside.ts"]]) test(`${tool} clearly denies Discord host AST execution for ${JSON.stringify(target)}`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.writeFile(path.join(f.root, "source.ts"), "const needle = 1;\n");
+		const done = f.start(structuredAction(f.root, tool, target), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		if (outcome.result.allowed) throw new Error("AST action unexpectedly allowed");
+		expect(String(outcome.result.error)).toMatch(/(?:AST|structural).*(?:unavailable|disabled|contain|safe)/i);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
+});
+
+for (const tool of ["ast_grep", "ast_edit"] as const) test(`${tool} cannot access a workspace hardlink to a private file`, async () => {
+	const f = await fixture();
+	const controller = new AbortController();
+	try {
+		await fs.mkdir(f.config.sessionDir, { recursive: true });
+		await fs.writeFile(path.join(f.config.sessionDir, "synthetic.ts"), "const needle = 1;\n");
+		await fs.link(path.join(f.config.sessionDir, "synthetic.ts"), path.join(f.root, "source.ts"));
+		const done = f.start(structuredAction(f.root, tool, ["source.ts"]), "forbidden", f.run, controller.signal);
+		const outcome = await Promise.race([done.then(result => ({ result })), f.next().then(() => ({ notice: true as const }))]);
+		expect("result" in outcome).toBe(true);
+		if (!("result" in outcome)) throw new Error("Unexpected approval notification");
+		expect(outcome.result.allowed).toBe(false);
+		expect(f.notificationCount()).toBe(0);
+		expect(await f.effects()).toBe("");
+	} finally { controller.abort(); await f.close(); }
 });
 
 const invalidActors: Array<[string, Partial<MessengerMessage>]> = [

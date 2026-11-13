@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.39] - 2026-11-13
+_Discord setup, gateway session recovery, and host action authorization fixes._
+
+### Fixed
+- Verify Discord gateway sessions and retained channel access before replacing setup credentials or configuration.
+- Improve Discord gateway session recovery and transport handling.
+- Fail closed on host action paths that cannot be verified within the authorized workspace.
+- Discord host workers deny `ast_grep`, `ast_edit`, `lsp`, and `lsp_rename` because their cross-file access cannot be contained reliably.
+
+
 ## [0.12.38] - 2026-11-13
 _Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification._
 

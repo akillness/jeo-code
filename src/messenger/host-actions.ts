@@ -63,7 +63,7 @@ function canonicalPath(target: string): string {
   }
 }
 
-const AUTO_TOOLS: Record<string, true> = { read: true, write: true, edit: true, find: true, search: true, ls: true, mkdir: true, ast_grep: true, ast_edit: true, lsp: true, lsp_rename: true, calc: true, web_search: true };
+const AUTO_TOOLS: Record<string, true> = { read: true, write: true, edit: true, find: true, search: true, ls: true, mkdir: true, calc: true, web_search: true };
 const READ_COMMANDS: Record<string, true> = { pwd: true, ls: true, cat: true, head: true, tail: true, wc: true, grep: true, rg: true, find: true, stat: true, file: true, sort: true, uniq: true, diff: true, cmp: true, printf: true, echo: true, true: true, false: true, test: true, "[": true };
 const SAFE_GIT: Record<string, true> = { status: true, diff: true, log: true, show: true, "rev-parse": true, "ls-files": true, "ls-tree": true, "check-ignore": true, describe: true };
 const SAFE_ENV: Record<string, true> = { CI: true, NODE_ENV: true, FORCE_COLOR: true, NO_COLOR: true, TERM: true, COLUMNS: true, LINES: true, TZ: true };
@@ -170,15 +170,32 @@ function risk(action: DiscordHostAction, binding: Binding, privateRoots: readonl
     if (action.channelId !== (binding.message.threadId ?? binding.message.channelId)) throw new Error("Host artifact destination does not match its authenticated thread");
     return true;
   }
-  const cwd = canonicalPath(action.cwd);
-  if (privateRoots.some(root => within(root, cwd))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
-  let approval = !within(binding.workspaceRoot, cwd);
+  const cwd = path.resolve(action.cwd);
+  const canonicalCwd = canonicalPath(cwd);
+  if (privateRoots.some(root => within(root, canonicalCwd))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
+  let approval = !within(binding.workspaceRoot, canonicalCwd);
   for (const key of ["filePath", "path", "dirPath", "targetPath", "dir"]) {
     const value = action.args[key];
     if (typeof value !== "string") continue;
     const target = canonicalPath(path.resolve(cwd, value));
     if (privateRoots.some(root => within(canonicalPath(root), target))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
     if (!within(binding.workspaceRoot, target)) approval = true;
+  }
+  if (action.tool === "ast_grep" || action.tool === "ast_edit") {
+    // The worker resolves and opens targets after authorization, so symlink swaps
+    // and hardlinks cannot be contained by a parent-side path check.
+    throw new Error("Discord host AST tools are unavailable until filesystem access is safely contained");
+  }
+  if (action.tool === "lsp" || action.tool === "lsp_rename") {
+    const files = Array.isArray(action.args.file) ? action.args.file : [action.args.file];
+    for (const file of files) {
+      if (typeof file !== "string") continue;
+      const target = canonicalPath(path.resolve(cwd, file.trim()));
+      if (privateRoots.some(root => within(root, target))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
+    }
+    // The TS language service follows project configuration and imports beyond the
+    // requested file; rename can also write those files. Entry checks cannot contain it.
+    throw new Error("Discord host LSP is unavailable until cross-file access is contained by the language service");
   }
   if (action.tool === "bash") {
     const command = String(action.args.command ?? action.args.cmd ?? "");
@@ -188,8 +205,6 @@ function risk(action: DiscordHostAction, binding: Binding, privateRoots: readonl
   }
   if (action.tool === "delete") return true;
   if (!AUTO_TOOLS[action.tool]) return true;
-  // lsp may execute commands and is not a read-only name by itself.
-  if (action.tool === "lsp" && /command|execute|restart|shutdown/i.test(String(action.args.action ?? action.args.method ?? ""))) return true;
   return approval;
 }
 
@@ -243,7 +258,10 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
       const privateRoots = [config.sessionDir, ...profilePaths, jeoHomeDir(), notifySessionsDir(), path.join(os.homedir(), ".ssh"), path.join(os.homedir(), ".aws"), path.join(os.homedir(), ".gnupg")].map(canonicalPath);
       signal.throwIfAborted();
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before authorization");
-      if (!risk(snapshot, binding, privateRoots)) {
+      const requiresApproval = risk(snapshot, binding, privateRoots);
+      signal.throwIfAborted();
+      if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before authorization");
+      if (!requiresApproval) {
         signal.throwIfAborted();
         current(run);
         return;
@@ -272,6 +290,9 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
       } catch { settle(new Error("Discord host approval could not be delivered")); }
       await result;
       if (!delivered) throw new Error("Discord host approval could not be delivered");
+      signal.throwIfAborted();
+      if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before execution");
+      risk(snapshot, binding, privateRoots);
       signal.throwIfAborted();
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before execution");
     },

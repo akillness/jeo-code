@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { loadMessengerConfig } from "../src/messenger/config";
-import { setupDiscordMessenger, type DiscordSetupDeps, type DiscordSetupIO, type DiscordSetupOptions } from "../src/messenger/discord-setup";
+import { probeDiscordGateway, setupDiscordMessenger, type DiscordSetupDeps, type DiscordSetupIO, type DiscordSetupOptions } from "../src/messenger/discord-setup";
 import { isMessengerMessageAllowed } from "../src/messenger/gateway";
 import { readMessengerProfiles, registerMessengerProfile, type MessengerProfileRecord } from "../src/messenger/runtime";
 import type { MessengerMessage } from "../src/messenger/types";
@@ -70,7 +70,8 @@ async function fixture() {
 		"/gateway/bot": { url: "wss://gateway.discord.gg" },
 	};
 	class ReadySocket extends EventTarget {
-		constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) }))); }
+		constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45000 } }) }))); }
+		send(data: string) { if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { v: 10, user: { id: "bot", username: "fixture-bot" }, session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", guilds: [], application: { id: "application", flags: 0 } } }) }))); }
 		close() {}
 	}
 	const deps: DiscordSetupDeps = {
@@ -97,7 +98,7 @@ async function fixture() {
 		await fs.mkdir(path.dirname(selectedPath), { recursive: true });
 		await fs.writeFile(selectedPath, `${JSON.stringify(config, null, 2)}\n`);
 	}
-	return { root, configPath, sessions, profilesPath, io, deps, notices, fetches, previous, save, close: () => fs.rm(root, { recursive: true, force: true }) };
+	return { root, configPath, sessions, profilesPath, io, deps, notices, fetches, responses, previous, save, close: () => fs.rm(root, { recursive: true, force: true }) };
 }
 
 const discordMessage: MessengerMessage = { platform: "discord", accountId: "bot", guildId: "guild", channelId: "thread", parentChannelId: "channel", threadId: "thread", senderId: "collaborator", messageId: "1", text: "work", direct: false, mentioned: false };
@@ -226,7 +227,8 @@ const responses: Record<string, unknown> = {
   "/gateway/bot": { url: "wss://gateway.discord.gg" },
 };
 class ReadySocket extends EventTarget {
-  constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) }))); }
+  constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45000 } }) }))); }
+  send(data: string) { if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { v: 10, user: { id: "bot", username: "fixture-bot" }, session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", guilds: [], application: { id: "application", flags: 0 } } }) }))); }
   close() {}
 }
 const result = await setupDiscordMessenger({ configPath: path.join(root, "profile", "messenger.json"), workerMode: "host", projectPath: ${JSON.stringify(relative ? "project" : project)}, userIds: ["owner"], channelIds: ["channel"], toolNames: ["read", "write"], dmTest: false }, {
@@ -259,4 +261,132 @@ console.log(JSON.stringify({ cwd: loaded.cwd, notices, calls, homeEntries: await
 		expect(Object.keys(await tree(home)).filter(entry => path.basename(entry) === ".jeo-workspace")).toEqual([]);
 		expect(await tree(project)).toEqual(source);
 	} finally { await f.close(); }
+});
+
+test("repair rejects a previously allowed guild channel after permissions are revoked", async () => {
+	const f = await fixture();
+	try {
+		await fs.mkdir(f.previous.cwd);
+		await f.save();
+		f.responses["/guilds/guild"] = { id: "guild", roles: [{ id: "guild", permissions: "0" }] };
+		await expect(setupDiscordMessenger({ configPath: f.configPath, dmTest: false }, f.io, f.deps)).rejects.toThrow(/lacks/);
+	} finally { await f.close(); }
+});
+
+test("repair retains a previously allowed owner DM alongside a valid guild channel", async () => {
+	const f = await fixture();
+	try {
+		await fs.mkdir(f.previous.cwd);
+		await f.save({ ...f.previous, platforms: { ...f.previous.platforms, discord: { ...f.previous.platforms.discord, allowedChannelIds: ["channel", "dm"] } } });
+		f.responses["/channels/dm"] = { id: "dm", type: 1, recipients: [{ id: "owner" }] };
+		const result = await setupDiscordMessenger({ configPath: f.configPath, dmTest: false }, f.io, f.deps);
+		expect(result.allowedChannelIds).toEqual(["channel", "dm"]);
+	} finally { await f.close(); }
+});
+
+for (const preserved of ["config", "credential"] as const) test(`a failed Gateway probe preserves the existing ${preserved} bytes`, async () => {
+	const f = await fixture();
+	try {
+		await fs.mkdir(f.previous.cwd);
+		await f.save();
+		const tokenPath = path.join(path.dirname(f.configPath), "discord-token");
+		await fs.writeFile(tokenPath, "old-synthetic-token\n", { mode: 0o600 });
+		const config = await fs.readFile(f.configPath);
+		const token = await fs.readFile(tokenPath);
+		class ClosedSocket extends EventTarget {
+			constructor() { super(); queueMicrotask(() => { const event = new Event("close"); Object.defineProperty(event, "code", { value: 4004 }); this.dispatchEvent(event); }); }
+			close() {}
+		}
+		await expect(setupDiscordMessenger({ configPath: f.configPath, dmTest: false, userIds: ["new-owner"] }, f.io, { ...f.deps, WebSocket: ClosedSocket as unknown as typeof WebSocket })).rejects.toThrow(/4004/);
+		expect(await fs.readFile(preserved === "config" ? f.configPath : tokenPath)).toEqual(preserved === "config" ? config : token);
+	} finally { await f.close(); }
+});
+
+test("Gateway probe identifies after HELLO and accepts a subsequent READY", async () => {
+	const sent: unknown[] = [];
+	class Socket extends EventTarget {
+		constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45000 } }) }))); }
+		send(data: string) {
+			const packet = JSON.parse(data); sent.push(packet);
+			if (packet.op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { v: 10, user: { id: "bot", username: "fixture-bot" }, session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", guilds: [], application: { id: "application", flags: 0 } } }) })));
+		}
+		close() {}
+	}
+	await probeDiscordGateway(async () => ({ url: "wss://gateway.discord.gg" }), "synthetic-token", Socket as unknown as typeof WebSocket);
+	expect(sent).toEqual([expect.objectContaining({ op: 2, d: expect.objectContaining({ token: "synthetic-token" }) })]);
+});
+
+for (const scenario of ["before HELLO", "malformed after IDENTIFY"] as const) test(`Gateway probe rejects READY ${scenario}`, async () => {
+	class Socket extends EventTarget {
+		constructor() { super(); queueMicrotask(() => {
+			if (scenario === "before HELLO") this.ready();
+			else this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45000 } }) }));
+		}); }
+		send() { this.ready(); }
+		ready() {
+			this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: scenario === "before HELLO" ? { v: 10, user: { id: "bot", username: "fixture-bot" }, session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", guilds: [], application: { id: "application", flags: 0 } } : {} }) }));
+			queueMicrotask(() => { const event = new Event("close"); Object.defineProperty(event, "code", { value: 1000 }); this.dispatchEvent(event); });
+		}
+		close() {}
+	}
+	await expect(probeDiscordGateway(async () => ({ url: "wss://gateway.discord.gg" }), "synthetic-token", Socket as unknown as typeof WebSocket)).rejects.toThrow(/Gateway/);
+});
+
+for (const scenario of ["wrong account", "invalid HELLO", "IDENTIFY send failure"] as const) test(`Gateway probe rejects ${scenario}`, async () => {
+	class Socket extends EventTarget {
+		constructor() { super(); queueMicrotask(() => {
+			this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: scenario === "invalid HELLO" ? 0 : 45000 } }) }));
+			if (scenario === "invalid HELLO") queueMicrotask(() => { const event = new Event("close"); Object.defineProperty(event, "code", { value: 1000 }); this.dispatchEvent(event); });
+		}); }
+		send() {
+			if (scenario === "IDENTIFY send failure") throw new Error("synthetic send failure");
+			queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", user: { id: "other-bot" } } }) })));
+		}
+		close() {}
+	}
+	await expect(probeDiscordGateway(async () => ({ url: "wss://gateway.discord.gg" }), "synthetic-token", Socket as unknown as typeof WebSocket, undefined, "bot")).rejects.toThrow(/Discord Gateway/);
+});
+
+for (const acknowledge of [false, true]) test(`Gateway probe ${acknowledge ? "accepts acknowledged heartbeats" : "rejects a missed heartbeat ACK even if READY arrives"}`, async () => {
+	const opened = Promise.withResolvers<Socket>();
+	const sent: number[] = [];
+	const scheduled = new Map<number, () => void>();
+	let nextId = 0;
+	const clock = {
+		random: () => 0.5,
+		schedule(callback: () => void, delay: number) {
+			const id = nextId++;
+			scheduled.set(id, callback);
+			expect(delay).toBe(id === 0 ? 50 : 100);
+			return () => { scheduled.delete(id); };
+		},
+	};
+	const tick = () => {
+		const [id, callback] = [...scheduled.entries()][0]!;
+		scheduled.delete(id);
+		callback();
+	};
+	class Socket extends EventTarget {
+		constructor() { super(); opened.resolve(this); }
+		send(data: string) { sent.push(JSON.parse(data).op); }
+		packet(packet: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(packet) })); }
+		close() {}
+	}
+	const outcome = probeDiscordGateway(async () => ({ url: "wss://gateway.discord.gg" }), "synthetic-token", Socket as unknown as typeof WebSocket, undefined, undefined, clock)
+		.then(() => "accepted", error => error instanceof Error ? error.message : String(error));
+	const socket = await opened.promise;
+	socket.packet({ op: 10, d: { heartbeat_interval: 100 } });
+	tick();
+	expect(sent).toEqual([2, 1]);
+	if (acknowledge) socket.packet({ op: 11, d: null });
+	tick();
+	if (acknowledge) {
+		expect(sent).toEqual([2, 1, 1]);
+		socket.packet({ op: 11, d: null });
+	}
+	socket.packet({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", user: { id: "bot" } } });
+	const result = await outcome;
+	if (acknowledge) expect(result).toBe("accepted");
+	else expect(result).toMatch(/heartbeat/i);
+	expect(scheduled.size).toBe(0);
 });

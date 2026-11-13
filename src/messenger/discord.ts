@@ -185,12 +185,12 @@ function connectGateway(
 	try {
 		socket = new WebSocketImpl(url);
 	} catch {
-		clearSession(session);
 		return Promise.resolve();
 	}
 	let finished = false;
 	let hello = false;
 	let established = false;
+	let resuming = false;
 	let acknowledged = true;
 	let cancelHeartbeat: (() => void) | undefined;
 	let cancelHandshake: (() => void) | undefined;
@@ -198,7 +198,6 @@ function connectGateway(
 	const finish = (error?: Error): void => {
 		if (finished) return;
 		finished = true;
-		if (!established) clearSession(session);
 		cancelHeartbeat?.();
 		cancelHandshake?.();
 		signal.removeEventListener("abort", abort);
@@ -277,6 +276,7 @@ function connectGateway(
 			};
 			cancelHeartbeat = clock.schedule(tick, clock.random() * interval);
 			if (session.id && session.sequence !== null) {
+				resuming = true;
 				send(6, { token, session_id: session.id, seq: session.sequence });
 			} else {
 				send(2, {
@@ -314,17 +314,18 @@ function connectGateway(
 				cancelHandshake?.();
 			} else if (packet.t === "RESUMED") {
 				established = true;
+				resuming = false;
 				cancelHandshake?.();
-			} else if (established && (packet.t === "THREAD_UPDATE" || packet.t === "THREAD_DELETE")) {
+			} else if ((established || resuming) && (packet.t === "THREAD_UPDATE" || packet.t === "THREAD_DELETE")) {
 				void onThreadEvent(packet.t, packet.d).catch(() => finish(new DiscordConfigurationError("Discord thread lifecycle handling failed")));
-			} else if (established && packet.t === "MESSAGE_CREATE") {
+			} else if ((established || resuming) && packet.t === "MESSAGE_CREATE") {
 				const message = normalizeMessage(packet.d, accountId);
 				if (message) {
 					void Promise.resolve()
 						.then(() => {
 							if (!signal.aborted) return onMessage(message);
 						})
-						.catch(() => {});
+						.catch(() => finish(new DiscordConfigurationError("Discord message delivery failed")));
 				}
 			}
 		}
@@ -352,6 +353,9 @@ export function createDiscordAdapter(
 		state: "active" | "archived" | "deleted";
 		verified: boolean;
 		revision: number;
+		stateRevision: number;
+		lineage: object;
+		archiveTimestamp?: number;
 	}
 	const createdThreads = new Map<string, KnownThread>();
 	interface ThreadLookup { accountId: string; guildId?: string; invalidatedParents: Set<string> }
@@ -362,7 +366,9 @@ export function createDiscordAdapter(
 		if (previous && (previous.accountId !== message.accountId || previous.guildId !== message.guildId ||
 			previous.parentChannelId !== parentChannelId || previous.state === "deleted")) throw new Error("Discord thread identity changed");
 		const thread: KnownThread = { accountId: message.accountId, guildId: message.guildId, parentChannelId,
-			state: "active", verified: true, revision: previous?.revision ?? 0 };
+			state: "active", verified: true, revision: previous?.revision ?? 0,
+			stateRevision: (previous?.stateRevision ?? 0) + (previous && previous.state !== "active" ? 1 : 0),
+			lineage: previous?.lineage ?? {}, archiveTimestamp: previous?.archiveTimestamp };
 		createdThreads.set(threadId, thread);
 		if (createdThreads.size > 10_000) {
 			const oldest = createdThreads.keys().next().value;
@@ -381,6 +387,15 @@ export function createDiscordAdapter(
 	return {
 		platform: "discord",
 		async start(onMessage, signal, onThreadLifecycle) {
+			const lifetime = new AbortController();
+			signal = AbortSignal.any([signal, lifetime.signal]);
+			const dispatchFailure = Promise.withResolvers<never>();
+			const failDispatch = (message: string): void => {
+				if (signal.aborted) return;
+				dispatchFailure.reject(new Error(message));
+				lifetime.abort();
+			};
+			const run = async (): Promise<void> => {
 			const session: DiscordSession = { sequence: null };
 			let accountId: string | undefined;
 			let initialUrl: string | undefined;
@@ -421,6 +436,12 @@ export function createDiscordAdapter(
 							typeof value.parent_id !== "string" || typeof value.type !== "number" || ![10, 11, 12].includes(value.type)) return;
 						const archived = isRecord(value.thread_metadata) ? value.thread_metadata.archived : undefined;
 						if (type === "THREAD_UPDATE" && typeof archived !== "boolean") return;
+						const thread = createdThreads.get(value.id);
+						const timestamp = isRecord(value.thread_metadata) && typeof value.thread_metadata.archive_timestamp === "string"
+							? Date.parse(value.thread_metadata.archive_timestamp) : NaN;
+						if (thread && thread.accountId === accountId && thread.guildId === value.guild_id &&
+							thread.parentChannelId === value.parent_id && type !== "THREAD_DELETE" &&
+							thread.archiveTimestamp !== undefined && Number.isFinite(timestamp) && timestamp < thread.archiveTimestamp) return;
 						if (type === "THREAD_DELETE" || archived === true) {
 							for (const preparation of threadPreparations) {
 								if (preparation.accountId === accountId && preparation.guildId === value.guild_id &&
@@ -429,7 +450,6 @@ export function createDiscordAdapter(
 								}
 							}
 						}
-						const thread = createdThreads.get(value.id);
 						if (!thread) {
 							// An unknown event cannot establish trust, but it must fence an older in-flight REST snapshot.
 							const lookup = threadLookups.get(value.id);
@@ -442,9 +462,17 @@ export function createDiscordAdapter(
 							thread.parentChannelId !== value.parent_id || !allowedThread(value.id, value.parent_id) || thread.state === "deleted") return;
 						const state = type === "THREAD_DELETE" ? "deleted" : archived ? "archived" : "active";
 						const changed = state !== thread.state;
+						const unknownArchive = thread.state === "archived" && thread.archiveTimestamp === undefined;
+						if (type !== "THREAD_DELETE" && thread.archiveTimestamp !== undefined) {
+							if (changed && (timestamp === thread.archiveTimestamp || (state === "active" && !Number.isFinite(timestamp))))
+								throw new Error("Discord thread archive state is ambiguous");
+						}
 						thread.state = state;
 						thread.verified = false;
 						thread.revision++;
+						if (changed) thread.stateRevision++;
+						if (Number.isFinite(timestamp) && (!unknownArchive || changed)) thread.archiveTimestamp = timestamp;
+						else if (changed) thread.archiveTimestamp = undefined;
 						const event: DiscordThreadLifecycle = { kind: state === "deleted" ? "delete" : state === "archived" ? "archive" : "unarchive",
 							accountId: thread.accountId, guildId: thread.guildId, parentChannelId: thread.parentChannelId, threadId: value.id };
 						if (changed) await onThreadLifecycle?.(event);
@@ -462,25 +490,38 @@ export function createDiscordAdapter(
 						let lookup: ThreadLookup | undefined;
 						try {
 							if (signal.aborted) return;
-							const thread = createdThreads.get(message.channelId);
+							let thread = createdThreads.get(message.channelId);
 							if (thread?.state === "deleted") return;
 							if (thread?.verified && thread.state === "active" && thread.accountId === message.accountId &&
 								thread.guildId === message.guildId && config.allowedUserIds.includes(message.senderId)) {
 								await forward({ ...message, threadId: message.channelId, parentChannelId: thread.parentChannelId });
 							} else if (!message.direct && config.allowedUserIds.includes(message.senderId)) {
 								const revision = thread?.revision;
+								const stateRevision = thread?.stateRevision;
+								const unchanged = (): boolean => {
+									const current = createdThreads.get(message.channelId);
+									if (current !== thread) {
+										if (!thread || !current || current.lineage !== thread.lineage) return false;
+										thread = current;
+									}
+									if (thread?.revision === revision) return true;
+									if (thread?.state !== "active" || thread.stateRevision !== stateRevision) return false;
+									if (!message.mentioned) throw new Error("Discord thread metadata changed during lookup");
+									return true;
+								};
 								lookup = { accountId: message.accountId, guildId: message.guildId, invalidatedParents: new Set() };
 								threadLookups.set(message.channelId, lookup);
 								const channel = await messengerFetchJson(
 									`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
 									{ headers: headers() }, signal, deps.fetch,
 								);
+								if (signal.aborted) return;
 								if (!isRecord(channel) || channel.id !== message.channelId) return;
-								if (createdThreads.get(message.channelId) !== thread || thread?.revision !== revision) return;
+								if (!unchanged()) return;
 								if (channel.guild_id !== undefined && channel.guild_id !== message.guildId) return;
 								if (typeof channel.type === "number" && [10, 11, 12].includes(channel.type)) {
 									if (typeof channel.parent_id !== "string" || !channel.parent_id || !allowedThread(message.channelId, channel.parent_id)) return;
-									if (lookup.invalidatedParents.has(channel.parent_id)) return;
+									if (lookup.invalidatedParents.has(channel.parent_id)) throw new Error("Discord thread changed during lookup");
 									if (!message.mentioned) {
 										const originalId = typeof channel.name === "string" ? /^Request (\d{1,20})$/.exec(channel.name)?.[1] : undefined;
 										if (channel.owner_id !== accountId || !originalId ||
@@ -492,15 +533,37 @@ export function createDiscordAdapter(
 										if (!isRecord(original) || original.id !== originalId || original.channel_id !== channel.parent_id ||
 											!isRecord(original.author) || typeof original.author.id !== "string" || original.author.bot === true || original.webhook_id) return;
 									}
-									if (signal.aborted || createdThreads.get(message.channelId) !== thread || thread?.revision !== revision ||
-										lookup.invalidatedParents.has(channel.parent_id)) return;
-									const recovered = rememberThread(message.channelId, message, channel.parent_id);
-									if (isRecord(channel.thread_metadata) && typeof channel.thread_metadata.archived === "boolean") {
-										recovered.state = channel.thread_metadata.archived ? "archived" : "active";
-										await onThreadLifecycle?.({ kind: channel.thread_metadata.archived ? "archive" : "unarchive", accountId: message.accountId,
-											guildId: message.guildId, parentChannelId: channel.parent_id, threadId: message.channelId });
-										if (channel.thread_metadata.archived) return;
+									if (signal.aborted || !unchanged()) return;
+									if (lookup.invalidatedParents.has(channel.parent_id)) throw new Error("Discord thread changed during lookup");
+									let archived = isRecord(channel.thread_metadata) && typeof channel.thread_metadata.archived === "boolean"
+										? channel.thread_metadata.archived : undefined;
+									const restTimestamp = isRecord(channel.thread_metadata) && typeof channel.thread_metadata.archive_timestamp === "string"
+										? Date.parse(channel.thread_metadata.archive_timestamp) : NaN;
+									if (thread?.state === "archived" && archived === undefined)
+										throw new Error("Discord thread archive state is ambiguous");
+									if (thread && archived !== undefined && archived !== (thread.state === "archived") &&
+										(thread.state === "archived" || thread.revision !== revision || thread.archiveTimestamp !== undefined)) {
+										if (thread.archiveTimestamp === undefined || !Number.isFinite(restTimestamp) || restTimestamp === thread.archiveTimestamp)
+											throw new Error("Discord thread archive state is ambiguous");
+										if (restTimestamp < thread.archiveTimestamp) archived = thread.state === "archived";
+										if (archived && thread.state === "archived") return;
 									}
+									const recovered = rememberThread(message.channelId, message, channel.parent_id);
+									const recoveredStateRevision = recovered.stateRevision;
+									if (archived !== undefined) {
+										if (!(thread?.state === "archived" && thread.archiveTimestamp === undefined) && Number.isFinite(restTimestamp) &&
+											(recovered.archiveTimestamp === undefined || restTimestamp > recovered.archiveTimestamp))
+											recovered.archiveTimestamp = restTimestamp;
+										recovered.state = archived ? "archived" : "active";
+										await onThreadLifecycle?.({ kind: archived ? "archive" : "unarchive", accountId: message.accountId,
+											guildId: message.guildId, parentChannelId: channel.parent_id, threadId: message.channelId });
+										if (archived) return;
+									}
+									const current = createdThreads.get(message.channelId);
+									if (signal.aborted || !current || current.accountId !== recovered.accountId ||
+										current.guildId !== recovered.guildId || current.parentChannelId !== recovered.parentChannelId ||
+										current.lineage !== recovered.lineage || current.stateRevision !== recoveredStateRevision || current.state !== "active" ||
+										lookup.invalidatedParents.has(channel.parent_id)) return;
 									await forward({ ...message, threadId: message.channelId, parentChannelId: channel.parent_id });
 								} else {
 									await forward(message);
@@ -508,6 +571,9 @@ export function createDiscordAdapter(
 							} else {
 								await forward(message);
 							}
+						} catch (error) {
+							failDispatch("Discord message delivery failed");
+							throw error;
 						} finally {
 							if (threadLookups.get(message.channelId) === lookup) threadLookups.delete(message.channelId);
 							ready.resolve();
@@ -523,7 +589,10 @@ export function createDiscordAdapter(
 						signal,
 						deps.WebSocket ?? WebSocket,
 						clock,
-						lifecycle,
+						(type, value) => lifecycle(type, value).catch(error => {
+							failDispatch("Discord thread lifecycle handling failed");
+							throw error;
+						}),
 					);
 				} catch (error) {
 					if (signal.aborted) return;
@@ -550,6 +619,12 @@ export function createDiscordAdapter(
 					throw new Error("Discord reconnect wait failed");
 				}
 				delay = Math.min(delay * 2, 30_000);
+			}
+			};
+			try {
+				await Promise.race([run(), dispatchFailure.promise]);
+			} finally {
+				lifetime.abort();
 			}
 		},
 		async prepare(message, signal) {

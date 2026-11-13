@@ -52,6 +52,17 @@ function fakeWorker(response: string | ((history: readonly string[]) => string),
 }
 
 
+class ReadySocket extends EventTarget {
+  constructor() {
+    super();
+    queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 60000 } }) })));
+  }
+  send(data: string) {
+    if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", user: { id: "bot" }, resume_gateway_url: "wss://gateway.discord.gg" } }) })));
+  }
+  close() {}
+}
+
 for (const independentSessions of [true, false]) test(`Discord setup migrates obsolete independentSessions=${independentSessions} while preserving operator settings`, async () => {
   const root = await directory();
   const configPath = path.join(root, "profile", "messenger.json");
@@ -69,6 +80,10 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
     "/users/@me": { id: "bot", username: "test-bot", bot: true },
     "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
     "/users/@me/guilds": [{ id: "guild" }],
+    "/channels/channel": { id: "channel", guild_id: "guild", name: "requests", type: 0 },
+    "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
+    "/guilds/guild/members/bot": { roles: [] },
+    "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
     "/gateway/bot": { url: "wss://gateway.discord.gg" },
   };
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -76,13 +91,6 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
     if (!Object.hasOwn(responses, route)) throw new Error(`Unexpected setup request: ${route}`);
     return Response.json(responses[route]);
   }) as typeof fetch;
-  class ReadySocket extends EventTarget {
-    constructor() {
-      super();
-      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) })));
-    }
-    close() {}
-  }
   await setupDiscordMessenger({ configPath, dmTest: false }, {
     interactive: false, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
   }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"], profilesPath: path.join(root, "messenger-profiles.json") });
@@ -104,6 +112,11 @@ test("invalid Discord setup tools leave the existing config unchanged", async ()
     "/users/@me": { id: "bot", username: "test-bot", bot: true },
     "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
     "/users/@me/guilds": [{ id: "guild" }],
+    "/channels/channel": { id: "channel", guild_id: "guild", name: "requests", type: 0 },
+    "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
+    "/guilds/guild/members/bot": { roles: [] },
+    "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
+    "/gateway/bot": { url: "wss://gateway.discord.gg" },
   };
   const fetchImpl = (async (input: string | URL | Request) => {
     const route = new URL(typeof input === "string" || input instanceof URL ? input : input.url).pathname.replace("/api/v10", "");
@@ -112,7 +125,7 @@ test("invalid Discord setup tools leave the existing config unchanged", async ()
   }) as typeof fetch;
   await expect(setupDiscordMessenger({ configPath, dmTest: false, toolNames: ["bogus"] }, {
     interactive: false, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
-  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, jeoCommand: ["/opt/jeo"] })).rejects.toThrow("toolNames must be a unique list");
+  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"] })).rejects.toThrow("toolNames must be a unique list");
   expect(await fs.readFile(configPath, "utf8")).toBe(original);
   expect((await fs.readdir(root)).filter(name => name.endsWith(".tmp"))).toEqual([]);
 });
@@ -153,6 +166,7 @@ for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh:
       "/users/@me": { id: "bot", username: "test-bot", bot: true },
       "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
       "/users/@me/guilds": [{ id: "guild" }],
+      "/channels/channel": { id: "channel", guild_id: "guild", name: "requests", type: 0 },
       "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
       "/guilds/guild/members/bot": { roles: [] },
       "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
@@ -164,7 +178,8 @@ for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh:
       return Response.json(responses[route]);
     };
     class ReadySocket extends EventTarget {
-      constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) }))); }
+      constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 60000 } }) }))); }
+      send(data: string) { if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", user: { id: "bot" }, resume_gateway_url: "wss://gateway.discord.gg" } }) }))); }
       close() {}
     }
     const setup = () => setupDiscordMessenger({ configPath, dmTest: false }, {

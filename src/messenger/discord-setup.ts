@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_MESSENGER_TOOLS, loadMessengerConfig, messengerProfilePrivatePaths, parseMessengerSandbox, resolveMessengerToken, validateMessengerEnvironment } from "./config";
-import { DISCORD_API, DISCORD_GATEWAY_INTENTS, discordGatewayUrl } from "./discord";
+import { DISCORD_API, DISCORD_GATEWAY_INTENTS, discordGatewayUrl, type DiscordClock } from "./discord";
 import { MessengerHttpError, messengerFetchJson } from "./http";
 import { installMessengerService, messengerServicePlan, restartMessengerService } from "./service";
 import { MESSENGER_RUN_SCRIPT_POSIX, MESSENGER_RUN_SCRIPT_WINDOWS, MESSENGER_TOKEN_FILE, messengerExecutablePath, messengerLauncherContent, writePrivateFile } from "./launcher";
@@ -421,6 +421,8 @@ export async function probeDiscordGateway(
 	token: string,
 	WebSocketImpl: typeof WebSocket,
 	signal?: AbortSignal,
+	botId?: string,
+	clock?: DiscordClock,
 ): Promise<void> {
 	throwIfAborted(signal);
 	const discovery = await api("GET", "/gateway/bot");
@@ -428,6 +430,23 @@ export async function probeDiscordGateway(
 	const url = discordGatewayUrl(isRecord(discovery) ? discovery.url : undefined);
 	const result = Promise.withResolvers<void>();
 	const socket = new WebSocketImpl(url);
+	let identified = false;
+	let acknowledged = true;
+	let cancelHeartbeat: (() => void) | undefined;
+	const schedule = (callback: () => void, delay: number): (() => void) => {
+		if (clock) return clock.schedule(callback, delay);
+		const timer = setTimeout(callback, delay);
+		return () => clearTimeout(timer);
+	};
+	let sequence: number | null = null;
+	const heartbeat = () => {
+		acknowledged = false;
+		try {
+			socket.send(JSON.stringify({ op: 1, d: sequence }));
+		} catch {
+			result.reject(new Error("Discord Gateway heartbeat failed"));
+		}
+	};
 	const timer = setTimeout(
 		() => result.reject(new Error("Discord Gateway did not confirm the bot session in time")),
 		GATEWAY_PROBE_MS,
@@ -445,17 +464,53 @@ export async function probeDiscordGateway(
 		}
 		if (!isRecord(packet)) return;
 		if (packet.op === 10) {
-			socket.send(
-				JSON.stringify({
-					op: 2,
-					d: {
-						token,
-						intents: DISCORD_GATEWAY_INTENTS,
-						properties: { os: process.platform, browser: "jeo", device: "jeo" },
-					},
-				}),
-			);
+			if (identified || !isRecord(packet.d) || typeof packet.d.heartbeat_interval !== "number" ||
+				!Number.isFinite(packet.d.heartbeat_interval) || packet.d.heartbeat_interval <= 0 || packet.d.heartbeat_interval > 300_000) {
+				result.reject(new Error("Discord Gateway returned an invalid HELLO"));
+				return;
+			}
+			identified = true;
+			const interval = packet.d.heartbeat_interval;
+			const tick = () => {
+				if (!acknowledged) {
+					result.reject(new Error("Discord Gateway heartbeat was not acknowledged"));
+					return;
+				}
+				heartbeat();
+				cancelHeartbeat = schedule(tick, interval);
+			};
+			cancelHeartbeat = schedule(tick, (clock?.random() ?? Math.random()) * interval);
+			try {
+				socket.send(
+					JSON.stringify({
+						op: 2,
+						d: {
+							token,
+							intents: DISCORD_GATEWAY_INTENTS,
+							properties: { os: process.platform, browser: "jeo", device: "jeo" },
+						},
+					}),
+				);
+			} catch {
+				result.reject(new Error("Discord Gateway failed to identify the bot"));
+			}
+		} else if (packet.op === 11 && identified) {
+			acknowledged = true;
+		} else if (packet.op === 1 && identified) {
+			heartbeat();
 		} else if (packet.op === 0 && packet.t === "READY") {
+			if (typeof packet.s === "number" && Number.isSafeInteger(packet.s)) sequence = packet.s;
+			if (!identified || !Number.isSafeInteger(packet.s) || !isRecord(packet.d) || !str(packet.d.session_id) ||
+				!isRecord(packet.d.user) || !str(packet.d.user.id) || (botId !== undefined && packet.d.user.id !== botId)) {
+				result.reject(new Error("Discord Gateway returned an invalid READY session"));
+				return;
+			}
+			try {
+				discordGatewayUrl(packet.d.resume_gateway_url);
+			} catch {
+				result.reject(new Error("Discord Gateway returned an invalid READY session"));
+				return;
+			}
 			result.resolve();
 		}
 	});
@@ -471,6 +526,7 @@ export async function probeDiscordGateway(
 		throwIfAborted(signal);
 	} finally {
 		clearTimeout(timer);
+		cancelHeartbeat?.();
 		signal?.removeEventListener("abort", cancel);
 		try {
 			socket.close(1000);
@@ -637,11 +693,6 @@ export async function setupDiscordMessenger(
 	await ensureMessageContentIntent(api, bot, io);
 	throwIfAborted(deps.signal);
 
-	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-	throwIfAborted(deps.signal);
-	await writePrivate(tokenPath, `${token}\n`, 0o600);
-	throwIfAborted(deps.signal);
-
 	const inviteUrl = discordInviteUrl(bot.applicationId);
 	const guilds = await waitForDiscordGuilds(api, inviteUrl, io, deps.sleep ?? Bun.sleep, options.inviteWaitMs ?? 300_000, deps.signal);
 	throwIfAborted(deps.signal);
@@ -652,15 +703,26 @@ export async function setupDiscordMessenger(
 
 	const userIds = options.userIds?.length ? options.userIds : (previousList("allowedUserIds") ?? bot.ownerIds);
 	if (!userIds.length) throw new Error("Could not identify the application owner; pass --user <your Discord user id>");
-	let channelIds: string[];
-	if (options.channelIds?.length || !previousList("allowedChannelIds")) {
-		const channels = await selectDiscordChannels(api, bot, guilds, options.channelIds, inviteUrl, io);
-		throwIfAborted(deps.signal);
-		for (const channel of channels) io.say(`Request channel: #${channel.name} in ${channel.guildName}`);
-		channelIds = channels.map(channel => channel.id);
-	} else {
-		channelIds = previousList("allowedChannelIds") as string[];
+	const retainedChannels = !options.channelIds?.length ? previousList("allowedChannelIds") : undefined;
+	let requestedChannels = options.channelIds?.length ? options.channelIds : retainedChannels;
+	if (retainedChannels) {
+		const guildChannels: string[] = [];
+		for (const id of retainedChannels) {
+			const channel = await api("GET", `/channels/${id}`);
+			if (!isRecord(channel) || channel.id !== id) throw new Error(`The bot cannot verify channel ${id}`);
+			if (channel.type !== 1) guildChannels.push(id);
+		}
+		requestedChannels = guildChannels;
 	}
+	const channels = retainedChannels && !requestedChannels?.length
+		? []
+		: await selectDiscordChannels(api, bot, guilds, requestedChannels, inviteUrl, io);
+	throwIfAborted(deps.signal);
+	for (const channel of channels) io.say(`Request channel: #${channel.name} in ${channel.guildName}`);
+	const channelIds = retainedChannels ?? channels.map(channel => channel.id);
+	await probeDiscordGateway(api, token, deps.WebSocket ?? WebSocket, deps.signal, bot.id);
+	throwIfAborted(deps.signal);
+	io.say("Discord Gateway accepted the bot session and intents.");
 	const dmChannel = options.dmTest === false ? undefined : await openOwnerDm(api, userIds[0]!, io);
 	throwIfAborted(deps.signal);
 	const allowedChannelIds = [...new Set([...channelIds, ...(dmChannel ? [dmChannel] : [])])];
@@ -670,6 +732,8 @@ export async function setupDiscordMessenger(
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
 	if (workerMode !== undefined) discord.workerMode = workerMode;
 	if (options.artifacts) discord.artifactDir = "./artifacts";
+	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+	throwIfAborted(deps.signal);
 	let cwd: unknown;
 	if (hostCwd !== undefined) {
 		cwd = hostCwd;
@@ -700,12 +764,15 @@ export async function setupDiscordMessenger(
 	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600, async staged => {
 		const loaded = await loadMessengerConfig(staged);
 		validateMessengerEnvironment({ ...loaded, platforms: { discord: loaded.platforms.discord } }, { [tokenEnv]: token });
-		if (workerMode === "host") return;
-		try {
-			await admitSandboxWorkspace(sandbox!, loaded.profileDir ?? directory, loaded.sessionDir, loaded.cwd);
-		} catch (error) {
-			throw new Error(`Sandbox workspace ${loaded.cwd} would be refused at launch (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
+		if (workerMode !== "host") {
+			try {
+				await admitSandboxWorkspace(sandbox!, loaded.profileDir ?? directory, loaded.sessionDir, loaded.cwd);
+			} catch (error) {
+				throw new Error(`Sandbox workspace ${loaded.cwd} would be refused at launch (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
+			}
 		}
+		throwIfAborted(deps.signal);
+		await writePrivate(tokenPath, `${token}\n`, 0o600);
 	});
 	throwIfAborted(deps.signal);
 	const registered = (await readMessengerProfiles(deps.profilesPath)).find(record => record.configPath === configPath);
@@ -719,10 +786,6 @@ export async function setupDiscordMessenger(
 	io.say(runtime.kind === "managed"
 		? `The launcher runs the pinned runtime ${MESSENGER_PACKAGE}@${runtime.version}; \`jeo update\` installs new versions here and restarts the service.`
 		: `The launcher runs ${command.join(" ")}; \`jeo update\` leaves it unchanged. Run setup from an installed jeo to pin a managed runtime.`);
-
-	await probeDiscordGateway(api, token, deps.WebSocket ?? WebSocket, deps.signal);
-	throwIfAborted(deps.signal);
-	io.say("Discord Gateway accepted the bot session and intents.");
 
 	const plan = messengerServicePlan(directory, runScript);
 	let service: string | undefined;

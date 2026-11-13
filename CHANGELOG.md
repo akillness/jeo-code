@@ -9,6 +9,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.12.36] - 2026-11-13
+_Compact pasted input and reliable subagents with lower paste-capture overhead._
+
 ### Changed
 - Pasted TUI text is displayed as `[Paste #N, L lines, C cols]`, and attached images as `#image01`, `#image02`, without rendering image pixels. Submission keeps the underlying text and selected image payloads; terminal-control escapes retain the existing paste sanitation policy.
 - Accumulate bracketed paste bodies in chunk-sized spans instead of per-character strings, reducing temporary allocation and capture latency. Reproduce measurements with `bun scripts/benchmark-compact-paste.ts`.

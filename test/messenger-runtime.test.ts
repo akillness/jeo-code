@@ -358,6 +358,10 @@ describe("setupDiscordMessenger runtime pinning", () => {
 		"/users/@me": { id: "bot", username: "test-bot", bot: true },
 		"/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
 		"/users/@me/guilds": [{ id: "guild" }],
+		"/channels/channel": { id: "channel", guild_id: "guild", type: 0, name: "requests" },
+		"/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
+		"/guilds/guild/members/bot": { roles: [] },
+		"/guilds/guild/channels": [{ id: "channel", guild_id: "guild", type: 0, name: "requests" }],
 		"/gateway/bot": { url: "wss://gateway.discord.gg" },
 	};
 	const fetchImpl = (async (input: string | URL | Request) => {
@@ -368,7 +372,12 @@ describe("setupDiscordMessenger runtime pinning", () => {
 	class ReadySocket extends EventTarget {
 		constructor() {
 			super();
-			queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY" }) })));
+			queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 60_000 } }) })));
+		}
+		send(data: string) {
+			if (JSON.parse(data).op === 2) {
+				queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", user: { id: "bot" } } }) })));
+			}
 		}
 		close() {}
 	}

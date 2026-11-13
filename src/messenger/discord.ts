@@ -320,12 +320,12 @@ function connectGateway(
 				void onThreadEvent(packet.t, packet.d).catch(() => finish(new DiscordConfigurationError("Discord thread lifecycle handling failed")));
 			} else if ((established || resuming) && packet.t === "MESSAGE_CREATE") {
 				const message = normalizeMessage(packet.d, accountId);
-				if (message) {
-					void Promise.resolve()
-						.then(() => {
-							if (!signal.aborted) return onMessage(message);
-						})
-						.catch(() => finish(new DiscordConfigurationError("Discord message delivery failed")));
+				if (message && !signal.aborted) {
+					try {
+						void onMessage(message).catch(() => finish(new DiscordConfigurationError("Discord message delivery failed")));
+					} catch {
+						finish(new DiscordConfigurationError("Discord message delivery failed"));
+					}
 				}
 			}
 		}
@@ -358,8 +358,8 @@ export function createDiscordAdapter(
 		archiveTimestamp?: number;
 	}
 	const createdThreads = new Map<string, KnownThread>();
-	interface ThreadLookup { accountId: string; guildId?: string; invalidatedParents: Set<string> }
-	const threadLookups = new Map<string, ThreadLookup>();
+	interface ThreadLookup { accountId: string; guildId?: string; invalidatedParents: Set<string>; closedParents: Set<string> }
+	const threadLookups = new Map<string, Set<ThreadLookup>>();
 	const threadPreparations = new Set<{ accountId: string; guildId?: string; channelId: string; invalidated: Set<string> }>();
 	const rememberThread = (threadId: string, message: MessengerMessage, parentChannelId: string): KnownThread => {
 		const previous = createdThreads.get(threadId);
@@ -450,14 +450,14 @@ export function createDiscordAdapter(
 								}
 							}
 						}
-						if (!thread) {
-							// An unknown event cannot establish trust, but it must fence an older in-flight REST snapshot.
-							const lookup = threadLookups.get(value.id);
-							if (lookup && lookup.accountId === accountId && lookup.guildId === value.guild_id && allowedThread(value.id, value.parent_id)) {
-								lookup.invalidatedParents.add(value.parent_id);
-							}
-							return;
+						// A closure fences every message already queued for this thread, not just its current REST lookup.
+						for (const lookup of threadLookups.get(value.id) ?? []) {
+							if (lookup.accountId !== accountId || lookup.guildId !== value.guild_id || !allowedThread(value.id, value.parent_id)) continue;
+							if (thread && (thread.accountId !== accountId || thread.guildId !== value.guild_id || thread.parentChannelId !== value.parent_id)) continue;
+							if (!thread) lookup.invalidatedParents.add(value.parent_id);
+							if (type === "THREAD_DELETE" || archived === true) lookup.closedParents.add(value.parent_id);
 						}
+						if (!thread) return;
 						if (thread.accountId !== accountId || thread.guildId !== value.guild_id ||
 							thread.parentChannelId !== value.parent_id || !allowedThread(value.id, value.parent_id) || thread.state === "deleted") return;
 						const state = type === "THREAD_DELETE" ? "deleted" : archived ? "archived" : "active";
@@ -482,16 +482,20 @@ export function createDiscordAdapter(
 						const ready = Promise.withResolvers<void>();
 						const tail = previous.then(() => ready.promise);
 						normalizationTails.set(message.channelId, tail);
+						const lookup: ThreadLookup = { accountId: message.accountId, guildId: message.guildId, invalidatedParents: new Set(), closedParents: new Set() };
+						let lookups = threadLookups.get(message.channelId);
+						if (!lookups) threadLookups.set(message.channelId, lookups = new Set());
+						lookups.add(lookup);
 						const forward = (destination: MessengerMessage): Promise<void> => {
 							ready.resolve();
 							return onMessage(destination);
 						};
-						await previous;
-						let lookup: ThreadLookup | undefined;
 						try {
+							await previous;
 							if (signal.aborted) return;
 							let thread = createdThreads.get(message.channelId);
 							if (thread?.state === "deleted") return;
+							if (thread && lookup.closedParents.has(thread.parentChannelId) && config.allowedUserIds.includes(message.senderId)) return;
 							if (thread?.verified && thread.state === "active" && thread.accountId === message.accountId &&
 								thread.guildId === message.guildId && config.allowedUserIds.includes(message.senderId)) {
 								await forward({ ...message, threadId: message.channelId, parentChannelId: thread.parentChannelId });
@@ -509,8 +513,6 @@ export function createDiscordAdapter(
 									if (!message.mentioned) throw new Error("Discord thread metadata changed during lookup");
 									return true;
 								};
-								lookup = { accountId: message.accountId, guildId: message.guildId, invalidatedParents: new Set() };
-								threadLookups.set(message.channelId, lookup);
 								const channel = await messengerFetchJson(
 									`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
 									{ headers: headers() }, signal, deps.fetch,
@@ -521,6 +523,7 @@ export function createDiscordAdapter(
 								if (channel.guild_id !== undefined && channel.guild_id !== message.guildId) return;
 								if (typeof channel.type === "number" && [10, 11, 12].includes(channel.type)) {
 									if (typeof channel.parent_id !== "string" || !channel.parent_id || !allowedThread(message.channelId, channel.parent_id)) return;
+									if (lookup.closedParents.has(channel.parent_id)) return;
 									if (lookup.invalidatedParents.has(channel.parent_id)) throw new Error("Discord thread changed during lookup");
 									if (!message.mentioned) {
 										const originalId = typeof channel.name === "string" ? /^Request (\d{1,20})$/.exec(channel.name)?.[1] : undefined;
@@ -534,6 +537,7 @@ export function createDiscordAdapter(
 											!isRecord(original.author) || typeof original.author.id !== "string" || original.author.bot === true || original.webhook_id) return;
 									}
 									if (signal.aborted || !unchanged()) return;
+									if (lookup.closedParents.has(channel.parent_id)) return;
 									if (lookup.invalidatedParents.has(channel.parent_id)) throw new Error("Discord thread changed during lookup");
 									let archived = isRecord(channel.thread_metadata) && typeof channel.thread_metadata.archived === "boolean"
 										? channel.thread_metadata.archived : undefined;
@@ -575,7 +579,8 @@ export function createDiscordAdapter(
 							failDispatch("Discord message delivery failed");
 							throw error;
 						} finally {
-							if (threadLookups.get(message.channelId) === lookup) threadLookups.delete(message.channelId);
+							lookups.delete(lookup);
+							if (lookups.size === 0) threadLookups.delete(message.channelId);
 							ready.resolve();
 							if (normalizationTails.get(message.channelId) === tail) normalizationTails.delete(message.channelId);
 						}

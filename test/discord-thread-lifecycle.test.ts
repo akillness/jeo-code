@@ -293,6 +293,156 @@ for (const scenario of [
 });
 
 for (const scenario of [
+  { name: "unarchive alone", events: ["unarchive"], fatal: true },
+  { name: "archive then unarchive", events: ["archive", "unarchive"], fatal: false },
+  { name: "delete then unarchive", events: ["delete", "unarchive"], fatal: false },
+] as const) test(`unknown thread ${scenario.name} during channel lookup preserves lifecycle safety`, async () => {
+  const socketReady = Promise.withResolvers<void>();
+  const lookingUp = Promise.withResolvers<void>();
+  const releaseLookup = Promise.withResolvers<void>();
+  const barrier = Promise.withResolvers<void>();
+  const messages: string[] = [];
+  const events: DiscordThreadLifecycle[] = [];
+  let socket!: Socket;
+  class Socket extends EventTarget {
+    constructor(_url: string) { super(); socket = this; socketReady.resolve(); }
+    send(_text: string) {}
+    close() {}
+    receive(t: string, d: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, s: 2, t, d }) })); }
+  }
+  const adapter = createDiscordAdapter(config.platforms.discord!, { TOKEN: "fixture" }, {
+    clock, WebSocket: Socket as unknown as typeof WebSocket,
+    fetch: Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+      if (url.pathname.endsWith("/gateway/bot")) return Response.json({ url: "wss://gateway.discord.gg" });
+      if (url.pathname.endsWith("/channels/A")) {
+        lookingUp.resolve(); await releaseLookup.promise;
+        return Response.json({ id: "A", guild_id: "guild", type: 11, parent_id: "parent", owner_id: "bot", name: "Request 123" });
+      }
+      if (url.pathname.endsWith("/channels/parent/messages/123")) return Response.json({ id: "123", channel_id: "parent", author: { id: "owner", bot: false } });
+      throw new Error(`Unexpected request ${url.pathname}`);
+    }, { preconnect() {} }),
+  });
+  const stop = new AbortController();
+  const running = adapter.start(async message => {
+    messages.push(message.messageId);
+    if (message.messageId === "barrier") barrier.resolve();
+  }, stop.signal, async event => { events.push(event); });
+  const result = running.then(() => "stopped", error => error instanceof Error ? error.message : String(error));
+  const channel = { id: "A", guild_id: "guild", parent_id: "parent", type: 11 };
+  const followup = (id: string, sender = "owner") => ({ id, guild_id: "guild", channel_id: "A", author: { id: sender }, content: "follow up" });
+  try {
+    await socketReady.promise;
+    socket.receive("READY", { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", user: { id: "bot" } });
+    socket.receive("MESSAGE_CREATE", followup("stale")); await lookingUp.promise;
+    for (const kind of scenario.events) {
+      socket.receive(kind === "delete" ? "THREAD_DELETE" : "THREAD_UPDATE", kind === "delete" ? channel : { ...channel, thread_metadata: { archived: kind === "archive" } });
+    }
+    releaseLookup.resolve();
+    socket.receive("MESSAGE_CREATE", followup("barrier", "unlisted"));
+    if (scenario.fatal) expect(await result).toBe("Discord message delivery failed");
+    else {
+      expect(await Promise.race([barrier.promise.then(() => "barrier"), result])).toBe("barrier");
+      expect(messages).toEqual(["barrier"]);
+    }
+    expect(events).toEqual([]);
+  } finally { releaseLookup.resolve(); stop.abort(); await result; }
+});
+
+for (const scenario of [
+  { name: "unknown thread archive", kind: "archive", known: false },
+  { name: "unknown thread delete", kind: "delete", known: false },
+  { name: "cached thread archive", kind: "archive", known: true },
+] as const) test(`queued pre-close messages do not execute after ${scenario.name}`, async () => {
+  const socketReady = Promise.withResolvers<void>();
+  const lookingUp = Promise.withResolvers<void>();
+  const releaseLookup = Promise.withResolvers<void>();
+  const barrier = Promise.withResolvers<void>();
+  const freshSettled = Promise.withResolvers<void>();
+  const initialSettled = Promise.withResolvers<void>();
+  const effects: string[] = [];
+  const replies: string[] = [];
+  const pending = new Set<Promise<void>>();
+  let channelReads = 0;
+  let socket!: Socket;
+  class Socket extends EventTarget {
+    constructor(_url: string) { super(); socket = this; socketReady.resolve(); }
+    send(_text: string) {}
+    close() {}
+    receive(t: string, d: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, s: 2, t, d }) })); }
+  }
+  const discord = createDiscordAdapter(config.platforms.discord!, { TOKEN: "fixture" }, {
+    clock, WebSocket: Socket as unknown as typeof WebSocket,
+    fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+      if (url.pathname.endsWith("/gateway/bot")) return Response.json({ url: "wss://gateway.discord.gg" });
+      if (url.pathname.endsWith("/channels/A")) {
+        channelReads++;
+        if (!scenario.known || channelReads > 1) { lookingUp.resolve(); await releaseLookup.promise; }
+        return Response.json({ id: "A", guild_id: "guild", type: 11, parent_id: "parent", owner_id: "bot", name: "Request 123" });
+      }
+      if (url.pathname.endsWith("/channels/parent/messages/123")) return Response.json({ id: "123", channel_id: "parent", author: { id: "owner", bot: false } });
+      if (url.pathname.startsWith("/api/v10/channels/A/messages")) {
+        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        if (typeof body === "object" && body !== null && "content" in body && typeof body.content === "string") replies.push(body.content);
+        return Response.json({ id: "reply" });
+      }
+      if (url.pathname.includes("/reactions/")) return new Response(null, { status: 204 });
+      throw new Error(`Unexpected request ${url.pathname}`);
+    }, { preconnect() {} }),
+  });
+  const adapter: MessengerAdapter = {
+    ...discord,
+    start: (onMessage, signal, onLifecycle) => discord.start(async message => {
+      if (message.messageId === "barrier") { await Promise.all(pending); barrier.resolve(); return; }
+      const handling = onMessage(message);
+      pending.add(handling);
+      try { await handling; } finally { pending.delete(handling); }
+    }, signal, onLifecycle),
+  };
+  const gateway = createMessengerGateway(config, [adapter], async message => {
+    effects.push(message.messageId);
+    return `answer:${message.messageId}`;
+  }, { onRequestSettled: async message => {
+    if (message.messageId === "fresh") freshSettled.resolve();
+    if (message.messageId === "initial") initialSettled.resolve();
+  } });
+  const stop = new AbortController();
+  const running = gateway.run(stop.signal);
+  const channel = { id: "A", guild_id: "guild", parent_id: "parent", type: 11 };
+  const followup = (id: string, sender = "owner") => ({ id, guild_id: "guild", channel_id: "A", author: { id: sender }, content: "follow up" });
+  try {
+    await socketReady.promise;
+    socket.receive("READY", { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg", user: { id: "bot" } });
+    if (scenario.known) {
+      socket.receive("MESSAGE_CREATE", followup("initial")); await initialSettled.promise;
+      expect(effects).toEqual(["initial"]);
+      expect(replies.filter(reply => reply.startsWith("answer:"))).toEqual(["answer:initial"]);
+      effects.length = 0; replies.length = 0;
+      socket.receive("THREAD_UPDATE", { ...channel, thread_metadata: { archived: true } });
+      socket.receive("THREAD_UPDATE", { ...channel, thread_metadata: { archived: false } });
+    }
+    socket.receive("MESSAGE_CREATE", followup("first")); await lookingUp.promise;
+    socket.receive("MESSAGE_CREATE", followup("queued"));
+    if (scenario.kind === "archive") {
+      socket.receive("THREAD_UPDATE", { ...channel, thread_metadata: { archived: true } });
+      socket.receive("THREAD_UPDATE", { ...channel, thread_metadata: { archived: false } });
+    } else socket.receive("THREAD_DELETE", channel);
+    releaseLookup.resolve();
+    socket.receive("MESSAGE_CREATE", followup("barrier", "unlisted")); await barrier.promise;
+    expect(effects).toEqual([]);
+    expect(replies).toEqual([]);
+    if (scenario.kind === "archive") {
+      socket.receive("MESSAGE_CREATE", followup("fresh")); await freshSettled.promise;
+      expect(effects).toEqual(["fresh"]);
+      expect(replies.filter(reply => reply.startsWith("answer:"))).toEqual(["answer:fresh"]);
+    }
+  } finally { releaseLookup.resolve(); stop.abort(); await running; }
+});
+
+for (const scenario of [
   { name: "archive", kind: "archive", overrides: {}, blocked: true },
   { name: "delete", kind: "delete", overrides: {}, blocked: true },
   { name: "another guild", kind: "archive", overrides: { guild_id: "other-guild" }, blocked: false },

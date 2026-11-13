@@ -324,6 +324,98 @@ jeo daemon start|stop|status|reload   # the shared daemon has no provider select
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
 
+### Discord 连接、工作流门禁重跑与模型设置
+
+#### 选择适合用途的连接方式
+
+- `jeo notify` 将本机 session 和 subagent 状态发送到 Discord，并接受 allowlist 用户的 session 控制。Webhook 只能向外发送，不能接收控制命令。
+- `jeo messenger` 是独立的双向远程编程网关，每个 Discord 线程/DM 都有持久 session。需要从 Discord 向 agent 派发工作时使用它。
+
+#### 配置 Discord session 通知
+
+创建 Discord Bot，启用 **Message Content Intent**，使用 `bot` scope 邀请，并仅授予所需的 View Channel、Send Messages、Read Message History、Send Messages in Threads 权限。不要授予 Administrator。通过密钥管理器或私有环境加载 `JEO_DISCORD_BOT_TOKEN`；命令只接收环境变量名，不接收 token 值：
+
+```bash
+# 将 CHANNEL_ID 和 USER_ID 替换为真实 Discord Snowflake ID。
+jeo notify setup --provider discord --token-env JEO_DISCORD_BOT_TOKEN \
+  --channel-id "CHANNEL_ID" --allowed-user-ids "USER_ID"
+jeo notify health --provider discord       # 检查网络访问，不发送消息
+jeo notify test --provider discord         # 实际发送一条测试消息
+jeo daemon start
+jeo daemon status
+```
+
+`health` 检查 Bot 身份和目标访问权限；`test` 才能证明真实投递。daemon status 中的 `initialized` 只表示传输层已启动，不代表 Discord Gateway 已连接。Setup 会将 Bot Token 明文保存在 `~/.jeo/config.json`，请保护该文件。更换 token 或目标后必须重新提供 `--allowed-user-ids`。`/sessions`、`/subagents`、`/send`、`/steer`、`/cancel` 仅可由配置目标中的 allowlist 用户使用。聊天控制不会批准计划或通过工作流门禁。参阅 [Discord 集成](docs/integrations/discord.md)。
+
+#### 配置双向 Discord 编程 session
+
+为 Discord Bot 启用 Message Content Intent，并配置 View Channel、Send Messages、Read Message History、Add Reactions、Attach Files、Create Public Threads、Send Messages in Threads 权限。明确设置人类用户和频道 allowlist。
+
+```bash
+# macOS/Linux：安装并启动用户服务，同时探测 Gateway。
+jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
+  --tools read,find,search
+jeo messenger check --config ~/.jeo/discord/messenger.json
+```
+
+`check` 只验证本地配置，不访问网络。通过向 Bot 发送 DM，或在指定请求频道提及 Bot 来验证实际对话。Windows 上省略 `--service` 并使用生成的 `.cmd` 启动器。Discord 默认使用 macOS/Linux 原生 sandbox；Windows 需要文档所述的 Docker sandbox。同一个 Bot 不要启动第二个 Gateway。线程 session 共享工作区，启用写入或 shell 工具前请阅读 [sandbox 与 session 规则](docs/integrations/messenger.md)。Setup 会将 Bot Token 保存在私有 sidecar，而不是 JSON 配置中。
+
+若省略 `toolNames`，Discord setup 可能授予较宽的默认工具列表；请明确指定 `--tools`。`read,find,search` 为只读工具；仅在确实需要远程改代码时添加 `edit,write`。`bash` 提供命令执行能力，只应授予可信用户。工具 allowlist 不能替代 sandbox。
+
+#### 仅重跑需要新证据的门禁
+
+在项目根目录运行；使用 `jeo state <skill> read` 查看回执：
+
+```bash
+jeo deep-interview "描述目标和验收标准"
+jeo ralplan                         # critic 判定：[OKAY]、[ITERATE] 或 [REJECT]
+jeo approve <plan-path>             # 使用当前计划的准确路径
+jeo team
+jeo ultragoal
+```
+
+- `[ITERATE]`：根据所有 critic 意见修改计划，再运行 `jeo ralplan`。只有新的 `[OKAY]` 才能批准。批准后若计划内容变化，批准失效；必须对当前计划重新运行 `ralplan` 并 `approve`。`[REJECT]` 会阻止执行，应返回需求阶段处理，而不是强行批准。
+- `jeo team` 失败：先检查工作树中的部分修改，再运行 `jeo team`。持久状态会保留已完成任务并恢复待办任务。不要删除或手改状态文件来伪造通过。
+- `jeo ultragoal` 失败：修复实现或验证命令后重新运行以取得新证据。每次调用只运行一次全局测试套件。没有实际结果的验收标准仍为未解决；聊天确认不等于门禁判定。
+
+#### 设置默认模型、角色模型和 Discord 专用模型
+
+通过 `jeo setup`、支持提供商的 `/provider login <provider>` 或提供商 API key 环境变量完成认证。使用 `/model` 选择已发现的模型；`jeo --model provider/model-id` 只覆盖本次启动。`jeo models` 可列出、搜索和刷新提供商目录，`jeo doctor` 可检查解析结果。
+
+全局默认值保存在 `~/.jeo/config.json`：
+
+```json
+{
+  "defaultModel": "provider/model-id",
+  "roles": {
+    "smol": "provider/fast-model-id",
+    "slow": "provider/reasoning-model-id",
+    "plan": "provider/planner-model-id"
+  },
+  "subagents": {
+    "critic": { "model": "provider/review-model-id" }
+  }
+}
+```
+
+也可设置 `JEO_DEFAULT_MODEL=provider/model-id`。Prompt routing 默认关闭；通过 `routing.enabled: true` 或 `/route on` 启用。`/model <name>` 会固定当前 session 的模型，`/model auto` 清除此固定选择。
+
+只为 Discord messenger 固定模型而不影响其他平台时，将以下字段合并到现有 `platforms.discord` 对象中：
+
+```json
+{
+  "platforms": {
+    "discord": {
+      "model": "provider/model-id",
+      "usageFallbackModel": "provider/fallback-model-id"
+    }
+  }
+}
+```
+
+两个模型都必须出现在实时发现目录中，并且本机凭据可用。`usageFallbackModel` 必须与 `model` 一起配置；仅在工具执行前的第一步发生持续额度错误时尝试。认证失败、暂时性 rate limit 和后续步骤错误都不会触发它。编辑时保留现有 token 与 allowlist。参阅[模型与提供商配置](docs/usage-guide.md)及[Messenger 模型说明](docs/integrations/messenger.md#discord-model)。
+
+
 ### Discord & Slack (Webhook 与 Bot App)
 
 为团队工作区配置标准 Webhook 或 Bot 凭证环境变量：

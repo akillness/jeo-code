@@ -324,6 +324,98 @@ jeo daemon start|stop|status|reload   # 共有デーモンにプロバイダ選�
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
 
+### Discord 連携、ワークフローゲートの再実行、モデル設定
+
+#### 用途に合う連携方式を選ぶ
+
+- `jeo notify` はローカルセッションやサブエージェントの状態を Discord に通知し、許可リストに登録されたユーザーからセッション制御を受け付けます。Webhook は送信専用で、制御メッセージは受信できません。
+- `jeo messenger` は Discord のスレッド/DM ごとに永続セッションを持つ、別の双方向リモートコーディングゲートウェイです。Discord からエージェントへ作業を依頼する場合はこちらを使います。
+
+#### Discord セッション通知の設定
+
+Discord Bot を作成し、**Message Content Intent** を有効にして `bot` スコープで招待します。必要最小限の View Channel、Send Messages、Read Message History、Send Messages in Threads のみを付与し、Administrator は付与しないでください。`JEO_DISCORD_BOT_TOKEN` はシークレットマネージャーまたは非公開環境から読み込み、トークン値ではなく環境変数名を渡します。
+
+```bash
+# CHANNEL_ID / USER_ID を実際の Discord Snowflake ID に置き換える
+jeo notify setup --provider discord --token-env JEO_DISCORD_BOT_TOKEN \
+  --channel-id "CHANNEL_ID" --allowed-user-ids "USER_ID"
+jeo notify health --provider discord       # 接続確認のみ、送信しない
+jeo notify test --provider discord         # 実際のテストメッセージを1件送信
+jeo daemon start
+jeo daemon status
+```
+
+`health` は Bot ID と宛先アクセスを確認し、`test` が実送信の確認です。daemon status の `initialized` はトランスポート起動を示すだけで、Discord Gateway 接続の成功を意味しません。Setup は Bot Token を `~/.jeo/config.json` に平文で保存するため、ファイルを非公開に保護してください。トークンまたは宛先を変更したら `--allowed-user-ids` も再指定します。`/sessions`、`/subagents`、`/send`、`/steer`、`/cancel` は設定済み宛先の許可ユーザーだけが使用できます。チャット制御はプラン承認やゲート通過ではありません。詳細は[Discord 連携ガイド](docs/integrations/discord.md)を参照してください。
+
+#### 双方向 Discord コーディングセッション
+
+Discord Bot に Message Content Intent と View Channel、Send Messages、Read Message History、Add Reactions、Attach Files、Create Public Threads、Send Messages in Threads の権限を設定します。人間ユーザーとチャネルの許可リストを明示してください。
+
+```bash
+# macOS/Linux: ユーザーサービスをインストール・起動し、Gateway を確認
+jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
+  --tools read,find,search
+jeo messenger check --config ~/.jeo/discord/messenger.json
+```
+
+`check` はネットワーク接続を行わずローカルプロファイルを検証します。実際の会話は Bot への DM、または設定済みリクエストチャネルでのメンションで確認します。Windows では `--service` を省略し、生成された `.cmd` ランチャーを使います。Discord の既定サンドボックスは macOS/Linux のネイティブ機能で、Windows では文書化された Docker サンドボックスが必要です。同じ Bot に対してゲートウェイを二重起動しないでください。スレッド間でワークスペースを共有するため、書き込み/シェルツールを有効にする前に[サンドボックスとセッションの規則](docs/integrations/messenger.md)を確認してください。Setup は Bot Token を JSON 設定ではなく非公開の別ファイルに保存します。
+
+`toolNames` がない場合、Discord setup は広い既定ツール一覧を付与することがあります。`--tools` を明示してください。`read,find,search` は読み取り専用で、リモート編集が必要な場合にだけ `edit,write` を追加します。`bash` はコマンド実行権限のため、信頼できるユーザーに限定してください。ツール許可リストはサンドボックスの代わりにはなりません。
+
+#### 必要な証拠に対応するゲートを再実行
+
+プロジェクトルートで実行し、レシートは `jeo state <skill> read` で確認します。
+
+```bash
+jeo deep-interview "目標と受け入れ基準を説明"
+jeo ralplan                         # critic 判定: [OKAY] / [ITERATE] / [REJECT]
+jeo approve <plan-path>             # 現在のプランの正確なパスを指定
+jeo team
+jeo ultragoal
+```
+
+- `[ITERATE]`: critic の全指摘を反映してプランを変更し、`jeo ralplan` を再実行します。新しい `[OKAY]` の後にだけ承認してください。承認後にプランを変更した場合、承認は無効になるため現在のプランで `ralplan` と `approve` をやり直します。[REJECT] は実行をブロックする判定です。無理に承認せず要件を見直します。
+- `jeo team` が失敗した場合: 部分的な変更が残っていないか作業ツリーを確認してから `jeo team` を再実行します。保存状態は完了済みタスクを保ち、保留中の作業を再開します。合格を装うために状態ファイルを削除・編集しないでください。
+- `jeo ultragoal` が失敗した場合: 実装または検証を修正し、新しい証拠を得るため再実行します。各実行でグローバルテストスイートは1回です。実行結果がない基準は未解決であり、チャットの確認応答はゲート判定ではありません。
+
+#### デフォルト、役割別、Discord 専用モデル
+
+`jeo setup`、対応プロバイダーの `/provider login <provider>`、または API キー環境変数で認証します。`/model` で検出済みモデルを選択し、`jeo --model provider/model-id` で単一起動のモデルを指定できます。`jeo models` でプロバイダーカタログを一覧・検索・更新し、`jeo doctor` で設定を確認します。
+
+グローバル設定は `~/.jeo/config.json` に保存します。
+
+```json
+{
+  "defaultModel": "provider/model-id",
+  "roles": {
+    "smol": "provider/fast-model-id",
+    "slow": "provider/reasoning-model-id",
+    "plan": "provider/planner-model-id"
+  },
+  "subagents": {
+    "critic": { "model": "provider/review-model-id" }
+  }
+}
+```
+
+環境変数 `JEO_DEFAULT_MODEL=provider/model-id` も使えます。プロンプトベースのルーティングは既定で無効で、`routing.enabled: true` または `/route on` で有効になります。`/model <name>` はセッション中のモデルを固定し、`/model auto` で固定を解除します。
+
+他のプラットフォームを変えず Discord messenger だけにモデルを固定するには、既存の `platforms.discord` オブジェクトへ次のフィールドを追加します。
+
+```json
+{
+  "platforms": {
+    "discord": {
+      "model": "provider/model-id",
+      "usageFallbackModel": "provider/fallback-model-id"
+    }
+  }
+}
+```
+
+両方のモデルがライブカタログに存在し、ローカル認証が利用可能である必要があります。`usageFallbackModel` には `model` が必須で、ツール実行前の最初のステップで継続的なクォータエラーが発生した場合だけ試行されます。認証エラー、一時的な rate limit、後続ステップの失敗には適用されません。既存のトークンと許可リストを保持してください。[モデルとプロバイダー設定](docs/usage-guide.md)および[Messenger のモデル説明](docs/integrations/messenger.md#discord-model)を参照してください。
+
+
 ### Discord & Slack (Webhook & ボットアプリ)
 
 チームのワークスペース通知用に環境変数を設定します:

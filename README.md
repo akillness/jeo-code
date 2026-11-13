@@ -381,6 +381,98 @@ What the words mean, because they are not interchangeable:
 └─────────────────────┘ session└──────────────────┘        └───────────────────────────┘
 ```
 
+### Discord setup, workflow-gate reruns, and model settings
+
+#### Pick the integration that matches the job
+
+- `jeo notify` sends local session and subagent updates to Discord and accepts allowlisted session controls. A webhook is outbound-only; it cannot receive controls.
+- `jeo messenger` is a separate bidirectional remote coding gateway with persistent Discord thread/DM sessions. Use it when you need to send work to an agent from Discord.
+
+#### Configure Discord session notifications
+
+Create a Discord bot, enable **Message Content Intent**, invite it with the `bot` scope, and grant only View Channel, Send Messages, Read Message History, and Send Messages in Threads as needed. Do not grant Administrator. Keep `JEO_DISCORD_BOT_TOKEN` loaded from a secret manager or private environment; pass the environment-variable name, never the token value:
+
+```bash
+# Replace the destination and user IDs with Discord Snowflake IDs.
+jeo notify setup --provider discord --token-env JEO_DISCORD_BOT_TOKEN \
+  --channel-id "CHANNEL_ID" --allowed-user-ids "USER_ID"
+jeo notify health --provider discord       # network check; sends nothing
+jeo notify test --provider discord         # sends one real test message
+jeo daemon start
+jeo daemon status
+```
+
+`health` checks bot identity and destination access; `test` is the delivery proof. `initialized` in daemon status only means transports started, not that the Discord Gateway is connected. Setup stores the bot token in plaintext under `~/.jeo/config.json`; protect that file and re-supply `--allowed-user-ids` when changing a token or destination. Use `/sessions`, `/subagents`, `/send`, `/steer`, and `/cancel` only from the configured destination and allowlisted human IDs. These chat controls do not approve a plan or rerun a workflow gate. See [Discord integration](docs/integrations/discord.md).
+
+#### Configure two-way Discord coding sessions
+
+Create a Discord Bot with Message Content Intent and the messenger permissions View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, and Send Messages in Threads. Keep the human/channel allowlists explicit.
+
+```bash
+# macOS/Linux: installs and starts a user service; setup probes the Gateway.
+jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
+  --tools read,find,search
+jeo messenger check --config ~/.jeo/discord/messenger.json
+```
+
+`check` validates the local profile without network calls. Send a DM or mention the bot in the configured request channel to verify a real conversation. On Windows, omit `--service` and use the generated `.cmd` launcher. The native Discord sandbox is the default on macOS/Linux; Windows needs the documented Docker sandbox. Do not run a second gateway for the same bot. Messenger sessions share the selected workspace, so review the [sandbox and session rules](docs/integrations/messenger.md) before enabling write or shell tools. Setup keeps the bot token in a private sidecar, not the JSON config.
+
+By default, Discord messenger setup can grant a broad tool list when `toolNames` is absent. Set `--tools` deliberately: `read,find,search` is read-only; add `edit,write` only for remote code changes. Add `bash` only when command execution is necessary and the authorized users are trusted. The sandbox is still required; a tool allowlist is not a substitute for it.
+
+#### Re-run only the gate that needs new evidence
+
+Run these commands from the project root; inspect receipts with `jeo state <skill> read`:
+
+```bash
+jeo deep-interview "Describe the goal and acceptance criteria"
+jeo ralplan                         # critic verdict: [OKAY], [ITERATE], or [REJECT]
+jeo approve <plan-path>             # use the exact current plan path
+jeo team
+jeo ultragoal
+```
+
+- `[ITERATE]`: change the plan for every critic finding, rerun `jeo ralplan`, and approve only after a fresh `[OKAY]`. Editing the plan after approval invalidates that approval; rerun `ralplan` and approve the current plan again. `[REJECT]` blocks execution; revisit requirements instead of forcing approval.
+- `jeo team` failure: inspect the working tree for partial edits, then rerun `jeo team`; persisted state keeps completed tasks and resumes pending work. Do not delete or hand-edit workflow state to simulate a pass.
+- `jeo ultragoal` failure: fix the implementation or verifier, then rerun `jeo ultragoal` for fresh evidence. Each invocation runs the global suite once; criterion-specific checks without observed evidence remain unresolved. A chat acknowledgement is not a gate verdict.
+
+#### Choose default, role, and Discord-specific models
+
+Authenticate providers with `jeo setup`, `/provider login <provider>` where supported, or provider API-key environment variables. Use `/model` to choose a discovered model; `jeo --model provider/model-id` overrides one launch. `jeo models` lists, searches, and refreshes provider catalogs. Check the resolved setup with `jeo doctor`.
+
+Global defaults live in `~/.jeo/config.json`:
+
+```json
+{
+  "defaultModel": "provider/model-id",
+  "roles": {
+    "smol": "provider/fast-model-id",
+    "slow": "provider/reasoning-model-id",
+    "plan": "provider/planner-model-id"
+  },
+  "subagents": {
+    "critic": { "model": "provider/review-model-id" }
+  }
+}
+```
+
+`JEO_DEFAULT_MODEL=provider/model-id` is the environment alternative. Prompt-based routing is opt-in (`routing.enabled: true` or `/route on`). A manually pinned `/model <name>` holds the session model; use `/model auto` to clear that pin.
+
+The Discord messenger can pin a model without changing other platforms by adding this fragment to its existing `platforms.discord` object:
+
+```json
+{
+  "platforms": {
+    "discord": {
+      "model": "provider/model-id",
+      "usageFallbackModel": "provider/fallback-model-id"
+    }
+  }
+}
+```
+
+Both models must be present in live discovery and have usable local credentials. `usageFallbackModel` requires `model` and is tried only for a persistent quota failure on the first step, before a tool can run; it does not cover authentication errors, transient rate limits, or later failures. Preserve the existing token and allowlists when editing this fragment. See [model and provider configuration](docs/usage-guide.md) and the [messenger model notes](docs/integrations/messenger.md#discord-model).
+
+
 ### Install as an Agent Skill
 
 Install channel notification capabilities into `jeo` or any other AI coding agent using the standard [Agent Skills](https://agentskills.io) CLI:

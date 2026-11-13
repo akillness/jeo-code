@@ -379,6 +379,98 @@ jeo daemon start|stop|status|reload   # 공유 데몬에는 프로바이더 선�
 ```
 
 
+### Discord 연동, 워크플로 게이트 재실행, 모델 설정
+
+#### 필요한 연동 방식 선택
+
+- `jeo notify`는 로컬 세션과 서브에이전트 상태를 Discord로 보내고, 허용 목록 사용자의 세션 제어를 받습니다. 웹훅은 바깥으로 보내기만 하며 명령을 수신하지 못합니다.
+- `jeo messenger`는 Discord 스레드/DM마다 영속 세션을 제공하는 별도 양방향 원격 코딩 게이트웨이입니다. Discord에서 에이전트에게 작업을 보내려면 이 방식을 사용하세요.
+
+#### Discord 세션 알림 설정
+
+Discord Bot을 만들고 **Message Content Intent**를 켠 뒤 `bot` 스코프로 초대하세요. 필요한 최소 권한(View Channel, Send Messages, Read Message History, Send Messages in Threads)만 부여하고 Administrator는 주지 마세요. `JEO_DISCORD_BOT_TOKEN`은 비밀 관리자나 비공개 환경에서 불러오고 토큰 값이 아니라 환경 변수 이름을 전달합니다:
+
+```bash
+# CHANNEL_ID와 USER_ID는 실제 Discord Snowflake ID로 바꾸세요.
+jeo notify setup --provider discord --token-env JEO_DISCORD_BOT_TOKEN \
+  --channel-id "CHANNEL_ID" --allowed-user-ids "USER_ID"
+jeo notify health --provider discord       # 네트워크 확인, 메시지는 보내지 않음
+jeo notify test --provider discord         # 실제 테스트 메시지 1건 전송
+jeo daemon start
+jeo daemon status
+```
+
+`health`는 봇 신원과 목적지 접근을 확인하고, `test`가 실제 전송을 증명합니다. 데몬 상태의 `initialized`는 전송 계층이 시작됐다는 뜻이지 Discord Gateway 접속 성공이 아닙니다. Setup은 봇 토큰을 `~/.jeo/config.json`에 평문 저장하므로 파일을 비공개로 보호하세요. 토큰이나 목적지를 바꾸면 `--allowed-user-ids`도 다시 지정해야 합니다. `/sessions`, `/subagents`, `/send`, `/steer`, `/cancel`은 설정된 목적지와 허용된 사용자만 사용할 수 있습니다. 채팅 제어는 계획을 승인하거나 워크플로 게이트를 통과시키지 않습니다. 자세한 내용은 [Discord 연동](docs/integrations/discord.md)을 참고하세요.
+
+#### 양방향 원격 코딩 세션 설정
+
+Discord Bot에 Message Content Intent와 View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, Send Messages in Threads 권한을 설정하세요. 사람 사용자와 채널 허용 목록은 구체적으로 지정해야 합니다.
+
+```bash
+# macOS/Linux: 사용자 서비스를 설치·시작하고 Gateway를 확인
+jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
+  --tools read,find,search
+jeo messenger check --config ~/.jeo/discord/messenger.json
+```
+
+`check`는 네트워크 연결 없이 로컬 프로필을 검사합니다. 실제 대화는 봇 DM 또는 설정된 요청 채널에서 멘션하여 확인하세요. Windows에서는 `--service`를 생략하고 생성된 `.cmd` 실행기를 사용합니다. Discord 기본 샌드박스는 macOS/Linux 네이티브이며 Windows에는 문서화된 Docker 샌드박스가 필요합니다. 같은 Bot으로 두 게이트웨이를 동시에 실행하지 마세요. 스레드별 세션은 워크스페이스를 공유하므로 쓰기/셸 도구를 켜기 전에 [샌드박스와 세션 규칙](docs/integrations/messenger.md)을 확인하세요. Setup은 Bot 토큰을 JSON 설정이 아니라 비공개 별도 파일에 저장합니다.
+
+`toolNames`가 없으면 Discord setup은 넓은 기본 도구 목록을 부여할 수 있습니다. `--tools`를 의도적으로 지정하세요. `read,find,search`는 읽기 전용이고, 원격 수정이 꼭 필요할 때만 `edit,write`를 더합니다. `bash`는 명령 실행 권한이므로 신뢰 가능한 사용자와 필요성이 확인된 경우에만 허용하세요. 도구 허용 목록은 샌드박스를 대체하지 않습니다.
+
+#### 새 증거가 필요한 게이트만 재실행
+
+프로젝트 루트에서 실행하고, 영수증은 `jeo state <skill> read`로 확인하세요:
+
+```bash
+jeo deep-interview "목표와 수락 기준 설명"
+jeo ralplan                         # critic 판정: [OKAY], [ITERATE], [REJECT]
+jeo approve <plan-path>             # 현재 계획의 정확한 경로 사용
+jeo team
+jeo ultragoal
+```
+
+- `[ITERATE]`: 모든 critic 지적을 반영해 계획을 수정하고 `jeo ralplan`을 다시 실행하세요. 새 `[OKAY]`를 받은 뒤에만 승인합니다. 승인 후 계획을 수정하면 승인이 무효가 되므로 현재 계획으로 `ralplan`과 `approve`를 다시 실행해야 합니다. `[REJECT]`는 실행 차단입니다. 승인을 억지로 진행하지 말고 요구사항을 재검토하세요.
+- `jeo team` 실패: 부분 수정이 남았는지 작업 트리를 확인한 뒤 `jeo team`을 다시 실행하세요. 저장된 상태는 완료 작업을 보존하고 대기 작업을 이어갑니다. 통과를 가장하려고 상태 파일을 지우거나 직접 수정하지 마세요.
+- `jeo ultragoal` 실패: 코드나 검증 명령을 수정한 뒤 새 증거를 위해 다시 실행하세요. 호출마다 전역 테스트 스위트는 한 번 실행됩니다. 실제 결과가 없는 기준은 미해결이며, 채팅의 확인 응답은 게이트 판정이 아닙니다.
+
+#### 기본·역할·Discord 전용 모델 선택
+
+`jeo setup`, 지원 제공자의 `/provider login <provider>`, 또는 제공자 API 키 환경 변수로 인증하세요. `/model`은 검색된 모델을 선택하고 `jeo --model provider/model-id`는 한 번 실행에만 적용합니다. `jeo models`로 제공자 카탈로그를 조회·검색·갱신하고 `jeo doctor`로 설정을 확인하세요.
+
+전역 기본값은 `~/.jeo/config.json`에 둡니다:
+
+```json
+{
+  "defaultModel": "provider/model-id",
+  "roles": {
+    "smol": "provider/fast-model-id",
+    "slow": "provider/reasoning-model-id",
+    "plan": "provider/planner-model-id"
+  },
+  "subagents": {
+    "critic": { "model": "provider/review-model-id" }
+  }
+}
+```
+
+환경 변수 `JEO_DEFAULT_MODEL=provider/model-id`도 사용할 수 있습니다. 프롬프트 기반 라우팅은 기본 꺼짐이며 `routing.enabled: true` 또는 `/route on`으로 켭니다. `/model <name>`은 세션 모델을 고정하고 `/model auto`가 고정을 해제합니다.
+
+다른 플랫폼에는 영향을 주지 않고 Discord 메신저만 모델을 고정하려면 기존 `platforms.discord` 객체에 다음 필드를 추가하세요:
+
+```json
+{
+  "platforms": {
+    "discord": {
+      "model": "provider/model-id",
+      "usageFallbackModel": "provider/fallback-model-id"
+    }
+  }
+}
+```
+
+두 모델 모두 실시간 검색 카탈로그에 있고 로컬 자격증명을 사용할 수 있어야 합니다. `usageFallbackModel`은 `model`이 필요하며 도구 실행 전 첫 단계에서 지속적인 사용량/쿼터 오류가 난 경우에만 시도합니다. 인증 오류, 일시적 rate limit, 이후 단계 실패에는 적용되지 않습니다. 기존 토큰과 허용 목록은 유지하세요. 자세한 내용은 [모델·제공자 설정](docs/usage-guide.md)과 [메신저 모델 설명](docs/integrations/messenger.md#discord-model)을 참고하세요.
+
+
 ### Discord & Slack (웹훅 & 봇 앱)
 
 팀 워크스페이스를 위해 표준 웹훅 또는 봇 자격증명을 환경 변수로 설정합니다:

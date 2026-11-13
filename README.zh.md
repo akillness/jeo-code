@@ -568,11 +568,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
+- **[Unreleased]**
+- **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)
-- **[0.12.32]** (2026-11-08) — Refresh the embedded sandbox runtime for npm consumers.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

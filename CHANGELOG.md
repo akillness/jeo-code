@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
+
+## [0.12.37] - 2026-11-13
 _Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals._
 
 ### Added

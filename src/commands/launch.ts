@@ -338,7 +338,7 @@ export {
   currentAtLabelFn as currentAtLabel,
 };
 export function normalizeSlashAlias(input: string): string {
-  // gjc-parity: bare `/login` opens the provider onboarding selector (same as bare
+  // Bare `/login` opens the provider onboarding selector (same as bare
   // `/provider`); `/login <provider|args>` is the direct OAuth-login alias.
   if (input === "/login") return "/provider";
   if (input.startsWith("/login ")) return `/provider login${input.slice("/login".length)}`;
@@ -346,7 +346,7 @@ export function normalizeSlashAlias(input: string): string {
   if (input === "/subagent" || input.startsWith("/subagent ")) return `/agents${input.slice("/subagent".length)}`;
   if (input === "/subagents" || input.startsWith("/subagents ")) return `/agents${input.slice("/subagents".length)}`;
   if (input === "/resume" || input.startsWith("/resume ")) return `/session resume${input.slice("/resume".length)}`;
-  // gjc-parity: /new, /drop, /rename, /sessions are top-level palette aliases for
+  // /new, /drop, /rename, /sessions are top-level palette aliases for
   // their /session <sub> implementations (same pattern as /resume above).
   if (input === "/new") return "/session new";
   if (input === "/drop") return "/session drop";
@@ -411,6 +411,17 @@ export function formatResumeHint(sessionId: string): string {
 }
 
 export async function runLaunchCommand(args: string[]): Promise<void> {
+  const launchCwd = process.cwd();
+  let resumeId: string | undefined;
+  for (;;) {
+    const next = await runLaunchScope(args, resumeId);
+    if (!next) return;
+    resumeId = next;
+    process.chdir(launchCwd);
+  }
+}
+
+async function runLaunchScope(args: string[], resumeId?: string): Promise<string | void> {
   // Brain-only control secret: remove before any tool, catalog, or guest setup.
   const shutdownNonce = process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
   delete process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
@@ -461,11 +472,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   if (shutdownNonce) process.on("message", handleControlMessage);
   const previousSessionDirectory = process.env.JEO_SESSION_DIR;
-  const runSession = (): Promise<void> => {
+  const runSession = (): Promise<string | void> => {
     const ready = Promise.withResolvers<void>();
     endpointStartup = ready.promise;
     setup.resolve();
-    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }).finally(ready.resolve);
+    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId).finally(ready.resolve);
   };
   try {
     const flags = parseFlags(args, process.cwd());
@@ -515,7 +526,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (!Array.isArray(allowedUserIds) || allowedUserIds.some(id => typeof id !== "string" || !id.trim())) throw new Error("UNAUTHORIZED: invalid sandbox actor allowlist");
     const authority = await createGrantAuthority({ sessionKey, cwd, config: sandboxConfig, supervisor: sessionSupervisor, allowedUserIds, stateDirectory, privateRoots });
     if (closing) throw new Error("Messenger worker stopping");
-    await withSandboxExecution({ supervisor: sessionSupervisor, authority, requestAccess: (host, mode) => authority.requestAccess(host, mode) }, runSession);
+    return await withSandboxExecution({ supervisor: sessionSupervisor, authority, requestAccess: (host, mode) => authority.requestAccess(host, mode) }, runSession);
   } finally {
     setup.resolve();
     await close();
@@ -526,9 +537,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 }
 
-async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void): Promise<void> {
+async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string): Promise<string | void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
+  if (resumeId) {
+    flags.resume = true;
+    flags.resumeId = resumeId;
+    flags.resumeInteractive = false;
+  }
   if (flags.errors.length) {
     for (const err of flags.errors) {
       console.error(`error: ${err}`);
@@ -543,7 +559,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // Killing our own jeo-created session from the `exit` hook only when `code === 0`
   // keeps both halves of the contract: clean exit closes the tmux session; crash /
   // nonzero exit leaves the dead pane up for inspection.
-  process.on("exit", code => {
+  const closeTmuxSession = (code: number): void => {
     const sessionName = process.env.JEO_TMUX_SESSION_NAME;
     if (!shouldSelfCloseTmuxSession(code, process.env) || !sessionName) return;
     try {
@@ -552,7 +568,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         stderr: "ignore",
       });
     } catch { /* best-effort */ }
-  });
+  };
+  process.on("exit", closeTmuxSession);
   // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
   // surfaces as an opaque downstream EMFILE ("too many open files") from file
   // watching, the browser tool, or a broad repo scan — warn up front with
@@ -642,8 +659,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         const cmd = tmuxLaunchCommand(process.argv[1], process.execPath, cwd);
 
         // Create a fresh, independent session (race-safe: the create is the guard).
-        // Size the DETACHED session to the caller terminal (gjc launch-tmux parity
-        // #1376): without -x/-y tmux creates it 80x24 and the inner jeo's first
+        // Size the DETACHED session to the caller terminal: without -x/-y tmux
+        // creates it 80x24 and the inner jeo's first
         // frames render mis-wrapped into the pane scrollback before attach resizes.
         // Chain `; set-option -t =<name> remain-on-exit on` onto the SAME tmux
         // invocation (via tmuxRemainOnExitChainArgs) so even an instant inner-process
@@ -676,7 +693,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           process.exit(1);
         }
         const sessionName = alloc.name;
-        // gjc-parity session profile (mouse / clipboard / copy-mode style / @jeo-*
+        // Session profile (mouse / clipboard / copy-mode style / @jeo-*
         // markers): wheel-up enters copy-mode over the REAL pane history, so the
         // mid-turn scrollback (ledger lines flushed above the live frame) is
         // reachable with the mouse wheel. Session-scoped (`-t =name`, never -g).
@@ -957,7 +974,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   };
   // The most recently displayed numbered pick list; `/model #N` selects from it.
   let lastPickIndex: PickEntry[] = [];
-  // Cumulative provider token usage for this REPL process (`/usage`, gjc parity).
+  // Cumulative provider token usage for this REPL process (`/usage`).
   const sessionUsage = { inputTokens: 0, outputTokens: 0, turns: 0 };
   // The last user request sent to the agent loop (`/retry`).
   let lastUserInput = "";
@@ -974,7 +991,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   let lastToolDetail: { tool: string; output: string } | null = null;
   // Accumulated reasoning/thinking for the in-flight turn (the model's thought before its
   // answer). Captured from the reasoning stream and persisted on the assistant message so
-  // it survives /resume + export (gjc "think → answer" record). Reset at each turn start.
+  // it survives /resume + export (the "think → answer" record). Reset at each turn start.
   let lastTurnReasoning = "";
   // Native reasoning artifacts for the FINAL (done) step — the engine attaches intermediate
   // steps' artifacts to their own pushed messages, but the done turn is built here. Reset on
@@ -1053,7 +1070,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   if (!flags.noSession) {
     if (flags.resumeInteractive) {
 
-      // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): the interactive
+      // Bare `--resume`/`-r` (no value) at cold startup: the interactive
       // session picker — added right before the REPL loop starts, below — takes over
       // and replaces this session before the user ever sees it, but ONLY in a TTY.
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1105,7 +1122,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       let id: string | undefined;
       let skipResume = false;
       if (flags.resumeId) {
-        // gjc-parity: resolve as a full id OR a short id prefix.
+        // Resolve as a full id OR a short id prefix.
         const resolved = await resolveSessionRef(flags.resumeId, cwd);
         if (resolved.kind === "ok") {
           id = resolved.id;
@@ -1135,7 +1152,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           sessionModel = initialSessionModel ?? header.model;
           lastUserInput = sessionPromptHistory(messages)[0] ?? "";
           lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
-          // Restore the unsent input-box draft (gajae-code parity) — see
+          // Restore the unsent input-box draft — see
           // startupDraft's own doc comment for why this path can't feed
           // queuedPromptInput.partial directly yet.
           if (header.draft) startupDraft = header.draft;
@@ -1160,7 +1177,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   }
 
   // Remote subagent visibility/control AND main-session mirroring over Telegram
-  // (gjc per-session-thread parity, see `src/agent/notify/`): best-effort, a
+  // (one thread per session, see `src/agent/notify/`): best-effort, a
   // cheap no-op unless `notifications.enabled`. Created ONCE for the whole REPL
   // lifetime (not per-turn) so a Telegram forum topic, once created, persists
   // across turns AND across `--resume` (keyed by jeo's real `sessionId`, not a
@@ -1200,7 +1217,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
   }
 
-  // Session-scoped registries for DETACHED subagents, background jobs, and monitors (gjc parity).
+  // Session-scoped registries for DETACHED subagents, background jobs, and monitors.
   // Created ONCE for the whole launch session lifetime (not per-turn) so detached
   // runs persist across turns and remain controllable/inspectable.
   let pendingMutationVerification = false;
@@ -1251,7 +1268,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   };
 
   // Persist (or clear) the unsent input-box draft into the session header so a
-  // later `/resume` restores it into the prompt (gajae-code parity: an
+  // later `/resume` restores it into the prompt (an
   // in-progress prompt survives a quit + resume instead of being silently
   // lost). Best-effort, same contract as persistSessionModel above — a
   // header-rewrite failure must never abort the exit path that calls this.
@@ -1309,10 +1326,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // through this when set, mirroring the local mid-turn-Enter path exactly
   // (same steerInbox, same scrollback card) instead of a parallel mechanism.
   let currentTurnSteer: { push: (line: string) => void; flushCard: (line: string) => void } | undefined;
-  // Session-local notify settings (gjc `/verbose`/`/lean`/`/redact` in-thread
-  // command parity): mutable for the REPL's lifetime, defaulted from config,
-  // never persisted — a config_command from Telegram changes THIS session
-  // only, exactly like gjc's own session-local semantics.
+  // Session-local notify settings (`/verbose`/`/lean`/`/redact` in-thread commands):
+  // mutable for the REPL's lifetime, defaulted from config, never persisted — a
+  // config_command from Telegram changes THIS session only.
   let notifyVerbosity: "lean" | "verbose" = cfg.notifications?.verbosity ?? "lean";
   let notifyRedact = cfg.notifications?.redact ?? false;
 
@@ -1320,6 +1336,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
   const turnSandboxScope = currentSandboxExecution();
+  let restartSessionId: string | undefined;
+  const requestSessionRestart = turnSandboxScope && !flags.literalPrompt && !process.env.JEO_MESSENGER_SESSION_KEY && process.stdin.isTTY
+    ? (id: string): void => { restartSessionId = id; }
+    : undefined;
   // ── Hoisted turn-closure dependencies ──────────────────────────────────────────
   // `runTurnScoped` (below) is invoked from BOTH the one-shot branch (`-p`, piped
   // stdin, messenger worker, startup `$skill`) and the interactive REPL. Its in-flight
@@ -1384,8 +1404,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     images?: ImageAttachment[],
     // What to show as the user card in the live frame: undefined → the prompt
     // itself (normal turns); null → suppress it entirely (skill runs, where the
-    // injected SKILL.md is NOT user-authored and the [skill] card already names it,
-    // gjc-style); a string → show that compact label instead of the raw input.
+    // injected SKILL.md is NOT user-authored and the [skill] card already names it);
+    // a string → show that compact label instead of the raw input.
     opts?: { userCard?: string | null; displayInput?: string; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string; unverified: boolean }> => {
     opts?.signal?.throwIfAborted();
@@ -1793,7 +1813,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
     // Resolve provider + dirty count up front — both are cheap and feed the live
     // frame's footer. `turnConfig` is reused so describeModel does NOT re-read the
-    // config file. (gjc parity P1.B5: dirty count per-turn, not per-render.)
+    // config file. (Dirty count per-turn, not per-render.)
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
@@ -2007,7 +2027,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui && cardText && cardText.trim()) tui.flushUserCard(cardText, opts?.userCard === undefined ? images : undefined);
       tui?.setContextUsage(historyTokens(history), contextTokens);
 
-      // Per-turn steering inbox (gjc parity): additional queries typed mid-turn land
+      // Per-turn steering inbox: additional queries typed mid-turn land
       // here and the engine drains them at each step boundary; createTaskTool forwards
       // the same drain so a single running subagent receives them live. Unconsumed
       // messages are folded into the next prompt in the finally block (race safety).
@@ -2642,8 +2662,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         sessionNotifyEndpoint.sendContextUpdate("turn_end", preview, { model: activeModel, usage: usageStr });
         // `notifyVerbosity` currently gates ONLY whether tool/step detail would be
         // mirrored (a future extension point) — the finalized reply text itself is
-        // always sent in full at both verbosity levels, matching gjc's own
-        // lean-vs-verbose semantics (lean omits tool noise, never the answer).
+        // always sent in full at both verbosity levels (lean omits tool noise,
+        // never the answer).
         sessionNotifyEndpoint.sendTurnStream(reply);
       }
     }
@@ -2752,7 +2772,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
   const joinedArgs = flags.message;
   const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;
-  // hermes-style experience distill (plan/gjc-inheritance.md B6) for one-shot
+  // hermes-style experience distill for one-shot
   // (`-p`/`--print`/piped) mode — previously ONLY the interactive exit path
   // spawned this, so a one-shot invocation (the common CI/scripted shape, e.g.
   // `jeo "task" -p`) never wrote anything to session memory no matter how many
@@ -3121,7 +3141,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // (/clear, /resume) so the box fits the resized terminal instead of the old width.
   const freshWelcomeLines = (): string[] =>
     renderWelcome({ ...welcomeData, cols: terminalSize().cols });
-  // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
+  // Fresh-start clear so the banner opens atop a clean screen. TTY only,
   // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
   // SKIPPED on a resume that actually restored prior messages: the transcript ledger
   // was already printed above (during session persistence, right after "Resumed
@@ -3174,7 +3194,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
-    // gjc-style invocation card: surface WHAT is being injected before the work
+    // Invocation card: surface WHAT is being injected before the work
     // starts — skill name, resolved SKILL.md path, and the prompt size.
     {
       const card = formatForgeBox(
@@ -3334,6 +3354,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   const drainPromptListeners = () => {
     for (const off of promptListenerCleanups.splice(0)) { try { off(); } catch { /* best effort */ } }
   };
+  const onPromptExit = (cleanup: () => void): void => {
+    process.once("exit", cleanup);
+    promptListenerCleanups.push(() => {
+      process.off("exit", cleanup);
+      cleanup();
+    });
+  };
   let keyFilter: PassThrough | undefined;
   // Holder for the active readline so the input filter can see the current line
   // buffer (used by the empty-line backspace guard below). Set after rl is created.
@@ -3361,7 +3388,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // lives in `filterPromptInputChunk` (pure + exported) so the full keystroke wiring is
     // testable without a live readline/PTY; this handler is the thin live adapter.
     const kfState = { inPaste: false };
-    // gjc parity (#2591 "preserve supplementary Unicode input"): a raw stdin "data"
+    // Preserve supplementary Unicode input: a raw stdin "data"
     // chunk boundary can land MID multi-byte UTF-8 sequence (real terminals/ptys do not
     // guarantee byte-aligned-to-character delivery, especially under load or over
     // SSH/tmux) — naive per-chunk `chunk.toString("utf8")` then replaces the split
@@ -3406,7 +3433,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // sequence. Restored on exit so a shell/editor started afterward isn't left with an
     // unexpected keyboard-encoding mode.
     process.stdout.write(enableModifyOtherKeys() + enableKittyKeyboard());
-    process.once("exit", () => {
+    onPromptExit(() => {
       try { process.stdout.write(disableKittyKeyboard() + disableModifyOtherKeys()); } catch { /* terminal gone */ }
     });
   }
@@ -3452,7 +3479,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     promptStdin.setRawMode(true);
     promptRawChanged = true;
   }
-  process.once("exit", restorePromptRawMode);
+  onPromptExit(restorePromptRawMode);
   // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
   // NEVER settles once the input stream closes (Ctrl-D, exhausted pipe) — the
   // while(true) prompt loop then waits forever (the "jeo never exits" hang).
@@ -3525,7 +3552,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // Enable bracketed paste for the REPL lifetime (restored on exit below):
     // terminals only wrap pastes in the 200~/201~ markers once the app opts in.
     process.stdout.write("\x1b[?2004h");
-    process.once("exit", () => { try { process.stdout.write("\x1b[?2004l"); } catch { /* terminal gone */ } });
+    onPromptExit(() => { try { process.stdout.write("\x1b[?2004l"); } catch { /* terminal gone */ } });
   }
   rl.on("line", l => {
     if (promptPasteActive) {
@@ -3612,11 +3639,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return true;
     };
     try {
+      // Bun's question() resets the caret but keeps a prefilled draft.
+      const rlCursor = rl as unknown as { cursor: number };
+      const cursor = rlCursor.cursor;
+      const question = rl.question(prompt, { signal: questionAbort.signal }).catch<string | typeof REMOTE_ABORT_SENTINEL>(err => {
+        if (err instanceof Error && err.name === "AbortError") return REMOTE_ABORT_SENTINEL;
+        throw err;
+      });
+      if (rl.line && typeof cursor === "number") rlCursor.cursor = cursor;
       const value = await Promise.race<string | typeof REMOTE_ABORT_SENTINEL | { remote: string }>([
-        rl.question(prompt, { signal: questionAbort.signal }).catch(err => {
-          if (err instanceof Error && err.name === "AbortError") return REMOTE_ABORT_SENTINEL;
-          throw err;
-        }),
+        question,
         new Promise<string>(resolve => {
           notifyStdinClosed = () => {
             if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
@@ -3936,11 +3968,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     applyCursorColor();
   };
   applyCursorColor();
-  process.once("exit", () => {
+  onPromptExit(() => {
     try { process.stdout.write(resetCursorColor()); } catch { /* terminal gone */ }
   });
 
-  // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
+  // The status bar pinned directly ABOVE the input box: bg-gradient
   // identity block (model · thinking / branch / cwd) left, live ctx% right.
   const statusBarLine = (cols: number): string => {
     const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
@@ -4400,7 +4432,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           return false;
         }
         if (key?.name === "tab") {
-          // gajae-code parity: cycle the provider tab (shift+tab steps back).
+          // Cycle the provider tab (shift+tab steps back).
           list.cycleTab(key.shift ? -1 : 1);
           return false;
         }
@@ -4489,10 +4521,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     return leaf.replace(/^gpt/i, "GPT");
   };
 
-  // gajae-code `/model` parity: after a model is picked, the interactive flow
-  // runs TWO menus — gjc's `#renderActionMenu` ("Set as DEFAULT / EXECUTOR / …",
-  // i.e. WHICH target uses this model) followed by its `#renderThinkingMenu`
-  // ("Reasoning for <target>", the per-target reasoning budget). DEFAULT updates
+  // After a model is picked in `/model`, the interactive flow runs TWO menus —
+  // an action menu ("Set as DEFAULT / EXECUTOR / …", i.e. WHICH target uses
+  // this model) followed by a thinking menu ("Reasoning for <target>", the
+  // per-target reasoning budget). DEFAULT updates
   // the active session model; a subagent role writes ~/.jeo/config.json without
   // switching the chat model.
   const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
@@ -4634,7 +4666,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     return chosen && (cloud.has(chosen) || subs.has(chosen)) ? chosen as AuthProvider : undefined;
   };
 
-  // Bare `/provider` opens gjc's interactive onboarding selector: choose between
+  // Bare `/provider` opens the interactive onboarding selector: choose between
   // OAuth/subscription login and registering an API-compatible endpoint. Returns the
   // picked action, or undefined when cancelled (Esc/Ctrl+C). TTY only — callers fall
   // back to the printed usage in non-interactive mode.
@@ -4731,7 +4763,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
 
   if (previewEnabled) {
-    process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
+    onPromptExit(() => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     const footerKeypressHandler = (_ch: string, rawKey: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined) => {
       // Kitty CSI-u / xterm modifyOtherKeys events arrive with `name: undefined`
       // (Node's keypress table predates those protocols) — normalize them back to
@@ -4962,7 +4994,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // Idle-prompt resize: re-reserve the footer at the new terminal height so the
     // fixed reservation stays accurate (otherwise the next paint would target the
     // old row count and either over-shoot or under-paint the reserved region).
-    // gjc-style responsiveness: re-reserve the footer IMMEDIATELY on the first resize
+    // Responsiveness: re-reserve the footer IMMEDIATELY on the first resize
     // event (leading edge → no lag), then cap re-reservations to ~30fps during a
     // drag-resize, with a trailing settle so the FINAL height is always reserved exactly.
     // Skip same-geometry events; each re-reserve disarms→arms so it must not run per-event.
@@ -5085,7 +5117,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste,
   });
 
-  // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): show the SAME
+  // Bare `--resume`/`-r` (no value) at cold startup: show the SAME
   // interactive session picker `/session resume` (no arg) uses, in place of the
   // fresh session created above. TTY-only — non-TTY already fell back to
   // silent-latest resume in the startup block above.
@@ -5095,6 +5127,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
       canSwitchSession: () => !hasPendingSessionInput(),
       promptHistoryText: message => compactPastes.restore(message),
+      requestSessionRestart,
       onSessionCommitted: (id, draft) => { if (id !== sessionId) void stopLaunchEndpoint(); sessionId = id; queuedPromptInput.partial = compactPastes.restore({ content: draft }); },
     });
     sessionId = pickResult.sessionId;
@@ -5178,6 +5211,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   }
 
   while (true) {
+      if (restartSessionId) break;
       invalidateDraftPaste();
       drainPendingTtyInput();
       // "New input first": queued FULL lines from the previous turn are folded
@@ -5304,7 +5338,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         : raw;
       let inputDisplay = input;
       input = compactPastes.expand(input);
-      // gjc-parity command aliases (full behavior reuse, no duplicated handlers):
+      // Command aliases (full behavior reuse, no duplicated handlers):
       // /login→/provider login, /settings→/config, /subagent(s)→/agents.
       input = normalizeSlashAlias(input);
       pendingSelection = undefined;
@@ -5392,7 +5426,7 @@ navMatches = [];
         if (pendingImages.length === 0) continue;
         input = "Please look at the attached image(s)."; // image-only submit
       }
-      // gjc-parity shell escape: `!<cmd>` runs the command directly in cmd-mode and
+      // Shell escape: `!<cmd>` runs the command directly in cmd-mode and
       // prints its output WITHOUT engaging the agent (history untouched), like a REPL
       // shell escape. The user is explicitly driving their own shell, so the deep-interview
       // mutation guard (which gates the AGENT's tools) does not apply here.
@@ -5458,7 +5492,7 @@ navMatches = [];
         continue;
       }
       if (input === "/handoff" || input.startsWith("/handoff ")) {
-        // jeo-native subset of gjc `/handoff` parity: bounded, read-only handoff
+        // jeo-native `/handoff`: bounded, read-only handoff
         // document (like /compact's summary, framed for a session handoff) — jeo
         // has no ACP/SDK-broker managed-session boundary to hand off INTO, so this
         // NEVER mutates history (see buildHandoffDocument's doc comment).
@@ -5496,6 +5530,7 @@ navMatches = [];
           advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
           canSwitchSession: () => !hasPendingSessionInput(preservedPartial),
           promptHistoryText: message => compactPastes.restore(message),
+          requestSessionRestart,
           onSessionCommitted: (id, draft) => {
             if (id !== sessionId) void stopLaunchEndpoint();
             sessionId = id;
@@ -5675,7 +5710,7 @@ navMatches = [];
         console.log(`Goal set to: "${arg}"`);
         continue;
       }
-      // ---- gjc-parity inspection commands ------------------------------------
+      // ---- inspection commands ------------------------------------------------
       if (input === "/usage") {
         const cfg = await readGlobalConfig();
         const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
@@ -5761,7 +5796,7 @@ navMatches = [];
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
         let name = (tokens[0] ?? "").toLowerCase();
-        // gjc-parity (semantic): /provider is ONBOARDING ONLY — set up OAuth credentials
+        // /provider is ONBOARDING ONLY — set up OAuth credentials
         // or an API-compatible endpoint. Switching the active provider/model lives in /model.
         const providerOnboardingUsage = (): string[] => [
           "Provider onboarding — set up credentials or an API-compatible endpoint:",
@@ -5776,7 +5811,7 @@ navMatches = [];
           "  Headless OAuth        : paste the redirect URL or code when the login prompt asks.",
           "Switch the active model or provider with /model.",
         ];
-        // Bare `/provider` in an interactive TTY → gjc's interactive onboarding selector
+        // Bare `/provider` in an interactive TTY → the interactive onboarding selector
         // (OAuth login vs API-compatible endpoint). The choice routes into the same
         // `login`/`add` branches below; cancel falls through to the printed readiness +
         // usage. Non-TTY / `help` keep the static panel (scriptable, unchanged).
@@ -6020,7 +6055,7 @@ navMatches = [];
           continue;
         }
         // Anything else (a provider name) used to switch the active provider — that moved
-        // to /model (gjc semantics: /provider onboards, /model selects).
+        // to /model (/provider onboards, /model selects).
         console.log(`'/provider ${name}' no longer switches providers — provider/model selection moved to /model.`);
         console.log("Run /model to pick any provider's model (or /model <id|#N>). /provider now only onboards — see /provider help.");
         continue;
@@ -6239,7 +6274,7 @@ navMatches = [];
         } else if (usage) {
           console.log(usage.trim());
         }
-        // gajae-code 0.7.8 parity: ping the terminal bell when a turn finishes so a
+        // Ping the terminal bell when a turn finishes so a
         // backgrounded session notifies the user. Off unless config.notify.bell (or
         // JEO_NOTIFY_BELL=1) is set; never fires for a cancelled turn.
         if (reply !== "Cancelled.") maybeBell("complete", cfg.notify, (s) => out.write(s), process.env as Record<string, string | undefined>);
@@ -6260,16 +6295,16 @@ navMatches = [];
     restorePromptRawMode();
     process.exit(130);
   }
-  // hermes-style experience distill (plan/gjc-inheritance.md B6) — now handed to a
+  // hermes-style experience distill — now handed to a
   // DETACHED child (round-16): /exit and ^C^C return the shell IMMEDIATELY instead
   // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
-  if (sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
+  if (!restartSessionId && sessionUsage.turns > 0 && !(sessionModel || defaultModel).startsWith("agy/")) {
     const spawned = await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
     if (spawned) console.log(chalk.gray("(session memory distilling in background)"));
   }
-  // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
+  // Resume pointer: leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
-  if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
+  if (!restartSessionId && sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
   await cleanupSession();
   process.removeListener("SIGINT", handleCtrlC);
   process.stdin.off("data", handleCtrlCByte);
@@ -6277,4 +6312,10 @@ navMatches = [];
   restorePromptRawMode();
   gracefulReadlineClose = true;
   rl.close();
+  if (restartSessionId) {
+    process.off("exit", closeTmuxSession);
+    // Start the selected transcript only after the old scope has fully revoked.
+    if (process.stdout.isTTY) process.stdout.write(clearScreen());
+    return restartSessionId;
+  }
 }

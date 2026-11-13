@@ -33,6 +33,8 @@ export interface SessionSlashCtx {
   logLines: (lines: string[]) => void;
   canSwitchSession?: () => boolean;
   onSessionCommitted?: (id: string | undefined, draft: string) => void;
+  /** Defer cross-session restores until the caller has revoked its sandbox. */
+  requestSessionRestart?: (id: string) => void;
   /** Restore editor-local references without changing canonical retry content. */
   promptHistoryText?: (message: Message) => string;
   /**
@@ -263,6 +265,10 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
       try {
         const loadedSession = loaded ?? await loadSession(rid, cwd);
         if (!maySwitch()) return;
+        if (rid !== sessionId && ctx.requestSessionRestart) {
+          ctx.requestSessionRestart(rid);
+          return;
+        }
         const { header, messages, timeline } = loadedSession;
         history.length = 1;
         for (const m of messages) history.push(m);
@@ -295,13 +301,13 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
           console.log(freshWelcomeLines().join("\n"));
         }
         const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-        logLines([
+        console.log([
           sep,
           `resumed session ${rid} · ${messages.length} message(s)`,
           sep,
           ...renderSessionTimeline(timeline, !!process.stdout.isTTY),
           sep,
-        ]);
+        ].join("\n"));
       } catch (err) {
         console.log(`! ${(err as Error).message}`);
       }
@@ -395,7 +401,7 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
       return result();
     }
     if (arg) {
-      // gjc-parity: resolve `arg` as a full id OR a short id prefix before resuming.
+      // Resolve `arg` as a full id OR a short id prefix before resuming.
       const resolved = await resolveSessionRef(arg, cwd);
       if (resolved.kind === "ambiguous") {
         console.log(`Ambiguous session id '${arg}' — matches: ${resolved.matches.slice(0, 5).join(", ")}${resolved.matches.length > 5 ? " …" : ""}. Use more characters or run with --resume (no value) to pick interactively.`);
@@ -413,7 +419,7 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
       console.log("(no saved sessions with history)");
       return result();
     }
-    // Interactive gjc-style picker on a TTY: type to filter, ↑↓/PgUp/PgDn to
+    // Interactive picker on a TTY: type to filter, ↑↓/PgUp/PgDn to
     // move, Enter resumes, Del deletes (press Del twice to confirm), Esc cancels.
     if (process.stdin.isTTY && process.stdout.isTTY) {
       // Loop so a delete refreshes the list and re-opens the picker in place.

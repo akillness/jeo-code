@@ -160,6 +160,233 @@ test("createEvalTool: parallel() runs thunks concurrently and preserves input or
   expect(res.output).toContain("Return value:\n[\n  0,\n  1,\n  2\n]");
 });
 
+test("createEvalTool: steering reaches both active parallel task children exactly once", async () => {
+  const dir = await tmpDir();
+  const { promise: bothStarted, resolve: releaseBoth } = Promise.withResolvers<void>();
+  let started = 0;
+  let pending: string[] = [];
+  const steeringEvents: string[] = [];
+  const histories = new Map<string, string[][]>();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { content: string }[]) => {
+      const task = String(messages[1]?.content ?? "");
+      const child = ["first child", "second child", "later child"].find(name => task.includes(name)) ?? "unknown";
+      const content = messages.map(message => String(message.content));
+      const calls = histories.get(child) ?? [];
+      calls.push(content);
+      histories.set(child, calls);
+      const hasSteering = content.some(text => text.includes("redirect both children"));
+      if (!hasSteering && child !== "later child") {
+        started++;
+        if (started === 2) {
+          pending = ["redirect both children: first", "redirect both children: second"];
+          releaseBoth();
+        }
+        await bothStarted;
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ncomplete" } });
+    },
+  }));
+  // Import after installing the mock so the real dispatch uses the offline LLM boundary.
+  const { createEvalTool } = await import("../src/agent/eval-tool");
+  const tool = createEvalTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    steer: () => pending.splice(0),
+    onEvent: event => {
+      if (event.detail?.startsWith("↳ steer: redirect both children:")) steeringEvents.push(event.detail);
+    },
+  });
+  try {
+    const res = await tool({
+      code: `await parallel([() => task("executor", "first child"), () => task("executor", "second child")]); return await task("executor", "later child");`,
+      timeoutMs: 10000,
+    }, dir);
+    expect(res.success).toBe(true);
+    expect(started).toBe(2);
+    expect(steeringEvents).toEqual([
+      "↳ steer: redirect both children: first", "↳ steer: redirect both children: second",
+      "↳ steer: redirect both children: first", "↳ steer: redirect both children: second",
+    ]);
+    for (const child of ["first child", "second child"]) {
+      const last = histories.get(child)?.at(-1) ?? [];
+      expect(last.filter(text => text.includes("redirect both children")).map(text => text.split("\n").at(-1))).toEqual([
+        "redirect both children: first", "redirect both children: second",
+      ]);
+    }
+    expect((histories.get("later child") ?? []).flat().filter(text => text.includes("redirect both children"))).toHaveLength(0);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 15000);
+
+test("createEvalTool: steering follows active children as tasks finish and start", async () => {
+  const dir = await tmpDir();
+  const { promise: initialReady, resolve: releaseInitial } = Promise.withResolvers<void>();
+  const { promise: laterReady, resolve: releaseLater } = Promise.withResolvers<void>();
+  const histories = new Map<string, string[][]>();
+  const initialChildren = new Set<string>();
+  let pending: string[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { content: string }[]) => {
+      const assignment = String(messages[1]?.content ?? "");
+      const child = ["departing child", "surviving child", "joining child"].find(name => assignment.includes(name)) ?? "unknown";
+      const content = messages.map(message => String(message.content));
+      const calls = histories.get(child) ?? [];
+      calls.push(content);
+      histories.set(child, calls);
+      if (calls.length === 1 && child !== "joining child") {
+        initialChildren.add(child);
+        if (initialChildren.size === 2) {
+          pending.push("steer before departure");
+          releaseInitial();
+        }
+        await initialReady;
+        if (child === "surviving child") await laterReady;
+      } else if (calls.length === 1) {
+        pending.push("steer after departure");
+        releaseLater();
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ncomplete" } });
+    },
+  }));
+  // The mocked LLM must be installed before loading the real dispatch path.
+  const { createEvalTool } = await import("../src/agent/eval-tool");
+  const tool = createEvalTool({ config: { defaultModel: "ollama/fast", subagents: {} }, steer: () => pending.splice(0) });
+  try {
+    const res = await tool({
+      code: `const departing = task("executor", "departing child"); const surviving = task("executor", "surviving child"); await departing; const joining = task("executor", "joining child"); return await Promise.all([surviving, joining]);`,
+      timeoutMs: 10000,
+    }, dir);
+    expect(res.success).toBe(true);
+    const instructions = (child: string) => (histories.get(child)?.at(-1) ?? [])
+      .filter(text => text.includes("steer before departure") || text.includes("steer after departure"))
+      .map(text => text.split("\n").at(-1));
+    expect(instructions("departing child")).toEqual(["steer before departure"]);
+    expect(instructions("surviving child")).toEqual(["steer before departure", "steer after departure"]);
+    expect(instructions("joining child")).toEqual(["steer after departure"]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 15000);
+
+test.each([false, true])("createEvalTool: cancellation preserves steering not consumed by any child (restore callback: %s)", async (restore) => {
+  const dir = await tmpDir();
+  const controller = new AbortController();
+  const { promise: firstStarted, resolve: releaseFirstStarted } = Promise.withResolvers<void>();
+  let waitingChildren = 0;
+  const pending: string[] = [];
+  let secondStarted = false;
+  const seenSteering: string[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { content: string }[], options: { signal?: AbortSignal }) => {
+      const assignment = String(messages[1]?.content ?? "");
+      if (assignment.includes("waiting child")) {
+        if (++waitingChildren === 2) releaseFirstStarted();
+      } else if (assignment.includes("gate child")) {
+        await firstStarted;
+        return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ngate complete" } });
+      } else if (assignment.includes("joining child")) {
+        secondStarted = true;
+        pending.push("newer instruction");
+        controller.abort();
+      }
+      await new Promise<void>(resolve => {
+        if (options.signal?.aborted) resolve();
+        else options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new Error("cancelled by test");
+    },
+  }));
+  // Install the offline provider boundary before loading real eval dispatch.
+  const { createEvalTool } = await import("../src/agent/eval-tool");
+  const tool = createEvalTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    signal: controller.signal,
+    steer: () => pending.splice(0),
+    ...(restore ? { restoreSteer: (messages: string[]) => { pending.unshift(...messages); } } : {}),
+    onEvent: event => {
+      if (event.detail === "enqueue steering") pending.push("unconsumed instruction");
+      if (event.detail === "↳ steer: unconsumed instruction") seenSteering.push(event.detail);
+    },
+  });
+  try {
+    const res = await tool({
+      code: `task("executor", "first waiting child"); task("executor", "second waiting child"); await task("executor", "gate child"); log("enqueue steering"); await task("executor", "joining child");`,
+      timeoutMs: 10000,
+    }, dir);
+    expect(secondStarted).toBe(true);
+    expect(waitingChildren).toBe(2);
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("cancelled");
+    if (restore || seenSteering.length === 0) {
+      expect(seenSteering).toEqual([]);
+      expect(pending).toEqual(["unconsumed instruction", "newer instruction"]);
+    } else {
+      expect(seenSteering).toEqual(["↳ steer: unconsumed instruction"]);
+      expect(pending).toEqual(["newer instruction"]);
+    }
+  } finally {
+    controller.abort();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 15000);
+
+test.each(["success", "script error", "abort"])("createEvalTool: throwing steering restoration fails the eval instead of hanging (%s)", async (mode) => {
+  const dir = await tmpDir();
+  const controller = new AbortController();
+  const { promise: firstStarted, resolve: releaseFirstStarted } = Promise.withResolvers<void>();
+  const pending: string[] = [];
+  const privateSentinel = "private-restoration-token-7e2c";
+  const events: unknown[] = [];
+  let restoreCalls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { content: string }[], options: { signal?: AbortSignal }) => {
+      const assignment = String(messages[1]?.content ?? "");
+      if (assignment.includes("waiting child")) {
+        releaseFirstStarted();
+        await new Promise<void>(resolve => {
+          if (options.signal?.aborted) resolve();
+          else options.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("cancelled by eval settlement");
+      }
+      if (assignment.includes("gate child")) await firstStarted;
+      if (mode === "abort" && assignment.includes("joining child")) controller.abort();
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ncomplete" } });
+    },
+  }));
+  // Install the provider fake before loading the real eval dispatch.
+  const { createEvalTool } = await import("../src/agent/eval-tool");
+  const tool = createEvalTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    signal: controller.signal,
+    steer: () => pending.splice(0),
+    restoreSteer: () => { restoreCalls++; throw new Error(privateSentinel); },
+    onEvent: event => {
+      events.push(event);
+      if (event.detail === "enqueue steering") pending.push("unconsumed instruction");
+    },
+  });
+  try {
+    const res = await tool({
+      code: `task("executor", "waiting child"); await task("executor", "gate child"); log("enqueue steering"); await task("executor", "joining child"); ${mode === "script error" ? 'throw new Error("script failure");' : 'return "finished";'}`,
+      timeoutMs: 10000,
+    }, dir);
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("steering restoration failed");
+    expect(restoreCalls).toBe(1);
+    expect(res.error).not.toContain(privateSentinel);
+    expect(JSON.stringify(events)).not.toContain(privateSentinel);
+    expect(res.error).not.toContain("timeout");
+    if (mode === "script error") expect(res.error).toContain("script failure");
+    if (mode === "abort") expect(res.error).toContain("eval cancelled");
+    if (mode === "success") expect(res.error).not.toContain("eval cancelled");
+  } finally {
+    controller.abort();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 15000);
+
 test("createEvalTool: parallel() rejects a non-array argument", async () => {
   const { createEvalTool } = await import("../src/agent/eval-tool");
   const tool = createEvalTool({ config: { defaultModel: "ollama/fast", subagents: {} } });

@@ -2357,6 +2357,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             config: { ...turnConfig, defaultModel: activeModel },
             signal: ac.signal,
             steer: drainSteer,
+            restoreSteer: messages => { steerInbox.unshift(...messages); },
             onEvent: onSubagentEvent,
             onSubagentMessage,
           }),

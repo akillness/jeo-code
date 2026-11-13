@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "../src/agent/loop";
 import { appendSubagentMessage, createSession, loadSession } from "../src/agent/session";
-import { taskToolProtocolLine } from "../src/agent/task-tool";
+import { createTaskTool, taskToolProtocolLine } from "../src/agent/task-tool";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
@@ -394,6 +394,66 @@ test("createTaskTool: a JSON-STRINGIFIED 'tasks' array (the exact live-reproduce
   expect(res.output).toContain("[Architect fan-out] 3/3 completed (concurrency 3)");
   expect(res.output).toContain("### Task 1/3");
   expect(res.output).toContain("### Task 3/3");
+});
+
+test("createTaskTool: malformed fan-out entries reject the entire batch before starting children", async () => {
+  const cwd = await tmpDir();
+  try {
+    const cases: { name: string; tasks: unknown; invalidIndex: number }[] = [
+      { name: "null after a valid entry", tasks: ["first", null, "last"], invalidIndex: 1 },
+      { name: "blank string after valid entries", tasks: ["first", "second", "  "], invalidIndex: 2 },
+      { name: "object without an assignment", tasks: ["first", { context: "orphan" }], invalidIndex: 1 },
+      { name: "blank object assignment", tasks: ["first", { assignment: " " }], invalidIndex: 1 },
+      { name: "JSON-stringified array with null", tasks: JSON.stringify(["first", null, "last"]), invalidIndex: 1 },
+    ];
+    for (const { name, tasks, invalidIndex } of cases) {
+      const starts: string[] = [];
+      const tool = createTaskTool({
+        config: { defaultModel: "m", subagents: {} },
+        signal: AbortSignal.abort(),
+        onEvent: event => { if (event.kind === "start") starts.push(event.detail ?? ""); },
+      });
+      const result = await tool({ role: "architect", tasks }, cwd);
+      expect({ name, success: result.success, starts }).toEqual({ name, success: false, starts: [] });
+      expect(result.error, name).toMatch(new RegExp(`(?:index\\s*|\\[)${invalidIndex}(?:\\]|\\b)`, "i"));
+    }
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("createTaskTool: fan-out retains legacy assignments and gives every child shared and isolated context", async () => {
+  const cwd = await tmpDir();
+  try {
+    for (const stringify of [false, true]) {
+      const starts: { index: number | undefined; detail: string | undefined }[] = [];
+      const prompts: string[] = [];
+      const tool = createTaskTool({
+        config: { defaultModel: "m", subagents: {}, subagentConcurrency: 1 },
+        signal: AbortSignal.abort(),
+        onEvent: event => { if (event.kind === "start") starts.push({ index: event.index, detail: event.detail }); },
+        onSubagentMessage: record => { if (record.message.role === "user") prompts.push(record.message.content); },
+      });
+      const tasks = [" alpha ", { task: "beta", context: "beta-private" }, { assignment: "gamma", context: "gamma-private" }, { prompt: "delta" }];
+      await tool({ role: "architect", context: "shared-context", tasks: stringify ? JSON.stringify(tasks) : tasks, justification: "These independent reviews cover separate files and need simultaneous examination" }, cwd);
+      expect(starts).toEqual([
+        { index: 1, detail: "alpha" }, { index: 2, detail: "beta" },
+        { index: 3, detail: "gamma" }, { index: 4, detail: "delta" },
+      ]);
+      expect(prompts).toHaveLength(4);
+      for (const prompt of prompts) expect(prompt).toContain("shared-context");
+      expect(prompts[1]).toContain("beta-private");
+      expect(prompts[1]).not.toContain("gamma-private");
+      expect(prompts[2]).toContain("gamma-private");
+      expect(prompts[2]).not.toContain("beta-private");
+      expect(prompts[0]).not.toContain("beta-private");
+      expect(prompts[0]).not.toContain("gamma-private");
+      expect(prompts[3]).not.toContain("beta-private");
+      expect(prompts[3]).not.toContain("gamma-private");
+    }
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("createTaskTool: a 'tasks' string that is NOT valid JSON (or parses to something other than an array) falls through to the ordinary single-task/empty-tasks error, never throws", async () => {

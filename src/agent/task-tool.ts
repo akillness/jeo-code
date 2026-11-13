@@ -743,18 +743,23 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       if (detached) {
         return { success: false, output: "", error: "Detached execution supports a single task only; fan-out 'tasks' cannot be detached." };
       }
-      const items = (tasksArg as unknown[])
-        .map(entry => {
-          if (typeof entry === "string") return { task: entry.trim(), context: "" };
-          if (entry && typeof entry === "object") {
-            const e = entry as Record<string, unknown>;
-            return { task: String(e.task ?? e.assignment ?? e.prompt ?? "").trim(), context: ctx(e.context) };
-          }
-          return { task: "", context: "" };
-        })
-        .filter(i => i.task);
-      if (items.length === 0) {
+      if (tasksArg.length === 0) {
         return { success: false, output: "", error: "task fan-out requires a non-empty 'tasks' array of assignments." };
+      }
+      const items: { task: string; context: string }[] = [];
+      const sharedContext = typeof args.context === "string" && args.context.trim()
+        ? `\n\nShared context:\n${args.context.trim()}` : "";
+      for (let i = 0; i < tasksArg.length; i++) {
+        const entry: unknown = tasksArg[i];
+        const e = entry && typeof entry === "object" && !Array.isArray(entry)
+          ? entry as Record<string, unknown> : undefined;
+        const assignment = typeof entry === "string" ? entry : e?.task ?? e?.assignment ?? e?.prompt;
+        if (typeof assignment !== "string" || !assignment.trim()) {
+          return { success: false, output: "", error: `Invalid fan-out task at index ${i}: expected a non-empty assignment string.` };
+        }
+        const itemContext = typeof e?.context === "string" && e.context.trim()
+          ? `\n\nTask context:\n${e.context.trim()}` : "";
+        items.push({ task: assignment.trim(), context: sharedContext + itemContext });
       }
       // A fan-out BATCH SIZE cap (queue length, not concurrency — see MAX_FANOUT
       // below): an unbounded queue behind bounded concurrency would still

@@ -63,11 +63,8 @@ function detailBlock(rec: SubagentRecord, verbosity?: SubagentVerbosity): string
 
 
 function idsOf(args: Record<string, any>): string[] {
-  if (Array.isArray(args.ids)) return args.ids.map((x: unknown) => String(x)).filter(isValidId);
-  if (args.id !== undefined) {
-    const s = String(args.id);
-    return isValidId(s) ? [s] : [];
-  }
+  if (Array.isArray(args.ids)) return args.ids;
+  if (args.id !== undefined) return [args.id];
   return [];
 }
 
@@ -77,12 +74,16 @@ function clampLimit(value: unknown): number {
 }
 
 export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
-  return async (args: Record<string, any>, _cwd: string): Promise<ToolResult> => {
+  return async (args: Record<string, any>, _cwd: string, _onProgress, signal): Promise<ToolResult> => {
     const action = String(args.action ?? "list").trim().toLowerCase();
-    const invalidId = args.id !== undefined && (typeof args.id !== "string" || !isValidId(args.id));
-    const invalidIds = args.ids !== undefined && (!Array.isArray(args.ids) || args.ids.some((id: unknown) => typeof id !== "string" || !isValidId(id)));
+    const validId = (id: unknown): id is string => typeof id === "string" && (isValidId(id) || registry.get(id) !== undefined);
+    const invalidId = args.id !== undefined && !validId(args.id);
+    const invalidIds = args.ids !== undefined && (!Array.isArray(args.ids) || args.ids.some((id: unknown) => !validId(id)));
     if (invalidId || invalidIds) {
       return { success: false, output: "", error: invalidId ? "Invalid subagent id: expected a valid identifier (letters, digits, '_' or '-')." : "Invalid subagent ids: expected an array of valid identifiers (letters, digits, '_' or '-')." };
+    }
+    if (args.id !== undefined && args.ids !== undefined) {
+      return { success: false, output: "", error: "Specify either id or ids, not both." };
     }
     const ids = idsOf(args);
     const verbosity: SubagentVerbosity | undefined = ["receipt", "preview", "full"].includes(args.verbosity) ? args.verbosity : undefined;
@@ -137,12 +138,39 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
 
 
     if (action === "await") {
+      const unknownIds = ids.filter(id => !registry.get(id));
+      if (unknownIds.length > 0) {
+        return { success: false, output: "", error: `No subagent matches ${unknownIds.join(", ")}.` };
+      }
       const targets = ids.length ? ids : registry.pending().map(r => r.id);
       if (targets.length === 0) {
         return { success: true, output: "No pending subagents to await." };
       }
       const timeoutMs = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : undefined;
-      const recs = await registry.awaitIds(targets, timeoutMs);
+      let timer: NodeJS.Timeout | undefined;
+      let onAbort: (() => void) | undefined;
+      const outcome = await new Promise<"settled" | "timeout" | "aborted">((resolve, reject) => {
+        onAbort = () => resolve("aborted");
+        if (signal?.aborted) {
+          resolve("aborted");
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (timeoutMs !== undefined) timer = setTimeout(() => resolve("timeout"), timeoutMs);
+        registry.awaitIds(targets).then(() => resolve("settled"), reject);
+      }).finally(() => {
+        clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      });
+      const recs = targets.map(id => registry.get(id)).filter((r): r is SubagentRecord => r !== undefined);
+      if (outcome === "aborted") {
+        return {
+          success: false,
+          output: recs.map(r => detailBlock(r, verbosity)).join("\n\n"),
+          error: "Subagent await aborted; subagents were not cancelled.",
+          mutationMayHaveOccurred: mutationEvidence(recs),
+        };
+      }
       const pendingIds = new Set(registry.pending().map(r => r.id));
       const stillPending = recs.filter(r => pendingIds.has(r.id)).length;
       const head = stillPending > 0
@@ -206,7 +234,7 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
         };
       }
       const id = targetIds[0]!;
-      if (!isValidId(id)) {
+      if (!validId(id)) {
         return { success: false, output: "", error: `Invalid subagent id '${id}'.` };
       }
       if (!message.trim()) {

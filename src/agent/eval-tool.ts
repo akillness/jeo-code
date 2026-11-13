@@ -60,6 +60,8 @@ export interface EvalToolOptions {
   /** Mid-turn steering drain — forwarded to every `task()` dispatch the script
    *  makes, same contract as TaskToolOptions.steer. */
   steer?: () => string[];
+  /** Restore, in order, messages drained for children but consumed by none. */
+  restoreSteer?: (messages: string[]) => void;
 }
 
 /** Structured result `task()` resolves to inside eval-authored code — a
@@ -261,6 +263,17 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     // createTaskTool's fan-out batchContext (avoids re-scanning AGENTS.md per
     // subagent when a script dispatches many in sequence/parallel).
     let projectContext: ProjectContextFile[] | undefined;
+    // Share each message among current children, tracking whether any consumed it.
+    // Undelivered messages return to the parent when the eval settles.
+    type SteerMessage = { text: string };
+    const steerQueues = new Set<SteerMessage[]>();
+    const undeliveredSteer = new Set<SteerMessage>();
+    let steerClosed = false;
+    const broadcastSteer = () => {
+      const messages = (opts.steer?.() ?? []).map(text => ({ text }));
+      for (const message of messages) undeliveredSteer.add(message);
+      for (const queue of steerQueues) queue.push(...messages);
+    };
     // Concurrency chokepoint (distinct from MAX_EVAL_TASK_CALLS' total-count
     // cap above): every task() dispatch — whether made sequentially, via
     // parallel()/pipeline()'s own worker-pool bound, or via N raw concurrent
@@ -331,7 +344,22 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     // gets a bounded cancellation instead of an unbounded background tail.
     const rpcSettleController = new AbortController();
     const rpcSignal = AbortSignal.any([combinedSignal, rpcSettleController.signal]);
-    const settleRpc = () => rpcSettleController.abort();
+    const settleRpc = () => {
+      if (steerClosed) return;
+      steerClosed = true;
+      rpcSettleController.abort();
+      let restoreError: string | undefined;
+      if (undeliveredSteer.size && opts.restoreSteer) {
+        try {
+          opts.restoreSteer([...undeliveredSteer].map(message => message.text));
+        } catch {
+          restoreError = `steering restoration failed for ${undeliveredSteer.size} unconsumed message(s).`;
+        }
+      }
+      undeliveredSteer.clear();
+      steerQueues.clear();
+      return restoreError;
+    };
 
     const { promise: donePromise, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers<unknown>();
     let settled = false;
@@ -339,12 +367,12 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     const onAbort = () => {
       if (settled) return;
       settled = true;
-      settleRpc();
+      const restoreError = settleRpc();
       worker.terminate();
       rejectDone(new Error(
-        opts.signal?.aborted
+        `${opts.signal?.aborted
           ? "eval cancelled."
-          : `eval exceeded its ${timeoutMs < 10_000 ? (timeoutMs / 1000).toFixed(1) : Math.round(timeoutMs / 1000)}s timeout (raise via {timeoutMs} up to ${Math.round(MAX_EVAL_TIMEOUT_MS / 1000)}s for a long-running workflow) — the isolated worker was terminated.`
+          : `eval exceeded its ${timeoutMs < 10_000 ? (timeoutMs / 1000).toFixed(1) : Math.round(timeoutMs / 1000)}s timeout (raise via {timeoutMs} up to ${Math.round(MAX_EVAL_TIMEOUT_MS / 1000)}s for a long-running workflow) — the isolated worker was terminated.`}${restoreError ? ` ${restoreError}` : ""}`
       ));
     };
     combinedSignal.addEventListener("abort", onAbort);
@@ -372,8 +400,9 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
       }
       if (msg.type === "done") {
         settled = true;
-        settleRpc(); // cancel any fire-and-forget task() still in flight/queued
-        if (msg.ok) resolveDone(msg.result);
+        const restoreError = settleRpc(); // cancel any fire-and-forget task() still in flight/queued
+        if (restoreError) rejectDone(new Error(`${msg.ok ? "" : `${msg.error} `}${restoreError}`));
+        else if (msg.ok) resolveDone(msg.result);
         else rejectDone(new Error(msg.error));
         return;
       }
@@ -391,20 +420,36 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
           }
           taskCalls++;
           await acquireFanoutSlot(rpcSignal);
+          let steerQueue: SteerMessage[] | undefined;
           try {
             if (projectContext === undefined) projectContext = await loadProjectContext(cwd);
+            if (rpcSignal.aborted) throw new Error("eval settled before this task() dispatch started.");
             const ctxText = typeof context === "string" && context.trim() ? `\n\nContext:\n${context.trim()}` : "";
+            if (opts.steer) {
+              // With restoration available, pending input belongs to existing
+              // children, not the one joining now. Otherwise leave it in the parent.
+              if (steerQueues.size && opts.restoreSteer) broadcastSteer();
+              steerQueue = [];
+              steerQueues.add(steerQueue);
+            }
             const result = await runSubagentOnce(role, trimmedTask, ctxText, cwd, {
               config: opts.config,
               signal: rpcSignal,
               onEvent: opts.onEvent,
               onSubagentMessage: opts.onSubagentMessage,
-              steer: opts.steer,
+              steer: steerQueue && (() => {
+                if (steerClosed) return [];
+                broadcastSteer();
+                const messages = steerQueue!.splice(0);
+                for (const message of messages) undeliveredSteer.delete(message);
+                return messages.map(message => message.text);
+              }),
               projectContext,
               excludedCredentialScopes,
             });
             safePostMessage({ type: "task_response", id, ok: true, result: toEvalResult(result) });
           } finally {
+            if (steerQueue) steerQueues.delete(steerQueue);
             releaseFanoutSlot();
           }
         } catch (e: any) {
@@ -415,8 +460,8 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     worker.onerror = (ev: ErrorEvent) => {
       if (settled) return;
       settled = true;
-      settleRpc();
-      rejectDone(new Error(`eval worker crashed: ${ev.message ?? "unknown error"}`));
+      const restoreError = settleRpc();
+      rejectDone(new Error(`eval worker crashed: ${ev.message ?? "unknown error"}${restoreError ? ` ${restoreError}` : ""}`));
     };
 
     worker.postMessage({ type: "run", code });

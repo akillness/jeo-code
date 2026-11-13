@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
-## [Unreleased]
-_Local cancellation, bounded async observation, and manual installed-artifact verification._
+## [0.12.38] - 2026-11-13
+_Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification._
 
 ### Fixed
 - Local filesystem mutations and `bash` honor cancellation at execution boundaries; operations already committed retain their mutation evidence rather than implying rollback.
 - Detached single tasks accept `detached: true` or `detached: "true"`, reject detached fan-out, cap unsettled runs at four, and return stable plain-text IDs. Pause or cancellation does not release capacity before the runner settles.
 - Local monitors accept a finite positive `timeout` in seconds, bound queued untrusted observations, and sanitize durable TUI events. Sandbox guest push observation and lifecycle forwarding remain unsupported at baseline; no privileged RPC is added.
+- Reject malformed fan-out requests while preserving shared context for valid child tasks.
+- Subagent await respects caller cancellation and rejects unknown IDs; ambiguous `id` plus `ids` targets are rejected rather than risking unintended cancel-all, while exact registry-issued custom IDs are accepted.
+- Broadcast eval steering to active children and restore undelivered messages when cancellation interrupts delivery.
 
 ### Changed
 - Restore the manual `release-verify` workflow with an exact 40-hex-character commit SHA and read-only repository permissions. It verifies an independently installed packed package and runs the installed executable through the tmux battery; it does not publish a release.
@@ -2880,7 +2883,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.32...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.12.38...HEAD
+[0.12.38]: https://github.com/akillness/jeo-code/compare/v0.12.37...v0.12.38
 [0.12.32]: https://github.com/akillness/jeo-code/compare/v0.12.31...v0.12.32
 [0.12.31]: https://github.com/akillness/jeo-code/releases/tag/v0.12.31
 [0.12.26]: https://github.com/akillness/jeo-code/releases/tag/v0.12.26

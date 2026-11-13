@@ -617,7 +617,7 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Local cancellation, bounded async observation, and manual installed-artifact verification.
+- **[0.12.38]** (2026-11-13) — Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification.
 - **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.

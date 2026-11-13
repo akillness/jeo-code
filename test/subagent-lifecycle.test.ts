@@ -183,6 +183,118 @@ for (const explicitTarget of [true, false]) {
   });
 }
 
+for (const targetKind of ["unknown id", "mixed ids"] as const) {
+  test(`lifecycle: await rejects ${targetKind} without waiting for a known child`, async () => {
+    const registry = new SubagentRegistry();
+    const tool = createSubagentTool(registry);
+    const runner = Promise.withResolvers<ToolResult>();
+    let childSignal: AbortSignal;
+    const child = registry.launch("executor", "independent work", signal => {
+      childSignal = signal;
+      return runner.promise;
+    });
+    const target = targetKind === "unknown id" ? { id: "ghost-1" } : { ids: [child.id, "ghost-1"] };
+    try {
+      const result = await Promise.race([
+        tool({ action: "await", ...target }, process.cwd()),
+        new Promise<null>(resolve => setImmediate(() => resolve(null))),
+      ]);
+      expect(result).not.toBeNull();
+      expect(result?.success).toBe(false);
+      expect(result?.error).toContain("ghost-1");
+      expect(childSignal!.aborted).toBe(false);
+      expect(registry.get(child.id)!.status).toBe("running");
+    } finally {
+      runner.resolve({ success: true, output: "finished independently" });
+      await registry.awaitIds([child.id]);
+    }
+  });
+}
+
+test("lifecycle: await without ids waits for every pending child", async () => {
+  const registry = new SubagentRegistry();
+  const tool = createSubagentTool(registry);
+  const runners = [Promise.withResolvers<ToolResult>(), Promise.withResolvers<ToolResult>()];
+  const children = runners.map((runner, index) => registry.launch("executor", `work ${index}`, () => runner.promise));
+  try {
+    const waiting = tool({ action: "await" }, process.cwd());
+    runners[0]!.resolve({ success: true, output: "first complete" });
+    await registry.awaitIds([children[0]!.id]);
+    const early = await Promise.race([waiting, new Promise<null>(resolve => setImmediate(() => resolve(null)))]);
+    expect(early).toBeNull();
+    runners[1]!.resolve({ success: true, output: "second complete" });
+    const result = await waiting;
+    expect(result.success).toBe(true);
+    expect(result.output).toContain(children[0]!.id);
+    expect(result.output).toContain(children[1]!.id);
+    expect(result.output).toContain("all settled");
+  } finally {
+    for (const runner of runners) runner.resolve({ success: false, output: "test cleanup" });
+    await registry.awaitIds(children.map(child => child.id));
+  }
+});
+
+test("lifecycle: aborting await leaves the child running until its real completion", async () => {
+  const registry = new SubagentRegistry();
+  const tool = createSubagentTool(registry);
+  const runner = Promise.withResolvers<ToolResult>();
+  const parent = new AbortController();
+  let childSignal: AbortSignal;
+  const child = registry.launch("executor", "independent work", signal => {
+    childSignal = signal;
+    return runner.promise;
+  });
+  try {
+    const waiting = tool({ action: "await", id: child.id }, process.cwd(), undefined, parent.signal);
+    parent.abort();
+    const observed = await Promise.race([
+      waiting,
+      new Promise<null>(resolve => setImmediate(() => resolve(null))),
+    ]);
+    expect(observed).not.toBeNull();
+    expect(observed?.success).toBe(false);
+    expect(observed?.error).toMatch(/abort/i);
+    expect(childSignal!.aborted).toBe(false);
+    expect(registry.get(child.id)!.status).toBe("running");
+    runner.resolve({ success: true, output: "actual child result" });
+    const [settled] = await registry.awaitIds([child.id]);
+    expect(settled).toMatchObject({ status: "completed", success: true, result: "actual child result" });
+  } finally {
+    runner.resolve({ success: false, output: "test cleanup" });
+    await registry.awaitIds([child.id]);
+  }
+});
+
+for (const action of ["inspect", "await", "cancel"] as const) {
+  test(`lifecycle: ${action} accepts an id generated for a custom role with spaces`, async () => {
+    const registry = new SubagentRegistry();
+    const tool = createSubagentTool(registry);
+    const runner = Promise.withResolvers<ToolResult>();
+    let childSignal: AbortSignal;
+    const child = registry.launch("qa reviewer", "custom review", signal => {
+      childSignal = signal;
+      return runner.promise;
+    });
+    try {
+      if (action === "await") runner.resolve({ success: true, output: "review completed" });
+      const result = await tool({ action, id: child.id }, process.cwd());
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(child.id);
+      if (action === "cancel") {
+        expect(childSignal!.aborted).toBe(true);
+        expect(registry.get(child.id)!.status).toBe("cancelled");
+      } else if (action === "await") {
+        expect(result.output).toContain("review completed");
+      } else {
+        expect(result.output).toContain("custom review");
+      }
+    } finally {
+      runner.resolve({ success: false, output: "test cleanup" });
+      await registry.awaitIds([child.id]);
+    }
+  });
+}
+
 for (const action of ["cancel", "pause", "await"] as const) {
   for (const targetKind of ["invalid id", "invalid ids", "mixed ids"] as const) {
     test(`lifecycle: ${action} rejects ${targetKind} without affecting unrelated live children`, async () => {
@@ -210,6 +322,33 @@ for (const action of ["cancel", "pause", "await"] as const) {
       }
     });
   }
+}
+
+for (const idsKind of ["empty", "different child"] as const) {
+test(`lifecycle: an explicit cancel id with ${idsKind} ids never cancels unrelated children`, async () => {
+  const registry = new SubagentRegistry();
+  const tool = createSubagentTool(registry);
+  const runners = [Promise.withResolvers<ToolResult>(), Promise.withResolvers<ToolResult>()];
+  const signals: AbortSignal[] = [];
+  const children = runners.map((runner, index) => registry.launch("executor", `work ${index}`, signal => {
+    signals.push(signal);
+    return runner.promise;
+  }));
+  try {
+    const ids = idsKind === "empty" ? [] : [children[1]!.id];
+    const result = await tool({ action: "cancel", id: children[0]!.id, ids }, process.cwd());
+    expect(signals[1]!.aborted).toBe(false);
+    expect(registry.get(children[1]!.id)!.status).toBe("running");
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/either id or ids.*not both/i);
+    expect(signals[0]!.aborted).toBe(false);
+    expect(registry.get(children[0]!.id)!.status).toBe("running");
+  } finally {
+    registry.cancel(children.map(child => child.id));
+    for (const runner of runners) runner.resolve({ success: false, output: "test cleanup" });
+    await registry.awaitIds(children.map(child => child.id));
+  }
+});
 }
 
 test("lifecycle: an intentionally empty cancel target list aborts all live children including paused workers", async () => {

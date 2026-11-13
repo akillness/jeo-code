@@ -30,6 +30,25 @@ test("nativeToolSchemasFor: deduplicates and ignores unknown tool names", () => 
   expect(names).not.toContain("bogus-tool");
 });
 
+test("native delegation schemas expose spawning and detached control only when allowed", () => {
+  const schemas = nativeToolSchemasFor(["task", "subagent"]);
+  const task = schemas.find(s => s.name === "task")!;
+  const subagent = schemas.find(s => s.name === "subagent")!;
+  expect(task.parameters.properties).toMatchObject({
+    role: { type: "string" }, task: { type: "string" }, context: { type: "string" },
+    detached: { type: "boolean" }, tasks: { type: "array" }, justification: { type: "string" },
+  });
+  expect(subagent.parameters.properties).toMatchObject({
+    action: { type: "string" }, id: { type: "string" }, ids: { type: "array" },
+    message: { type: "string" }, timeoutMs: { type: "number" },
+    verbosity: { type: "string" }, limit: { type: "number" },
+  });
+  expect(subagent.parameters.required).toContain("action");
+  const names = nativeToolSchemasFor(["read"]).map(s => s.name);
+  expect(names).not.toContain("task");
+  expect(names).not.toContain("subagent");
+});
+
 // Gemini (antigravity) intermittently namespaces native functions under `default_api`
 // (observed live: functionCall.name = "default_api:done") → engine rejected it as an
 // unknown tool. serializeToolCalls must strip the namespace back to the bare tool name.

@@ -116,6 +116,42 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       required: ["calculations"],
     },
   },
+  task: {
+    name: "task",
+    description: "Delegate a single assignment or a bounded fan-out to subagents. Use detached=true only for a single assignment; manage detached runs with subagent.",
+    parameters: {
+      type: "object",
+      properties: {
+        role: STRING,
+        task: STRING,
+        context: STRING,
+        detached: { type: "boolean" },
+        tasks: {
+          type: "array",
+          items: { anyOf: [STRING, { type: "object", properties: { task: STRING, context: STRING }, required: ["task"] }] },
+        },
+        justification: STRING,
+      },
+    },
+  },
+  subagent: {
+    name: "subagent",
+    description: "List, inspect, await, cancel, steer, pause or resume detached subagents launched by task.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "inspect", "await", "cancel", "steer", "pause", "resume"] },
+        id: STRING,
+        ids: { type: "array", items: STRING },
+        message: STRING,
+        verbosity: { type: "string", enum: ["receipt", "preview", "full"] },
+        limit: { type: "number" },
+        timeoutMs: { type: "number" },
+      },
+      required: ["action"],
+    },
+  },
+
   monitor: {
     name: "monitor",
     description: "Start or control a session-scoped background monitor; output lines arrive asynchronously as notices.",

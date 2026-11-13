@@ -20,6 +20,29 @@ afterEach(async () => {
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
+test("runAgentLoop exposes and dispatches native delegation tools", async () => {
+  let calls = 0;
+  const received: Record<string, unknown>[] = [];
+  llm.mockImplementation(async (_history, options) => {
+    expect(options?.tools?.map(tool => tool.name)).toContain("task");
+    expect(options?.tools?.map(tool => tool.name)).toContain("subagent");
+    calls++;
+    return calls === 1
+      ? JSON.stringify({ tool: "task", arguments: { role: "planner", task: "inspect the project" } })
+      : JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+  });
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+    cwd, maxSteps: 5, budget: { maxExtensions: 0 },
+    tools: {
+      task: async args => { received.push(args); return { success: true, output: "completed" }; },
+      subagent: async () => ({ success: true, output: "no detached runs" }),
+    },
+  });
+  expect(result.done).toBe(true);
+  expect(received).toEqual([{ role: "planner", task: "inspect the project" }]);
+});
+
 test("runAgentLoop: batch of 3 reads -> exactly 1 LLM call and 3 onToolResult events in order", async () => {
   let llmCalls = 0;
   llm.mockImplementation(async () => {

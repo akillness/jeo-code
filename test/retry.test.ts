@@ -41,7 +41,7 @@ test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
 
 test("resolveRetryOptions: rate-limit defaults engage only when not explicitly configured", () => {
   // Unset → generous 429 budget + a backoff floor so the first 429 doesn't instantly exhaust.
-  // No default rateLimitMaxServerDelayMs: gjc parity retries a generic 429 forever,
+  // No default rateLimitMaxServerDelayMs: retries a generic 429 forever,
   // honoring however long the server asks, instead of failing fast past a budget.
   const base = resolveRetryOptions(undefined);
   expect(base.rateLimitRetries).toBe(6);
@@ -155,7 +155,7 @@ test("withRetry: an EXPLICITLY configured rateLimitMaxServerDelayMs fails fast b
 });
 
 test("withRetry: WITHOUT the opt-in ceiling a long server Retry-After is honored IN FULL (gjc parity)", async () => {
-  // gjc contract (agent-session-retry-cap.test.ts): a generic 429 carrying a ~3.1h
+  // Retry contract: a generic 429 carrying a ~3.1h
   // retry-after-ms is retried, waiting the full server-directed delay — never failed
   // fast, never compressed to a 30s cap.
   const sleeps: number[] = [];

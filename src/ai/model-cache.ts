@@ -8,7 +8,7 @@
  * newer than that snapshot, so an account that had `gpt-5.6-*` could not select it
  * until discovery happened to finish first.
  *
- * Persisting the discovered lists (gjc parity) closes both gaps: the next launch
+ * Persisting the discovered lists closes both gaps: the next launch
  * rehydrates the account's REAL model set from disk before any network call, and a
  * background refresh keeps it current. The cache is an optimization — a missing,
  * corrupt, or stale file only means live discovery must refresh the catalog,

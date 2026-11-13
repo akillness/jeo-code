@@ -173,7 +173,7 @@ function zipColumns(left: string[], right: string[], leftWidth: number, gap: str
 }
 
 /**
- * The gjc-style hero welcome box ("JEO forge"): one outer box with the version
+ * The hero welcome box ("JEO forge"): one outer box with the version
  * embedded in the top border. Narrow terminals keep a single centered forge
  * column; wide terminals split into a left hero mark and a right workspace table
  * (folder, version, model, context files) so the launch capture uses the extra
@@ -198,7 +198,7 @@ export function renderWelcome(d: WelcomeData): string[] {
     return [truncate(`jeo v${d.version} · ${d.model}`, Math.max(0, cols - 1))];
   }
 
-  // The banner fills the full terminal width (gjc forge: flush with the input box and
+  // The banner fills the full terminal width (flush with the input box and
   // status bar below it). `cols - 1` leaves the last column free so a full-width row
   // never wraps; the forge mark + pills stay centered inside the box.
   const grandWidth = Math.max(...FORGE_MARK_ART_GRAND.map(l => l.length));

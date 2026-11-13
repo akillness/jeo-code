@@ -1,6 +1,6 @@
 /**
  * `goal` tool — lets the agent explicitly set/read/clear the session's natural-
- * language stop condition, mirroring gjc's own `goal` tool. Wraps the existing
+ * language stop condition. Wraps the existing
  * file-persisted GoalState (src/agent/goal-verifier.ts) that the human-typed
  * `/goal <condition>` slash command already writes to and that the engine's
  * per-`done` verifier (src/commands/launch.ts, verifyGoal) already reads from —

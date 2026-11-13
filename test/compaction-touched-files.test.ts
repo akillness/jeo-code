@@ -1,7 +1,7 @@
 import { test, expect, mock } from "bun:test";
 import { extractTouchedFiles } from "../src/agent/compaction";
 
-// gjc-style file-operation preservation in compaction (plan/gjc-inheritance.md B8):
+// File-operation preservation in compaction:
 // the files mutated in the summarized span are extracted mechanically and pinned
 // into the summary prompt so post-compaction turns keep their file context.
 
@@ -40,7 +40,7 @@ test("maybeCompact pins the touched-file list into the summary prompt", async ()
   expect(seenSystemPrompt).toContain("src/agent/engine.ts");
 });
 
-// cycle 11 (plan/gjc-inheritance.md): extend extraction to conservative bash
+// Cycle 11: extend extraction to conservative bash
 // mutation mentions, force a "Files touched:" header, surface touchedFiles.
 
 test("extractTouchedFiles also captures conservative bash mutation mentions", () => {

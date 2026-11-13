@@ -6,7 +6,7 @@ export interface LaunchFlags {
   list: boolean;
   resume: boolean;
   resumeId?: string;
-  /** True when `--resume`/`-r` was given with NO value at cold startup (gjc-parity):
+  /** True when `--resume`/`-r` was given with NO value at cold startup:
    *  triggers the interactive session picker instead of silently resuming latest. */
   resumeInteractive: boolean;
   noSession: boolean;
@@ -120,7 +120,7 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;
     } else if (a === "--continue" || a === "-c") {
-      // Always silently resume the MOST RECENT session (gjc-parity: no picker for --continue/-c).
+      // Always silently resume the MOST RECENT session (no picker for --continue/-c).
       flags.resume = true;
       flags.resumeInteractive = false;
       const next = args[i + 1];
@@ -134,7 +134,7 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       const eqIdx = a.indexOf("=");
       flags.resumeId = a.slice(eqIdx + 1);
     } else if (a === "--resume" || a === "-r") {
-      // gjc-parity: value present -> resolve as id/prefix directly; no value -> interactive picker.
+      // Value present -> resolve as id/prefix directly; no value -> interactive picker.
       flags.resume = true;
       const next = args[i + 1];
       if (next && !next.startsWith("-")) {

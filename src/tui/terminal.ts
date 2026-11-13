@@ -23,7 +23,7 @@ export function clearToEnd(): string {
 }
 
 /** Full reset of the visible screen: erase the screen (2J), erase the scrollback
- *  buffer (3J), and home the cursor (H). This is the gjc-style "fresh start" clear —
+ *  buffer (3J), and home the cursor (H). This provides a "fresh start" clear —
  *  use it at launch and for `/clear`, NEVER mid-turn (it would flood tmux scrollback). */
 export function clearScreen(): string {
   return `${ESC}2J${ESC}3J${ESC}H`;

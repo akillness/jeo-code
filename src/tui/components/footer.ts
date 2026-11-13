@@ -21,14 +21,14 @@ export interface FooterData {
   /** Colorize the stage track (default true). Set false for the mono theme. */
   color?: boolean;
   /** Context usage in tokens. Provider-anchored once a call has returned this turn
-   *  (the last response's own reported `inputTokens` — gjc v0.10.1 SSOT parity);
+   *  (the last response's own reported `inputTokens`);
    *  a client-side character-count estimate only for the brief pre-first-response gap. */
   contextUsedTokens?: number;
   /** Provider/model context window in tokens, when known. */
   contextMaxTokens?: number;
   cwd?: string;
   branch?: string;
-  /** Uncommitted-change count for the `⑂ branch ?N` dirty flag (gjc parity); omit/0 = clean. */
+  /** Uncommitted-change count for the `⑂ branch ?N` dirty flag; omit/0 = clean. */
   dirtyCount?: number;
   /** Live USD cost for the turn (price table × usage); omit when the model has no known price. */
   costUsd?: number;
@@ -131,7 +131,7 @@ export function renderFooter(d: FooterData): string {
     parts.push(d.sessionId.slice(0, 8));
   }
 
-  // Live turn cost (gjc parity): only when a known price produced a figure.
+  // Live turn cost: only when a known price produced a figure.
   if (d.costUsd !== undefined && Number.isFinite(d.costUsd) && d.costUsd > 0) {
     parts.push(formatCost(d.costUsd));
   }

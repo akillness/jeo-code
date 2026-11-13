@@ -8,7 +8,7 @@
  *   user        → real prompts, but ALSO tool-result feedback
  *                 (`Tool [name] result (ok|fail):\n…`) and parse-correction bounces
  *   assistant   → raw JSON tool calls, or plain prose (final/legacy replies)
- * This formatter folds that back into a gjc-style ledger: `user ▸` prompt blocks,
+ * This formatter folds that back into a ledger: `user ▸` prompt blocks,
  * one compact `✔/✗ title` line per tool step, and `jeo ◂` reply blocks.
  */
 import chalk from "chalk";
@@ -177,7 +177,7 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
           ? ""
           : m.content;
     if (!reason.trim()) continue;
-    // Persisted thinking (gjc "think → answer" order): show the turn's reasoning,
+    // Persisted thinking ("think → answer" order): show the turn's reasoning,
     // dimmed, above the reply so the durable record carries it across /resume + export.
     if (m.reasoning?.trim()) {
       if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");

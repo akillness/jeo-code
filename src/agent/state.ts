@@ -70,7 +70,7 @@ export interface Config {
   customProviders?: Record<string, CustomProviderConfig>;
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
-   * metadata is not lost, but provider execution/status applies the GJC parity rule:
+   * metadata is not lost, but provider execution/status gives API keys precedence:
    * an API key is broader and wins whenever both key + OAuth exist. API-key-only
    * providers never populate OAuth; the key exists for index-compatibility.
    */
@@ -93,7 +93,7 @@ export interface Config {
   sandbox?: SandboxConfig;
   /** Individually approved absolute global skill files for sandbox sessions. */
   sandboxSkillAssets?: string[];
-  /** Terminal-bell notifications (gajae-code 0.7.8 parity). `bell` is the master
+  /** Terminal-bell notifications. `bell` is the master
    *  toggle; per-event flags refine it. Env `JEO_NOTIFY_BELL=1/0` force-overrides. */
   notify?: {
     bell?: boolean;
@@ -136,10 +136,10 @@ export interface Config {
   /** Most-recently-selected models, newest first (MRU; head == defaultModel). */
   recentModels?: string[];
   /**
-   * Provider retry budgets (gjc parity). `requestMaxRetries` is the number of
+   * Provider retry budgets. `requestMaxRetries` is the number of
    * retries (excluding the initial request) for a provider request; `maxDelayMs`
-   * caps exponential backoff. `maxRetries`/`streamMaxRetries` are accepted for
-   * gjc-config compatibility.
+   * caps exponential backoff. `maxRetries`/`streamMaxRetries` are accepted as
+   * compatibility aliases.
    */
   retry?: {
     requestMaxRetries?: number;
@@ -163,7 +163,7 @@ export interface Config {
     failFastPatterns?: string[];
   };
   /**
-   * Per-subagent-role overrides (gjc role-agent parity), keyed by role id.
+   * Per-subagent-role overrides, keyed by role id.
    * Bundled ids (executor / planner / architect / critic) take model / maxSteps /
    * thinking pins. A NON-bundled id that declares `title`, `description`, or
    * `prompt` becomes a config-defined CUSTOM ROLE (system-driven registry —
@@ -181,7 +181,7 @@ export interface Config {
     };
   };
   /**
-   * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
+   * Model role tiers for `--smol`/`--slow`/`--plan`. Each falls back to
    * `defaultModel`. Env `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps.
    */
   roles?: {
@@ -553,9 +553,8 @@ export async function readRawGlobalConfig(): Promise<Config> {
 }
 
 /**
- * Global config write lock — HIGH-1 lost-update fix (gjc parity: auth-storage.ts
- * SqliteAuthCredentialStore serializes credential writes inside SQLite). jeo keeps
- * everything in one config.json, so EVERY read-modify-write must serialize through one
+ * Global config write lock — HIGH-1 lost-update fix. All configuration is kept
+ * in one config.json, so EVERY read-modify-write must serialize through one
  * lock file; otherwise two concurrent per-provider OAuth refreshes (e.g. doctor.ts
  * Promise.all) read the same base config and the later write clobbers the earlier one's
  * just-rotated refresh token → silent logout.

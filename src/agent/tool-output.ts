@@ -12,8 +12,7 @@ import * as path from "node:path";
 import { jeoEnv } from "../util/env";
 import { minimizeToolOutput } from "./output-minimizer";
 
-/** Env-tunable output budget (plan/gjc-inheritance.md B10, gjc settings-driven
- *  output handling 계승): JEO_TOOL_OUTPUT_MAX caps the model-visible tool result;
+/** Env-tunable output budget: JEO_TOOL_OUTPUT_MAX caps the model-visible tool result;
  *  the spill threshold tracks it so anything truncated stays artifact-recoverable. */
 function envOutputMax(): number {
   const raw = Number(jeoEnv("TOOL_OUTPUT_MAX") ?? "");

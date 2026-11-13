@@ -15,7 +15,7 @@ const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googlea
 /** Anthropic-style thinking budget for Claude served via CCA. gemini's budget fn
  *  returns undefined for claude ids, which left antigravity Claude with NO thinking
  *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers —
- *  low/medium/high ALL think (gajae parity: reasoning at every level); only an
+ *  low/medium/high ALL think (reasoning at every level); only an
  *  UNSET effort stays non-thinking. */
 function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"]): number | undefined {
   switch (effort) {
@@ -78,7 +78,7 @@ export interface ResolveProjectOptions {
 
 /**
  * Resolve the Cloud Code Assist project id for an Antigravity call:
- * stored credential → env → lazy loadCodeAssist/onboardUser discovery (gjc parity).
+ * stored credential → env → lazy loadCodeAssist/onboardUser discovery.
  * A discovered id is persisted onto the stored gemini OAuth record so users who
  * logged in before discovery existed are healed without re-login.
  */
@@ -277,7 +277,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
       "content-type": "application/json",
       accept: "text/event-stream",
       "User-Agent": getAntigravityUserAgent(),
-      // Claude reasoning over CCA requires the Anthropic interleaved-thinking beta (gjc parity).
+      // Claude reasoning over CCA requires the Anthropic interleaved-thinking beta.
       ...(claudeThinkingOn ? { "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
     },
     body,

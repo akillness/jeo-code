@@ -2,18 +2,16 @@
  * Intermediate-judgment guards for the agent loop — the mid-run "should this turn
  * continue, correct itself, or stop" decisions that run between model calls.
  *
- * gjc keeps this concern in its own layer: `gjc-runtime/ultragoal-guard.ts` computes a
- * named `UltragoalGuardState` discriminated union PURELY, and the runtime merely acts on
- * the verdict. jeo previously inlined the same logic inside `engine.ts`'s `while` loop as
- * scattered booleans and message strings. This module gives jeo the same classification:
- * a named `GuardState` taxonomy plus pure, independently-testable classifier functions.
- * `engine.ts` still owns the control flow (history mutation, `step++`, `continue`,
- * `return finish(...)`) — only the JUDGMENT moves here, so behavior is unchanged.
+ * This module provides a named `GuardState` taxonomy and pure,
+ * independently-testable classifier functions. `engine.ts` owns the control
+ * flow (history mutation, `step++`, `continue`, `return finish(...)`);
+ * only the judgment is handled here, keeping classification separate from
+ * runtime actions without changing behavior.
  */
 
 /**
- * Named taxonomy of the loop's intermediate judgments — jeo's descendant of gjc's
- * `UltragoalGuardState`. Each member names one decision the loop can reach mid-turn.
+ * Named taxonomy of the loop's intermediate judgments.
+ * Each member names one decision the loop can reach mid-turn.
  */
 export type GuardState =
   | "ok" // proceed: emit / execute the tool call as-is
@@ -55,9 +53,9 @@ export const GUARD_LIMITS = Object.freeze({
    *  one correction states the paths and asks for verification; a second full-history retry only burns tokens. */
   MAX_SHELL_ONLY_DONE_CORRECTIONS: 1,
   /** Context-mutating refusal-ladder rungs (resend → reset → guidance strip) before
-   *  recovery switches to unbounded backoff resends (gjc parity: never terminal). */
+   *  recovery switches to unbounded backoff resends; refusal recovery is never terminal. */
   MAX_REFUSAL_RETRIES: 3,
-  /** First post-ladder refusal backoff wait (ms); doubles per attempt (gjc retry.baseDelayMs). */
+  /** First post-ladder refusal backoff wait (ms); doubles per attempt. */
   REFUSAL_BACKOFF_BASE_MS: 2_000,
   /** Ceiling on the post-ladder refusal backoff wait (ms). */
   REFUSAL_BACKOFF_MAX_MS: 30_000,
@@ -554,7 +552,7 @@ export function repeatHint(tool: string, prev?: { success: boolean; output: stri
   return reflect + base;
 }
 
-/** Inputs for the done-verification gate (jeo's descendant of gjc's ultragoal-guard). */
+/** Inputs for the done-verification gate. */
 export interface DoneGateInput {
   /** A write/edit succeeded this turn. */
   sawMutation: boolean;
@@ -591,8 +589,7 @@ export interface DoneGateVerdict {
 }
 
 /**
- * Classify whether a `done` should be accepted or bounced — the direct descendant of
- * gjc's `ultragoal-guard` completion gate (plan/gjc-inheritance.md B4).
+ * Classify whether a `done` should be accepted or bounced.
  *
  * A turn that MUTATED files remains blocked while verification is missing/failed,
  * STALE (a passing run predates the last edit), or a post-turn hook is still failing.

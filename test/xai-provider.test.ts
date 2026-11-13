@@ -6,7 +6,7 @@ import { PROVIDER_NAMES, providerEnvVar, describeProvider } from "../src/ai/prov
 import { companyLabel, findCatalogModel } from "../src/ai/model-catalog";
 
 // xAI (Grok) is a first-class, API-key, OpenAI-compatible cloud provider
-// (https://api.x.ai/v1, XAI_API_KEY) — mirrors gajae-code's xAI/Grok support.
+// xAI/Grok support (https://api.x.ai/v1, XAI_API_KEY).
 
 test("xai is a registered provider with the XAI_API_KEY env and xAI label", () => {
   expect(PROVIDER_NAMES).toContain("xai");

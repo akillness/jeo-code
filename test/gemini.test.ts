@@ -87,7 +87,7 @@ test("geminiThinkingConfig: gemini-3.x carries the thinkingLevel enum, never a n
   expect(geminiThinkingConfig("gemini-3-pro-low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
   // …but an explicit caller effort wins.
   expect(geminiThinkingConfig("gemini-3-pro-high", "low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
-  // No effort + unmarked gemini-3 → omit thinkingConfig (model default; gjc parity).
+  // No effort + unmarked gemini-3 → omit thinkingConfig (model default).
   expect(geminiThinkingConfig("gemini-3-flash")).toBeUndefined();
   // Non-3 majors keep the numeric budget path; pre-2.5 stays omitted.
   expect(geminiThinkingConfig("gemini-10-pro", "medium")).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
@@ -153,7 +153,7 @@ test("geminiAdapter: OAuth credential routes to Cloud Code Assist and unwraps re
     expect(calls[0]!.url).toContain("cloudcode-pa.googleapis.com/v1internal:streamGenerateContent");
     const sent = JSON.parse(String(calls[0]!.init?.body));
     expect(sent.project).toBe("proj-2"); // stored projectId short-circuits discovery (no extra fetch)
-    // Thought tokens count as output (gjc parity).
+    // Thought tokens count as output.
     expect(usage).toEqual([{ inputTokens: 7, outputTokens: 5 }]);
   } finally {
     globalThis.fetch = prevFetch;
@@ -202,7 +202,7 @@ test("geminiRequest: gemini-3 thinking sends thinkingLevel with NO thinkingBudge
   );
   expect(payload.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
   expect(payload.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
-  // The additive output bump applies ONLY on the numeric-budget path (gjc parity).
+  // The additive output bump applies ONLY on the numeric-budget path.
   expect(payload.generationConfig.maxOutputTokens).toBe(4000);
 });
 
@@ -212,7 +212,7 @@ test("geminiRequest: a positive numeric budget rides on top of maxOutputTokens (
     geminiRequest(messages, { model: "gemini-2.5-flash", reasoningEffort: "medium", maxTokens: 4000 } as any, cred, "generateContent").body,
   );
   // medium (8192) clamps to 4000-1024=2976; the output cap grows by the budget so
-  // thinking can't eat the visible answer (gjc stream.ts additive behavior).
+  // The additive output allowance prevents thinking from consuming the visible answer budget.
   expect(payload.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 2976 });
   expect(payload.generationConfig.maxOutputTokens).toBe(4000 + 2976);
   const capped = JSON.parse(
@@ -276,7 +276,7 @@ test("discoverGeminiProjectId: login-time discovery carries the gemini-cli ident
     expect(calls[0]!.url).toContain(":loadCodeAssist");
     const headers = calls[0]!.init?.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer tok-gem");
-    // gjc google-gemini-cli parity: discovery identifies as gemini-cli.
+    // google-gemini-cli discovery identifies as gemini-cli.
     expect(headers["User-Agent"]).toContain("GeminiCLI/");
     expect(headers["Client-Metadata"]).toBe("ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI");
   } finally {

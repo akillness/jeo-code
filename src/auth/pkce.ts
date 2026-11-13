@@ -1,6 +1,5 @@
 /**
  * Generate a PKCE code verifier + S256 challenge using the Web Crypto API.
- * Mirrors gjc's `packages/ai/src/utils/oauth/pkce.ts`.
  */
 export async function generatePKCE(): Promise<{ verifier: string; challenge: string }> {
   const verifierBytes = new Uint8Array(96);

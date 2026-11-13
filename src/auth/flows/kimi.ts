@@ -1,6 +1,5 @@
 /**
  * Kimi Code (Moonshot subscription) OAuth — device authorization grant.
- * Faithful port of gjc's packages/ai/src/utils/oauth/kimi.ts.
  *
  * No callback server: the user opens `verification_uri_complete` (or enters the
  * user code at `verification_uri`) and jeo polls the token endpoint until the
@@ -40,7 +39,7 @@ interface TokenResponse {
   interval?: number;
 }
 
-/** gjc parity: raw (non-JEO_) env overrides for the OAuth host. */
+/** Raw (non-JEO_) env overrides for the OAuth host. */
 function resolveOAuthHost(): string {
   return process.env.KIMI_CODE_OAUTH_HOST || process.env.KIMI_OAUTH_HOST || DEFAULT_OAUTH_HOST;
 }
@@ -62,7 +61,7 @@ function getDeviceModel(): string {
 // Cached per config-dir path so a JEO_CONFIG_DIR change (tests) is honored.
 const deviceIdCache = new Map<string, string>();
 
-/** Stable per-machine device id, persisted like gjc's `<agent-dir>/kimi-device-id`. */
+/** Stable per-machine device id, persisted in `<config-dir>/kimi-device-id`. */
 function getDeviceId(): string {
   const dir = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".jeo");
   const deviceIdPath = path.join(dir, DEVICE_ID_FILENAME);
@@ -84,7 +83,7 @@ function getDeviceId(): string {
   return deviceId;
 }
 
-/** X-Msh-* device headers sent on every Kimi OAuth AND API request (gjc parity). */
+/** X-Msh-* device headers sent on every Kimi OAuth AND API request. */
 export function getKimiCommonHeaders(): Record<string, string> {
   return {
     "User-Agent": `KimiCLI/${pkg.version}`,

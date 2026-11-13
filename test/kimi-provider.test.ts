@@ -10,7 +10,7 @@ import { getKimiCommonHeaders } from "../src/auth/flows/kimi";
 import type { Credential } from "../src/auth";
 import type { CallOptions } from "../src/ai/types";
 
-// Kimi Code OAuth (device-code) — gjc parity: OAuth serves the Anthropic-compatible
+// Kimi Code OAuth (device-code): OAuth serves the Anthropic-compatible
 // api.kimi.com/coding backend; an API key serves the OpenAI-compatible moonshot API.
 
 const OAUTH_CRED: Credential = { kind: "oauth", provider: "kimi", token: "kimi-oauth-token" };
@@ -51,7 +51,7 @@ test("kimi OAuth request targets api.kimi.com/coding with Bearer + X-Msh headers
   const req = anthropicRequest([{ role: "user", content: "hi" }], options, OAUTH_CRED, false, true);
   expect(req.url).toBe("https://api.kimi.com/coding/v1/messages");
   expect(req.headers.authorization).toBe("Bearer kimi-oauth-token");
-  // Kimi device identification headers ride along on API calls (gjc parity).
+  // Kimi device identification headers ride along on API calls.
   expect(req.headers["X-Msh-Platform"]).toBe("kimi_cli");
   expect(req.headers["X-Msh-Device-Id"]).toBeTruthy();
   // NO Claude-Code OAuth cloaking against a non-Anthropic base:

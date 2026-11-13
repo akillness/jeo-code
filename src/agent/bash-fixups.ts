@@ -1,5 +1,5 @@
 /**
- * GJC Bash Command Fixups — conservative, INTENT-PRESERVING, off-by-default rewrites
+ * Bash command fixups — conservative, INTENT-PRESERVING, off-by-default rewrites
  * for common CLI mistakes. Every rule is a no-op unless it matches exactly, and no rule
  * may change what the command observably does (only its form). Gated behind
  * `JEO_BASH_FIXUPS=1` by the caller (bashTool); never altered by default.

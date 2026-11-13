@@ -101,7 +101,7 @@ export interface TimelineOptions {
   highlightActive?: boolean;
   /** Keep only the most recent N rows (older collapse to a "(+M earlier)" line). */
   maxRows?: number;
-  /** Render the [NN:CAT] badge per row (default true); false → gjc-style bare rows. */
+  /** Render the [NN:CAT] badge per row (default true); false → bare rows. */
   badges?: boolean;
 }
 

@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readTool, editTool, writeTool } from "../src/agent/tools";
 
-// gjc-inherited blind-edit guard (plan/gjc-inheritance.md B7 + B3.5):
+// Blind-edit guard:
 // a blind (no-anchor) line-range edit against content the agent has never
 // read this session is rejected once (read-first enforced), and SEARCH
 // mismatches carry an excerpt so a failed edit costs one retry instead of a

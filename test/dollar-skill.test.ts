@@ -3,7 +3,7 @@ import { parseSkillInvocation, parseSkillChain, parseSkillMarkdown, SKILLS, uniq
 import { complete } from "../src/tui/components/autocomplete";
 import type { CompletionContext } from "../src/tui/components/autocomplete";
 
-// `$name` exact-name skill entrypoint (gjc/Codex style): the FIRST token `$team`
+// `$name` exact-name skill entrypoint: the FIRST token `$team`
 // invokes the loaded skill "team" directly; unknown `$word` stays an ordinary prompt.
 
 const userSkill = parseSkillMarkdown("spec-kit", "summary: Spec-driven development router\n\nUse specify CLI.");

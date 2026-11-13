@@ -1,6 +1,6 @@
 /**
- * In-process registry for BACKGROUND shell processes (gjc `job`/async-bash parity,
- * scoped down to one runtime). Unlike the synchronous `bash` tool, `start()` spawns
+ * In-process registry for BACKGROUND shell processes, scoped to one runtime.
+ * Unlike the synchronous `bash` tool, `start()` spawns
  * a real parallel OS process (see `shell-lease.ts`) and returns immediately — the parent
  * can keep working and later list / tail / await / cancel it via the `job` control
  * tool while stdout/stderr drain into a bounded buffer in the background.

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { StringDecoder } from "node:string_decoder";
 
-// gjc parity (#2591 "preserve supplementary Unicode input"): a raw stdin "data" chunk
+// Preserve supplementary Unicode input: a raw stdin "data" chunk
 // boundary can land MID multi-byte UTF-8 sequence — real terminals/ptys do not
 // guarantee byte-aligned-to-character delivery. The OLD code did a naive
 // `chunk.toString("utf8")` PER CHUNK, which replaces a split sequence's incomplete

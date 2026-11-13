@@ -1,6 +1,6 @@
 /**
  * Provider presets — one-flag onboarding for well-known OpenAI/Anthropic-compatible
- * gateways (gjc/gajae-code parity).
+ * gateways.
  *
  * A preset is a pre-filled {@link CustomProviderConfig}: base URL, wire protocol,
  * credential env var, and (when the endpoint has a fixed catalog) the model ids. It
@@ -253,8 +253,8 @@ export interface PresetExpansion {
 
 /**
  * Expand a preset into a concrete provider id + config, validating the flag
- * combination the way gajae-code's onboarding does (fixed presets reject
- * `--base-url`; parameterized presets require it).
+ * combination (fixed presets reject `--base-url`; parameterized presets
+ * require it).
  */
 export function expandProviderPreset(input: PresetExpandInput): PresetExpansion {
   const preset = findProviderPreset(input.preset);

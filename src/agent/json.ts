@@ -5,7 +5,7 @@
  * wrap JSON in prose, ```json fences, or trailing commentary. This recovers the
  * first balanced top-level `{...}` object, respecting strings and escapes.
  *
- * gjc-robustness hardening (the JSON-mode path is the hot path for the default
+ * Robustness handling (the JSON-mode path is the hot path for the default
  * antigravity provider, which is text-only and cannot use native tool-calling):
  *   - tolerate trailing commas before `}`/`]` (a frequent small-model slip);
  *   - `preferKeys` lets the tool-call caller prefer the balanced object that

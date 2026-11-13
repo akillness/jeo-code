@@ -1,9 +1,9 @@
 /**
- * Daemon lifecycle control (gjc `daemon` command / `control-types.ts` parity,
- * scoped to jeo's one daemon kind — telegram). A pid+startedAt lock file at
- * `notifyDaemonLockPath()` enforces the singleton: Telegram allows only one
- * `getUpdates` long-poll owner per bot token, so a second daemon process must
- * refuse to start rather than race the first for updates (409 Conflict).
+ * Daemon lifecycle control, scoped to jeo's one daemon kind — telegram.
+ * A pid+startedAt lock file at `notifyDaemonLockPath()` enforces the singleton:
+ * Telegram allows only one `getUpdates` long-poll owner per bot token, so a
+ * second daemon process must refuse to start rather than race the first for
+ * updates (409 Conflict).
  */
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
@@ -124,8 +124,8 @@ const START_TIME_TOLERANCE_MS = 10_000;
  *  the recorded `startedAt` against the OS-reported actual process start
  *  time to rule out PID reuse — a dead daemon's pid can be reassigned by the
  *  OS to a completely unrelated process before the next status/stop check
- *  runs, which `kill(pid, 0)` alone cannot distinguish (gjc #2786 parity:
- *  "restore macOS daemon signaling (kill(2) + start-time recheck)"). Falls
+ *  runs, which `kill(pid, 0)` alone cannot distinguish. This start-time
+ *  recheck supports safe daemon signaling on macOS with kill(2). Falls
  *  back to the existence-only result whenever the OS lookup itself is
  *  unavailable (Windows, `ps` missing, permission denied) — never a
  *  regression versus the old behavior in that case. */

@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { createTaskTool } from "../src/agent/task-tool";
 import { TOOL_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, truncateToolOutput } from "../src/agent/engine";
 
-// Spawn-gate lite + env-tunable output budget (plan/gjc-inheritance.md B9/B10).
+// Spawn-gate lite + env-tunable output budget (B9/B10).
 
 test("task fan-out beyond the gate is refused without a justification", async () => {
   const tool = createTaskTool({ config: { defaultModel: "test" } as any });

@@ -18,7 +18,7 @@ test("createStreamEvents: step header + tool target are logged on each step, not
   ev.onToolResult!("bash", false, "exit 1\nSegfault");
 
   const out = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  // STEP headers with the real tool target — the whole point of the gjc-parity fix
+  // STEP headers with the real tool target — identify the tool being invoked
   expect(out).toMatch(/[Rr]ead\s*:?\s*src\/agent\/engine\.ts/);
   expect(out).toContain("Bash");
   // results, with the failing output tail surfaced

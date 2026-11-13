@@ -1,6 +1,5 @@
 /**
  * Google (Gemini CLI / Cloud Code Assist) OAuth — standard authorization-code flow.
- * Port of gjc's google-oauth-shared.ts + google-gemini-cli.ts constants.
  *
  * NOTE: these tokens authenticate against Google's Cloud Code Assist backend.
  * jeo's default `gemini` adapter targets the public generativelanguage API,
@@ -14,7 +13,7 @@ import type { OAuthController, OAuthCredentials } from "../types";
 
 /** Login-time Cloud Code Assist project discovery for a gemini-cli token. Sends the
  *  gemini-cli identity headers (User-Agent + Client-Metadata) on loadCodeAssist/
- *  onboardUser, matching gjc's google-gemini-cli discovery requests. */
+ *  onboardUser, as the gemini-cli discovery requests do. */
 export function discoverGeminiProjectId(
   accessToken: string,
   opts: { onProgress?: (message: string) => void } = {},
@@ -112,7 +111,7 @@ class GoogleOAuthFlow extends OAuthCallbackFlow {
     const email = await getUserEmail(data.access_token);
     let projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID || undefined;
     if (!projectId) {
-      // gjc parity: auto-discover (or provision) the Cloud Code Assist project so
+      // Auto-discover (or provision) the Cloud Code Assist project so
       // Antigravity models work straight after login — best-effort, never fails login.
       try {
         projectId = await discoverGeminiProjectId(data.access_token);

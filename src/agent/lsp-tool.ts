@@ -1,7 +1,7 @@
 /**
- * `lsp` tool — read-only TypeScript/JavaScript language-service queries (gjc `lsp`
- * parity, scoped to TS/JS/TSX/JSX via the in-process `ts.LanguageService` from
- * `ts-language-service.ts` — NOT a real LSP client/server, NOT multi-language).
+ * `lsp` tool — read-only TypeScript/JavaScript language-service queries,
+ * scoped to TS/JS/TSX/JSX via the in-process `ts.LanguageService` from
+ * `ts-language-service.ts` — NOT a real LSP client/server, NOT multi-language.
  * Safe for every subagent role. Cross-file rename (mutating) is the separate
  * `lsp_rename` tool so the read-only-role toolset filter (which gates by tool
  * NAME, not by argument) cannot be bypassed by a `rename` action hidden in here.

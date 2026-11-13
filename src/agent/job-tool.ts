@@ -1,7 +1,7 @@
 /**
  * `job` control tool — the parent's handle on BACKGROUND shell processes launched
- * via `job {action:"start"}`. Mirrors gjc's `job`/async-bash control surface, scoped
- * to an in-process registry: start, list, tail, await (optionally bounded), and cancel.
+ * via `job {action:"start"}`. Uses an in-process registry for start, list, tail,
+ * await (optionally bounded), and cancel.
  */
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";

@@ -1,6 +1,6 @@
 /**
- * `lsp_rename` tool — cross-file TypeScript/JavaScript symbol rename (gjc `lsp`
- * `action:"rename"` parity), using the same in-process `ts.LanguageService` as the
+ * `lsp_rename` tool — cross-file TypeScript/JavaScript symbol rename,
+ * using the same in-process `ts.LanguageService` as the
  * read-only `lsp` tool. MUTATING: kept as its own tool (not an action on `lsp`) so
  * the read-only-role toolset filter — which excludes tools by NAME — cannot be
  * bypassed by an `apply:true` argument hidden inside a nominally "read-only" tool.

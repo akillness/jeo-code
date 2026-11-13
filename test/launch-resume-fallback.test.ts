@@ -61,7 +61,7 @@ test("bare --resume (no TTY): resumes the REAL prior session's content, not a fr
 
     // Resumes the SEEDED session (by id), not some other/fresh one.
     expect(stdout).toContain(`Resumed session ${id} (4 messages)`);
-    // The prior work is actually reproduced on screen (gjc-style transcript ledger),
+    // The prior work is actually reproduced on screen in the transcript ledger,
     // not just a bare message count.
     expect(stdout).toContain("add a logout handler");
     expect(stdout).toContain("Write logout.ts");

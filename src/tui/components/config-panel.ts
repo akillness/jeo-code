@@ -185,7 +185,7 @@ export function formatPickList(entries: PickEntry[], opts: { current?: string; c
 }
 
 /**
- * Numbered pick list with GJC-style capability columns. This is the setting-flow
+ * Numbered pick list with capability columns. This is the setting-flow
  * view: every row has a stable `#N` token and the live/OAuth model id is
  * annotated with catalog metadata when known.
  */

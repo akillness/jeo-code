@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readTool, editTool, lineAnchor } from "../src/agent/tools";
 
-// hashline-lite (plan/gjc-inheritance.md B2, gjc hashline 경량 계승):
+// hashline-lite:
 // read output carries 2-char content anchors (`42ab|`); ≔ edits may cite them
 // and are verified against the CURRENT content before mutating. SEARCH blocks
 // that accidentally carry the display prefixes are stripped (dual-protocol fixup).

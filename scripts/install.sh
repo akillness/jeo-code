@@ -1,10 +1,9 @@
 #!/bin/sh
-# jeo (jeo-code) installer — gjc-style bun global install.
+# jeo (jeo-code) installer — Bun global install.
 #
-# The gjc parity path is a single Bun global install. The published-package form
-# (once jeo-code is on npm) is identical to gajae-code's:
+# Installation uses a single Bun global install. The published-package form is:
 #
-#   bun install -g jeo-code            # gjc parity: bun install -g gajae-code
+#   bun install -g jeo-code
 #
 # Until then this script performs the equivalent global install straight from the
 # GitHub repo, auto-installing Bun if missing. Registry flags are explicit and
@@ -242,7 +241,7 @@ run_bun_global_add() {
   fi
 }
 
-# Bun global install (the gjc-idiomatic path). Exposes the package's `jeo` bin
+# Bun global install. Exposes the package's `jeo` bin
 # in Bun's global bin dir (~/.bun/bin/jeo).
 install_global() {
   spec=$(normalize_repo_spec "$REPO")

@@ -15,7 +15,7 @@ export function isOpenAIReasoningModel(model: string): boolean {
   return /^o\d/.test(m) || (gptMajor ? Number(gptMajor[1]) >= 5 : false);
 }
 
-/** gjc-parity: write the backend-specific param that turns NATIVE reasoning ON, so the
+/** Write the backend-specific param that turns NATIVE reasoning ON, so the
  *  model streams thinking we can surface. Mutates `payload`. "openai" needs no param here
  *  (handled by `reasoning_effort` for true o-series/gpt-5 models). */
 export function applyCompatThinking(
@@ -77,7 +77,7 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
     payload.max_tokens = options.maxTokens ?? defaultMaxTokens;
   }
 
-  // gjc parity — enable NATIVE reasoning per the backend's thinking format so the model
+  // Enable NATIVE reasoning per the backend's thinking format so the model
   // actually emits reasoning (otherwise OpenRouter/Qwen/z.ai stay silent and the TUI has
   // nothing to show). `reasoning_effort` (OpenAI-style) only suits o-series/gpt-5; other
   // backends need their own param. Gated on a requested effort (off → no thinking).

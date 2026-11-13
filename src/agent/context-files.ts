@@ -552,7 +552,7 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
     baseChars += file.content.length;
   }
 
-  // GJC/OMA parity: skill docs are loaded by `skills/catalog.ts`; hook/rule guidance is
+  // Skill docs are loaded by `skills/catalog.ts`; hook/rule guidance is
   // separate project policy. Keep a reserved guidance budget so large root context files do
   // not completely crowd out `.agents` / `.jeo` rules and hooks.
   for (const entry of await discoverAgentGuidanceFiles(cwd)) {

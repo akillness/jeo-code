@@ -9,6 +9,12 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Changed
+- Remove external-project references from the multilingual README guides and implementation comments without changing existing session-import compatibility.
+
+### Fixed
+- Resume menus restore complete conversation lines and editable drafts without moving the cursor to the start. Selecting another transcript in a sandboxed TUI closes the old session scope before creating a fresh sandbox, so input continues without reusing earlier access grants.
+
 ## [0.12.36] - 2026-11-13
 _Compact pasted input and reliable subagents with lower paste-capture overhead._
 

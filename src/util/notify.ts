@@ -1,5 +1,5 @@
 /**
- * Terminal-bell notifications (gajae-code 0.7.8 parity).
+ * Terminal-bell notifications.
  *
  * Emits an ASCII BEL (`\x07`) to the controlling terminal at notable
  * interaction points so a backgrounded `jeo` session pings the user when it

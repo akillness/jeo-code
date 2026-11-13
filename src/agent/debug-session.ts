@@ -1,8 +1,8 @@
 /**
  * In-process CDP (V8 Inspector Protocol) client driving a spawned `node --inspect-brk`
- * process (gjc `debug` parity, Node.js JavaScript/TypeScript ONLY).
+ * process for Node.js JavaScript/TypeScript ONLY.
  *
- * Scope, stated honestly:
+ * Scope:
  *  - Targets `node` specifically. Bun's own inspector speaks the WebKit Inspector
  *    Protocol dialect (Bun docs: "Bun speaks the WebKit Inspector Protocol"), and
  *    empirical testing here showed its `Debugger.paused`/resume sequencing does NOT
@@ -430,7 +430,7 @@ export class DebugSession {
   }
 }
 
-/** Process-wide singleton — one active debug session (gjc `debug` tool parity). */
+/** Process-wide singleton — one active debug session. */
 export const debugSession = new DebugSession();
 
 // Safety net: never leave a debugged `node` process running past the CLI's own exit.

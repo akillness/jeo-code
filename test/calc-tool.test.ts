@@ -3,9 +3,9 @@ import { calcTool, evaluateExpression, tokenizeExpression } from "../src/agent/c
 import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL } from "../src/agent/engine";
 import { nativeToolSchemasFor } from "../src/agent/tool-schemas";
 
-// gjc parity (packages/coding-agent/src/tools/calculator.ts): a faithful port of the
+// Calculator tool behavior tests.
 // tokenizer/recursive-descent parser/evaluator, verified directly against the real,
-// public gajae-code source (not inferred).
+// Verify calculator results.
 
 test("evaluateExpression: standard arithmetic with correct precedence", () => {
   expect(evaluateExpression("2 + 3 * 4")).toBe(14);

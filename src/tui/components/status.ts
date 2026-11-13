@@ -8,7 +8,7 @@ import { formatCost } from "../../ai/pricing";
 import { applyDimensionalGradient, stageGradient, stageIndexForStep } from "./evolution";
 
 /**
- * One-row status bar pinned directly above the boxed input (gjc-layout parity):
+ * One-row status bar pinned directly above the boxed input:
  *   <bg-gradient block: ⬢ model · ◔ thinking / ⑂ branch *D ?N / ▸ cwd>  …  ⤴ R/s · ctx P%/MaxM
  * The left identity segment rides the theme's gradient as a BACKGROUND block;
  * right-side live stats stay plain so they read at a glance.
@@ -149,7 +149,7 @@ export interface JeoStatusData {
   usage?: { inputTokens: number; outputTokens: number } | null;
   /** Live USD cost for the turn (price table × usage); omit when the model has no known price. */
   costUsd?: number;
-  /** True while a delegated subagent turn is in flight — renders gjc's `(sub)` marker. */
+  /** True while a delegated subagent turn is in flight — renders the `(sub)` marker. */
   subagentActive?: boolean;
 
 }
@@ -208,8 +208,8 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
   // Live token spend for the turn — visible per step, not only in the final summary.
   if (data.usage && (data.usage.inputTokens || data.usage.outputTokens)) {
     extraStats += ` · ${formatUsage(data.usage)}`;
-    // gjc-parity live output-token rate (logs/gjc-tui-study analysis Gap B):
-    // `⤴ N.N/s` like gjc's HUD. Derived purely from existing usage + elapsed —
+    // Live output-token rate:
+    // `⤴ N.N/s` displays the rate. Derived purely from existing usage + elapsed —
     // no new data sources; gated past the first second so a fresh turn doesn't
     // flash a meaningless spike.
     const elapsedSec = (data.elapsedMs ?? 0) / 1000;
@@ -219,7 +219,7 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
       extraStats += ` · ${glyph} ${rate >= 100 ? rate.toFixed(0) : rate.toFixed(1)}/s`;
     }
   }
-  // Live USD cost (gjc parity `$0.42 (sub)`): only when a known price produced a figure.
+  // Live USD cost (e.g. `$0.42 (sub)`): only when a known price produced a figure.
   if (typeof data.costUsd === "number" && Number.isFinite(data.costUsd) && data.costUsd > 0) {
     extraStats += ` · ${formatCost(data.costUsd)}`;
   }
@@ -245,7 +245,7 @@ export interface StatusBoxData extends JeoStatusData {
   spinner?: string;
   /** Live streamed model activity (reasoning/uniform fallback); overrides `message`. */
   activity?: string;
-  /** Append gjc's ⟦esc⟧ cancel hint to the activity row. */
+  /** Append the ⟦esc⟧ cancel hint to the activity row. */
   escHint?: boolean;
 }
 

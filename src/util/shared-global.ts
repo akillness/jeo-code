@@ -1,7 +1,7 @@
 /**
  * Read-only view of the shared bun global install (`~/.bun/install/global`) that `jeo update`
- * writes into with `bun install -g jeo-code@V`. That directory also holds other tools
- * (gajae-code, ...), so `jeo update` must prove it leaves every other top-level package alone.
+ * writes into with `bun install -g jeo-code@V`. That directory also holds other tools,
+ * so `jeo update` must prove it leaves every other top-level package alone.
  *
  * This module only ever reads: it never writes, deletes, renames, spawns or executes anything.
  * Restore commands are formatted as strings for a human to run.

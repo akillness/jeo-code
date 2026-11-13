@@ -43,8 +43,8 @@ test("P7: executorSystemPrompt done self-check replaces the bare verify directiv
   expect(p).not.toContain("Always verify (run tests / execute the program) before calling done.");
 });
 
-// Round 16 (gjc <verification> inheritance): VERIFICATION_DIRECTIVE is the single source
-// for the done self-check AND gjc's test-quality contract, woven into the executor prompt
+// Round 16 (verification): VERIFICATION_DIRECTIVE is the single source
+// for the done self-check AND the test-quality contract, woven into the executor prompt
 // and consumed by launch.ts (was duplicated verbatim in both — parallel-convention smell).
 test("round16: VERIFICATION_DIRECTIVE carries the self-check + anti-tautology test-quality clause", () => {
   expect(VERIFICATION_DIRECTIVE).toContain("Before calling done, self-check");

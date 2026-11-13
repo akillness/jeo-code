@@ -2,7 +2,7 @@ import type { ProviderName } from "../types";
 import { customProviderDef, customProviderDefs, customProviderNames } from "./custom-providers";
 
 /**
- * gjc-style data-driven provider catalog. Every entry here is an OpenAI-compatible
+ * Data-driven provider catalog. Every entry here is an OpenAI-compatible
  * cloud API (same `/chat/completions` + `/models` wire protocol), so adding a new
  * provider is ONE table row — `register-providers` builds its adapter via
  * `makeOpenAICompatibleAdapter`, and routing / discovery / status / auth all derive
@@ -35,7 +35,7 @@ export interface OpenAICompatProviderDef {
   /** True for subscription/plan products (coding-plan, portal, token-plan, code) rather than
    *  pay-per-token APIs. Surfaced under the `/provider` "OAuth / subscription" onboarding path. */
   readonly subscription?: boolean;
-  /** gjc-parity native-reasoning enablement: how this backend turns thinking ON.
+  /** Native-reasoning enablement: how this backend turns thinking ON.
    *  "openrouter" → `reasoning:{effort}`; "qwen" → `enable_thinking:true`; "zai" →
    *  `thinking:{type:"enabled"}`. Omitted → OpenAI `reasoning_effort` (o/gpt-5 only). */
   readonly thinkingFormat?: "openai" | "openrouter" | "qwen" | "zai";
@@ -50,7 +50,7 @@ export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
   { name: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", apiKeyEnv: "CEREBRAS_API_KEY", defaultModel: "cerebras/llama-3.3-70b", knownModels: ["llama-3.3-70b", "llama3.1-8b", "qwen-3-235b-a22b-instruct-2507"] },
   { name: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_API_KEY", defaultModel: "fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct" },
   { name: "nvidia", label: "NVIDIA", baseUrl: "https://integrate.api.nvidia.com/v1", apiKeyEnv: "NVIDIA_API_KEY", defaultModel: "nvidia/meta/llama-3.3-70b-instruct" },
-  // Additional gjc-parity OpenAI-compatible clouds (authoritative base URLs + env vars).
+  // Additional OpenAI-compatible clouds (authoritative base URLs + env vars).
   { name: "alibaba-coding-plan", label: "Alibaba Coding Plan", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", apiKeyEnv: "ALIBABA_CODING_PLAN_API_KEY", defaultModel: "alibaba-coding-plan/qwen3.5-plus", subscription: true, thinkingFormat: "qwen" },
   { name: "huggingface", label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", apiKeyEnv: "HF_TOKEN", defaultModel: "huggingface/deepseek-ai/DeepSeek-R1" },
   { name: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", apiKeyEnv: "NANO_GPT_API_KEY", defaultModel: "nanogpt/openai/gpt-5.4" },

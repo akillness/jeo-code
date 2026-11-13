@@ -201,7 +201,7 @@ test("notifications.enabled:true publishes a discovery file keyed by the session
 
 // ---------------------------------------------------------------------------
 // #2 — connecting a client to the discovery URL joins the live multiplexed
-// endpoint (subagent snapshot protocol unchanged by Tier 2 — gjc-parity
+// endpoint (subagent snapshot protocol unchanged by Tier 2)
 // regression guard) and can drive it with `list`.
 //
 // Identity is retained by the endpoint and replayed to late connections. Install

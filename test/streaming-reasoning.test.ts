@@ -23,7 +23,7 @@ test("LaunchTui: streams the model's reasoning live, then flushes it once to scr
   expect(strip(out.join(""))).toContain("checking the package version");
 
   // On the tool dispatch, the reasoning is flushed ONCE into scrollback grouped under a
-  // single `jeo` agent-name label, the (italic dimmed) prose below it — gjc layout.
+  // single `jeo` agent-name label, the (italic dimmed) prose below it.
   out.length = 0;
   ev.onAssistant!(
     '{"reasoning":"checking the package version","tool":"read","arguments":{"filePath":"package.json"}}',
@@ -64,7 +64,7 @@ test("LaunchTui: streams native thinking live, then persists it under a jeo labe
   expect(strip(out.join(""))).toContain("weighing two approaches");
 
   // On commit the native thought is flushed ONCE into scrollback grouped under a single
-  // `jeo` agent-name label, the (italic dimmed) prose below it — gjc layout.
+  // `jeo` agent-name label, with (italic dimmed) prose below it.
   out.length = 0;
   ev.onAssistant!('{"tool":"read","arguments":{}}', { tool: "read", arguments: {} });
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);

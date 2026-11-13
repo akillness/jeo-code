@@ -290,7 +290,7 @@ test("backtick-span literals suppress /command and $skill mid-line matching (gjc
   expect(complete("note \\` then ` and /mo", c).kind).toBe("none");
   // No span at all — ordinary mid-line matching is untouched.
   expect(complete("do X then /mo", c).kind).toBe("command");
-  // `@path` mentions stay live INSIDE a span (gjc parity: only command/skill
+  // `@path` mentions stay live INSIDE a span (only command/skill
   // matching is suppressed; path completion is preserved in literals).
   expect(complete("note ` then @", c).kind).toBe("path");
 });

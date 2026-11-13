@@ -266,7 +266,7 @@ test("downloadFile classifies permanent HTTP client errors separately from retry
   }
 });
 
-// ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
+// ── Bounded download size ──────────────────────
 
 test("downloadFile rejects a response whose body exceeds an injected maxBytes cap, without ever returning the oversized bytes", async () => {
   const bytes = new Uint8Array(2048).fill(7);
@@ -339,7 +339,7 @@ test("downloadFile classifies an interrupted response stream as retryable", asyn
   expect(result).toEqual({ status: "retry" });
 });
 
-// ── Bot-wide 429 cooldown, injectable clock (jeo-native subset of GJC v0.11.10 PR #3048) ──
+// ── Bot-wide 429 cooldown, injectable clock ──
 
 /** Scripted fetch: returns `script[i]` for the i-th call (clamped to the last
  *  entry once exhausted), so a 429 can be scripted first and a normal 200

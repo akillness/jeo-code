@@ -6,7 +6,7 @@ function stripAnsi(str: string): string {
 }
 
 // Merged stream contract: the step header is LAZY (printed at onAssistant once the
-// tool target is known, never for done/invalid replies) and carries gjc-style
+// tool target is known, never for done/invalid replies) and carries
 // elapsed-duration + cumulative-token-usage suffixes.
 
 test("step header carries duration and usage suffixes once available", () => {
@@ -54,7 +54,7 @@ test("tool results keep the classified ok/fail badges", () => {
   expect(out).toContain("exit 1");
 });
 
-// gjc-parity (logs/gjc-tui-study analysis Gap B): [STEP] row shows a live
+// The [STEP] row shows a live
 // output-token rate derived from existing usage + elapsed.
 import { renderJeoStatus } from "../src/tui/components/status";
 

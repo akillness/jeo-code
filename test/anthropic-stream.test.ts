@@ -188,7 +188,7 @@ test("anthropicPayload: low effort enables extended thinking (cross-provider par
   const at = (effort: CallOptions["reasoningEffort"]) =>
     JSON.parse(anthropicPayload(messages, { model: "claude-3-5-sonnet", maxTokens: 32000, reasoningEffort: effort }, false, true, cred));
 
-  // gjc ANTHROPIC_THINKING tiers: low/medium/high ALL think (gajae parity:
+  // ANTHROPIC_THINKING tiers: low/medium/high ALL think (
   // reasoning at every level) — only an UNSET effort stays off.
   expect(at("low").thinking).toEqual({ type: "enabled", budget_tokens: 4096, display: "summarized" });
   expect(at("medium").thinking).toEqual({ type: "enabled", budget_tokens: 8192, display: "summarized" });

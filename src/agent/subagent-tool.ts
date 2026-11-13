@@ -1,7 +1,7 @@
 /**
  * `subagent` control tool (#9) — the parent's handle on DETACHED subagents launched
- * via `task {detached:true}`. Mirrors gjc's `subagent`/`job` control surface, scoped
- * to an in-process registry: list, inspect, await (optionally bounded), cancel, and
+ * via `task {detached:true}`. Uses an in-process registry to
+ * list, inspect, await (optionally bounded), cancel, and
  * steer (live peer messaging into a single running subagent).
  *
  * Pause is a cooperative wrap-up request, not a suspended execution checkpoint.

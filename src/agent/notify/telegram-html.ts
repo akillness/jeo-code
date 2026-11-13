@@ -1,12 +1,11 @@
 /**
- * Telegram HTML formatting helpers (gjc `notifications-sdk` HTML-format-source
- * parity, scoped to jeo's needs). All notify-daemon Telegram output is sent
- * with `parse_mode: "HTML"`. This module is the single source of truth for:
- * escaping dynamic text, converting a bounded markdown subset into Telegram
- * HTML, and safely truncating/splitting a finished message to Telegram's
- * 4096-char limit without breaking tags or entities. `ask`-tool inline-button
- * layout helpers (`buttonLabel`, `buildButtonGrid`, etc.) are OUT OF SCOPE —
- * jeo has no `ask` tool (see Tier 2 contract).
+ * Telegram HTML formatting helpers scoped to jeo's needs. All notify-daemon
+ * Telegram output is sent with `parse_mode: "HTML"`. This module is the single
+ * source of truth for: escaping dynamic text, converting a bounded markdown
+ * subset into Telegram HTML, and safely truncating/splitting a finished
+ * message to Telegram's 4096-char limit without breaking tags or entities.
+ * `ask`-tool inline-button layout helpers (`buttonLabel`, `buildButtonGrid`,
+ * etc.) are OUT OF SCOPE — jeo has no `ask` tool (see Tier 2 contract).
  *
  * Discipline: escape first, tag second. Telegram only parses a small tag set
  * (b, i, u, s, code, pre, a, blockquote, tg-spoiler); a stray `<` or unbalanced

@@ -1,6 +1,5 @@
 /**
- * Host-wide shared Telegram rate-limit pool for the threaded session surface
- * (gjc `RateLimitPool` parity).
+ * Host-wide shared Telegram rate-limit pool for the threaded session surface.
  *
  * Multiple jeo sessions on one host share a single bot token and paired chat.
  * Telegram enforces per-bot/per-chat limits (~1 message/sec, bursts up to ~20),
@@ -25,8 +24,8 @@
  * type for architectural completeness/future use — jeo has no `ask` tool
  * (Tier 3, out of scope) and no incremental token-level stream to mirror yet
  * (see the Tier 2 contract) — and `"idle"` is likewise unused today. All four
- * lanes are kept exactly as gjc has them; this is a note about CURRENT
- * callers, not a scope reduction of the module itself.
+ * lanes remain supported; this is a note about CURRENT callers, not a scope
+ * reduction of the module itself.
  */
 
 /** Delivery lanes in descending priority. */

@@ -22,7 +22,7 @@ export function makeOpenAICompatibleAdapter(opts: { name: ProviderName; baseUrl:
     model: o.model.startsWith(prefix) ? o.model.slice(prefix.length) : o.model,
     baseUrl: o.baseUrl ?? opts.baseUrl,
     // Carry the backend's native-reasoning enablement so openaiRequest can turn thinking
-    // on with the right param (gjc parity) — without it OpenRouter/Qwen models stay silent.
+    // on with the right param — without it OpenRouter/Qwen models stay silent.
     reasoningFormat: o.reasoningFormat ?? opts.thinkingFormat,
   });
   const credFor = (c: Credential): Credential => (opts.keyless ? KEYLESS : c);

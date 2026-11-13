@@ -17,7 +17,7 @@ test("renders a basic GFM table as a box-drawn grid", () => {
 });
 
 test("honors escaped pipes inside a cell instead of splitting on them", () => {
-  // gjc #997 parity: `\|` is a literal pipe, not a column separator. A naive
+  // `\|` is a literal pipe, not a column separator. A naive
   // split would grow a phantom 3rd column and corrupt the row.
   const out = renderMarkdownTables("| Col A | Col B |\n| --- | --- |\n| a \\| b | c |");
   const lines = out.split("\n");

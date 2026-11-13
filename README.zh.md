@@ -102,7 +102,7 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
 | `/computer [status\|on\|off]` | 切换本会话的 fail-closed 桌面自动化工具 |
 | `/new` · `/sessions` | 开始新会话或列出已保存会话 |
-| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | 恢复 Jeo 会话，或将只读的精确版本 GJC v5 分支导入新的 Jeo 会话 |
+| `/resume [id]` | 按 ID 或唯一的 ID 前缀恢复已保存的 Jeo 会话；省略 ID 时打开选择器 |
 | `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | 显示发布说明 · 查看、等待或取消当前会话的后台任务 |
 | `/history [n\|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
 | `/retry` · `/btw <q>` | 重试上次请求 · 不写入历史的旁路提问 |
@@ -456,10 +456,6 @@ bun run dev:doctor          # 报告全局 `jeo` 是否运行的是本源码(lin
 CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release 时自动触发，或手动 `workflow_dispatch`(可选 dry-run)。工作流依次执行浏览器硬门禁、类型检查、测试(浏览器工具测试在独立进程中)、`pack:check`、打包 tarball 的启动冒烟，然后运行 `npm publish --provenance`。
 
 发布使用 **npm trusted publishing(OIDC)** — 不存在需要轮换、可能泄露或需豁免 2FA 的 `NPM_TOKEN` secret(npm 自 2026 年 8 月起限制绕过 2FA 的令牌，并于 2027 年 1 月终止用其直接发布)。在 npmjs.com 上一次性设置: 包 `jeo-code` → Settings → Trusted Publisher → GitHub Actions，owner `akillness`，repository `jeo-code`，workflow `npm-publish.yml`，environment 留空。该 job 需要 `permissions.id-token: write` 和 npm ≥ 11.5.1(工作流会自行升级 npm)。
-
-## 致谢 (Acknowledgements)
-
-非常感谢 [gajae-code](https://github.com/Yeachan-Heo/gajae-code) 带来的灵感。
 
 ## 更新日志 (Changelog)
 

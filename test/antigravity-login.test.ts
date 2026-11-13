@@ -42,7 +42,7 @@ test("discoverAntigravityProjectId: a reported tier without a project ONBOARDS i
   globalThis.fetch = (async (url: any, init?: any) => {
     calls.push({ url: String(url), init });
     if (String(url).includes(":loadCodeAssist")) {
-      // gjc antigravity parity: workspace-style payload — a tier but NO project.
+      // Workspace-style payload: a tier but NO project.
       return Response.json({ currentTier: { id: "standard-tier" } });
     }
     if (String(url).includes(":onboardUser")) {
@@ -53,7 +53,7 @@ test("discoverAntigravityProjectId: a reported tier without a project ONBOARDS i
   try {
     const id = await discoverAntigravityProjectId("tok-ws");
     expect(id).toBe("ag-onboarded");
-    // No allowedTiers in the payload → onboards the legacy tier (gjc getDefaultTierId).
+    // No allowedTiers in the payload → onboards the legacy tier.
     const onboardBody = JSON.parse(String(calls[1].init?.body));
     expect(onboardBody.tierId).toBe("legacy-tier");
     expect(onboardBody.metadata.ideType).toBe("ANTIGRAVITY");

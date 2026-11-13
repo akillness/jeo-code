@@ -1,6 +1,6 @@
 import { test, expect, mock } from "bun:test";
 
-// cycle 12 (plan/gjc-inheritance.md): write/edit calls to DISTINCT files in one
+// cycle 12: write/edit calls to DISTINCT files in one
 // batch run concurrently; same-file calls stay ordered; bash stays exclusive.
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

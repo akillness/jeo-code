@@ -1,7 +1,7 @@
 /**
  * jeo ledger — cross-plan append-only ledger (ledger / review / cleanup).
  *
- * Rebranded from gjc/gajae-code → jeo/jeo-code. State lives under .jeo/.
+ * State lives under .jeo/.
  *  - Events appended to .jeo/ledger.jsonl (one JSON object per line).
  *  - State is ALWAYS derived by folding the event log.
  *  - Zero external dependencies (Node stdlib only).

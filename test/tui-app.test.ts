@@ -38,7 +38,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   tui.start();
   const live = out.join("");
-  // gjc-style inline rendering: NO alt screen — tmux/terminal scrollback keeps working mid-turn.
+  // Inline rendering: NO alt screen — tmux/terminal scrollback keeps working mid-turn.
   expect(live).not.toContain(enterAltScreen());
   expect(live).toContain(hideCursor());
   // Every frame row is painted with per-line EL — never an ED clear, which tmux
@@ -73,7 +73,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).not.toContain(leaveAltScreen()); // never entered, never left
   expect(tail).toContain(showCursor());
   // Final summary still printed with clear-to-EOL per line + clear-below hygiene…
-  expect(tail).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(tail).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // Agent name label leads the reply
   expect(tail).toContain("ok"); // reply printed statically (no `jeo>` prefix)
   expect(tail).toContain("\x1b[K");
   expect(tail).toContain("\x1b[0J");
@@ -106,7 +106,7 @@ test("LaunchTui: JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen
     // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
     // footer box, context lines) never merge into the summary or leave a torn box.
     const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
-    expect(afterLeave).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label
+    expect(afterLeave).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // Agent name label
     expect(afterLeave).toContain("ok");
     expect(afterLeave).toContain("\x1b[K");
     expect(afterLeave).toContain("\x1b[0J");
@@ -550,7 +550,7 @@ test("LaunchTui: live region renders tool list + footer, finish collapses to sta
   }
 
   const finalText = logged.join("\n");
-  expect(finalText).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(finalText).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // Agent name label leads the reply
   expect(finalText).toContain("all done"); // reply printed statically
   expect(finalText).toContain("write"); // tool summary retained
   const tail = out.join("");
@@ -700,7 +700,7 @@ test("LaunchTui (inline): status line and model bar are never cut off when conte
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   try {
-    // tty:true uses the gjc-style inline layout; size() defaults to 80x24.
+    // tty:true uses the inline layout; size() defaults to 80x24.
     const tui = new LaunchTui({ model: "m1", provider: "ollama", sessionId: "sess1234", maxSteps: 25, tty: true, write: () => {} });
     tui.start();
     const ev = tui.events();
@@ -722,7 +722,7 @@ test("LaunchTui (inline): status line and model bar are never cut off when conte
     expect(frame.length).toBeLessThanOrEqual(24);          // fits inside the terminal height
     // The live status field and the model bar must both survive at the bottom.
     expect(txt.some(l => l.includes("[esc]") || l.includes("⟦esc⟧"))).toBe(true);
-    // The very last row of the inline frame is the gjc-style model bar.
+    // The very last row of the inline frame is the model bar.
     const lastContent = txt[txt.length - 1] ?? "";
     expect(lastContent).toContain("m1");
   } finally {
@@ -859,7 +859,7 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and pe
   ev.onReasoningStream!("weighing two approaches to the cap");
   expect(internals.streamingThought).toContain("weighing two approaches");
   // Committing to a tool flushes the native thought into scrollback as a "Thinking" block
-  // (gjc "think → answer" parity) and clears the transient live state.
+  // ("think → answer" transition) and clears the transient live state.
   ev.onAssistant!("{}", { tool: "read", arguments: { filePath: "x.ts" } });
   expect(internals.streamingThought).toBe("");
   clearInterval(internals.timer);
@@ -869,7 +869,7 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and pe
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try { tui.finish("done"); } finally { console.log = origLog; }
   const txt = logged.join("\n");
-  expect(txt).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // grouped under the gjc-style `jeo` label
+  expect(txt).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // grouped under the `jeo` label
   expect(txt).toContain("weighing two approaches");
 });
 
@@ -947,7 +947,7 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
     console.log = origLog;
   }
   const txt = logged.join("\n");
-  expect(txt).toContain("Bash");        // merged gjc-style card title
+  expect(txt).toContain("Bash");        // merged card title
   expect(txt).toContain("$ bun test");  // command echo inside the card
 });
 

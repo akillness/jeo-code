@@ -119,7 +119,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "moonshot-v1-128k", provider: "kimi", providerModel: "moonshot-v1-128k", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false, releaseDate: "2024-01" },
   // Kimi Code (Moonshot coding subscription, device-code OAuth) — Anthropic-compatible
   // at https://api.kimi.com/coding. Provider-qualified (`kimi/…`) to avoid canonical
-  // collisions (kimi-k2.5 also exists under tencent). gjc catalog parity: kimi-code.
+  // collisions (kimi-k2.5 also exists under tencent).
   // Newest first.
   { canonical: "kimi-k2.7-code", provider: "kimi", providerModel: "kimi/kimi-k2.7-code", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)", releaseDate: "2026-06" },
   { canonical: "kimi-for-coding", provider: "kimi", providerModel: "kimi/kimi-for-coding", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: true, company: "Moonshot (Kimi Code)", releaseDate: "2026-01" }, // [INFERENCE] alias-registration date approximated from Kimi CLI's 2026-01 launch — no primary-source changelog entry found
@@ -536,7 +536,7 @@ export function resetLiveProviderModels(): void {
  * format) actually serves. The subscription endpoint rejects Moonshot API-platform
  * ids (kimi-latest, moonshot-v1-*, kimi-thinking-preview), so a Kimi OAuth login is
  * limited to exactly these; an API key serves the api.moonshot.ai catalog instead.
- * gjc parity: models.json `kimi-code` provider entries (wire ids, `kimi/` stripped).
+ * Entries are the wire ids of the `kimi-code` provider models (`kimi/` stripped).
  */
 export const KIMI_CODE_MODELS: readonly string[] = [
   "kimi-for-coding",

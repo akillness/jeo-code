@@ -98,7 +98,7 @@ test("concurrent fan-out: status shows the most recently active slot plus a runn
   }
 });
 
-// ── Parallel subagent panel (gjc TUI-exposure parity) ───────────────────────
+// ── Parallel subagent panel ───────────────────────────────────────────────
 // Every live subagent renders a panel, with one row per active worker.
 // Pin the rendered frame rather than only the currentActivity() string.
 

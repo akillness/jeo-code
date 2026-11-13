@@ -131,7 +131,7 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
   await readyPromise;
 
   const res = await fetch(`${flow.capturedRedirect}?code=x&state=WRONG`);
-  expect(res.status).toBe(500); // gjc parity: callback failures respond 500, not 400
+  expect(res.status).toBe(500); // Callback failures respond 500, not 400
   const failBody = await res.text();
   expect(failBody).toContain("State mismatch");
   // Failure page now also auto-closes after the countdown (both success and
@@ -338,7 +338,7 @@ test("classifyRefreshFailure: dead-token signals are definitive, network blips a
   expect(classifyRefreshFailure(new Error("fetch failed"))).toBe("transient");
   expect(classifyRefreshFailure(new Error("connect ECONNREFUSED 127.0.0.1:443"))).toBe("transient");
   expect(classifyRefreshFailure(new Error("request timeout after 30s"))).toBe("transient");
-  // A 401 that is itself a network description stays transient (gjc parity).
+  // A 401 that is itself a network description stays transient.
   expect(classifyRefreshFailure(new Error("fetch failed (was 401 earlier)"))).toBe("transient");
 });
 
@@ -505,7 +505,7 @@ test("refreshOAuthToken: refreshes ahead of expiry when the token dies within th
     }) as typeof fetch;
 
     const { refreshOAuthToken, OAUTH_REFRESH_SKEW_MS } = await import("../src/auth/refresh");
-    expect(OAUTH_REFRESH_SKEW_MS).toBe(60_000); // gjc auth-storage.ts parity
+    expect(OAUTH_REFRESH_SKEW_MS).toBe(60_000); // Authentication storage behavior
     const res = await refreshOAuthToken("anthropic");
     expect(refreshHit).toBe(true);
     expect(res.reason).toBe("refreshed");

@@ -30,7 +30,7 @@ process.title = APP_NAME;
 // outside any user try/catch — that is NOT a real fatal, so it exits quietly
 // (matching the shell's own SIGPIPE exit code) instead of dumping the raw error.
 //
-// gjc PR #3051 parity: a genuine fatal also gets a best-effort, synchronous,
+// A genuine fatal also gets a best-effort, synchronous,
 // owner-only, bounded crash-log entry (secrets redacted) under jeo's config
 // dir BEFORE the clean stderr line — writeCrashLog() never throws, so it can
 // never mask the original error.

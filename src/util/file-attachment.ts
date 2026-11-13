@@ -21,15 +21,14 @@ import type { ImageAttachment } from "../ai/types";
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
 /** Reject a dropped/pasted image path bigger than this before reading it fully into
- *  memory (gjc parity, #2658's "source size" bound in spirit — a scoped-down version
- *  for jeo's simpler single-read attach path, not the full symlink/TOCTOU/consent
- *  hardening that PR added for a materially different threat model: gjc validates
- *  arbitrary bracketed-paste text that may originate from an untrusted clipboard
- *  source, while this reads a path the user directly typed/dropped into their own
- *  composer). Without a cap, a stray path to a multi-GB file — a typo, or a dropped
- *  huge video misidentified by extension — would be read ENTIRELY into memory before
- *  the magic-byte check below ever gets to reject it. 25 MiB comfortably covers any
- *  real photo/screenshot while bounding the worst case. */
+ *  memory. This bounds the simpler single-read attach path for a path the user
+ *  directly typed/dropped into their own composer; it does not provide full
+ *  symlink/TOCTOU/consent hardening or validate arbitrary bracketed-paste text
+ *  from an untrusted clipboard source. Without a cap, a stray path to a multi-GB
+ *  file — a typo, or a dropped huge video misidentified by extension — would be
+ *  read ENTIRELY into memory before the magic-byte check below ever gets to
+ *  reject it. 25 MiB comfortably covers typical photos/screenshots while bounding
+ *  the worst case. */
 export const MAX_ATTACH_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export function imageTag(n: number): string {
@@ -138,9 +137,9 @@ export function attachmentFromImageBytes(bytes: Uint8Array): ImageAttachment | n
  *  - strips matching single/double quotes,
  *  - unescapes backslash-escaped characters (macOS escapes spaces as `\ `),
  *  - resolves a `file://` URI (with percent-decoding),
- *  - expands a leading `~` / `~/` to the home directory (gjc parity: a TYPED or
- *    shell-copied `~/Downloads/shot.png` is a real, attachable path — without this it
- *    silently failed to resolve and the raw text was sent to the model instead).
+ *  - expands a leading `~` / `~/` to the home directory so a typed or
+ *    shell-copied `~/Downloads/shot.png` resolves as an attachable path rather
+ *    than failing to resolve and sending the raw text to the model instead.
  * Returns the cleaned path.
  */
 export function decodeDroppedPath(token: string, home: string = os.homedir()): string {

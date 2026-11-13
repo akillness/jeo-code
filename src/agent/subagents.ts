@@ -1,13 +1,12 @@
 /**
- * Subagent role registry (gjc role-agent parity: executor / planner / architect /
- * critic). A "subagent" is the executor tool-loop driven with a role-specific
+ * Subagent role registry: executor / planner / architect / critic.
+ * A "subagent" is the executor tool-loop driven with a role-specific
  * system prompt, model, step budget, and toolset. The registry is pure data so
  * it can be listed in the TUI (`/agents`) and consumed by `jeo team` without
  * importing any provider or I/O code.
  *
  * Read-only roles (planner/architect/critic) get a mutation-free toolset so a
- * review/plan lane physically cannot edit the repo, mirroring gjc's read-only
- * role agents.
+ * review/plan lane physically cannot edit the repo.
  */
 import { DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
 import type { Config } from "./state";
@@ -39,7 +38,7 @@ export interface SubagentRole {
    *  start with one of these prefixes (after stripping leading env-assignments /
    *  `sudo`); anything else is rejected. The registry definition IS the runtime
    *  constraint — no config plumbing. Undefined = unconstrained bash. Read-only
-   *  roles drop bash entirely regardless. (plan/gjc-inheritance.md cycle 10, B5) */
+   *  roles drop bash entirely regardless. */
   bashAllowedPrefixes?: string[];
 }
 
@@ -342,7 +341,7 @@ export function parseMaxSteps(input: string | undefined): number | undefined {
 export type ThinkLevelValue = "low" | "medium" | "high" | "xhigh";
 
 /** Per-role reasoning level → explicit role override, else undefined (= INHERIT
- *  the global thinkingLevel at call time — gjc's "(inherit)" semantics). */
+ *  the global thinkingLevel at call time). */
 export function resolveSubagentThinking(
   roleId: string,
   config: Pick<Config, "subagents">,
@@ -380,7 +379,7 @@ export interface ApplyTargetChoice {
 
 /**
  * Choices for the "apply picked model to…" picker shown after an interactive
- * model selection (gjc parity: picking a model also lets you pick WHO uses it).
+ * model selection: picking a model also lets you pick WHO uses it.
  * The hint shows each target's current model, so the same picker doubles as a
  * read-and-change panel for existing role assignments. Pure — testable.
  */

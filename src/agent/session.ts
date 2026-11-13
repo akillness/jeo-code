@@ -18,8 +18,8 @@ export interface SessionHeader {
   /** Latest CLI-owned conversation, folded from append-only metadata records. */
   agy?: { conversationId: string; messageCount: number };
   /** Unsent input-box draft at last save, restored into the prompt on `/resume`
-   *  (gajae-code parity: an in-progress cursor survives a quit + resume instead
-   *  of being silently lost). Absent/empty when there was nothing to restore. */
+   *  so in-progress input survives a quit + resume instead of being silently
+   *  lost. Absent/empty when there was nothing to restore. */
   draft?: string;
   /** Source system marker for imported sessions (read-only session importer layer). */
   sourceSystem?: "gjc";
@@ -76,7 +76,7 @@ export interface SessionSummary {
   title?: string;
   /** Model id pinned to this session (header `model`), if any. */
   model?: string;
-  /** GJC import provenance (present for imported sessions). */
+  /** Import provenance (present for imported sessions). */
   sourceSystem?: "gjc";
   sourceSessionId?: string;
   sourceLeafId?: string;
@@ -575,7 +575,7 @@ export type SessionRefResolution =
   | { kind: "ambiguous"; matches: string[] }
   | { kind: "not-found" };
 
-/** Resolve a full session id OR a short id PREFIX (gjc-parity: `--resume <prefix>`,
+/** Resolve a full session id OR a short id PREFIX (`--resume <prefix>`,
  *  `/session resume <prefix>`) to exactly one session id. Exact match wins immediately
  *  (fast path, no directory scan) before falling back to a prefix scan of listSessions(). */
 export async function resolveSessionRef(idOrPrefix: string, cwd = process.cwd()): Promise<SessionRefResolution> {
@@ -702,9 +702,9 @@ export async function updateSessionModel(id: string, model: string, cwd = proces
 }
 /**
  * Persist (or clear) the unsent input-box draft in a session's JSONL header so a
- * later `/resume` restores it into the prompt (gajae-code parity). Empty text
- * clears any stale draft rather than writing an empty string. No-op (no write)
- * when the header's current draft already matches. Throws a clear Error if the
+ * later `/resume` restores it into the prompt. Empty text clears any stale
+ * draft rather than writing an empty string. No-op (no write) when the
+ * header's current draft already matches. Throws a clear Error if the
  * session file does not exist.
  */
 export async function updateSessionDraft(id: string, draft: string, cwd = process.cwd()): Promise<void> {
@@ -777,7 +777,7 @@ export async function exportSession(
     // content containing ``` doesn't prematurely close the code fence.
     const fenceFor = (s: string) => "`".repeat(Math.max(3, (s.match(/`+/g) ?? []).reduce((mx, r) => Math.max(mx, r.length), 0) + 1));
     lines.push(`## ${role}`, "");
-    // Persisted thinking (gjc "think → answer"): include it in the durable export so the
+    // Persisted thinking (think → answer): include it in the durable export so the
     // markdown record matches the in-app transcript and the JSON export.
     if (m.role === "assistant" && m.reasoning?.trim()) {
       const tf = fenceFor(m.reasoning);

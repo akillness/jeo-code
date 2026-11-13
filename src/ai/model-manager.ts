@@ -123,7 +123,7 @@ export function thinkingMaxTokens(level?: "low" | "medium" | "high" | "xhigh"): 
  *  429 risk that a blanket 128k `max_tokens` carries on low-tier API keys. */
 const DEFAULT_MAX_OUTPUT_CAP = 64_000;
 
-/** Output-token budget for a call (gjc/omp parity): the model's CATALOG max-output,
+/** Output-token budget for a call: the model's CATALOG max-output,
  *  capped by JEO_MAX_OUTPUT_TOKENS (default 64k) — NOT the thinking-level table.
  *
  *  Rationale: on Anthropic adaptive-thinking models (Sonnet/Fable/Mythos 5, Opus 4.6+)
@@ -146,7 +146,7 @@ export function resolveMaxOutputTokens(
 
 /** Map the thinking level to an OpenAI reasoning-effort tier. low/medium/high pass
  *  through unchanged and xhigh folds to high (the deepest tier the provider APIs accept), so
- *  reasoning works at EVERY thinking level (gajae parity). Only an unset level returns
+ *  reasoning works at EVERY thinking level. Only an unset level returns
  *  undefined (reasoning off — the explicit /fast path). */
 export function thinkingToReasoningEffort(
   level?: "low" | "medium" | "high" | "xhigh",
@@ -219,14 +219,14 @@ export interface ModelManager {
 
 
 /**
- * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
+ * Build retry options from a config `retry` budget. `requestMaxRetries`
  * counts retries (not the initial request), so total `withRetry` attempts =
  * requestMaxRetries + 1. When unset, the `withRetry` defaults apply (3 attempts),
  * but rate-limit (429) errors get a more generous budget + a backoff floor so a
  * transient per-minute window can clear instead of the very first 429 instantly
  * exhausting auto-retry. A server-directed retry delay is honored IN FULL — no
  * default ceiling — because a generic 429 is retried forever, not treated as fatal
- * past some arbitrary budget (gjc parity: even a multi-hour Anthropic rate-limit
+ * past some arbitrary budget (even a multi-hour Anthropic rate-limit
  * window is retried, not bailed on); `rateLimitMaxServerDelayMs` remains available
  * as an explicit opt-in for a caller that truly cannot wait that long. Explicit
  * config (`requestMaxRetries`/`maxDelayMs`) always wins and disables the matching
@@ -273,7 +273,7 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
   // 429 backoff floor: explicit wins; else default UNLESS the user pinned maxDelayMs.
   if (typeof retry?.rateLimitMinDelayMs === "number") opts.rateLimitMinDelayMs = retry.rateLimitMinDelayMs;
   else if (typeof retry?.maxDelayMs !== "number") opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
-  // No default `rateLimitMaxServerDelayMs` ceiling: gjc parity retries a generic 429
+  // No default `rateLimitMaxServerDelayMs` ceiling: a generic 429 is retried
   // forever, honoring however long the server asks (see the doc comment above). Usage
   // limits fail fast on their own via isUsageLimitError → defaultRetryable, well before a
   // wait is ever computed, so this is safe. An explicit config value is still honored for
@@ -282,7 +282,7 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
 
   // Config-driven fail-fast overrides: a status in `failFastStatuses` or a message
   // matching any `failFastPattern` is forced non-retryable, layered on top of the
-  // chosen predicate (which still decides everything else). gjc parity for pinning a
+  // chosen predicate (which still decides everything else). This pins a
   // normally-transient class (e.g. 503) to abort instead of riding the backoff ladder.
   const failFastStatuses = retry?.failFastStatuses;
   const failFastPatterns = retry?.failFastPatterns;
@@ -536,11 +536,11 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the
   // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.
-  // gjc parity: `requestMaxRetries` governs non-stream calls; `streamMaxRetries`
+  // `requestMaxRetries` governs non-stream calls; `streamMaxRetries`
   // governs the stream site's replay-safe pre-first-chunk loop (retryableStream
   // never replays after the first emitted chunk). Both fall back to `maxRetries`,
   // and an unset stream budget keeps the conservative withRetry default — the
-  // generous gjc default of 100 only applies when the user configures it.
+  // generous stream budget (e.g. 100) only applies when the user configures it.
   // `retry.signal` is the caller's ORIGINAL signal (Ctrl-C / turn abort) — not the
   // per-attempt fetch timeout composed below — so a long, honored server-directed
   // retry wait (see resolveRetryOptions) can still be cancelled by the user without

@@ -2,11 +2,10 @@
 //
 // Cross-target standalone-binary builder for `jeo`.
 //
-// Ported in spirit from gajae-code's release binary matrix (gjc #997-era release
-// tooling). jeo is a single package with a single entrypoint (`src/cli.ts`) and
-// no native addons / workers, so this is a stripped-down equivalent: it adds a
-// first-class **Windows x64 (.exe)** release target alongside macOS/Linux,
-// instead of the host-only `bun build --compile` the install script uses.
+// jeo is a single package with a single entrypoint (`src/cli.ts`) and no native
+// addons / workers, so the release matrix stays small: it adds a first-class
+// **Windows x64 (.exe)** release target alongside macOS/Linux, instead of the
+// host-only `bun build --compile` the install script uses.
 //
 // Usage:
 //   bun scripts/ci-release-build-binaries.ts                 # host target only

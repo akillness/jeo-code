@@ -101,7 +101,7 @@ export interface LaunchTuiOptions {
   branch?: string;
   /** Uncommitted-change count for the `⑂ branch ?N` dirty flag; omit/0 = clean. */
   dirtyCount?: number;
-  /** Thinking-level label ("high", …) for the gjc-style model status bar. */
+  /** Thinking-level label ("high", …) for the model status bar. */
   thinking?: string;
   /** PromptRouter's resolved tier when routing chose THIS turn's `model` (undefined
    *  when routing didn't engage — pinned model, routing off, or the credential
@@ -186,12 +186,12 @@ export function liveBlockWrapKey(wrapW: number, text: string): string {
   return `${wrapW}\u0000${tailForWrap(text)}`;
 }
 
-/** Max lines of a committed reasoning block kept in scrollback (gjc-style collapse): a
+/** Max lines of a committed reasoning block kept in scrollback: a
  *  long chain-of-thought is clipped with a "+N more" hint so it never floods the ledger. */
 export const THINKING_COMMIT_MAX_LINES = 12;
 
 /** Collapse a committed reasoning block to a line cap, appending a "… (+N more lines)"
- *  hint when clipped (gjc collapsed-by-default parity). Returns the input verbatim when
+ *  hint when clipped. Returns the input verbatim when
  *  it already fits. */
 export function clipReasoningLines(text: string, cap = THINKING_COMMIT_MAX_LINES): string {
   const rows = text.replace(/\r/g, "").split("\n");
@@ -199,7 +199,7 @@ export function clipReasoningLines(text: string, cap = THINKING_COMMIT_MAX_LINES
   return [...rows.slice(0, cap), `… (+${rows.length - cap} more lines)`].join("\n");
 }
 
-/** gjc-style "thought for Ns" header for a committed/streaming Thinking block. Omits the
+/** "Thought for Ns" header for a committed/streaming Thinking block. Omits the
  *  duration when no step start is known (e.g. resumed/exported records). The optional
  *  `modelLabel` (e.g. "gpt-4o-mini (openai)", built by `modelProviderLabel()`) names
  *  which routed model actually produced this committed thought — a cross-provider
@@ -215,14 +215,14 @@ export function thinkingHeader(elapsedMs: number | undefined, unicode: boolean, 
 
 /** Status animation palette while a tool/process runs (background verification): an
  *  amber→yellow gradient, distinct from the cool thinking gradient, so "the agent is
- *  running a process / verifying" reads at a glance (gjc parity: `theme.fg("warning")`
- *  on the in-flight tool line). */
+ *  running a process / verifying" reads at a glance; `theme.fg("warning")`
+ *  colors the in-flight tool line. */
 export const STATUS_VERIFY_PALETTE = ["#ffd24a", "#ffb300"] as const;
 const DEFAULT_MAX_STEPS = 100;
 // Resize repaint cap (~30fps): the leading edge fires instantly, follow-ups during a
 // drag-resize are throttled to this interval, and a trailing repaint paints the final size.
 const RESIZE_THROTTLE_MS = 33;
-// Tools light enough that they never get a forge card (gjc parity): completion is a
+// Tools light enough that they never get a forge card: completion is a
 // single ✓/✗ ledger line; only failures surface a result card with the error body.
 const LIGHT_TOOLS = new Set(["read", "find", "search", "ls", "todo"]);
 function todoListChanged(
@@ -277,7 +277,7 @@ export class LaunchTui {
   // event loop waiting on 'drain' — keeps the render loop responsive and non-blocking.
   // Generic and tmux-agnostic: helps regardless of what's downstream of stdout.
   private stdoutBackpressured = false;
-  // Resize handling (gjc-style responsiveness): repaint IMMEDIATELY on the first event
+  // Resize handling: repaint IMMEDIATELY on the first event
   // so a deliberate resize never lags, then cap follow-ups to ~30fps so a drag-resize
   // tracks the cursor live (instead of staying stale until the drag pauses — the lag a
   // pure trailing debounce caused). A trailing timer always fires once more so the FINAL
@@ -335,7 +335,7 @@ export class LaunchTui {
   private livePromptInput = "";
   // Auto-derived turn title (no LLM call): seeded from the first user message, refined
   // once to the first tool's verb+target. Shown in the HUD and synced to the tmux pane
-  // title under --tmux so multiple sessions are distinguishable at a glance (gjc parity).
+  // title under --tmux so multiple sessions are distinguishable at a glance.
   private turnTitle: string | null = null;
   private turnTitleRefined = false;
   // Live "reasoning" text streamed from the model's response this step (the optional
@@ -344,7 +344,7 @@ export class LaunchTui {
   private streamingReasoning = "";
   /** Native model thinking text (separate reasoning channel), shown DIMMED while it
    *  streams, then persisted once into scrollback as a "Thinking" block on commit so the
-   *  model's reasoning stays visible above the answer (gjc "think → answer" parity). */
+   *  model's reasoning stays visible above the answer. */
   private streamingThought = "";
   /** True once the model opens an extended-thinking block this step. Signature-only
    *  reasoning models (opus-4-7/4-8) stream NO thinking text, so without this flag the
@@ -356,12 +356,12 @@ export class LaunchTui {
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
   private flushedReasoning = "";
-  // Native thinking text already persisted into scrollback this step (gjc parity: the
+  // Native thinking text already persisted into scrollback this step (the
   // model's reasoning stays VISIBLE above the answer instead of vanishing on commit).
   private flushedThought = "";
   // Live streaming output of the currently-running tool (bash stdout via onToolProgress).
   // Shown as a DIMMED bounded block while the tool runs; cleared when the formatted
-  // result card lands (onToolResult) — the gjc-style "shaded until complete" effect.
+  // result card lands (onToolResult) — the "shaded until complete" effect.
   private liveToolOutput = "";
   // Ctrl+O history/detail panel. When set, the live inline frame shows this
   // block above the heartbeat; pressing Ctrl+O again clears it and restores the
@@ -377,7 +377,7 @@ export class LaunchTui {
   private historyScroll = 0;
   private historyMaxScroll = 0;
   private historyPageSize = 1;
-  // Kind of the last ledger entry — drives the gjc-reference vertical rhythm: a
+  // Kind of the last ledger entry — drives the vertical spacing: a
   // blank line separates DIFFERENT ledger groups (card ↔ ✓-tool lines ↔ reasoning
   // ↔ notices), while same-kind lines (consecutive ✓ reads) stay adjacent.
   private lastLedgerKind: string | null = null;
@@ -414,13 +414,13 @@ export class LaunchTui {
   private readonly themeFlow = themeFlowPalette(this.theme);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
-  // gjc-style inline rendering (default on a TTY): the live frame repaints in place in
+  // Inline rendering (default on a TTY): the live frame repaints in place in
   // the MAIN buffer and every completed ledger line is flushed into normal scrollback
   // first, so tmux / terminal mouse-wheel can scroll back through earlier progress
   // mid-turn. JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
   // (scroll-isolated, but no mid-turn scrollback).
   private readonly inline: boolean;
-  // Thinking-level label for the gjc-style model status bar.
+  // Thinking-level label for the model status bar.
   private readonly thinkingLevel?: string;
   // PromptRouter's resolved tier when routing chose this turn's model; undefined when
   // routing didn't engage. Renders the persistent `⚡tier` marker in the status bar.
@@ -598,8 +598,8 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
-        // Persist the model's pre-answer thought into scrollback (gjc parity: "think →
-        // answer" reads visibly instead of vanishing on commit). gjc layout: a single
+        // Persist the model's pre-answer thought into scrollback ("think →
+        // answer" stays visible instead of vanishing on commit). Layout: a single
         // `jeo` agent-name label leads the segment, then the thought as ITALIC + dimmed
         // prose (subordinate to the reply) — native reasoning first, then the JSON-protocol
         // plan, both grouped under the one label (no per-block divider header).
@@ -611,7 +611,7 @@ export class LaunchTui {
             : (s: string) => s;
           const style = (prose: string) => prose.split("\n").map(styleThought).join("\n");
           const parts: string[] = [this.agentLabel()];
-          // gjc "thought for Ns" header: step-start → commit ≈ the model's think+gen time.
+          // "thought for Ns" header: step-start → commit ≈ the model's think+gen time.
           // Names the routed model/provider so a cross-provider routed turn's scrollback
           // record stays legible after the fact, not just live in the model bar.
           const elapsedMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
@@ -640,7 +640,7 @@ export class LaunchTui {
           const summary = summarizeForgeInvocation(toolName, invocation.arguments);
           this.pendingTitle = summary.title;
           // Refine the turn title once to the first tool's verb+target (e.g. "read
-          // package.json"), gjc-style, then lock — sharper than the raw user message.
+          // package.json"), then lock — more specific than the raw user message.
           if (!this.turnTitleRefined) {
             this.turnTitle = summary.title.length > 50 ? summary.title.slice(0, 49) + "…" : summary.title;
             this.turnTitleRefined = true;
@@ -682,12 +682,12 @@ export class LaunchTui {
         const t = (tool || "").toLowerCase();
         const target = this.pendingTitle || tool;
         this.pendingTitle = null;
-        // gjc-parity glyph-first ledger line: a colored ✓/✗ leads the flushed
-        // scrollback line so a wheel-scroll back through history scans like gjc's
+        // Glyph-first ledger line: a colored ✓/✗ leads the flushed
+        // scrollback line so a wheel-scroll back through history is easy to scan.
         // tool checklist — no category/status badge clutter.
         const mark = this.unicode ? (success ? "✓" : "✗") : success ? "v" : "x";
         const paintedMark = this.theme.color ? (success ? chalk.green(mark) : chalk.red(mark)) : mark;
-        // gjc-parity timing detail: the completed card shows how long the tool ran,
+        // Timing detail: the completed card shows how long the tool ran,
         // dim after the ✓/✗ glyph (e.g. `✓ Bash · (438ms)`).
         const toolMs = this.toolStartedAt ? Date.now() - this.toolStartedAt : 0;
         this.toolStartedAt = 0;
@@ -697,7 +697,7 @@ export class LaunchTui {
         const card = this.pendingForge;
         this.pendingForge = null;
         if (card && t === "bash") {
-          // gjc-style single Bash card: command echo + `Output` divider + body + exit
+          // Single Bash card: command echo + `Output` divider + body + exit
           // note, under one ✓/✗-marked header — mutated in place so the live frame and
           // the non-TTY summary both show the merged card.
           card.title = `${paintedMark} Bash${durSuffix}`;
@@ -708,7 +708,7 @@ export class LaunchTui {
           card.lines.push(...result.lines);
           this.flushForgeCard(card, success);
         } else if (card && t === "web_search" && success && webSearchCardLines(output, { unicode: this.unicode })) {
-          // gjc-style Web Search card: `✓ Web Search: <provider> · N sources` header
+          // Web Search card: `✓ Web Search: <provider> · N sources` header
           // over Query / Answer / Sources / Metadata divider sections rebuilt from
           // the structured tool output (provider chain — Anthropic native or the
           // keyless DuckDuckGo fallback).
@@ -743,7 +743,7 @@ export class LaunchTui {
         this.draw();
       },
       onBudget: (limit: number, reason: string) => {
-        // gjc-style retry flow: the step budget extended itself — update the live
+        // Retry flow: the step budget extended itself — update the live
         // `step N/M` denominators and leave one durable ledger line.
         this.footer.maxSteps = limit;
         this.spinner.updateStep(this.footer.step ?? 0, limit);
@@ -766,7 +766,7 @@ export class LaunchTui {
       onUsage: (u: { inputTokens: number; outputTokens: number }, lastCall?: { inputTokens: number; outputTokens: number }) => {
         // Cumulative turn usage — shown in the final summary/cost meter (unchanged).
         this.turnUsage = u;
-        // Context-window meter (gjc v0.10.1 parity): once a provider response reports
+        // Context-window meter: once a provider response reports
         // its OWN usage, that call's `inputTokens` IS the provider's own measurement of
         // the current context size — since every step resends the whole growing
         // history, this is strictly more accurate than the pre-call character-count
@@ -887,8 +887,8 @@ export class LaunchTui {
     return [`  ${accent("user")}`, top, ...mid, bottom];
   }
 
-  /** Flush a `user` card into scrollback so a submitted query stays visible there
-   *  (gjc parity), instead of only as the transient HUD turn-title / a status notice.
+  /** Flush a `user` card into scrollback so a submitted query stays visible there,
+   *  instead of only as the transient HUD turn-title / a status notice.
    *  Shared by the prompt that STARTS a turn and the mid-turn steering flush.
    *  Attachments stay in the model request; this surface renders numbered text tags only. */
   flushUserCard(text: string, images?: ImageAttachment[]): void {
@@ -913,10 +913,10 @@ export class LaunchTui {
 
   /** Append a completed progress-ledger line. In inline mode the line is flushed
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
-   *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
+   *  mouse-wheel can review the full progress history mid-turn; the
    *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
    *  final summary.
-   *  `kind` drives the readability rhythm (jeo-ref layout): a blank spacer row is
+   *  `kind` drives the readability rhythm: a blank spacer row is
    *  inserted when the ledger switches between groups (tool lines ↔ reasoning ↔
    *  cards ↔ notices) and around every card — same-kind lines stay adjacent so a
    *  burst of ✓ reads still scans as one block.
@@ -963,11 +963,11 @@ export class LaunchTui {
     });
   }
 
-  /** gjc-style ledger tree for list-shaped tool results (find / search / ls): a dim
+  /** Ledger tree for list-shaped tool results (find / search / ls): a dim
    *  ` · N files` / ` · N matches` count suffix for the summary line plus up to six
    *  dim `├─` child rows sampling the results, closed by `└─ … N more`. Children are
-   *  flushed into scrollback with the summary, so wheel-scroll history reads like
-   *  gjc's `✓ Find: pattern  39 files` block. Other tools return no decoration. */
+   *  flushed into scrollback with the summary, so wheel-scroll history retains the
+   *  summary and sampled results together. Other tools return no decoration. */
   private ledgerTree(tool: string, success: boolean, output: string): { suffix: string; children: string[] } {
     const t = (tool || "").toLowerCase();
     if (!success || (t !== "find" && t !== "search" && t !== "ls")) return { suffix: "", children: [] };
@@ -1020,7 +1020,7 @@ export class LaunchTui {
 
   private currentActivity(): string {
     const running = this.tools.currentTool();
-    // An in-flight tool's real target beats the workflow phase banner (gjc-style:
+    // An in-flight tool's real target beats the workflow phase banner:
     // the status row shows what is happening RIGHT NOW; the ◆ hud line carries
     // the workflow identity).
     if (this.workflowStatus && !running) {
@@ -1077,11 +1077,11 @@ export class LaunchTui {
   }
 
   /**
-   * Surface a delegated subagent's live progress (the `task` tool) in the stream region,
-   * mirroring gjc's subagent monitoring: the assignment, each nested tool call, and the
-   * final outcome — so a TUI turn shows what the subagent actually did instead of going
-   * silent until the task result box. The full findings still arrive as the task tool's
-   * own result forge box; this is the live play-by-play.
+   * Surface a delegated subagent's live progress (the `task` tool) in the stream region:
+   * the assignment, each nested tool call, and the final outcome — so a TUI turn shows
+   * what the subagent actually did instead of going silent until the task result box.
+   * The full findings still arrive as the task tool's own result forge box; this is
+   * the live play-by-play.
    */
   onSubagentEvent(e: TaskSubEvent): void {
     if (this.finished) return;
@@ -1306,7 +1306,7 @@ export class LaunchTui {
     this.resizeRepaint();
   };
 
-  /** gjc-style agent identity: a bold accent `jeo` name label on its own line that leads
+  /** Agent identity: a bold accent `jeo` name label on its own line that leads
    *  every assistant segment — thought blocks (onAssistant) and the final reply (finish). */
   private agentLabel(): string {
     return this.theme.color ? chalk.bold(accentPaint(this.theme)("jeo")) : "jeo";
@@ -1364,7 +1364,7 @@ export class LaunchTui {
     const planLines = this.renderPlan(this.theme.color, ok);
     if (!this.inline) {
       // Inline scrollback already reads as a ✓/✗ checklist; the step timeline +
-      // compact strip + flow line would just repeat it (gjc-style slim summary).
+      // The compact strip + flow line would just repeat it; keep the summary slim.
       if (timelineSteps.length) {
         finalLines.push(formatStepHeader(timelineSteps, { elapsedMs: totalElapsedMs, unicode: this.unicode, color: this.theme.color }));
       }
@@ -1404,8 +1404,8 @@ export class LaunchTui {
     const renderedReply = this.theme.color
       ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)), muted: mutedPaint(this.theme) })
       : stripMarkdown(tabled);
-    // gjc-style agent identity: a bold accent `jeo` label on its OWN line leads the reply
-    // (mirrors gjc's `gajae` header), instead of an inline `jeo>` prompt prefix.
+    // Agent identity: a bold accent `jeo` label on its OWN line leads the reply
+    // as a standalone header, instead of an inline `jeo>` prompt prefix.
     const nameLabel = this.agentLabel();
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
@@ -1466,7 +1466,7 @@ export class LaunchTui {
   private flushForgeCard(summary: ForgeSummary, success?: boolean): void {
     if (!this.inline || this.finished) return;
     const width = scaleForgeWidth(size().cols - 1);
-    // gjc D2 (state-encoded border): a FAILED card gets a red border so it pops
+    // State-encoded border: a FAILED card gets a red border so it pops
     // out of scrollback at a glance; OK/neutral cards keep the theme accent
     // identity. The ✓/✗ title mark already encodes state, but the border tone
     // is what the eye catches first when scanning back through history.
@@ -1664,7 +1664,7 @@ export class LaunchTui {
     };
   }
   /**
-   * The gjc-style inline live frame: a flat stack with no outer border —
+   * The inline live frame: a flat stack with no outer border —
    *   <live forge card(s)> · <spinner status line> · <todos> · <hud line> · <model bar>
    * Completed cards and ✓ ledger lines were already flushed into scrollback above.
    */
@@ -1690,7 +1690,7 @@ export class LaunchTui {
     // it is the live heartbeat and must always be visible; the in-flight card gets
     // whatever rows remain above it.
     const tail: string[] = [];
-    // Live reasoning (gjc-style muted thinking): stream the model's forming thought
+    // Live reasoning with muted styling: stream the model's forming thought
     // as a DIMMED, bounded block above the status line. It is transient — flushed
     // UN-dimmed into scrollback once the model commits to a tool/reply (onAssistant),
     // so the in-progress trace stays shaded while the final record reads in normal text.
@@ -1698,7 +1698,7 @@ export class LaunchTui {
     // rectangle, so a short trace leaves no padded "hole" and a short terminal is spared.
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
-      // gjc-parity: the Thinking block label carries the routed model/provider and a
+      // The Thinking block label carries the routed model/provider and a
       // running timer ("Thinking · gpt-4o-mini (openai) · Ns") — names which model is
       // actually reasoning right now, so a cross-provider routed turn is legible mid-turn,
       // not just after the fact in the status bar. Cache key stays the constant "Thinking"
@@ -1715,13 +1715,13 @@ export class LaunchTui {
       tail.push(...this.renderLiveBlock(liveLabel, "(thinking…)", cols, rows, 6, "Thinking"));
     }
 
-    // Live tool output (gjc-style streaming bash stdout): while a tool runs, its
+    // Live tool output with streaming bash stdout: while a tool runs, its
     // output arrives via onToolProgress and is shown as a DIMMED, bounded tail block.
     // It is transient — cleared on result, when the formatted forge card takes over.
     if (this.runningTool && this.liveToolOutput.trim()) {
       tail.push(...this.renderLiveBlock("Output", this.liveToolOutput, cols, rows, 8));
     }
-    // Parallel subagent panel (gjc parity): a fan-out `task` batch with more than one
+    // Parallel subagent panel: a fan-out `task` batch with more than one
     // concurrent slot live gets its OWN multi-line block — one row per active worker —
     // so a genuinely parallel batch reads as parallel instead of a single rotating line.
     if (this.subagentActive) {
@@ -1744,7 +1744,7 @@ export class LaunchTui {
       tail.push(...args.planLines);
     }
 
-    // hud line + model status bar pinned at the bottom of the live frame (gjc layout).
+    // hud line + model status bar pinned at the bottom of the live frame.
     const diamond = this.unicode ? "◆" : "*";
     const hudTail = this.workflowStatus
       ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}`
@@ -1778,7 +1778,7 @@ export class LaunchTui {
     return frame;
   }
 
-  /** The gjc-style one-row model status bar: ⬢ model (provider) · ◔ thinking / ⑂ branch / ▸ cwd. */
+  /** The one-row model status bar: ⬢ model (provider) · ◔ thinking / ⑂ branch / ▸ cwd. */
   private renderModelBar(cols: number, elapsedMs: number): string {
     const usage = this.turnUsage;
     const rate = usage && elapsedMs >= 1000 && usage.outputTokens > 0 ? usage.outputTokens / (elapsedMs / 1000) : undefined;
@@ -1859,7 +1859,7 @@ export class LaunchTui {
     const planLines = this.renderPlan(this.theme.color);
     const planHeight = planLines.length;
 
-    // gjc-style inline frame: a flat stack (live card → status line → todos → hud →
+    // Inline frame: a flat stack (live card → status line → todos → hud →
     // model bar), no outer border, no mascot art — completed work lives in scrollback.
     if (fit && this.inline) {
       // Pass cols - 1 so every in-frame box (input, model bar, forge, status) lines up

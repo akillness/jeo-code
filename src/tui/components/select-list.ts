@@ -166,7 +166,7 @@ export interface RenderSelectOptions {
   unicode?: boolean;
   /** Apply chalk color (default true). */
   color?: boolean;
-  /** Render a provider/group tab bar (gajae-code `/model` parity) and the `tab` key hint. */
+  /** Render a provider/group tab bar and the `tab` key hint. */
   showTabs?: boolean;
 }
 

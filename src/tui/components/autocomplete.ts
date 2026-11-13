@@ -95,7 +95,7 @@ function prefixHits(pool: string[], token: string): string[] {
 }
 
 /**
- * Fuzzy subsequence test (gjc parity): every char of `query` appears in
+ * Fuzzy subsequence test: every char of `query` appears in
  * `target` in order (not necessarily adjacent). Empty query matches everything.
  */
 export function fuzzyMatch(query: string, target: string): boolean {
@@ -108,7 +108,7 @@ export function fuzzyMatch(query: string, target: string): boolean {
 }
 
 /**
- * Score a match (gjc parity): exact=100 > startsWith=80 > includes=60 >
+ * Score a match: exact=100 > startsWith=80 > includes=60 >
  * subsequence(40 − gaps×5, min 1). Returns 0 when `query` is not a subsequence.
  */
 export function fuzzyScore(query: string, target: string): number {
@@ -131,10 +131,10 @@ export function fuzzyScore(query: string, target: string): number {
 }
 
 /**
- * Fuzzy command-name matches, ranked best-first (gjc §2.1): higher fuzzyScore
+ * Fuzzy command-name matches, ranked best-first: higher fuzzyScore
  * first, ties broken by registration order so the list stays stable. Prefix
- * matches always outrank looser subsequence hits, so `/mod`→`/model` is kept
- * while `/mdl`→`/model` now also completes.
+ * matches always outrank looser subsequence hits, so `/mod`→`/model` completes
+ * while `/mdl`→`/model` also completes.
  */
 function fuzzyHits(pool: string[], token: string): string[] {
   const q = token.toLowerCase();
@@ -146,7 +146,7 @@ function fuzzyHits(pool: string[], token: string): string[] {
 }
 
 /**
- * Command-name completion with a description fallback (gjc §2.1). Name matches
+ * Command-name completion with a description fallback. Name matches
  * win outright (so `/mod`→`/model` stays precise); only when NOTHING matches the
  * name do we fall back to substring-or-better description hits, so intent-style
  * queries with no literal name match still resolve — e.g. `/oauth`→`/login`,
@@ -196,7 +196,7 @@ function rankedModelPool(ctx: CompletionContext): string[] {
  */
 /**
  * True when `pos` sits inside an unterminated (or paired) single-backtick span
- * opened earlier on the same line (gjc parity, #2619/#2629). A backslash
+ * opened earlier on the same line. A backslash
  * ALWAYS escapes the next character — an escaped backtick (`\``) never toggles
  * the span — so a composer example like "use `/model` to switch" or a literal
  * "type \` then a command" both classify correctly. Only line-local state:
@@ -228,7 +228,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     // Literal backtick spans (`` `/model` ``, `` `$skill` ``) are protected text,
     // not live mentions — suppress command/skill matching (and the Tab/Enter
     // dispatch riding on it) below so a typed example never pops the palette.
-    // `@path` mentions above stay live inside a span (gjc parity: path
+    // `@path` mentions above stay live inside a span (path
     // completion is preserved in literals; only command/skill matching is
     // suppressed). The token's own start offset is `line.length - token.length`
     // (or `line.length` when trailing-space, which never matches $/ below).
@@ -281,7 +281,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/fast":
       return argIndex === 0 ? finish(["on", "off", "status"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
-      // /provider is onboarding-only (gjc parity): login, key, and the custom-provider
+      // /provider is onboarding-only: login, key, and the custom-provider
       // registry (add/list/remove/presets). Model switching completes under /model.
       const cloud = ["anthropic", "openai", "gemini", "antigravity"];
       if (argIndex === 0) return finish(["login", "key", "add", "list", "remove", "presets", "help"], "subcommand");

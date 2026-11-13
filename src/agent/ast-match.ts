@@ -1,8 +1,8 @@
 /**
- * Structural AST pattern matcher for TypeScript/JavaScript (gjc `ast_grep`/`ast_edit`
- * parity, scoped to TS/JS/TSX/JSX — jeo-code has zero native dependencies, so this is
- * a pure-TS reimplementation of ast-grep's metavariable matching against the
- * `typescript` compiler API's AST, NOT the real ast-grep binary and NOT multi-language.
+ * Structural AST pattern matcher for TypeScript/JavaScript, scoped to TS/JS/TSX/JSX.
+ * jeo-code has zero native dependencies: matching is implemented in pure TypeScript
+ * against the `typescript` compiler API's AST, NOT the native ast-grep binary
+ * and NOT multi-language.
  *
  * Pattern syntax (matches the `ast_grep`/`ast_edit` tool contract):
  *  - `$NAME`  — capture exactly ONE node; two occurrences of the same name in a

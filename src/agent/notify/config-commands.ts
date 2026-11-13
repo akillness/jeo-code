@@ -1,7 +1,7 @@
 /**
- * In-thread configuration slash commands for the per-session Telegram surface
- * (gjc `notifications/config-commands.ts` parity). A user can adjust how their
- * OWN session's activity mirrors into its topic without touching global config:
+ * In-thread configuration slash commands for the per-session Telegram surface.
+ * A user can adjust how their OWN session's activity mirrors into its topic
+ * without touching global config:
  *
  * - `/verbose`            switch the mirror to verbose (full tool output + reasoning)
  * - `/lean`               switch back to lean (assistant text + tool names only)

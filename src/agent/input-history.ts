@@ -5,7 +5,7 @@
  * recalled nothing on a fresh launch (and only this-run prompts otherwise). This
  * persists submitted prompts to a per-workspace file so ↑ recalls "previously
  * used queries" across launches — the same recall a shell gives you — and it
- * composes with `/resume`'s in-session seeding (gjc-style durable input history).
+ * composes with `/resume`'s in-session seeding.
  *
  * Pure filesystem helpers, kept tiny and best-effort: a read/write failure never
  * breaks the prompt. The file is newline-delimited, oldest→newest on disk.

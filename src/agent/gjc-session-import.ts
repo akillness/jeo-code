@@ -1256,7 +1256,7 @@ function messageFromUserOrDeveloper(
   entry: ParsedEntryParts,
 ): Message {
   if (role === "developer") {
-    // NOTE: GJC `developer` role is normalized to a Jeo `system` message.
+    // NOTE: The imported `developer` role is normalized to a Jeo `system` message.
     return {
       role: "system",
       content: entry.content,

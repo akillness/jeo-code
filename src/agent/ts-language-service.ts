@@ -1,6 +1,6 @@
 /**
- * In-process TypeScript "language service" host (gjc `lsp` parity for TS/JS/TSX/JSX
- * ONLY — no external `typescript-language-server` process, no other languages).
+ * In-process TypeScript "language service" host for TS/JS/TSX/JSX
+ * ONLY — no external `typescript-language-server` process, no other languages.
  * Built directly on the `typescript` compiler API's `ts.LanguageService`, which is
  * the exact engine `tsserver`/most TS editor integrations run on top of — so
  * definition/references/hover/rename here match what a real TS language server

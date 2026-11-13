@@ -62,7 +62,7 @@ test("buildThinkingLevelChoices lists the four levels in order with the current 
   expect(choices.map(c => c.value)).toEqual(["low", "medium", "high", "xhigh"]);
   expect(choices.find(c => c.value === "high")?.hint).toBe("current");
   expect(choices.find(c => c.value === "low")?.hint).toBe("");
-  // gajae-code parity: "<level> — <description>" labels.
+  // Labels use "<level> — <description>".
   expect(choices.find(c => c.value === "low")?.label).toBe("low — light reasoning");
   expect(choices.find(c => c.value === "xhigh")?.label).toBe("xhigh — maximum reasoning");
 });

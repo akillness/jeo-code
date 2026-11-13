@@ -14,7 +14,7 @@ import {
 import { OAUTH_FLOW_REGISTRY } from "./flows";
 import { readGlobalConfig, type StoredOAuth } from "../agent/state";
 
-// gjc auth-broker refresher parity: a refresh attempt fails either *definitively*
+// An auth-broker refresh attempt fails either *definitively*
 // (the refresh token itself is dead — invalid_grant / revoked / a 401-403 that is
 // not a network blip) or *transiently* (timeout / connection reset). A definitive
 // failure must stop us re-attempting a doomed refresh on every call; a transient
@@ -38,14 +38,14 @@ export interface RefreshResult {
 }
 
 /** Refresh-ahead window: a token expiring within this many ms is treated as stale
- *  and refreshed NOW, so it never dies mid-request. gjc parity: auth-storage.ts
+ *  and refreshed NOW, so it never dies mid-request.
  *  OAUTH_REFRESH_SKEW_MS = 60_000. */
 export const OAUTH_REFRESH_SKEW_MS = 60_000;
 
 /**
  * Exchange the stored refresh token for a fresh access token via the provider's
  * real OAuth token endpoint, persist it, and return the updated credential.
- * Mirrors gjc's auth-broker refresher semantics (single source of truth).
+ * The auth-broker refresher is the single source of truth.
  */
 export async function refreshOAuthToken(provider: AuthProvider): Promise<RefreshResult> {
   // API-key-only providers (xai/kimi) have no OAuth flow — nothing to refresh.
@@ -86,7 +86,7 @@ export async function refreshOAuthToken(provider: AuthProvider): Promise<Refresh
         // Dead refresh token: re-attempting it on every resolution only burns a
         // round-trip and then emits an opaque stale-token 401. Clear it so the
         // next resolution degrades cleanly to an API key (or a logged-out state
-        // that prompts re-login). Mirrors gjc auth-broker disableCredentialById.
+        // that prompts re-login).
         await clearOauthToken(provider);
         const cfg = await readGlobalConfig();
         const apiKey = cfg.providers[provider];

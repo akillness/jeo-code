@@ -25,7 +25,7 @@ export type MessengerActivityReporter = (text: string) => void;
 
 export interface MessengerAdapter {
 	platform: MessengerPlatform;
-	start(onMessage: (message: MessengerMessage) => Promise<void>, signal: AbortSignal): Promise<void>;
+	start(onMessage: (message: MessengerMessage) => Promise<void>, signal: AbortSignal, onThreadLifecycle?: (event: DiscordThreadLifecycle) => Promise<void>): Promise<void>;
 	send(message: MessengerMessage, text: string, signal?: AbortSignal): Promise<void>;
 	prepare?(message: MessengerMessage, signal?: AbortSignal): Promise<MessengerMessage>;
 	status?(
@@ -47,11 +47,15 @@ export interface MessengerPlatformConfig {
 	/** Optional platform-specific model and persistent-usage-limit fallback. */
 	model?: string;
 	usageFallbackModel?: string;
+	/** Explicit Discord-only CLI trust mode; other platforms reject this setting. */
+	workerMode?: DiscordWorkerMode;
 }
 
 export interface MessengerConfig {
 	/** Directory holding the loaded messenger.json, token file and run script; set by `loadMessengerConfig`. */
 	profileDir?: string;
+	/** Internal identity derived from the loaded configuration path, never accepted from JSON. */
+	profileKey?: string;
 	cwd: string;
 	sessionDir: string;
 	toolNames: string[];
@@ -93,3 +97,89 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function isEnoent(error: unknown): boolean {
 	return isRecord(error) && error.code === "ENOENT";
 }
+
+export type DiscordWorkerMode = "sandbox" | "host";
+
+export interface DiscordRunRef {
+	conversationKey: string;
+	sessionId: string;
+	generation: number;
+	runId: string;
+}
+
+export interface DiscordWorkerScope {
+	sessionId: string;
+	generation: number;
+	epoch: string;
+}
+
+export interface DiscordWorkerOwner extends DiscordWorkerScope {
+	pid: number;
+	startedAt: number;
+	bootStartedAt?: number;
+	cleanupReceipt: string;
+}
+
+/** Private parent-created bootstrap; it is not a general sandbox exemption. */
+export interface DiscordHostBootstrap {
+	version: 1;
+	mode: "host";
+	scope: DiscordWorkerScope;
+	nonce: string;
+	cwd: string;
+	workspaceRoot: string;
+	sourceRoot: string;
+	sessionDir: string;
+	cleanupReceipt: string;
+	bootStartedAt?: number;
+}
+
+/** Keep the run identifier ordered with its literal prompt on the stdin channel. */
+export interface DiscordHostTurn {
+	type: "host_turn";
+	runId: string;
+	text: string;
+}
+
+export type DiscordHostAction = {
+	kind: "tool";
+	tool: string;
+	cwd: string;
+	args: Readonly<Record<string, unknown>>;
+} | {
+	kind: "artifact_upload";
+	channelId: string;
+	files: readonly { name: string; size: number; sha256: string }[];
+};
+
+/** Requests carry no actor or conversation claims; the parent binds those. */
+export interface DiscordActionRequest {
+	type: "action_request";
+	nonce: string;
+	epoch: string;
+	runId: string;
+	requestId: string;
+	action: DiscordHostAction;
+}
+
+export interface DiscordActionDecision {
+	type: "action_decision";
+	nonce: string;
+	epoch: string;
+	runId: string;
+	requestId: string;
+	actionDigest: string;
+	decision: "allow" | "deny";
+	reason?: string;
+}
+
+/** A trusted Discord adapter event, not a synthetic authenticated message. */
+export interface DiscordThreadLifecycle {
+	kind: "archive" | "unarchive" | "delete";
+	accountId: string;
+	guildId?: string;
+	parentChannelId: string;
+	threadId: string;
+}
+
+export type MessengerRequestOutcome = "completed" | "failed" | "cancelled";

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { MessengerConfig, MessengerPlatform, MessengerPlatformConfig } from "./types";
@@ -105,7 +106,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			platform === "slack"
 				? ["tokenEnv", "appTokenEnv", "allowedUserIds", "allowedChannelIds"]
 				: platform === "discord"
-					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir", "model", "usageFallbackModel"]
+					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir", "model", "usageFallbackModel", "workerMode"]
 					: ["tokenEnv", "allowedUserIds", "allowedChannelIds"],
 			`${platform} config`,
 		);
@@ -117,6 +118,11 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			config.appTokenEnv = envName(item.appTokenEnv, "JEO_SLACK_APP_TOKEN", "slack.appTokenEnv");
 		if (item.allowedChannelIds !== undefined)
 			config.allowedChannelIds = ids(item.allowedChannelIds, `${platform}.allowedChannelIds`);
+		if (platform === "discord" && item.workerMode !== undefined) {
+			if (item.workerMode !== "sandbox" && item.workerMode !== "host")
+				throw new Error('discord.workerMode must be "sandbox" or "host"');
+			config.workerMode = item.workerMode;
+		}
 		if (platform === "discord" && item.artifactDir !== undefined)
 			config.artifactDir = path.resolve(baseDir, string(item.artifactDir, "discord.artifactDir"));
 		if (platform === "discord" && item.model !== undefined)
@@ -163,6 +169,8 @@ export async function validateMessengerStorage(config: MessengerConfig): Promise
 			throw new Error("The sandbox workspace must be disjoint from the messenger profile directory (configuration and credentials); set cwd to a directory outside it");
 		}
 	}
+	// Host workers use isolated clean worktrees, not the source checkout as a sandbox mount.
+	if (config.platforms.discord?.workerMode === "host" && (!config.sandbox || (!config.platforms.telegram && !config.platforms.slack))) return;
 	const pending = [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")];
 	while (pending.length) {
 		const directory = pending.pop()!;
@@ -199,13 +207,16 @@ export async function messengerProfilePrivatePaths(profileDir: string, cwd: stri
 
 export async function loadMessengerConfig(file: string): Promise<MessengerConfig> {
 	let value: unknown;
+	let configFile: string;
 	try {
-		value = await Bun.file(file).json();
+		configFile = await canonicalSandboxPath(file);
+		value = await Bun.file(configFile).json();
 	} catch {
 		throw new Error("Cannot read messenger configuration as JSON");
 	}
 	const profileDir = path.dirname(path.resolve(file));
-	const config: MessengerConfig = { ...parseMessengerConfig(value, profileDir), profileDir };
+	const profileKey = createHash("sha256").update(configFile).digest("hex");
+	const config: MessengerConfig = { ...parseMessengerConfig(value, profileDir), profileDir, profileKey };
 	await validateMessengerStorage(config);
 	const artifactDir = config.platforms.discord?.artifactDir;
 	if (artifactDir) {

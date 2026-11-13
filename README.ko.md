@@ -41,7 +41,23 @@
 
 - [양방향 메신저 게이트웨이 (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. Discord는 Docker 없이 운영체제 자체 샌드박스(macOS Seatbelt·Linux bubblewrap)에서 대화마다 독립된 세션으로 실행되며, 세션이 끝나면 그 세션이 띄운 모든 프로세스도 함께 종료됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
+**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. 기본적으로 Discord는 Docker 없이 운영체제 자체 샌드박스(macOS Seatbelt·Linux bubblewrap)에서 대화마다 독립된 세션으로 실행되며, 샌드박스 세션이 끝나면 그 세션이 띄운 모든 프로세스도 함께 종료됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
+
+### Discord 호스트 모드 (명시적 선택)
+
+봇 PC의 로컬 CLI 신뢰 권한으로 실행하려면 setup으로 대상 프로필의 `platforms.discord.workerMode`를 `"host"`로 명시적으로 설정하세요. 기존 실행 중인 프로필은 자동 전환되지 않으며 기본/native 샌드박스와 Discord 이외 플랫폼의 동작은 그대로입니다. setup은 이미 설치된 서비스를 재시작할 수 있으므로 의도한 프로필에만 실행하세요.
+
+```bash
+jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
+jeo messenger run --config ~/.jeo/discord/messenger.json
+```
+
+- **요건과 신뢰:** root가 아닌 POSIX 계정이 필요하며 root·Windows는 거부합니다. 프로젝트는 비공개 프로필/세션 디렉터리 밖에 있는, 커밋된 `HEAD`가 있는 기존 Git 저장소여야 합니다. 비 Git·첫 커밋 전 저장소는 실패하며 setup은 저장소를 초기화하거나 복사하지 않습니다. 호스트 도구는 봇의 OS 사용자와 로컬 CLI 신뢰 권한으로 실행되며 **OS 격리가 아닙니다**. 신뢰하는 사용자·프로젝트에만 허용하세요.
+- **스레드 작업 공간:** 스레드마다 독립된 이력, 고정 세션, 워커 프로세스·cwd와 커밋된 `HEAD`에서 처음 만드는 Git 연결 worktree·브랜치를 유지합니다. 원본 체크아웃의 staged·unstaged·untracked 변경은 건드리지 않습니다. worktree는 보존하며 자동 병합·push·worktree 삭제는 없습니다.
+- **제어:** 허용·인증된 사용자가 원래 스레드에서 첨부 없는 한 줄의 독립 메시지로 보냅니다. `/session status`는 상태, `/cwd`는 cwd를 조회하고, `/cwd /absolute/path/to/project`는 커밋된 기존 Git 프로젝트를 선택합니다. `/cancel`은 해당 스레드 작업만 취소하며 `/approve <requestId>`·`/deny <requestId>`는 대기 중인 동작 요청에 응답합니다. cwd 변경은 현재 작업을 종료하고 원본 체크아웃 대신 해당 프로젝트의 스레드 전용 worktree를 선택합니다.
+- **승인 경계:** 일반 편집·테스트·빌드는 기존 도구 허용 목록 안에서 자동 실행합니다. 명시적 삭제·패키지 설치·Git push·배포·업로드·시스템 변경은 같은 스레드에서 정확히 그 동작에 대한 일회성 승인이 필요합니다. 신뢰한 스크립트 내부 동작을 모두 분류하거나 OS 수준에서 효과를 격리하는 것은 아닙니다.
+- **수명 주기:** 보관·삭제는 해당 스레드 작업만 취소하고 이력·브랜치·worktree를 보존합니다. 보관 해제 후에도 다음 허용 메시지 전에는 워커를 시작하지 않습니다. 정리가 확인된 뒤 재시작하면 저장 상태를 재사용하고 이미 접수한 메시지는 재실행하지 않습니다. 이전 소유자를 검증할 수 없으면 복구를 차단하며 모든 비정상 종료의 정리를 보장하지 않습니다.
+
 
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
 
@@ -609,7 +625,7 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[Unreleased]** — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)

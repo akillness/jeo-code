@@ -26,6 +26,7 @@ import { createBrowserTool } from "./browser-tool";
 import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
+import { currentDiscordHostExecution, withDiscordHostExecution } from "./discord-host";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, toolTarget, type StepBudgetConfig } from "./step-budget";
@@ -1475,9 +1476,21 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               const sandboxedHandler = sandbox && !Object.hasOwn(parentTools, tool) && !SANDBOX_MEDIATED_TOOLS.has(handler)
                 ? (input: Record<string, any>, _cwd: string, progress?: (text: string) => void) => sandbox.supervisor.call(tool, input, { cwd, signal: opts.signal, onProgress: progress })
                 : handler;
-              const res = await (sandbox
-                ? withSandboxExecution({ ...sandbox, signal: opts.signal }, () => sandboxedHandler(args ?? {}, cwd, onProgress))
-                : sandboxedHandler(args ?? {}, cwd, onProgress));
+              const host = currentDiscordHostExecution();
+              // This mandatory gate is independent of optional pre-tool hooks and plan approval.
+              const hostSignal = host && (opts.signal ? AbortSignal.any([host.signal, opts.signal]) : host.signal);
+              const executionArgs = host ? structuredClone(args ?? {}) : args ?? {};
+              if (host && hostSignal) {
+                hostSignal.throwIfAborted();
+                if (tool === "bash" && !SANDBOX_MEDIATED_TOOLS.has(handler)) throw new Error("Discord host bash requires the effective-command tool boundary");
+                if (tool !== "bash") await host.authorizeTool(cwd, tool, executionArgs, hostSignal);
+                hostSignal.throwIfAborted();
+              }
+              const res = await (host && hostSignal
+                ? withDiscordHostExecution({ ...host, signal: hostSignal }, () => sandboxedHandler(executionArgs, cwd, onProgress))
+                : sandbox
+                  ? withSandboxExecution({ ...sandbox, signal: opts.signal }, () => sandboxedHandler(executionArgs, cwd, onProgress))
+                  : sandboxedHandler(executionArgs, cwd, onProgress));
               success = res.success;
               images = res.images;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);

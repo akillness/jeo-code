@@ -1,11 +1,13 @@
 import { MessengerHttpError } from "./http";
 import { DiscordModelSelectionError } from "./model-selection";
 import type {
+	DiscordThreadLifecycle,
 	MessengerActivityReporter,
 	MessengerAdapter,
 	MessengerConfig,
 	MessengerMessage,
 	MessengerReply,
+	MessengerRequestOutcome,
 } from "./types";
 import { MessengerFatalError, MessengerUnverifiedReplyError } from "./types";
 
@@ -252,9 +254,14 @@ interface PendingMessage {
 	message: MessengerMessage;
 	adapter: MessengerAdapter;
 	signal: AbortSignal;
+	controller: AbortController;
+	completion: Promise<void>;
+	settlement?: Promise<void>;
 	resolve: () => void;
 	/** Destination conversation key; requests sharing it never run at the same time. */
 	key: string;
+	/** Discord's start-thread-from-message endpoint uses the source message ID as the thread ID. */
+	preparationKey?: string;
 	/** Status reactions on the user's original message. */
 	status: (state: "processing" | "success" | "failure") => void;
 }
@@ -262,6 +269,7 @@ interface PendingMessage {
 export interface MessengerGateway {
 	run(signal: AbortSignal): Promise<void>;
 	handle(message: MessengerMessage, signal?: AbortSignal): Promise<void>;
+	cancelConversation(conversationKey: string): void;
 }
 
 export interface MessengerGatewayOptions {
@@ -275,6 +283,8 @@ export interface MessengerGatewayOptions {
 	concurrency?: number;
 	/** Authenticated human controls bypass model queues, including busy sessions. */
 	sandboxControl?: (message: MessengerMessage, signal: AbortSignal) => Promise<{ handled: boolean; output: string }>;
+	onThreadLifecycle?: (event: DiscordThreadLifecycle) => Promise<void>;
+	onRequestSettled?: (message: MessengerMessage, outcome: MessengerRequestOutcome) => Promise<void>;
 	/**
 	 * Operator log for a request that failed before or during delivery. Users see the generic failure text, except
 	 * an unverified completion, whose marked answer is delivered; this is the one place the cause is observable,
@@ -299,6 +309,8 @@ export function createMessengerGateway(
 	}
 	const seen = new Set<string>();
 	const queue: PendingMessage[] = [];
+	const requests = new Set<PendingMessage>();
+	const closedConversations = new Map<string, "archived" | "deleted">();
 	const reportError = (message: MessengerMessage, error: unknown, stage: "prepare" | "reply" | "deliver"): void => {
 		try { options.onRequestError?.(message, error, stage); } catch { /* Operator logging never affects the request. */ }
 	};
@@ -351,12 +363,66 @@ export function createMessengerGateway(
 		};
 	}
 
+	function settle(pending: PendingMessage, outcome: MessengerRequestOutcome): Promise<void> {
+		if (pending.settlement) return pending.settlement;
+		pending.settlement = Promise.resolve().then(async () => {
+			try {
+				await options.onRequestSettled?.(pending.message, outcome);
+			} catch (error) {
+				reportError(pending.message, error, "deliver");
+			} finally {
+				requests.delete(pending);
+				pending.resolve();
+			}
+		});
+		return pending.settlement;
+	}
+
+	function cancelConversation(key: string): void {
+		let identity: unknown;
+		try { identity = JSON.parse(key); } catch { return; }
+		for (const pending of requests) {
+			// Raw thread lookups have no parent yet. Match their thread ID, never their shared parent channel.
+			const rawThread = !pending.message.threadId && Array.isArray(identity) && identity[0] === "messenger-session-v1" &&
+				identity[1] === "discord" && pending.message.platform === "discord" && identity[2] === pending.message.accountId &&
+				JSON.stringify(identity[3]) === JSON.stringify(optionalIdentity("guild", pending.message.guildId)) &&
+				Array.isArray(identity[5]) && identity[5][0] === "present" && identity[5][1] === pending.message.channelId;
+			if (pending.key !== key && pending.preparationKey !== key && !rawThread) continue;
+			pending.controller.abort();
+			const index = queue.indexOf(pending);
+			if (index !== -1) {
+				queue.splice(index, 1);
+				void settle(pending, "cancelled");
+			}
+		}
+	}
+
+	async function threadLifecycle(adapter: MessengerAdapter, event: DiscordThreadLifecycle): Promise<void> {
+		if (adapter.platform !== "discord" || !event.accountId || !event.threadId || !event.parentChannelId ||
+			!["archive", "unarchive", "delete"].includes(event.kind)) return;
+		const allowed = config.platforms.discord?.allowedChannelIds;
+		if (allowed && !allowed.includes(event.parentChannelId) && !allowed.includes(event.threadId)) return;
+		const key = JSON.stringify(["messenger-session-v1", "discord", event.accountId, optionalIdentity("guild", event.guildId),
+			event.parentChannelId, ["present", event.threadId], ["absent"], ["absent"]]);
+		if (event.kind === "unarchive") {
+			if (closedConversations.get(key) === "deleted") return;
+			closedConversations.delete(key);
+		} else {
+			closedConversations.set(key, event.kind === "delete" ? "deleted" : "archived");
+			cancelConversation(key);
+		}
+		await options.onThreadLifecycle?.(event);
+	}
+
 	async function processRequest(pending: PendingMessage): Promise<void> {
-		const { message, adapter, signal, resolve, status } = pending;
+		const { message, adapter, signal, status } = pending;
 		let failed = false;
 		let activity = NO_ACTIVITY;
 		try {
-			if (signal.aborted) return;
+			if (signal.aborted || closedConversations.has(pending.key)) return;
+			if (!isMessengerMessageAllowed(message, config) || messengerConversationKey(message) !== pending.key) {
+				throw new Error("Messenger prepared destination is no longer authorized");
+			}
 			status("processing");
 			activity = createActivityReporter(adapter, message, signal, activityIntervalMs);
 			activity.report("Starting request");
@@ -388,8 +454,8 @@ export function createMessengerGateway(
 			failed = true;
 			if (!signal.aborted) { status("failure"); reportError(message, error, "deliver"); }
 		} finally {
-			await activity.close(failed ? "failure" : signal.aborted ? "cancelled" : "success");
-			resolve();
+			await activity.close(signal.aborted ? "cancelled" : failed ? "failure" : "success");
+			await settle(pending, signal.aborted || closedConversations.has(pending.key) ? "cancelled" : failed ? "failed" : "completed");
 		}
 	}
 
@@ -414,8 +480,11 @@ export function createMessengerGateway(
 
 	async function handle(message: MessengerMessage, signal?: AbortSignal): Promise<void> {
 		const adapter = byPlatform.get(message.platform);
-		const effectiveSignal = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
-		if (effectiveSignal.aborted || !adapter || !isMessengerMessageAllowed(message, config)) return Promise.resolve();
+		const controller = new AbortController();
+		const effectiveSignal = AbortSignal.any([lifetime.signal, controller.signal, ...(signal ? [signal] : [])]);
+		if (effectiveSignal.aborted || !adapter || !isMessengerMessageAllowed(message, config)) return;
+		const admitted = { ...message };
+		const initialKey = messengerConversationKey(message);
 		const id = JSON.stringify([message.platform, message.accountId, message.channelId, message.messageId]);
 		if (seen.has(id)) return;
 		seen.add(id);
@@ -423,52 +492,75 @@ export function createMessengerGateway(
 			const oldest = seen.values().next().value;
 			if (oldest !== undefined) seen.delete(oldest);
 		}
+		// Only standalone authenticated commands reach parent controls, without waiting for preparation or a turn.
+		const controlText = message.text.trim();
+		if (options.sandboxControl && !message.attachments?.length && !/[\r\n]/.test(message.text) &&
+			/^\/(?:sandbox(?:[ \t]+[^\r\n]*)?|(?:approve|deny)[ \t]+\S+|cancel|cwd(?:[ \t]+[^\r\n]+)?|session[ \t]+status)$/.test(controlText)) {
+			const control = await options.sandboxControl(message, effectiveSignal);
+			if (control.handled) {
+				if (!effectiveSignal.aborted && control.output.trim()) await adapter.send(message, control.output, effectiveSignal);
+				return;
+			}
+		}
+		if (closedConversations.has(initialKey)) return;
+		const completion = Promise.withResolvers<void>();
+		// Bind cancellation before the HTTP response: Discord guarantees the created thread ID equals its source message ID.
+		const preparationKey = adapter.prepare && admitted.platform === "discord" && !admitted.direct &&
+			!admitted.threadId && !admitted.parentChannelId && !admitted.conversationId
+			? messengerConversationKey({ ...admitted, parentChannelId: admitted.channelId, threadId: admitted.messageId })
+			: undefined;
+		const pending: PendingMessage = { message, adapter, signal: effectiveSignal, controller, completion: completion.promise,
+			resolve: completion.resolve, key: initialKey, preparationKey, status: createStatusReporter(adapter, message, effectiveSignal) };
+		requests.add(pending);
 		const lane = admissionKey(message, adapter);
 		const previous = admissionTails.get(lane) ?? Promise.resolve();
 		const ready = Promise.withResolvers<void>();
 		const tail = previous.then(() => ready.promise);
 		admissionTails.set(lane, tail);
 		void tail.then(() => { if (admissionTails.get(lane) === tail) admissionTails.delete(lane); });
+		let queued = false;
+		let failed = false;
 		try {
-			if (options.sandboxControl) {
-				const control = await options.sandboxControl(message, effectiveSignal);
-				if (control.handled) {
-					if (!effectiveSignal.aborted && control.output.trim()) await adapter.send(message, control.output, effectiveSignal);
-					return;
-				}
-			}
 			await previous;
 			if (effectiveSignal.aborted) return;
-			const status = createStatusReporter(adapter, message, effectiveSignal);
-			// Capacity is claimed before preparing: a request that cannot be queued must never create a thread.
 			if (queue.length + preparing >= MAX_QUEUED_MESSAGES) {
-				// Never executed, so forget the id: a redelivery is accepted once capacity returns, replaying nothing.
 				seen.delete(id);
-				status("failure");
+				failed = true;
+				pending.status("failure");
 				return;
 			}
-			let destination: MessengerMessage;
-			let key: string;
 			preparing++;
 			try {
-				destination = (await adapter.prepare?.(message, effectiveSignal)) ?? message;
-				key = messengerConversationKey(destination);
+				const destination = (await adapter.prepare?.(message, effectiveSignal)) ?? message;
+				if (destination.platform !== admitted.platform || destination.accountId !== admitted.accountId ||
+					destination.senderId !== admitted.senderId || destination.messageId !== admitted.messageId ||
+					destination.guildId !== admitted.guildId || destination.direct !== admitted.direct ||
+					destination.mentioned !== admitted.mentioned || destination.text !== admitted.text ||
+					!isMessengerMessageAllowed(destination, config)) throw new Error("Messenger prepared destination is not authorized");
+				pending.key = messengerConversationKey(destination);
+				pending.message = Object.freeze({ ...destination });
 			} catch (error) {
-				if (!effectiveSignal.aborted) { status("failure"); reportError(message, error, "prepare"); }
+				failed = true;
+				if (!effectiveSignal.aborted) { pending.status("failure"); reportError(message, error, "prepare"); }
 				return;
 			} finally {
+				pending.preparationKey = undefined;
 				preparing--;
 			}
-			if (effectiveSignal.aborted) return;
-			const { promise, resolve } = Promise.withResolvers<void>();
-			queue.push({ message: destination, adapter, signal: effectiveSignal, resolve, key, status });
+			if (effectiveSignal.aborted || closedConversations.has(pending.key)) { controller.abort(); return; }
+			queue.push(pending);
+			queued = true;
 			schedule();
-			return promise;
-		} finally { ready.resolve(); }
+		} finally {
+			ready.resolve();
+			if (!queued) await settle(pending, effectiveSignal.aborted ? "cancelled" : failed ? "failed" : "cancelled");
+		}
+		await completion.promise;
 	}
 
 	return {
 		handle,
+		cancelConversation,
 		async run(signal) {
 			if (running || lifetime.signal.aborted) throw new Error("Messenger gateway cannot be restarted");
 			running = true;
@@ -481,7 +573,7 @@ export function createMessengerGateway(
 				for (const adapter of adapters) {
 					starts.push(
 						Promise.resolve().then(async () => {
-							await adapter.start(msg => handle(msg, lifetime.signal), lifetime.signal);
+							await adapter.start(msg => handle(msg, lifetime.signal), lifetime.signal, event => threadLifecycle(adapter, event));
 							if (!lifetime.signal.aborted) throw new Error(`${adapter.platform} adapter stopped unexpectedly`);
 						}),
 					);
@@ -494,7 +586,12 @@ export function createMessengerGateway(
 			} finally {
 				lifetime.abort();
 				signal.removeEventListener("abort", abort);
-				while (queue.length > 0) queue.shift()?.resolve();
+				while (queue.length > 0) {
+					const pending = queue.shift()!;
+					pending.controller.abort();
+					await settle(pending, "cancelled");
+				}
+				await Promise.allSettled([...requests].map(pending => pending.completion));
 				await Promise.allSettled(turns);
 				if (fatalError) throw fatalError;
 			}

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
+_Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals._
+
+### Added
+- **Discord host mode (explicit opt-in):** `jeo messenger setup --config <file> --worker-mode host --project <existing-committed-Git-project>` sets `platforms.discord.workerMode: "host"` for that profile. Threads retain independent histories, stable sessions, worker processes, cwd, and linked worktrees/branches initially created from committed `HEAD`, without touching the original checkout's staged, unstaged or untracked changes. Non-Git and unborn repositories fail without initialization or copying; there is no automatic merge, push or worktree deletion.
+- **Authenticated thread controls and approvals:** standalone `/session status`, `/cwd [existing-Git-path]`, `/cancel`, `/approve <requestId>` and `/deny <requestId>` control only the originating thread. Ordinary edits, tests and builds run automatically within the existing tool allowlist; explicit deletion, package installation, push, deployment, upload and system changes require one-use exact-action approval in the same thread.
+- **Retained lifecycle state:** archive/delete cancels only that thread's work while preserving history and worktrees; unarchive waits for the next allowed message before starting a worker. Restart after confirmed cleanup reuses state without replaying admitted messages; an unverified previous owner blocks recovery rather than claiming cleanup succeeded.
+
+### Security
+- Host mode requires a non-root POSIX account and runs as the bot's OS user with local CLI trust, **not OS isolation**; Windows and root are rejected. Trusted script internals are not fully classified or OS-contained, and universal crash cleanup is not guaranteed. Existing live profiles require explicit opt-in; default/native sandbox and non-Discord behavior remain unchanged.
 
 ### Changed
 - Remove external-project references from the multilingual README guides and implementation comments without changing existing session-import compatibility.

@@ -13,6 +13,8 @@ import {
   killSpec,
   type ReapTarget,
 } from "./process-reaper";
+import { currentDiscordHostExecution, discordHostEnvironmentDigest, stopDiscordHostShell, type DiscordHostExecution } from "./discord-host";
+import { spawnLeasedShell, settlesWithin, type ShellReader } from "./shell-lease";
 
 /** Read the deep-interview lock; on corrupt state fail CLOSED (treat as active lock). */
 async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
@@ -883,7 +885,7 @@ export async function editTool(
 const DRAIN_HEAD_CAP = 100_000 + 4_096; // MAX_OUTPUT + slack so the final cut still fires
 const DRAIN_LIVE_TAIL = 16 * 1024; // matches FRAME_WRAP_TAIL_CHARS — the TUI renders only this window
 async function drainPipe(
-  r: ReadableStreamDefaultReader<Uint8Array>,
+  r: ShellReader,
   onChunk?: (partial: string) => void,
 ): Promise<string> {
   const dec = new TextDecoder();
@@ -960,6 +962,54 @@ function bashDestructiveReason(command: string): string | null {
   if (/\bmkfs(?:\.\w+)?\s+.*\/dev\//i.test(command)) return "a filesystem format on a raw device (mkfs)";
   return null;
 }
+/** Host commands never enter the global numeric-PGID reaper. The holder pins their ownership. */
+async function runDiscordHostBash(host: DiscordHostExecution, command: string, cwd: string, timeoutMs: number, env: Record<string, string>, onProgress: ((text: string) => void) | undefined, signal: AbortSignal): Promise<ToolResult> {
+  signal.throwIfAborted();
+  const shell = spawnLeasedShell(command, cwd, env);
+  const untrack = host.trackShell(shell);
+  let timedOut = false;
+  let aborted = false;
+  let termination: Promise<void> | undefined;
+  const stop = () => termination ??= stopDiscordHostShell(shell);
+  const onAbort = () => { aborted = true; void stop().catch(() => {}); };
+  const timer = setTimeout(() => { timedOut = true; void stop().catch(() => {}); }, timeoutMs);
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  let lastEmit = 0;
+  const stdoutPromise = drainPipe(shell.stdout, onProgress ? partial => {
+    const now = Date.now();
+    if (now - lastEmit >= 80) { lastEmit = now; onProgress(partial); }
+  } : undefined);
+  const stderrPromise = drainPipe(shell.stderr);
+  const drains = Promise.all([stdoutPromise, stderrPromise]);
+  let code: number | null = null;
+  let cleanupError: Error | undefined;
+  try {
+    code = await shell.exit;
+    if (!aborted && !timedOut) await settlesWithin(drains, 500);
+    await stop();
+    if (!await settlesWithin(drains, 500)) throw new Error("Discord host descendant pipe ownership is unconfirmed");
+    untrack();
+  } catch (error) {
+    cleanupError = error instanceof Error ? error : new Error("Discord host shell cleanup failed");
+    host.reportCleanupFailure(cleanupError);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    // Cutting a pipe never serves as proof that a descendant stopped.
+    await Promise.allSettled([shell.stdout.cancel(), shell.stderr.cancel()]);
+    if (!cleanupError) { shell.release(); shell.dispose(); }
+  }
+  const [stdout, stderr] = await drains;
+  onProgress?.(stdout);
+  let output = [stdout, stderr].filter(Boolean).join("\n");
+  if (output.length > 100_000) output = output.slice(0, 100_000) + "\n…(output truncated at 100000 chars)";
+  if (cleanupError) return { success: false, output, error: cleanupError.message };
+  if (aborted) return { success: false, output, error: "Command aborted" };
+  if (timedOut) return { success: false, output, error: `Command timed out after ${Math.round(timeoutMs / 1000)}s and was killed` };
+  return { success: code === 0, output: output || "(no output)", error: code !== 0 ? `Exit code ${code}` : undefined };
+}
+
 export async function bashTool(
   command: string,
   cwd: string = process.cwd(),
@@ -990,6 +1040,14 @@ export async function bashTool(
     const safeEnv = env && !Array.isArray(env)
       ? Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === "string")) as Record<string, string>
       : undefined;
+    const host = currentDiscordHostExecution();
+    if (host) {
+      const activeSignal = signal ? AbortSignal.any([host.signal, signal]) : host.signal;
+      const effectiveEnv = Object.fromEntries(Object.entries({ ...process.env, ...safeEnv }).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      await host.authorizeTool(runCwd, "bash", { command, timeoutMs, env: safeEnv ?? {}, environmentDigest: discordHostEnvironmentDigest(effectiveEnv) }, activeSignal);
+      activeSignal.throwIfAborted();
+      return await runDiscordHostBash(host, command, runCwd, timeoutMs, effectiveEnv, onProgress, activeSignal);
+    }
     // Run the command using Bun's native spawn. When background reaping is on
     // (default, POSIX), spawn the shell as its OWN process-group leader so a
     // backgrounded grandchild (`next dev &`, a daemon) joins that group and the

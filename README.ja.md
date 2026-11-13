@@ -33,7 +33,23 @@
 
 - [双方向メッセンジャーゲートウェイ (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。Discord は Docker なしで OS 標準のサンドボックス（macOS Seatbelt・Linux bubblewrap）上で会話ごとに独立したセッションとして動作し、セッション終了時にそのセッションが起動した全プロセスも終了します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
+**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。既定では Discord は Docker なしで OS 標準のサンドボックス（macOS Seatbelt・Linux bubblewrap）上で会話ごとに独立したセッションとして動作し、サンドボックスのセッション終了時にそのセッションが起動した全プロセスも終了します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
+
+### Discord ホストモード（明示的な選択）
+
+ボット PC のローカル CLI と同じ信頼権限で実行するには、setup で対象プロファイルの `platforms.discord.workerMode` を `"host"` に明示的に設定します。稼働中の既存プロファイルは自動切替されず、既定/native サンドボックスと Discord 以外の動作は変わりません。setup はインストール済みサービスを再起動する場合があるため、対象を確認して実行してください。
+
+```bash
+jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
+jeo messenger run --config ~/.jeo/discord/messenger.json
+```
+
+- **要件と信頼:** root 以外の POSIX アカウントが必要です。root・Windows は拒否します。プロジェクトは非公開プロファイル/セッションディレクトリの外にある、コミット済み `HEAD` を持つ既存の Git リポジトリに限ります。非 Git・初回コミット前のリポジトリは失敗し、setup は初期化もコピーもしません。ホストのツールはボットの OS ユーザーとローカル CLI の信頼権限で動作し、**OS による隔離ではありません**。信頼できるユーザーとプロジェクトだけに許可してください。
+- **スレッドの作業領域:** 各スレッドは独立した履歴、固定セッション、専用ワーカープロセス・cwd と、コミット済み `HEAD` から初回作成する Git linked worktree・ブランチを保持します。元のチェックアウトの staged・unstaged・untracked 変更には触れません。worktree は保持し、自動マージ・push・worktree 削除は行いません。
+- **制御:** 許可・認証されたユーザーが、元のスレッドに添付なしの独立した1行メッセージを送ります。`/session status` は状態、`/cwd` は cwd を表示し、`/cwd /absolute/path/to/project` はコミット済みの既存 Git プロジェクトを選択します。`/cancel` はそのスレッドの作業だけを取り消し、`/approve <requestId>`・`/deny <requestId>` は保留中の操作要求に回答します。cwd の変更は現在の作業を終了し、元のチェックアウトではなく、そのプロジェクトのスレッド専用 worktree を選択します。
+- **承認の境界:** 通常の編集・テスト・ビルドは既存のツール許可リスト内で自動実行します。明示的な削除・パッケージ導入・Git push・デプロイ・アップロード・システム変更には、同じスレッドでその操作だけに使える1回限りの承認が必要です。信頼したスクリプト内部の全操作を分類したり、その影響を OS レベルで隔離したりはしません。
+- **ライフサイクル:** アーカイブ・削除は対象スレッドの作業だけを中止し、履歴・ブランチ・worktree を保持します。アーカイブ解除でも、次の許可されたメッセージまではワーカーを起動しません。クリーンアップ確認後の再起動は保存状態を再利用し、受付済みメッセージを再実行しません。以前の所有者を検証できなければ復旧を拒否し、あらゆるクラッシュの後処理を保証するものではありません。
+
 
 📖 **[使い方ガイド](docs/usage-guide.md)** — インストール、TUI操作（↑履歴、Ctrl+O、`!`シェル）、スラッシュコマンド、`/resume`、スペックファーストワークフローをデモ動画付きで解説。
 
@@ -554,7 +570,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[Unreleased]** — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)

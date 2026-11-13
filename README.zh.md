@@ -33,7 +33,23 @@
 
 - [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
 
-**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。Discord 无需 Docker，在操作系统自带沙箱（macOS Seatbelt、Linux bubblewrap）中按会话独立运行，会话结束时该会话启动的所有进程一并终止。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
+**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。默认情况下，Discord 无需 Docker，在操作系统自带沙箱（macOS Seatbelt、Linux bubblewrap）中按会话独立运行，沙箱会话结束时该会话启动的所有进程一并终止。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
+
+### Discord 主机模式（显式启用）
+
+如需以机器人 PC 本地 CLI 的信任权限执行，请通过 setup 将目标配置的 `platforms.discord.workerMode` 显式设为 `"host"`。现有运行中配置不会自动切换；默认/native 沙箱及非 Discord 平台的行为不变。setup 可能重启已安装的服务，请确认目标配置后再执行。
+
+```bash
+jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
+jeo messenger run --config ~/.jeo/discord/messenger.json
+```
+
+- **要求与信任：** 必须使用非 root 的 POSIX 账户；拒绝 root 和 Windows。项目必须是位于私有配置/会话目录之外、已有已提交 `HEAD` 的 Git 仓库。非 Git 或尚无首个提交的仓库会失败；setup 不会初始化或复制仓库。主机工具以机器人的 OS 用户及本地 CLI 信任权限运行，**不是 OS 隔离**。仅对可信用户和项目启用。
+- **线程工作区：** 每个线程保留独立历史、固定会话、专属 worker 进程和 cwd，以及首次从已提交 `HEAD` 创建的 Git linked worktree 和分支。原始检出目录的 staged、unstaged、untracked 改动不受影响。保留 worktree，不会自动合并、push 或删除 worktree。
+- **控制：** 白名单内且已认证的用户在原线程中发送不带附件的独立单行消息。`/session status` 查看状态，`/cwd` 查看 cwd，`/cwd /absolute/path/to/project` 选择已有提交的 Git 项目；`/cancel` 仅取消该线程的工作；`/approve <requestId>` 或 `/deny <requestId>` 回应待处理操作请求。切换 cwd 会结束当前工作，选择该项目的线程专属 worktree，而不是原始检出目录。
+- **审批边界：** 普通编辑、测试和构建在现有工具白名单内自动运行。显式删除、安装软件包、Git push、部署、上传和系统变更需要在同一线程中对确切操作进行一次性审批。这不代表能完整分类可信脚本内部的操作，也不会在 OS 层隔离其影响。
+- **生命周期：** 归档或删除仅取消对应线程的工作，保留历史、分支和 worktree；解除归档后，直到下一条获准消息到来才启动 worker。确认清理完成后重启会复用已保存状态，不重放已接收的消息。无法验证旧所有者时会阻止恢复；主机模式不保证能清理所有崩溃场景。
+
 
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
 
@@ -552,7 +568,7 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[Unreleased]** — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)

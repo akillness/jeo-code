@@ -9,6 +9,7 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { notifyDaemonLockPath, notifyDaemonLogPath, notifyDir } from "./paths";
 import { readGlobalConfig } from "../state";
 
@@ -26,6 +27,12 @@ export function isPidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** Host replacement requires observed process absence; permission errors and reused PIDs fail closed. */
+export function isProcessAbsent(pid: number): boolean {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
 
 export function parseEtimeToMs(raw: string): number | undefined {
@@ -149,9 +156,26 @@ export async function inspectLockOwner(lock: DaemonLockInfo): Promise<LockOwnerC
   return { alive: Math.abs(real - lock.startedAt) <= START_TIME_TOLERANCE_MS, verified: true };
 }
 
-export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
+/** Stable numeric boot-session marker; deliberately independent of adjustable wall-clock timestamps. */
+export async function hostBootTimeMs(): Promise<number | undefined> {
+  let raw: string | undefined;
+  if (process.platform === "linux") raw = await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8").catch(() => undefined);
+  else if (process.platform === "darwin") {
+    raw = await new Promise<string | undefined>(resolve => {
+      const child = nodeSpawn("sysctl", ["-n", "kern.bootsessionuuid"], { stdio: ["ignore", "pipe", "ignore"] });
+      let output = "";
+      child.stdout?.on("data", chunk => { output += chunk; });
+      child.on("error", () => resolve(undefined));
+      child.on("close", code => resolve(code === 0 ? output : undefined));
+    });
+  }
+  if (!raw || !/^[a-f0-9-]{36}$/i.test(raw.trim())) return undefined;
+  return Number.parseInt(createHash("sha256").update(raw.trim().toLowerCase()).digest("hex").slice(0, 13), 16) + 1;
+}
+
+export async function readDaemonLock(lockPath = notifyDaemonLockPath()): Promise<DaemonLockInfo | undefined> {
   try {
-    const raw = await fs.readFile(notifyDaemonLockPath(), "utf-8");
+    const raw = await fs.readFile(lockPath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<DaemonLockInfo>;
     if (typeof parsed.pid !== "number" || typeof parsed.startedAt !== "number") return undefined;
     if (!Number.isSafeInteger(parsed.pid) || parsed.pid <= 0 || !Number.isFinite(parsed.startedAt)) return undefined;
@@ -161,8 +185,8 @@ export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
   }
 }
 
-async function interruptedRecoveryMessage(): Promise<string | undefined> {
-  const guard = `${notifyDaemonLockPath()}.reclaim`;
+async function interruptedRecoveryMessage(lockPath = notifyDaemonLockPath()): Promise<string | undefined> {
+  const guard = `${lockPath}.reclaim`;
   const stat = await fs.stat(guard).catch(() => undefined);
   if (stat && Date.now() - stat.mtimeMs >= 30_000) {
     return `Notification lock recovery is blocked by ${guard}. Stop all daemon/pairing processes and verify their owners are gone before manually removing this recovery guard; it is not automatically deleted because that can race a live lock owner.`;
@@ -172,9 +196,13 @@ async function interruptedRecoveryMessage(): Promise<string | undefined> {
 
 /** Exclusive process lock shared with Telegram pairing, which also owns getUpdates. */
 export async function acquireDaemonLock(purpose: "daemon" | "pairing" = "daemon"): Promise<{ release: () => Promise<void>; markReady: () => Promise<void> } | undefined> {
-  await fs.mkdir(notifyDir(), { recursive: true, mode: 0o700 });
-  const lockPath = notifyDaemonLockPath();
-  let contents = JSON.stringify({ pid: process.pid, startedAt: await processStartTimeMs(process.pid) ?? Date.now(), purpose, ready: false, owner: crypto.randomUUID() });
+  return acquireProcessLock(notifyDaemonLockPath(), { purpose });
+}
+
+/** The same atomic lock algorithm, at a caller-owned path instead of Telegram's singleton path. */
+export async function acquireProcessLock(lockPath: string, options: { purpose?: "daemon" | "pairing"; strict?: boolean } = {}): Promise<{ release: () => Promise<void>; markReady: () => Promise<void> } | undefined> {
+  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  let contents = JSON.stringify({ pid: process.pid, startedAt: await processStartTimeMs(process.pid) ?? Date.now(), purpose: options.purpose, ready: false, owner: crypto.randomUUID() });
   const create = async () => {
     // Publish a fully written record atomically; a killed writer cannot leave partial JSON.
     const tmp = `${lockPath}.${crypto.randomUUID()}.tmp`;
@@ -193,17 +221,20 @@ export async function acquireDaemonLock(purpose: "daemon" | "pairing" = "daemon"
     try { reclaim = await fs.open(`${lockPath}.reclaim`, "wx", 0o600); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        const blocked = await interruptedRecoveryMessage();
+        const blocked = await interruptedRecoveryMessage(lockPath);
         if (blocked) throw new Error(blocked);
         return undefined;
       }
       throw error;
     }
     try {
-      const existing = await readDaemonLock();
-      if (existing && await isLockOwnerAlive(existing)) return undefined;
-      // Recover legacy malformed locks only after a grace period for old writers.
-      if (!existing && Date.now() - (await fs.stat(lockPath)).mtimeMs < 30_000) return undefined;
+      const existing = await readDaemonLock(lockPath);
+      if (existing) {
+        const owner = await inspectLockOwner(existing);
+        if (owner.alive || (options.strict && (!owner.verified || !isProcessAbsent(existing.pid)))) return undefined;
+      }
+      // Host execution cannot prove ownership from a malformed record; Telegram retains its legacy grace period.
+      if (!existing && (options.strict || Date.now() - (await fs.stat(lockPath)).mtimeMs < 30_000)) return undefined;
       await fs.unlink(lockPath);
       if (!(await create())) return undefined;
     } finally {

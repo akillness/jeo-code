@@ -92,12 +92,13 @@ const HOLDER_SCRIPT = [
 const STATUS_POLL_MIN_MS = 5;
 const STATUS_POLL_MAX_MS = 50;
 
-export function spawnLeasedShell(command: string, cwd: string): LeasedShell {
-  return process.platform === "win32" ? spawnDirect(command, cwd) : spawnLeased(command, cwd);
+/** Optional environment is the caller's captured effective environment, not a deferred inheritance. */
+export function spawnLeasedShell(command: string, cwd: string, env?: Readonly<Record<string, string>>): LeasedShell {
+  return process.platform === "win32" ? spawnDirect(command, cwd, env) : spawnLeased(command, cwd, env);
 }
 
-function spawnDirect(command: string, cwd: string): LeasedShell {
-  const proc = Bun.spawn([resolvePosixTool("bash"), "-c", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+function spawnDirect(command: string, cwd: string, env?: Readonly<Record<string, string>>): LeasedShell {
+  const proc = Bun.spawn([resolvePosixTool("bash"), "-c", command], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const stdout = proc.stdout.getReader();
   const stderr = proc.stderr.getReader();
   const reaped = proc.exited.then(() => undefined);
@@ -112,14 +113,14 @@ function spawnDirect(command: string, cwd: string): LeasedShell {
   };
 }
 
-function spawnLeased(command: string, cwd: string): LeasedShell {
+function spawnLeased(command: string, cwd: string, environment?: Readonly<Record<string, string>>): LeasedShell {
   // node:child_process reports a bad cwd inconsistently across Bun versions (an 'error' event on
   // some, a holder that exits 127 on others); check up front so start() fails like Bun.spawn did.
   if (!fs.statSync(cwd).isDirectory()) throw new Error(`ENOTDIR: not a directory, stat '${cwd}'`);
   const leaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "jeo-lease-"));
   const statusFile = path.join(leaseDir, "status");
   const cleanup = () => { try { fs.rmSync(leaseDir, { recursive: true, force: true }); } catch { /* best effort only */ } };
-  const { BASH_ENV: userBashEnv, ...env } = process.env;
+  const { BASH_ENV: userBashEnv, ...env } = environment ?? process.env;
   let child: cp.ChildProcess;
   try {
     child = cp.spawn("bash", ["-c", HOLDER_SCRIPT, "bash", command, statusFile, userBashEnv ?? ""], {

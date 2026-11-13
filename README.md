@@ -52,7 +52,23 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. Discord runs without Docker in the operating system's own sandbox (macOS Seatbelt, Linux bubblewrap), one independent session per conversation; when a session ends, every process it started ends with it. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
+**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. By default, Discord runs without Docker in the operating system's own sandbox (macOS Seatbelt, Linux bubblewrap), one independent session per conversation; when a sandboxed session ends, every process it started ends with it. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
+
+### Discord host mode (explicit opt-in)
+
+For local CLI trust on the bot PC, explicitly set `platforms.discord.workerMode: "host"` in the intended profile through setup. Existing live profiles are not switched automatically; default/native sandbox behavior and non-Discord platforms are unchanged. Run deliberately: setup can restart an already installed service.
+
+```bash
+jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
+jeo messenger run --config ~/.jeo/discord/messenger.json
+```
+
+- **Requirements and trust:** use a non-root POSIX account; root and Windows are rejected. The project must already be a Git repository with a committed `HEAD`, outside the private profile/session directories. Non-Git and unborn repositories fail; setup never initializes or copies a repository. Host tools run as the bot's OS user with local CLI trust, **not OS isolation**. Only opt in for trusted users and projects.
+- **Thread workspaces:** each thread keeps independent history, a stable session, its own worker process and cwd, and a linked Git worktree/branch initially created from committed `HEAD`. The original checkout's staged, unstaged and untracked changes stay untouched. Worktrees are retained; there is no automatic merge, push or worktree deletion.
+- **Controls:** allowed, authenticated users send a standalone, single-line message without attachments in the originating thread: `/session status` inspects state; `/cwd` inspects the cwd; `/cwd /absolute/path/to/project` selects an existing committed Git project; `/cancel` cancels only that thread's work; `/approve <requestId>` or `/deny <requestId>` answers its pending action request. A cwd change retires current work and selects the thread-owned worktree for that project, not the original checkout.
+- **Approval boundary:** ordinary edits, tests and builds run automatically within the existing tool allowlist. Explicit deletion, package installation, Git push, deployment, upload and system changes require one-use approval for the exact action in the same thread. This does not fully classify trusted scripts' internals or contain their effects at the OS level.
+- **Lifecycle:** archive/delete cancels only the affected thread's work and retains history, branch and worktree; unarchive starts no worker until the next allowed message. After confirmed cleanup, restart reuses saved state without replaying admitted messages. An unverified previous owner blocks recovery; host mode does not promise universal crash cleanup.
+
 
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
@@ -598,7 +614,7 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[Unreleased]** — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.
 - **[0.12.33]** (2026-11-10)

@@ -3,6 +3,7 @@ import { resolveMessengerToken } from "./config";
 import { MessengerHttpError, messengerFetchJson } from "./http";
 import {
 	isRecord,
+	type DiscordThreadLifecycle,
 	type MessengerAdapter,
 	type MessengerMessage,
 	type MessengerPlatformConfig,
@@ -10,7 +11,7 @@ import {
 } from "./types";
 
 export const DISCORD_API = "https://discord.com/api/v10";
-export const DISCORD_GATEWAY_INTENTS = (1 << 9) | (1 << 12) | (1 << 15);
+export const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
 const PERMANENT_CLOSE_CODES: Record<number, true> = {
 	4004: true,
 	4010: true,
@@ -62,6 +63,8 @@ export interface DiscordClock {
 
 export interface DiscordTransportDeps extends MessengerTransportDeps {
 	clock?: DiscordClock;
+	/** Authorize the exact already-loaded project files; response.txt is ordinary response text. */
+	authorizeArtifacts?: (message: MessengerMessage, files: readonly { name: string; data: Uint8Array }[], signal: AbortSignal) => Promise<void>;
 }
 
 const defaultClock: DiscordClock = {
@@ -174,6 +177,7 @@ function connectGateway(
 	signal: AbortSignal,
 	WebSocketImpl: typeof WebSocket,
 	clock: DiscordClock,
+	onThreadEvent: (type: "THREAD_UPDATE" | "THREAD_DELETE", value: unknown) => Promise<void>,
 ): Promise<void> {
 	if (signal.aborted) return Promise.resolve();
 	const result = Promise.withResolvers<void>();
@@ -295,6 +299,10 @@ function connectGateway(
 					finish(new DiscordConfigurationError("Discord returned an invalid Gateway session"));
 					return;
 				}
+				if (isRecord(packet.d.user) && packet.d.user.id !== accountId) {
+					finish(new DiscordConfigurationError("Discord Gateway account does not match the authenticated bot"));
+					return;
+				}
 				try {
 					session.url = discordGatewayUrl(packet.d.resume_gateway_url);
 				} catch {
@@ -307,7 +315,9 @@ function connectGateway(
 			} else if (packet.t === "RESUMED") {
 				established = true;
 				cancelHandshake?.();
-			} else if (packet.t === "MESSAGE_CREATE") {
+			} else if (established && (packet.t === "THREAD_UPDATE" || packet.t === "THREAD_DELETE")) {
+				void onThreadEvent(packet.t, packet.d).catch(() => finish(new DiscordConfigurationError("Discord thread lifecycle handling failed")));
+			} else if (established && packet.t === "MESSAGE_CREATE") {
 				const message = normalizeMessage(packet.d, accountId);
 				if (message) {
 					void Promise.resolve()
@@ -335,13 +345,30 @@ export function createDiscordAdapter(
 ): MessengerAdapter {
 	const token = resolveMessengerToken(config.tokenEnv, env)?.trim();
 	const clock = deps.clock ?? defaultClock;
-	const createdThreads = new Map<string, { parentChannelId: string }>();
-	const rememberThread = (threadId: string, parentChannelId: string): void => {
-		createdThreads.set(threadId, { parentChannelId });
+	interface KnownThread {
+		accountId: string;
+		guildId?: string;
+		parentChannelId: string;
+		state: "active" | "archived" | "deleted";
+		verified: boolean;
+		revision: number;
+	}
+	const createdThreads = new Map<string, KnownThread>();
+	interface ThreadLookup { accountId: string; guildId?: string; invalidatedParents: Set<string> }
+	const threadLookups = new Map<string, ThreadLookup>();
+	const threadPreparations = new Set<{ accountId: string; guildId?: string; channelId: string; invalidated: Set<string> }>();
+	const rememberThread = (threadId: string, message: MessengerMessage, parentChannelId: string): KnownThread => {
+		const previous = createdThreads.get(threadId);
+		if (previous && (previous.accountId !== message.accountId || previous.guildId !== message.guildId ||
+			previous.parentChannelId !== parentChannelId || previous.state === "deleted")) throw new Error("Discord thread identity changed");
+		const thread: KnownThread = { accountId: message.accountId, guildId: message.guildId, parentChannelId,
+			state: "active", verified: true, revision: previous?.revision ?? 0 };
+		createdThreads.set(threadId, thread);
 		if (createdThreads.size > 10_000) {
 			const oldest = createdThreads.keys().next().value;
 			if (oldest !== undefined) createdThreads.delete(oldest);
 		}
+		return thread;
 	};
 	const normalizationTails = new Map<string, Promise<void>>();
 	const activityMessages = new Map<string, string>();
@@ -349,9 +376,11 @@ export function createDiscordAdapter(
 		if (!token) throw new DiscordConfigurationError("Discord bot token is missing");
 		return { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
 	};
+	const allowedThread = (threadId: string, parentChannelId: string): boolean =>
+		!config.allowedChannelIds || config.allowedChannelIds.includes(parentChannelId) || config.allowedChannelIds.includes(threadId);
 	return {
 		platform: "discord",
-		async start(onMessage, signal) {
+		async start(onMessage, signal, onThreadLifecycle) {
 			const session: DiscordSession = { sequence: null };
 			let accountId: string | undefined;
 			let initialUrl: string | undefined;
@@ -386,6 +415,40 @@ export function createDiscordAdapter(
 						}
 						initialUrl = discordGatewayUrl(gateway.url);
 					}
+					const lifecycle = async (type: "THREAD_UPDATE" | "THREAD_DELETE", value: unknown): Promise<void> => {
+						// Dispatch data is trusted only on this authenticated account's established socket and known thread tuple.
+						if (!isRecord(value) || typeof value.id !== "string" || typeof value.guild_id !== "string" ||
+							typeof value.parent_id !== "string" || typeof value.type !== "number" || ![10, 11, 12].includes(value.type)) return;
+						const archived = isRecord(value.thread_metadata) ? value.thread_metadata.archived : undefined;
+						if (type === "THREAD_UPDATE" && typeof archived !== "boolean") return;
+						if (type === "THREAD_DELETE" || archived === true) {
+							for (const preparation of threadPreparations) {
+								if (preparation.accountId === accountId && preparation.guildId === value.guild_id &&
+									(preparation.channelId === value.id || preparation.channelId === value.parent_id) && allowedThread(value.id, value.parent_id)) {
+									preparation.invalidated.add(JSON.stringify([value.id, value.parent_id]));
+								}
+							}
+						}
+						const thread = createdThreads.get(value.id);
+						if (!thread) {
+							// An unknown event cannot establish trust, but it must fence an older in-flight REST snapshot.
+							const lookup = threadLookups.get(value.id);
+							if (lookup && lookup.accountId === accountId && lookup.guildId === value.guild_id && allowedThread(value.id, value.parent_id)) {
+								lookup.invalidatedParents.add(value.parent_id);
+							}
+							return;
+						}
+						if (thread.accountId !== accountId || thread.guildId !== value.guild_id ||
+							thread.parentChannelId !== value.parent_id || !allowedThread(value.id, value.parent_id) || thread.state === "deleted") return;
+						const state = type === "THREAD_DELETE" ? "deleted" : archived ? "archived" : "active";
+						const changed = state !== thread.state;
+						thread.state = state;
+						thread.verified = false;
+						thread.revision++;
+						const event: DiscordThreadLifecycle = { kind: state === "deleted" ? "delete" : state === "archived" ? "archive" : "unarchive",
+							accountId: thread.accountId, guildId: thread.guildId, parentChannelId: thread.parentChannelId, threadId: value.id };
+						if (changed) await onThreadLifecycle?.(event);
+					};
 					const deliver = async (message: MessengerMessage): Promise<void> => {
 						const previous = normalizationTails.get(message.channelId) ?? Promise.resolve();
 						const ready = Promise.withResolvers<void>();
@@ -396,19 +459,28 @@ export function createDiscordAdapter(
 							return onMessage(destination);
 						};
 						await previous;
+						let lookup: ThreadLookup | undefined;
 						try {
 							if (signal.aborted) return;
 							const thread = createdThreads.get(message.channelId);
-							if (thread && config.allowedUserIds.includes(message.senderId)) {
+							if (thread?.state === "deleted") return;
+							if (thread?.verified && thread.state === "active" && thread.accountId === message.accountId &&
+								thread.guildId === message.guildId && config.allowedUserIds.includes(message.senderId)) {
 								await forward({ ...message, threadId: message.channelId, parentChannelId: thread.parentChannelId });
 							} else if (!message.direct && config.allowedUserIds.includes(message.senderId)) {
+								const revision = thread?.revision;
+								lookup = { accountId: message.accountId, guildId: message.guildId, invalidatedParents: new Set() };
+								threadLookups.set(message.channelId, lookup);
 								const channel = await messengerFetchJson(
 									`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
 									{ headers: headers() }, signal, deps.fetch,
 								);
 								if (!isRecord(channel) || channel.id !== message.channelId) return;
+								if (createdThreads.get(message.channelId) !== thread || thread?.revision !== revision) return;
+								if (channel.guild_id !== undefined && channel.guild_id !== message.guildId) return;
 								if (typeof channel.type === "number" && [10, 11, 12].includes(channel.type)) {
-									if (typeof channel.parent_id !== "string" || !channel.parent_id) return;
+									if (typeof channel.parent_id !== "string" || !channel.parent_id || !allowedThread(message.channelId, channel.parent_id)) return;
+									if (lookup.invalidatedParents.has(channel.parent_id)) return;
 									if (!message.mentioned) {
 										const originalId = typeof channel.name === "string" ? /^Request (\d{1,20})$/.exec(channel.name)?.[1] : undefined;
 										if (channel.owner_id !== accountId || !originalId ||
@@ -420,7 +492,15 @@ export function createDiscordAdapter(
 										if (!isRecord(original) || original.id !== originalId || original.channel_id !== channel.parent_id ||
 											!isRecord(original.author) || typeof original.author.id !== "string" || original.author.bot === true || original.webhook_id) return;
 									}
-									rememberThread(message.channelId, channel.parent_id);
+									if (signal.aborted || createdThreads.get(message.channelId) !== thread || thread?.revision !== revision ||
+										lookup.invalidatedParents.has(channel.parent_id)) return;
+									const recovered = rememberThread(message.channelId, message, channel.parent_id);
+									if (isRecord(channel.thread_metadata) && typeof channel.thread_metadata.archived === "boolean") {
+										recovered.state = channel.thread_metadata.archived ? "archived" : "active";
+										await onThreadLifecycle?.({ kind: channel.thread_metadata.archived ? "archive" : "unarchive", accountId: message.accountId,
+											guildId: message.guildId, parentChannelId: channel.parent_id, threadId: message.channelId });
+										if (channel.thread_metadata.archived) return;
+									}
 									await forward({ ...message, threadId: message.channelId, parentChannelId: channel.parent_id });
 								} else {
 									await forward(message);
@@ -429,6 +509,7 @@ export function createDiscordAdapter(
 								await forward(message);
 							}
 						} finally {
+							if (threadLookups.get(message.channelId) === lookup) threadLookups.delete(message.channelId);
 							ready.resolve();
 							if (normalizationTails.get(message.channelId) === tail) normalizationTails.delete(message.channelId);
 						}
@@ -442,6 +523,7 @@ export function createDiscordAdapter(
 						signal,
 						deps.WebSocket ?? WebSocket,
 						clock,
+						lifecycle,
 					);
 				} catch (error) {
 					if (signal.aborted) return;
@@ -473,34 +555,47 @@ export function createDiscordAdapter(
 		async prepare(message, signal) {
 			if (message.direct) return message;
 			if (message.threadId) {
-				if (message.parentChannelId) rememberThread(message.threadId, message.parentChannelId);
+				const known = createdThreads.get(message.threadId);
+				if (known && known.state !== "active") throw new Error("Discord thread is not active");
+				if (message.parentChannelId) rememberThread(message.threadId, message, message.parentChannelId);
 				return message;
 			}
-			const channel = await messengerFetchJson(
-				`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
-				{ headers: headers() },
-				signal,
-				deps.fetch,
-			);
-			if (!isRecord(channel) || typeof channel.type !== "number")
-				throw new Error("Discord channel type unavailable");
-			if ([10, 11, 12].includes(channel.type)) {
-				if (typeof channel.parent_id !== "string" || !channel.parent_id)
-					throw new Error("Discord thread parent unavailable");
-				rememberThread(message.channelId, channel.parent_id);
-				return { ...message, threadId: message.channelId, parentChannelId: channel.parent_id };
+			const preparation = { accountId: message.accountId, guildId: message.guildId, channelId: message.channelId, invalidated: new Set<string>() };
+			const known = createdThreads.get(message.channelId);
+			const revision = known?.revision;
+			threadPreparations.add(preparation);
+			try {
+				const channel = await messengerFetchJson(
+					`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}`,
+					{ headers: headers() }, signal, deps.fetch,
+				);
+				signal?.throwIfAborted();
+				if (!isRecord(channel) || channel.id !== message.channelId || typeof channel.type !== "number" ||
+					(channel.guild_id !== undefined && channel.guild_id !== message.guildId)) throw new Error("Discord channel type unavailable");
+				if ([10, 11, 12].includes(channel.type)) {
+					if (typeof channel.parent_id !== "string" || !channel.parent_id) throw new Error("Discord thread parent unavailable");
+					if (!allowedThread(message.channelId, channel.parent_id)) throw new Error("Discord thread is not authorized");
+					if ((isRecord(channel.thread_metadata) && channel.thread_metadata.archived === true) ||
+						preparation.invalidated.has(JSON.stringify([message.channelId, channel.parent_id])) ||
+						createdThreads.get(message.channelId) !== known || known?.revision !== revision) throw new Error("Discord thread changed during preparation");
+					rememberThread(message.channelId, message, channel.parent_id);
+					return { ...message, threadId: message.channelId, parentChannelId: channel.parent_id };
+				}
+				if (channel.type !== 0 && channel.type !== 5) throw new Error("Discord channel cannot host a reply thread");
+				const thread = await messengerFetchJson(
+					`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}/messages/${encodeURIComponent(message.messageId)}/threads`,
+					{ method: "POST", headers: headers(), body: JSON.stringify({ name: `Request ${message.messageId}` }) }, signal, deps.fetch,
+				);
+				signal?.throwIfAborted();
+				if (!isRecord(thread) || typeof thread.id !== "string" || !thread.id) throw new Error("Discord thread creation returned no ID");
+				if ((thread.parent_id !== undefined && thread.parent_id !== message.channelId) ||
+					(thread.guild_id !== undefined && thread.guild_id !== message.guildId)) throw new Error("Discord thread creation returned a different destination");
+				if (preparation.invalidated.has(JSON.stringify([thread.id, message.channelId]))) throw new Error("Discord thread closed during creation");
+				rememberThread(thread.id, message, message.channelId);
+				return { ...message, threadId: thread.id, parentChannelId: message.channelId };
+			} finally {
+				threadPreparations.delete(preparation);
 			}
-			if (channel.type !== 0 && channel.type !== 5) throw new Error("Discord channel cannot host a reply thread");
-			const thread = await messengerFetchJson(
-				`${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}/messages/${encodeURIComponent(message.messageId)}/threads`,
-				{ method: "POST", headers: headers(), body: JSON.stringify({ name: `Request ${message.messageId}` }) },
-				signal,
-				deps.fetch,
-			);
-			if (!isRecord(thread) || typeof thread.id !== "string" || !thread.id)
-				throw new Error("Discord thread creation returned no ID");
-			rememberThread(thread.id, message.channelId);
-			return { ...message, threadId: thread.id };
 		},
 		async status(message, state, signal) {
 			const base = `${DISCORD_API}/channels/${encodeURIComponent(message.channelId)}/messages/${encodeURIComponent(message.messageId)}/reactions`;
@@ -528,6 +623,11 @@ export function createDiscordAdapter(
 		async activity(message, text, signal, outcome = "success") {
 			const channelId = message.threadId ?? message.channelId;
 			const key = JSON.stringify([channelId, message.messageId]);
+			const thread = createdThreads.get(channelId);
+			if (thread && thread.state !== "active") {
+				activityMessages.delete(key);
+				return;
+			}
 			const messages = `${DISCORD_API}/channels/${encodeURIComponent(channelId)}/messages`;
 			const statusId = activityMessages.get(key);
 			if (text === undefined) {
@@ -569,6 +669,8 @@ export function createDiscordAdapter(
 			activityMessages.set(key, created.id);
 		},
 		async send(message, text, signal) {
+			message = Object.freeze({ ...message });
+			const endpoint = `${DISCORD_API}/channels/${encodeURIComponent(message.threadId ?? message.channelId)}/messages`;
 			let files: { name: string; data: Uint8Array }[] = [];
 			if (config.artifactDir) {
 				try {
@@ -577,7 +679,7 @@ export function createDiscordAdapter(
 					files = result.files;
 				} catch {
 					await messengerFetchJson(
-						`${DISCORD_API}/channels/${encodeURIComponent(message.threadId ?? message.channelId)}/messages`,
+						endpoint,
 						{
 							method: "POST",
 							headers: headers(),
@@ -592,6 +694,7 @@ export function createDiscordAdapter(
 					throw new Error("Discord artifact delivery failed");
 				}
 			}
+			signal?.throwIfAborted();
 			const { chunks, needsAttachment } = splitDiscordText(text);
 			for (let index = 0; index < chunks.length + Number(needsAttachment); index++) {
 				for (let attempt = 0; ; attempt++) {
@@ -647,16 +750,29 @@ export function createDiscordAdapter(
 					}
 				}
 			}
-			for (const file of files) {
+			// Pin upload bytes before asking the parent. Never reread a path after an approval.
+			const uploads = files.map(file => ({ name: file.name, blob: new Blob([file.data.slice()]),
+				digest: new Bun.CryptoHasher("sha256").update(file.data).digest("hex") }));
+			if (files.length > 0) {
+				signal?.throwIfAborted();
+				if (config.workerMode === "host" && !deps.authorizeArtifacts) throw new Error("Discord host artifact delivery requires parent authorization");
+				await deps.authorizeArtifacts?.(message, Object.freeze(files.map(file => Object.freeze(file))), signal ?? new AbortController().signal);
+				signal?.throwIfAborted();
+				if (files.some((file, index) => file.name !== uploads[index]!.name ||
+					new Bun.CryptoHasher("sha256").update(file.data).digest("hex") !== uploads[index]!.digest)) throw new Error("Discord artifact bytes changed during authorization");
+			}
+			for (const file of uploads) {
+				signal?.throwIfAborted();
 				const requestHeaders = headers();
 				delete requestHeaders["Content-Type"];
 				const form = new FormData();
 				form.append("payload_json", JSON.stringify({ allowed_mentions: { parse: [], replied_user: false } }));
-				form.append("files[0]", new Blob([file.data]), file.name);
+				form.append("files[0]", file.blob, file.name);
 				for (let attempt = 0; ; attempt++) {
 					try {
+						signal?.throwIfAborted();
 						await messengerFetchJson(
-							`${DISCORD_API}/channels/${encodeURIComponent(message.threadId ?? message.channelId)}/messages`,
+							endpoint,
 							{ method: "POST", headers: requestHeaders, body: form },
 							signal,
 							deps.fetch,
@@ -669,7 +785,7 @@ export function createDiscordAdapter(
 						}
 						if (!signal?.aborted) {
 							await messengerFetchJson(
-								`${DISCORD_API}/channels/${encodeURIComponent(message.threadId ?? message.channelId)}/messages`,
+								endpoint,
 								{
 									method: "POST",
 									headers: headers(),

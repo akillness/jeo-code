@@ -66,6 +66,8 @@ import { createSandboxPolicy } from "../agent/sandbox/policy";
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
 import { handleSandboxControl } from "../agent/sandbox/control";
 import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
+import { acceptDiscordHostDecision, closeDiscordHostRuntime, createDiscordHostRuntime, currentDiscordHostExecution, readDiscordHostBootstrap, runDiscordHostTurn, writeDiscordHostCleanupReceipt, type DiscordHostRuntime } from "../agent/discord-host";
+import { isDiscordHostTurn } from "../messenger/host-protocol";
 import { runAgySessionTurn } from "./launch/agy-turn";
 import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
@@ -426,6 +428,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   const shutdownNonce = process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
   delete process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
   let supervisor: SandboxSupervisor | undefined;
+  let hostRuntime: DiscordHostRuntime | undefined;
   let stateDirectory: string | undefined;
   let stopEndpoint: (() => Promise<void>) | undefined;
   const setup = Promise.withResolvers<void>();
@@ -434,7 +437,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   const acknowledge = async (gone: boolean): Promise<void> => {
     if (!shutdownNonce) return;
     const written = Promise.withResolvers<void>();
-    process.stderr.write(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce: shutdownNonce, gone })}\n`, error => error ? written.reject(error) : written.resolve());
+    process.stderr.write(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce: shutdownNonce, ...(hostRuntime ? { epoch: hostRuntime.bootstrap.scope.epoch } : {}), gone })}\n`, error => error ? written.reject(error) : written.resolve());
     await written.promise;
   };
   const close = (): Promise<void> => closing ??= (async () => {
@@ -443,7 +446,11 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
         await setup.promise;
         await endpointStartup;
         await stopEndpoint?.();
-        // No supervisor means startup never had authority to create an environment.
+        if (hostRuntime) {
+          await closeDiscordHostRuntime(hostRuntime);
+          await writeDiscordHostCleanupReceipt(hostRuntime);
+        }
+        // Sandbox ownership stays with its supervisor; host ownership was settled above.
         await supervisor?.close();
         if (stateDirectory) fs.rmSync(stateDirectory, { recursive: true, force: true });
         await acknowledge(true);
@@ -463,11 +470,14 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   // Private cross-platform control: the pool's IPC channel (not a signal, not stdin) carries the shutdown
   // request. Installed before any await so no setup phase can miss it; accepts only the exact nonce message.
   const handleControlMessage = (message: unknown): void => {
+    if (hostRuntime && acceptDiscordHostDecision(hostRuntime, message)) return;
     if (!shutdownNonce || typeof message !== "object" || message === null || Array.isArray(message)) return;
     const keys = Object.keys(message);
-    if (keys.length !== 2 || !keys.includes("type") || !keys.includes("nonce")) return;
-    const control = message as { type?: unknown; nonce?: unknown };
+    const expectedKeys = hostRuntime ? ["type", "nonce", "epoch"] : ["type", "nonce"];
+    if (keys.length !== expectedKeys.length || expectedKeys.some(key => !keys.includes(key))) return;
+    const control = message as { type?: unknown; nonce?: unknown; epoch?: unknown };
     if (control.type !== "jeo_messenger_shutdown" || control.nonce !== shutdownNonce) return;
+    if (hostRuntime && control.epoch !== hostRuntime.bootstrap.scope.epoch) return;
     handleTermination();
   };
   if (shutdownNonce) process.on("message", handleControlMessage);
@@ -476,12 +486,27 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     const ready = Promise.withResolvers<void>();
     endpointStartup = ready.promise;
     setup.resolve();
-    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId).finally(ready.resolve);
+    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId, hostRuntime ? { runtime: hostRuntime, stop: handleTermination } : undefined).finally(ready.resolve);
   };
   try {
     const flags = parseFlags(args, process.cwd());
+    const bootstrap = readDiscordHostBootstrap(process.env, { literalWorker: flags.literalWorker === true, ipcAvailable: typeof process.send === "function" });
+    if (bootstrap) {
+      if (!shutdownNonce || bootstrap.nonce !== shutdownNonce || !flags.resume || flags.resumeId !== bootstrap.scope.sessionId || flags.noSession || flags.worktree ||
+          fs.realpathSync(process.cwd()) !== bootstrap.cwd || fs.realpathSync(bootstrap.workspaceRoot) !== bootstrap.workspaceRoot ||
+          fs.realpathSync(bootstrap.sourceRoot) !== bootstrap.sourceRoot || !previousSessionDirectory || fs.realpathSync(previousSessionDirectory) !== bootstrap.sessionDir) {
+        throw new Error("Discord host worker identity or workspace mismatch");
+      }
+      hostRuntime = createDiscordHostRuntime(bootstrap, request => {
+        if (typeof process.send !== "function" || process.connected === false) throw new Error("Discord host parent IPC unavailable");
+        process.send(request);
+      });
+      process.on("disconnect", handleTermination);
+      process.on("SIGINT", handleTermination);
+    }
     const config = await readGlobalConfig({ requireValid: true });
     if (closing) throw new Error("Messenger worker stopping");
+    if (hostRuntime) return await runSession();
     const remoteConfig = process.env.JEO_MESSENGER_SANDBOX;
     const sandboxConfig: SandboxConfig | undefined = remoteConfig === undefined ? config.sandbox : JSON.parse(remoteConfig);
     if ((flags.literalPrompt || process.env.JEO_MESSENGER_SESSION_KEY) && !sandboxConfig) throw new Error("SANDBOX_REQUIRED: remote execution requires sandbox configuration");
@@ -532,12 +557,15 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     await close();
     process.removeListener("SIGTERM", handleTermination);
     process.removeListener("message", handleControlMessage);
+    process.removeListener("disconnect", handleTermination);
+    process.removeListener("SIGINT", handleTermination);
     if (previousSessionDirectory === undefined) delete process.env.JEO_SESSION_DIR;
     else process.env.JEO_SESSION_DIR = previousSessionDirectory;
   }
 }
 
-async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string): Promise<string | void> {
+async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string, hostExecution?: { runtime: DiscordHostRuntime; stop(): void }): Promise<string | void> {
+  const hostRuntime = hostExecution?.runtime;
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
   if (resumeId) {
@@ -1175,6 +1203,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       sessionId = (await createSession(cwd, undefined, sessionModel)).id;
     }
   }
+  if (hostRuntime && sessionId !== hostRuntime.bootstrap.scope.sessionId) throw new Error("Discord host transcript identity mismatch");
 
   // Remote subagent visibility/control AND main-session mirroring over Telegram
   // (one thread per session, see `src/agent/notify/`): best-effort, a
@@ -1210,7 +1239,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }
     }
   } finally {
-    registerEndpointCleanup?.(sessionNotifyEndpoint ? stopLaunchEndpoint : undefined);
+    if (!hostRuntime) registerEndpointCleanup?.(sessionNotifyEndpoint ? stopLaunchEndpoint : undefined);
   }
   const sandboxTranscriptId = sessionId;
   if (sessionNotifyEndpoint) {
@@ -1229,6 +1258,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     console.error(`${error.message}. Run /goal clear to remove it; fresh verification is still required.`);
   }
 
+  const turnSandboxScope = currentSandboxExecution();
   const subagentRegistry = new SubagentRegistry();
   const jobRegistry = new JobRegistry();
   let activeTui: LaunchTui | null = null;
@@ -1244,8 +1274,31 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
 
   let cleanedUp = false;
+  let hostCleanup: Promise<void> | undefined;
   const cleanupSession = async (): Promise<void> => {
     if (cleanedUp) return;
+    if (hostRuntime) {
+      return hostCleanup ??= (async () => {
+        activeAgyController?.abort();
+        subagentRegistry.cancelAll();
+        jobRegistry.cancelAll();
+        monitorRegistry.cancelAll();
+        await Promise.all([
+          activeAgyTurn?.catch(() => undefined),
+          closeDiscordHostRuntime(hostRuntime),
+          subagentRegistry.awaitIds(subagentRegistry.list().map(record => record.id)),
+          jobRegistry.awaitIds(jobRegistry.list().map(record => record.id)),
+          monitorRegistry.awaitIds(monitorRegistry.list().map(record => record.id)),
+        ]);
+        if (subagentRegistry.pending().length || jobRegistry.cancellable().length || monitorRegistry.cancellable().length) {
+          throw new Error("REVOKE_INCOMPLETE: Discord host descendants have not settled");
+        }
+        await stopLaunchEndpoint();
+        await stopSessionNotifyEndpoint(subagentRegistry);
+        await turnSandboxScope?.supervisor.close();
+        cleanedUp = true;
+      })().catch(error => { hostCleanup = undefined; throw error; });
+    }
     cleanedUp = true;
     activeAgyController?.abort();
     await activeAgyTurn?.catch(() => undefined);
@@ -1256,6 +1309,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     await stopSessionNotifyEndpoint(subagentRegistry);
     await turnSandboxScope?.supervisor.close();
   };
+  if (hostRuntime) registerEndpointCleanup?.(cleanupSession);
 
   // Persist the active per-session model into the session header so `/resume` restores
   // it (each session can carry its own model independent of the global default).
@@ -1335,7 +1389,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
-  const turnSandboxScope = currentSandboxExecution();
   let restartSessionId: string | undefined;
   const requestSessionRestart = turnSandboxScope && !flags.literalPrompt && !process.env.JEO_MESSENGER_SESSION_KEY && process.stdin.isTTY
     ? (id: string): void => { restartSessionId = id; }
@@ -1381,6 +1434,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // state — the interactive REPL wraps it below (`forceExitFromCtrlC = …`) with the
   // prompt/raw-mode restore that only exists once the REPL has been set up.
   const hardExitCore = (): void => {
+    if (hostExecution) { hostExecution.stop(); return; }
     subagentRegistry.cancelAll();
     jobRegistry.cancelAll();
     monitorRegistry.cancelAll();
@@ -2797,25 +2851,44 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     try {
       if (flags.literalWorker) {
         const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+        const lifetime = new AbortController();
+        const closeInput = () => lifetime.abort();
+        if (hostRuntime) input.once("close", closeInput);
         try {
           for await (const line of input) {
             try {
-              const message = JSON.parse(line);
-              if (typeof message !== "string" || !message.trim()) throw new Error("Invalid messenger request");
-              const { done, reply, unverified } = await runTurn(message, false);
+              const frame: unknown = JSON.parse(line);
+              const result = hostRuntime
+                ? await (async () => {
+                    if (!isDiscordHostTurn(frame)) throw new Error("Invalid Discord host request");
+                    return runDiscordHostTurn(hostRuntime, frame.runId, lifetime.signal, async () => {
+                      const execution = currentDiscordHostExecution();
+                      if (!execution) throw new Error("Discord host execution scope unavailable");
+                      return runTurn(frame.text, false, undefined, { signal: execution.signal });
+                    });
+                  })()
+                : await (async () => {
+                    if (typeof frame !== "string" || !frame.trim()) throw new Error("Invalid messenger request");
+                    return runTurn(frame, false);
+                  })();
+              const { done, reply, unverified } = result;
               if (done) console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
               // The turn ended in a controlled state with an UNVERIFIED-marked answer:
               // deliver it as a failure and keep serving this conversation's follow-ups.
               else if (unverified && reply.trim()) console.log(`JEO_MESSENGER_UNVERIFIED ${JSON.stringify(reply)}`);
               else throw new Error("Messenger agent turn did not complete");
             } catch {
-              console.log("JEO_MESSENGER_ERROR");
+              if (!hostRuntime || !lifetime.signal.aborted) console.log("JEO_MESSENGER_ERROR");
               break;
             }
 
 
           }
-        } finally { input.close(); }
+        } finally {
+          input.removeListener("close", closeInput);
+          input.close();
+          if (hostRuntime) { lifetime.abort(); await cleanupSession(); }
+        }
         return;
       }
       let messageContent = joinedArgs;
@@ -3077,6 +3150,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       await maybeDistillOneShot();
       return;
     } finally {
+      if (hostRuntime) await cleanupSession();
       await stopLaunchEndpoint().catch(() => {});
       // The in-flight abort harness `resume()`s a TTY stdin (and `dispose()` only
       // reverts raw mode). A flowing TTY read handle keeps Bun's event loop alive, so

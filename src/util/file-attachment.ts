@@ -6,7 +6,7 @@
  * at the caret, exactly as if the user typed it. So "attach a file by dropping it
  * into the box" reduces to: recognise an image path inside the submitted text,
  * read the bytes, and turn it into an {@link ImageAttachment} — replacing the raw
- * path token with the same `[image #N]` tag the Ctrl+V clipboard path uses, so the
+ * path token with the same `#image01` tag the Ctrl+V clipboard path uses, so the
  * model receives one consistent reference scheme regardless of how the image got
  * attached.
  *
@@ -32,12 +32,35 @@ const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
  *  real photo/screenshot while bounding the worst case. */
 export const MAX_ATTACH_IMAGE_BYTES = 25 * 1024 * 1024;
 
+export function imageTag(n: number): string {
+  return `#image${String(n).padStart(2, "0")}`;
+}
+
+/** Drop deleted references and keep the surviving payloads in displayed tag order. */
+export function reconcileImageTags(text: string, images: readonly ImageAttachment[]): { text: string; images: ImageAttachment[] } {
+  const kept: ImageAttachment[] = [];
+  const numbers = new Map<number, number>();
+  const updated = text.replace(/#image(\d{2,})(?!\d)/g, (tag, digits: string) => {
+    const index = Number(digits) - 1;
+    const image = images[index];
+    if (!image) return tag;
+    let number = numbers.get(index);
+    if (number === undefined) {
+      kept.push(image);
+      number = kept.length;
+      numbers.set(index, number);
+    }
+    return imageTag(number);
+  });
+  return { text: updated, images: kept };
+}
+
 
 /**
- * Normalize the whitespace around every `[image #N]` tag to a single space:
+ * Normalize only whitespace immediately around each `#image01` tag:
  *  - one space before a tag that follows other text (none at line start),
  *  - one space after a tag that is followed by more text,
- *  - any run of spaces/tabs collapsed to one, and the whole string trimmed.
+ *  - spaces/tabs touching tags collapse; unrelated typed whitespace is preserved.
  *
  * A tag at the very end keeps NO trailing space (callers that want the caret to sit
  * past it add exactly one). Terminals pad a dragged-and-dropped path with their own
@@ -46,18 +69,22 @@ export const MAX_ATTACH_IMAGE_BYTES = 25 * 1024 * 1024;
  * Idempotent: re-normalizing already-clean text is a no-op.
  */
 export function normalizeImageTags(text: string): string {
-  return text
-    .replace(/[ \t]*(\[image #\d+\])[ \t]*/g, (m, tag: string, off: number, s: string) =>
-      (off > 0 ? " " : "") + tag + (off + m.length < s.length ? " " : ""),
-    )
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  let out = "";
+  let cursor = 0;
+  for (const match of text.matchAll(/[ \t]*(#image\d{2,})(?!\d)[ \t]*/g)) {
+    out += text.slice(cursor, match.index);
+    if (out && !/[ \t\n]$/.test(out)) out += " ";
+    out += match[1];
+    cursor = match.index + match[0].length;
+    if (cursor < text.length && text[cursor] !== "\n") out += " ";
+  }
+  return out + text.slice(cursor);
 }
 
-/** Caret offset just past the `[image #n]` tag in `text` (and its single trailing
+/** Caret offset just past the numbered image tag in `text` (and its single trailing
  *  space when present); falls back to end-of-text when the tag is absent. */
 export function caretAfterTag(text: string, n: number): number {
-  const tag = `[image #${n}]`;
+  const tag = imageTag(n);
   const idx = text.indexOf(tag);
   if (idx < 0) return text.length;
   let end = idx + tag.length;
@@ -66,14 +93,14 @@ export function caretAfterTag(text: string, n: number): number {
 }
 
 /**
- * Insert an `[image #n]` tag at `cursor` within `line` (the Ctrl+V clipboard-image
+ * Insert a numbered image tag at `cursor` within `line` (the Ctrl+V clipboard-image
  * path), normalizing surrounding whitespace so the tag is flanked by exactly one
  * space. A tag landing at end-of-line gets one trailing space so the user can keep
  * typing; the returned caret sits right after the tag (and that space).
  */
 export function insertImageTag(line: string, cursor: number, n: number): { text: string; cursor: number } {
   const at = Math.max(0, Math.min(cursor, line.length));
-  const tag = `[image #${n}]`;
+  const tag = imageTag(n);
   let text = normalizeImageTags(line.slice(0, at) + tag + line.slice(at));
   const idx = text.indexOf(tag);
   if (idx >= 0 && idx + tag.length >= text.length) text += " "; // trailing space at EOL for typing
@@ -185,7 +212,7 @@ const defaultReader: FileReader = async (p) => {
 
 export interface AttachResult {
   /** The input text with every successfully-attached image path replaced by its
-   *  `[image #N]` tag; unmatched / unreadable paths are left verbatim. */
+   *  `#image01` tag; unmatched / unreadable paths are left verbatim. */
   text: string;
   /** The newly-read image attachments, in source order. */
   images: ImageAttachment[];
@@ -199,7 +226,7 @@ export interface AttachResult {
  * Resolve image file paths dropped into `text` into attachments.
  *
  * @param text         the submitted input line
- * @param startNumber  the next `[image #N]` number to assign (1-based; pass
+ * @param startNumber  the next image tag number to assign (1-based; pass
  *                     `existingImages.length + 1` so dropped files continue the
  *                     numbering started by Ctrl+V clipboard images)
  * @param read         file reader (defaults to the real filesystem)
@@ -227,7 +254,7 @@ export async function attachImagePaths(
     const att = reads[i];
     if (!att) continue; // not a real image / unreadable → leave the text as-is
     const t = tokens[i]!;
-    out += text.slice(cursor, t.start) + `[image #${n}]`;
+    out += text.slice(cursor, t.start) + imageTag(n);
     cursor = t.end;
     images.push(att);
     n += 1;
@@ -241,7 +268,7 @@ export async function attachImagePaths(
   // the caret hard against `]` and the next typed word glued onto the tag
   // ("[image #1]please"); with it, both attach paths behave the same.
   let normalized = normalizeImageTags(out);
-  const lastTag = `[image #${n - 1}]`;
+  const lastTag = imageTag(n - 1);
   const lastIdx = normalized.indexOf(lastTag);
   if (lastIdx >= 0 && lastIdx + lastTag.length >= normalized.length) normalized += " ";
   return { text: normalized, images, cursor: caretAfterTag(normalized, n - 1) };

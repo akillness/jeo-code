@@ -33,6 +33,8 @@ export interface SessionSlashCtx {
   logLines: (lines: string[]) => void;
   canSwitchSession?: () => boolean;
   onSessionCommitted?: (id: string | undefined, draft: string) => void;
+  /** Restore editor-local references without changing canonical retry content. */
+  promptHistoryText?: (message: Message) => string;
   /**
    * REPL's interactive list-picker runner (raw-mode keypress loop + repaint).
    * Not a pure module export — it closes over terminal/readline state owned
@@ -148,13 +150,14 @@ export function renderSessionTimeline(timeline: readonly SessionTimelineEntry[],
     beforeMessage: index => inserts[index]!, trailingLines: inserts[messages.length] });
 }
 
-export function sessionPromptHistory(messages: readonly Message[]): string[] {
+export function sessionPromptHistory(messages: readonly Message[], mapper?: (message: Message) => string): string[] {
   const prompts: string[] = [];
   for (const message of messages) {
     if (message.role !== "user") continue;
     const text = String(message.content ?? "").trim();
     if (!text || text.startsWith("Tool [") || text.startsWith("[mid-turn steering") || text.startsWith("[Earlier conversation summary]") || text.startsWith("[Interrupted tool execution]") || text.startsWith("Your last reply") || text.startsWith("The budget for this turn is exhausted") || text.startsWith("The step budget for this turn is exhausted") || text.startsWith("You are cycling through the same")) continue;
-    if (prompts[0] !== text) prompts.unshift(text);
+    const prompt = mapper ? mapper(message) : text;
+    if (prompts[0] !== prompt) prompts.unshift(prompt);
   }
   return prompts;
 }
@@ -279,7 +282,7 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         // prompt lands at the front (first ↑). Skip injected/framed messages.
         const rli = rl as unknown as { history?: string[] };
         if (Array.isArray(rli.history)) {
-          rli.history.splice(0, rli.history.length, ...sessionPromptHistory(timeline.filter(e => e.type === "message").map(e => e.message)));
+          rli.history.splice(0, rli.history.length, ...sessionPromptHistory(timeline.filter(e => e.type === "message").map(e => e.message), ctx.promptHistoryText));
         }
         // Clean restore: wipe the screen + scrollback BEFORE replaying the
         // transcript so it can't collide with picker remnants, the prior

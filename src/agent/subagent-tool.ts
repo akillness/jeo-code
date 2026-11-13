@@ -4,10 +4,9 @@
  * to an in-process registry: list, inspect, await (optionally bounded), cancel, and
  * steer (live peer messaging into a single running subagent).
  *
- * Out of scope here (a separate subsystem, not stubbed): pause/resume — a step-budget
- * loop has no safe mid-step checkpoint to resume from, so that remains intentionally
- * absent rather than faked. Live peer messaging to/among ALL running subagents (not
- * just one target id) is the `irc` tool, built on the same registry.steer().
+ * Pause is a cooperative wrap-up request, not a suspended execution checkpoint.
+ * Resume redirects a still-live run; settled runs require a new task. Live peer
+ * messaging to/among ALL running subagents is the `irc` tool, on registry.steer().
  */
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
@@ -30,7 +29,7 @@ const FULL_CHARS = 12_000;
 export const SUBAGENT_TOOL_PROTOCOL_LINE =
   `subagent {action:"list"|"inspect"|"await"|"cancel"|"steer"|"pause"|"resume", ids?, id?, message?, verbosity?:"receipt"|"preview"|"full", limit?:number, timeoutMs?} — control DETACHED ` +
   `subagents started with task{detached:true}. 'await' blocks and returns reports; 'inspect' shows status + result; 'cancel' aborts; 'steer' injects live instructions into running subagents; ` +
-  `'pause' asks running subagents to wrap up safely; 'resume' wakes or redirects a paused/completed subagent. ` +
+  `'pause' asks running subagents to wrap up safely; 'resume' redirects a still-live paused/running subagent (settled runs require a new task). ` +
   `'verbosity' controls result length ('receipt' status-only, 'preview' <=2000 chars, 'full' <=12000 chars); 'limit' caps listings.`;
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -80,6 +79,11 @@ function clampLimit(value: unknown): number {
 export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
   return async (args: Record<string, any>, _cwd: string): Promise<ToolResult> => {
     const action = String(args.action ?? "list").trim().toLowerCase();
+    const invalidId = args.id !== undefined && (typeof args.id !== "string" || !isValidId(args.id));
+    const invalidIds = args.ids !== undefined && (!Array.isArray(args.ids) || args.ids.some((id: unknown) => typeof id !== "string" || !isValidId(id)));
+    if (invalidId || invalidIds) {
+      return { success: false, output: "", error: invalidId ? "Invalid subagent id: expected a valid identifier (letters, digits, '_' or '-')." : "Invalid subagent ids: expected an array of valid identifiers (letters, digits, '_' or '-')." };
+    }
     const ids = idsOf(args);
     const verbosity: SubagentVerbosity | undefined = ["receipt", "preview", "full"].includes(args.verbosity) ? args.verbosity : undefined;
 
@@ -133,18 +137,19 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
 
 
     if (action === "await") {
-      const targets = ids.length ? ids : registry.running().map(r => r.id);
+      const targets = ids.length ? ids : registry.pending().map(r => r.id);
       if (targets.length === 0) {
-        return { success: true, output: "No running subagents to await." };
+        return { success: true, output: "No pending subagents to await." };
       }
       const timeoutMs = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : undefined;
       const recs = await registry.awaitIds(targets, timeoutMs);
-      const stillRunning = recs.filter(r => r.status === "running").length;
-      const head = stillRunning > 0
-        ? `Awaited ${recs.length} subagent(s); ${stillRunning} still running after the ${timeoutMs}ms timeout — await again, pause, or cancel.`
+      const pendingIds = new Set(registry.pending().map(r => r.id));
+      const stillPending = recs.filter(r => pendingIds.has(r.id)).length;
+      const head = stillPending > 0
+        ? `Awaited ${recs.length} subagent(s); ${stillPending} still pending after the ${timeoutMs}ms timeout — await again, resume, or cancel.`
         : `Awaited ${recs.length} subagent(s); all settled.`;
       return {
-        success: stillRunning === 0,
+        success: stillPending === 0,
         output: `${head}\n\n${recs.map(r => detailBlock(r, verbosity)).join("\n\n")}`,
         mutationMayHaveOccurred: mutationEvidence(recs),
       };
@@ -179,11 +184,10 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
     }
 
     if (action === "cancel") {
-      const targets = ids.length ? ids : registry.running().map(r => r.id);
-      if (targets.length === 0) {
-        return { success: true, output: "No running subagents to cancel." };
+      const recs = registry.cancel(ids);
+      if (recs.length === 0) {
+        return { success: true, output: "No running or paused subagents to cancel." };
       }
-      const recs = registry.cancel(targets);
       return {
         success: true,
         output: `Cancelled ${recs.length} subagent(s):\n${recs.map(rowLine).join("\n")}`,

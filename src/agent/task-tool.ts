@@ -812,7 +812,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // `executor`'s single resolved model), so the first worker to exclude a
       // scope saves every sibling worker the same wasted round.
       const batchExcludedScopes = new Set<string>();
-      const results: SubagentRunResult[] = new Array(items.length);
+      const results: ToolResult[] = new Array(items.length);
       let next = 0;
       // #7: broadcast steering hub — each concurrent worker sees every parent
       // steer message exactly once (safe even for parallel read-only fan-out).
@@ -829,14 +829,26 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           // dead/misleading once the executor stopped being forced-serial). Each
           // task runs isolated on its own slice of context; a task that genuinely
           // depends on another's output belongs in a sequential follow-up call.
-          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride });
+          try {
+            results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride });
+          } catch (error: unknown) {
+            // Setup and reporting callbacks can throw outside the inner loop's
+            // failure handler. Keep that child's failure without dropping siblings.
+            const explicitMutation = typeof error === "object" && error !== null && "mutationMayHaveOccurred" in error && error.mutationMayHaveOccurred === true;
+            results[i] = {
+              success: false,
+              output: "",
+              error: error instanceof Error ? error.message : String(error),
+              mutationMayHaveOccurred: !role.readOnly || explicitMutation ? true : undefined,
+            };
+          }
         }
 
       };
       await Promise.all(Array.from({ length: limit }, () => worker()));
       const ok = results.filter(r => r.success).length;
       const head = `[${role.title} fan-out] ${ok}/${items.length} completed (concurrency ${limit}).`;
-      const combined = results.map((r, i) => `### Task ${i + 1}/${items.length}\n${r.output}`).join("\n\n");
+      const combined = results.map((r, i) => `### Task ${i + 1}/${items.length}\n${r.output || r.error || ""}`).join("\n\n");
       return {
         success: ok === items.length,
         output: `${head}\n\n${combined}`,

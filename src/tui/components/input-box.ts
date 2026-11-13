@@ -1,6 +1,38 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
 import { visibleWidth, truncateToWidth } from "./width";
+import type { Message } from "../../ai/types";
+
+/** Persisted UI metadata is untrusted; accept it only when it reconstructs canonical text. */
+export function validatedInputDisplay(message: Pick<Message, "content" | "inputDisplay">): Message["inputDisplay"] {
+  const display = message.inputDisplay;
+  if (!display || typeof display !== "object" || typeof display.text !== "string" ||
+      /[\x00-\x08\x0b-\x1f\x7f]/.test(display.text) ||
+      !Number.isInteger(display.textLength) || display.textLength < 0 || display.textLength > message.content.length ||
+      !Array.isArray(display.pastes)) return undefined;
+  let textCursor = 0;
+  let canonicalCursor = 0;
+  const seen = new Map<string, { start: number; end: number }>();
+  for (const paste of display.pastes) {
+    if (!paste || typeof paste !== "object" || typeof paste.marker !== "string" ||
+        !/^\[Paste #\d+, \d+ lines, \d+ cols\]$/.test(paste.marker) ||
+        !Number.isInteger(paste.start) || !Number.isInteger(paste.end) ||
+        paste.start < 0 || paste.end <= paste.start || paste.end > display.textLength) return undefined;
+    const previous = seen.get(paste.marker);
+    if (previous && (previous.end - previous.start !== paste.end - paste.start ||
+        !message.content.startsWith(message.content.slice(previous.start, previous.end), paste.start))) return undefined;
+    seen.set(paste.marker, paste);
+    const index = display.text.indexOf(paste.marker, textCursor);
+    if (index < 0) return undefined;
+    const typed = display.text.slice(textCursor, index);
+    if (paste.start !== canonicalCursor + typed.length || !message.content.startsWith(typed, canonicalCursor)) return undefined;
+    textCursor = index + paste.marker.length;
+    canonicalCursor = paste.end;
+  }
+  const tail = display.text.slice(textCursor);
+  return canonicalCursor + tail.length === display.textLength && message.content.startsWith(tail, canonicalCursor)
+    ? display : undefined;
+}
 
 export interface InputBoxOptions {
   cols?: number;

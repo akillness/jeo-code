@@ -23,6 +23,13 @@ export interface ImageAttachment {
 export interface Message {
   role: "system" | "user" | "assistant";
   content: string;
+  /** Local editor/transcript metadata only; providers consume canonical `content`.
+   *  Paste ranges reference that content, avoiding a second persisted payload copy. */
+  inputDisplay?: {
+    text: string;
+    textLength: number;
+    pastes: Array<{ marker: string; start: number; end: number }>;
+  };
   /** Optional image attachments (clipboard paste). Multimodal providers render
    *  these alongside `content`; history bookkeeping (compaction, transcripts)
    *  keeps treating `content` as the message body. */

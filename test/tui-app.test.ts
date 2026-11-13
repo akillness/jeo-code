@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn, vi } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
 import { visibleWidth } from "../src/tui/components/width";
 import { hideCursor, showCursor, clearToEnd, enterAltScreen, leaveAltScreen } from "../src/tui/terminal";
@@ -498,18 +498,24 @@ test("LaunchTui: corrupt deep-interview state shows fail-closed mutation lock", 
     await fs.mkdir(path.join(dir, ".jeo", "state"), { recursive: true });
     await fs.writeFile(path.join(dir, ".jeo", "state", "deep-interview-state.json"), "{ nope", "utf8");
     process.chdir(dir);
-
+    const locked = Promise.withResolvers<void>();
     const out: string[] = [];
-    const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
-    tui.start();
-    await new Promise(resolve => setTimeout(resolve, 20));
-    expect(out.join("")).toContain("MUTATION LOCKED");
-    const origLog = console.log;
-    console.log = () => {};
+    const tui = new LaunchTui({ model: "m1", write: text => {
+      out.push(text);
+      if (text.includes("MUTATION LOCKED")) locked.resolve();
+    } });
+    // Real filesystem completion cannot be advanced by fake time. This is only
+    // a failure watchdog; successful progress waits on the rendered lock signal.
+    const watchdog = setTimeout(() => locked.reject(new Error("Corrupt workflow state never rendered the mutation lock")), 3_000);
     try {
-      tui.finish("done");
+      tui.start();
+      await locked.promise;
+      expect(out.join("")).toContain("MUTATION LOCKED");
     } finally {
-      console.log = origLog;
+      clearTimeout(watchdog);
+      const origLog = console.log;
+      console.log = () => {};
+      try { tui.finish("done"); } finally { console.log = origLog; }
     }
   } finally {
     process.chdir(originalCwd);
@@ -1184,54 +1190,32 @@ test("LaunchTui.flushUserCard: the turn-starting prompt persists as a user box i
   tui.finish("ok");
 });
 
-test("LaunchTui.flushUserCard: an attached image renders inline via the kitty graphics protocol on a supporting terminal", () => {
-  const out: string[] = [];
-  const prevProtocol = process.env.JEO_IMAGE_PROTOCOL;
-  process.env.JEO_IMAGE_PROTOCOL = "kitty";
-  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
-  tui.start();
+for (const protocol of ["kitty", "iterm2", "none"]) {
+  test(`LaunchTui.flushUserCard: ${protocol} terminals keep attachments as numbered text, never pixels`, () => {
+    const out: string[] = [];
+    const previous = process.env.JEO_IMAGE_PROTOCOL;
+    process.env.JEO_IMAGE_PROTOCOL = protocol;
+    const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+    const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
+    const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
+    try {
+      tui.start();
+      out.length = 0;
+      tui.flushUserCard("compare #image01 and #image02", [image, image]);
+      const raw = out.join("");
+      expect(raw).toContain("compare #image01 and #image02");
+      expect(raw).not.toContain("\x1b_G");
+      expect(raw).not.toContain("\x1b]1337;File=");
+      expect(raw).not.toContain(image.data);
+      expect(raw).not.toContain("▄");
+    } finally {
+      tui.finish("ok");
+      if (previous === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
+      else process.env.JEO_IMAGE_PROTOCOL = previous;
+    }
+  });
+}
 
-  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
-  const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
-
-  out.length = 0;
-  tui.flushUserCard("check this screenshot", [image]);
-  const raw = out.join("");
-  // The user card still renders as text …
-  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
-  expect(strip(raw)).toContain("check this screenshot");
-  // … and the image now renders as a REAL kitty graphics escape, not just a
-  // "N image(s) attached" text count (gjc TUI-image parity — the actual feature
-  // under test).
-  expect(raw).toContain("\x1b_Ga=T,f=100,q=2,");
-
-  if (prevProtocol === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
-  else process.env.JEO_IMAGE_PROTOCOL = prevProtocol;
-  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  tui.finish("ok");
-});
-
-test("LaunchTui.flushUserCard: an attached image on a non-image-capable terminal shows only the text card (no escape leak)", () => {
-  const out: string[] = [];
-  const prevProtocol = process.env.JEO_IMAGE_PROTOCOL;
-  process.env.JEO_IMAGE_PROTOCOL = "none";
-  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
-  tui.start();
-
-  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
-  const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
-
-  out.length = 0;
-  tui.flushUserCard("check this screenshot", [image]);
-  const raw = out.join("");
-  expect(raw).not.toContain("\x1b_G");
-  expect(raw).not.toContain("\x1b]1337;File=");
-
-  if (prevProtocol === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
-  else process.env.JEO_IMAGE_PROTOCOL = prevProtocol;
-  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  tui.finish("ok");
-});
 
 test("LaunchTui.flushUserCard: images are ignored (no-op) when the frame is already finished", () => {
   const out: string[] = [];
@@ -1395,33 +1379,35 @@ test("renderLiveBlock: sizes to content (no padded hole) and caps by terminal he
   expect(internals.renderLiveBlock("Output", "   ", 80, 50, 8)).toEqual([]);
 });
 
-test("LaunchTui: the live-frame interval skips scheduled frames while write() signals backpressure (returns false), and resumes on 'drain'", async () => {
-  // Node/Bun stream convention: write() returns false when the internal buffer is over
-  // the high-water mark. A tmux client (or any slow consumer) that can't keep draining
-  // must not make the render loop pile up writes or block — it should skip beats until
-  // the writer actually drains, signaled here by emitting 'drain' on process.stdout
-  // (the same event a real backpressured Writable emits once its buffer clears).
+test("LaunchTui: the live-frame interval skips scheduled frames while write() signals backpressure (returns false), and resumes on 'drain'", () => {
+  // The fake write sink is not stdout: capture its associated drain callback so
+  // unrelated runner output cannot unblock it. Fake time drives actual frame ticks.
+  vi.useFakeTimers();
+  const originalOnce = process.stdout.once;
+  let drain: (() => void) | undefined;
+  const once = spyOn(process.stdout, "once").mockImplementation((event, listener) => {
+    if (event === "drain") {
+      drain = () => listener();
+      return process.stdout;
+    }
+    return originalOnce.call(process.stdout, event, listener);
+  });
   let backpressured = true;
   const out: string[] = [];
-  const tui = new LaunchTui({
-    model: "m1",
-    tty: true,
-    write: (s: string) => { out.push(s); return backpressured ? false : undefined; },
-  });
-  tui.start();
-  await new Promise(r => setTimeout(r, 10)); // let start()'s own writes land
-  out.length = 0; // isolate the periodic 120ms tick's frames from start()'s one-off writes
+  const tui = new LaunchTui({ model: "m1", tty: true, write: text => { out.push(text); return !backpressured; } });
   try {
-    await new Promise(r => setTimeout(r, 260)); // ~2 tick intervals while backpressured
-    // The first write attempt (already made during start(), before we cleared `out`) set
-    // the flag; every subsequent tick must be skipped outright — zero further writes.
-    expect(out.length).toBe(0);
-
+    tui.start();
+    tui.events().onStep!(1);
+    out.length = 0;
+    vi.advanceTimersByTime(240);
+    expect(out).toEqual([]);
     backpressured = false;
-    process.stdout.emit("drain");
-    await new Promise(r => setTimeout(r, 260)); // several more ticks once drained
-    expect(out.length).toBeGreaterThan(0); // normal cadence resumed
+    drain?.();
+    vi.advanceTimersByTime(120);
+    expect(out.join("")).toContain("calling model");
   } finally {
     tui.finish("");
+    once.mockRestore();
+    vi.useRealTimers();
   }
 });

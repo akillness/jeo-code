@@ -6,6 +6,7 @@ import { geminiRequest } from "../src/ai/providers/gemini";
 import { looksLikePng, attachmentFromBytes } from "../src/util/clipboard-image";
 import { estimateMessageTokens } from "../src/agent/compaction";
 import type { Message } from "../src/ai/types";
+import { CompactPasteStore } from "../src/commands/launch/input";
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("fakebody")]);
 const IMG = { mediaType: "image/png", data: PNG.toString("base64") };
@@ -80,3 +81,23 @@ test("compaction: image attachments add a per-image token estimate", () => {
   expect(withOne - plain).toBe(1100);
   expect(withTwo - plain).toBe(2200);
 });
+
+for (const { name, serialize } of [
+  { name: "Anthropic", serialize: (messages: Message[]) => anthropicPayload(messages, { model: "claude-sonnet-4-5" }, false, true) },
+  { name: "OpenAI", serialize: (messages: Message[]) => openaiRequest(messages, { model: "gpt-4o" }, { kind: "api_key", provider: "openai", token: "local-test" }, false).body },
+  { name: "Codex", serialize: (messages: Message[]) => codexResponsesRequest(messages, { model: "gpt-5.5" }, { kind: "oauth", provider: "openai", token: "local-test" }).body },
+  { name: "Gemini", serialize: (messages: Message[]) => geminiRequest(messages, { model: "gemini-2.5-flash" }, { kind: "api_key", provider: "gemini", token: "local-test" }, "generateContent").body },
+]) {
+  test(`${name}: model requests preserve canonical input and images but exclude editor display metadata`, () => {
+    const store = new CompactPasteStore();
+    const marker = store.store("private canonical\r\n한🙂\t$&");
+    const display = `before ${marker} after`;
+    const canonical = store.expand(display);
+    const message: Message = { role: "user", content: canonical, images: [IMG], inputDisplay: store.snapshot(display, canonical) };
+    const request = serialize([message]);
+    expect(request).toContain(JSON.stringify(canonical));
+    expect(request).toContain(IMG.data);
+    expect(request).not.toContain(marker);
+    expect(request).not.toContain('"inputDisplay"');
+  });
+}

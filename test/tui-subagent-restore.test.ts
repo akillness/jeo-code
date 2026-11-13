@@ -3,9 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { appendMessage, appendMessages, appendParentResponse, appendSubagentEvent, appendSubagentMessage, createSession, loadSession, renameSession, updateSessionDraft, updateSessionModel } from "../src/agent/session";
-import { renderSessionTimeline, runSessionSlash } from "../src/commands/launch/session-slash";
+import { renderSessionTimeline, runSessionSlash, sessionPromptHistory } from "../src/commands/launch/session-slash";
 import type { Message } from "../src/agent/loop";
 import chalk from "chalk";
+import { CompactPasteStore } from "../src/commands/launch/input";
 
 test("subagent history survives reload and resume without presenting unfinished work as completed", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agent-restore-"));
@@ -278,5 +279,54 @@ test("session timeline replay sanitizes tool paths and results while retaining c
     expect(plain).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
   } finally {
     chalk.level = previousLevel;
+  }
+});
+
+test("sessionPromptHistory filters protocol frames before compacting genuine prompts", () => {
+  const first = "private first\r\n한🙂";
+  const last = "private second\t$&";
+  const messages: Message[] = [
+    { role: "system", content: "system-private" },
+    { role: "user", content: first },
+    { role: "assistant", content: "assistant-private" },
+    ...["Tool [read] result (ok):\nprivate result", "[mid-turn steering] hidden", "[Earlier conversation summary] hidden", "[Interrupted tool execution] hidden", "Your last reply was invalid", "The step budget for this turn is exhausted", "You are cycling through the same request"].map(content => ({ role: "user" as const, content })),
+    { role: "user", content: last },
+  ];
+  const store = new CompactPasteStore();
+  const compact = sessionPromptHistory(messages, message => store.store(message.content));
+  expect(compact).toEqual(["[Paste #2, 1 lines, 18 cols]", "[Paste #1, 2 lines, 13 cols]"]);
+  expect(compact.map(text => store.expand(text))).toEqual([last, first]);
+  expect(sessionPromptHistory(messages)).toEqual([last, first]);
+});
+
+test("session resume restores compact editable history while retry and model history retain canonical prompts", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-compact-resume-"));
+  try {
+    const session = await createSession(cwd);
+    const sourceStore = new CompactPasteStore();
+    const display = `before ${sourceStore.store("private resume body\r\n한🙂\t$&")} after`;
+    const content = sourceStore.expand(display);
+    await appendMessages(session.id, [
+      { role: "user", content, inputDisplay: sourceStore.snapshot(display, content) },
+      { role: "assistant", content: JSON.stringify({ tool: "read", arguments: { path: "report.txt" } }) },
+      { role: "user", content: "Tool [read] result (ok):\nprivate feedback" },
+      { role: "assistant", content: "saved answer" },
+    ], cwd);
+    const history: Message[] = [{ role: "system", content: "system" }];
+    const rl = { history: [] as string[] };
+    const store = new CompactPasteStore();
+    store.store("unrelated draft");
+    const result = await runSessionSlash(`/session resume ${session.id}`, {
+      cwd, history, noSession: false, sessionId: undefined, sessionModel: undefined, rl,
+      advanceSessionBoxColor: () => {}, disarmPreview: () => {}, clearScreen: () => "", freshWelcomeLines: () => [],
+      logLines: () => {}, runSelectPicker: async () => {}, promptHistoryText: message => store.restore(message),
+    });
+    expect(rl.history).toEqual(["before [Paste #2, 2 lines, 19 cols] after"]);
+    expect(store.expand(rl.history[0]!)).toBe(content);
+    expect(result.lastUserInput).toBe(content);
+    expect(result.lastReply).toBe("saved answer");
+    expect(history.filter(message => message.role === "user").map(message => message.content)).toEqual([content, "Tool [read] result (ok):\nprivate feedback"]);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
   }
 });

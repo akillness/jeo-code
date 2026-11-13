@@ -12,6 +12,7 @@ import {
   caretAfterTag,
   insertImageTag,
   MAX_ATTACH_IMAGE_BYTES,
+  reconcileImageTags,
 } from "../src/util/file-attachment";
 
 
@@ -66,12 +67,12 @@ test("findImagePathTokens: matches only image paths, leaving prose alone", () =>
   expect(multi.map(x => x.path)).toEqual(["/a.png", "/b.gif"]);
 });
 
-test("attachImagePaths: replaces readable image paths with [image #N] tags and collects attachments", async () => {
+test("attachImagePaths: replaces readable image paths with numbered #image tags and preserves payloads", async () => {
   const fs: Record<string, Uint8Array> = { "/tmp/a.png": PNG, "/tmp/b.jpg": JPEG };
   const read = async (p: string) => fs[p] ?? null;
 
   const res = await attachImagePaths("here /tmp/a.png and /tmp/b.jpg ok", 1, read);
-  expect(res.text).toBe("here [image #1] and [image #2] ok");
+  expect(res.text).toBe("here #image01 and #image02 ok");
   expect(res.images).toEqual([
     { mediaType: "image/png", data: Buffer.from(PNG).toString("base64") },
     { mediaType: "image/jpeg", data: Buffer.from(JPEG).toString("base64") },
@@ -81,10 +82,9 @@ test("attachImagePaths: replaces readable image paths with [image #N] tags and c
 test("attachImagePaths: continues numbering from startNumber for clipboard images already attached", async () => {
   const read = async () => PNG;
   const res = await attachImagePaths("see /tmp/x.png", 3, read);
-  // A tag that ends the draft keeps ONE trailing space (same contract as insertImageTag's
-  // Ctrl+V path), so the next typed word cannot glue onto it as "[image #3]please".
-  expect(res.text).toBe("see [image #3] ");
-  expect(res.cursor).toBe("see [image #3] ".length);
+  // Ctrl+V and dropped paths share numbering and keep a separator for the next word.
+  expect(res.text).toBe("see #image03 ");
+  expect(res.cursor).toBe("see #image03 ".length);
   expect(res.images).toHaveLength(1);
 });
 
@@ -92,7 +92,7 @@ test("attachImagePaths: leaves unreadable or non-image paths untouched", async (
   const read = async (p: string) => (p === "/real.png" ? PNG : p === "/fake.png" ? new Uint8Array([0, 1, 2, 3]) : null);
   const res = await attachImagePaths("/missing.png /fake.png /real.png", 1, read);
   // Only the real PNG is replaced/attached; the missing + non-image paths stay verbatim.
-  expect(res.text).toBe("/missing.png /fake.png [image #1] ");
+  expect(res.text).toBe("/missing.png /fake.png #image01 ");
   expect(res.images).toHaveLength(1);
 });
 
@@ -104,50 +104,49 @@ test("attachImagePaths: no-op when the text holds no image paths", async () => {
 test("normalizeImageTags: collapses stray spaces around a tag to exactly one", () => {
   // The reported bug: a dropped path / Ctrl+V insert leaves several spaces so the
   // caret looks "pushed". Multiple spaces around the tag collapse to one each.
-  expect(normalizeImageTags("see   [image #1]   here")).toBe("see [image #1] here");
-  expect(normalizeImageTags("a[image #1]b")).toBe("a [image #1] b");
-  expect(normalizeImageTags("hello  [image #1]")).toBe("hello [image #1]");
+  expect(normalizeImageTags("see   #image01   here")).toBe("see #image01 here");
+  expect(normalizeImageTags("a#image01 b")).toBe("a #image01 b");
+  expect(normalizeImageTags("hello  #image01")).toBe("hello #image01");
 });
 
 test("normalizeImageTags: trims edges and adds no trailing space for an end tag", () => {
-  expect(normalizeImageTags("  [image #1]  ")).toBe("[image #1]");
-  expect(normalizeImageTags("see [image #3]")).toBe("see [image #3]");
+  expect(normalizeImageTags("  #image01  ")).toBe("#image01");
+  expect(normalizeImageTags("see #image03")).toBe("see #image03");
 });
 
 test("normalizeImageTags: is idempotent and keeps clean multi-tag text unchanged", () => {
-  const clean = "here [image #1] and [image #2] ok";
+  const clean = "here #image01 and #image02 ok";
   expect(normalizeImageTags(clean)).toBe(clean);
-  expect(normalizeImageTags(normalizeImageTags("a[image #1][image #2]z"))).toBe(
-    normalizeImageTags("a[image #1][image #2]z"),
+  expect(normalizeImageTags(normalizeImageTags("a#image01 #image02 z"))).toBe(
+    normalizeImageTags("a#image01 #image02 z"),
   );
-  expect(normalizeImageTags("a[image #1][image #2]z")).toBe("a [image #1] [image #2] z");
+  expect(normalizeImageTags("a#image01 #image02 z")).toBe("a #image01 #image02 z");
 });
 
 test("caretAfterTag: parks just past the tag and its single trailing space", () => {
-  expect(caretAfterTag("[image #1] ", 1)).toBe(11); // after the trailing space
-  expect(caretAfterTag("[image #1]", 1)).toBe(10); // no trailing space → after ]
-  expect(caretAfterTag("hi [image #2] there", 2)).toBe(14); // after the space before "there"
-  expect(caretAfterTag("no tag here", 1)).toBe("no tag here".length); // absent → end
+  expect(caretAfterTag("#image01 ", 1)).toBe(9);
+  expect(caretAfterTag("#image01", 1)).toBe(8);
+  expect(caretAfterTag("hi #image02 there", 2)).toBe(12);
 });
 
 test("insertImageTag: empty box gets one trailing space, caret right after it", () => {
   const r = insertImageTag("", 0, 1);
-  expect(r.text).toBe("[image #1] ");
-  expect(r.cursor).toBe(11); // ready to type the prompt — NOT pushed several columns
+  expect(r.text).toBe("#image01 ");
+  expect(r.cursor).toBe(9);
 });
 
 test("insertImageTag: inserts mid-text with exactly one space on each side", () => {
   // caret after "abc" (index 3): "abc| def" → tag lands between, single-spaced.
   const r = insertImageTag("abc def", 3, 2);
-  expect(r.text).toBe("abc [image #2] def");
-  expect(r.cursor).toBe("abc [image #2] ".length); // just after the tag's separating space
+  expect(r.text).toBe("abc #image02 def");
+  expect(r.cursor).toBe("abc #image02 ".length);
 });
 
 test("insertImageTag: never accumulates spaces when the caret already sits on whitespace", () => {
   // A box already ending in a space must not yield a double space before the tag.
   const r = insertImageTag("hi ", 3, 1);
-  expect(r.text).toBe("hi [image #1] ");
-  expect(r.cursor).toBe("hi [image #1] ".length);
+  expect(r.text).toBe("hi #image01 ");
+  expect(r.cursor).toBe("hi #image01 ".length);
 });
 
 test("attachImagePaths: normalizes terminal-added spacing around a dropped path and reports the caret", async () => {
@@ -155,16 +154,16 @@ test("attachImagePaths: normalizes terminal-added spacing around a dropped path 
   // A terminal pads a dropped path with extra spaces; the swapped tag must not inherit them —
   // exactly ONE trailing space survives, and the caret parks after it, ready to type.
   const res = await attachImagePaths("look   /tmp/shot.png  ", 1, read);
-  expect(res.text).toBe("look [image #1] ");
+  expect(res.text).toBe("look #image01 ");
   expect(res.images).toHaveLength(1);
-  expect(res.cursor).toBe("look [image #1] ".length); // caret right after the tag, not past stray spaces
+  expect(res.cursor).toBe("look #image01 ".length);
 });
 
 test("attachImagePaths: a tag followed by more text keeps its single separator, no extra tail", async () => {
   const read = async (p: string) => (p === "/tmp/shot.png" ? PNG : null);
   const res = await attachImagePaths("look /tmp/shot.png please", 1, read);
-  expect(res.text).toBe("look [image #1] please");
-  expect(res.cursor).toBe("look [image #1] ".length);
+  expect(res.text).toBe("look #image01 please");
+  expect(res.cursor).toBe("look #image01 ".length);
 });
 
 test("attachImagePaths: cursor falls back to text end when nothing is attached", async () => {
@@ -198,8 +197,26 @@ test("attachImagePaths (real filesystem default reader): rejects a file over MAX
     await fs.writeFile(smallPath, Buffer.from(PNG));
     const ok = await attachImagePaths(`see ${smallPath} please`);
     expect(ok.images).toHaveLength(1);
-    expect(ok.text).toBe("see [image #1] please");
+    expect(ok.text).toBe("see #image01 please");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("reconcileImageTags: deleting an image reference removes only its payload and renumbers survivors", () => {
+  const images = [
+    { mediaType: "image/png", data: Buffer.from(PNG).toString("base64") },
+    { mediaType: "image/jpeg", data: Buffer.from(JPEG).toString("base64") },
+  ];
+  expect(reconcileImageTags("compare #image02 please", images)).toEqual({
+    text: "compare #image01 please", images: [images[1]],
+  });
+  expect(reconcileImageTags("images removed", images)).toEqual({ text: "images removed", images: [] });
+  expect(reconcileImageTags("#image02 then #image01", images)).toEqual({
+    text: "#image01 then #image02", images: [images[1], images[0]],
+  });
+});
+
+test("normalizeImageTags: attaching an image preserves unrelated typed whitespace", () => {
+  expect(normalizeImageTags("a  spaced\n  draft   #image01   tail")).toBe("a  spaced\n  draft #image01 tail");
+});

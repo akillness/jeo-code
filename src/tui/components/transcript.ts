@@ -16,6 +16,9 @@ import type { Message } from "../../ai/types";
 import { summarizeForgeInvocation } from "./forge";
 import { tryExtractJsonObject } from "../../agent/json";
 import { sanitizeForTerminal } from "./code-view";
+import { visibleWidth } from "./width";
+import { imageTag } from "../../util/file-attachment";
+import { validatedInputDisplay } from "./input-box";
 
 export interface TranscriptOptions {
   color?: boolean;
@@ -107,9 +110,22 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       if (lines.length) lines.push("");
       const turnNo = promptNumber.get(i) ?? 1;
       lines.push(dim(`${unicode ? "─" : "-"} turn ${turnNo}/${totalTurns}`));
-      const imgs = m.images?.length ? dim(` ⧉ ${m.images.length} image(s)`) : "";
+      const imgs = m.images?.length ? dim(` ⧉ ${m.images.map((_, index) => imageTag(index + 1)).join(" ")}`) : "";
       lines.push(`${cyanBold(`user ${userMark}`)}${imgs}`);
-      lines.push(...clipBody(m.content, bodyCap));
+      const display = validatedInputDisplay(m);
+      let text = display?.text ?? m.content;
+      if (!display && (text.length > 1000 || /[\r\n]/.test(text))) {
+        const rows = text.split(/\r\n|\r|\n/);
+        const columns = rows.reduce((max, row) => Math.max(max, visibleWidth(row)), 0);
+        text = `[Paste #${turnNo}, ${rows.length} lines, ${columns} cols]`;
+      }
+      if (!display && m.images?.length) {
+        text = text.replace(/\[image #(\d+)\]/g, (tag, index: string) => {
+          const number = Number(index);
+          return number > 0 && number <= m.images!.length ? imageTag(number) : tag;
+        });
+      }
+      lines.push(...clipBody(text, bodyCap));
       continue;
     }
     // assistant: a JSON tool call (compact ledger lines) or a prose/done reply.

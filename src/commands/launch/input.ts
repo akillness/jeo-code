@@ -1,4 +1,69 @@
-import { verticalCursorOffset, rowBoundaryOffset } from "../../tui/components/input-box";
+import { verticalCursorOffset, rowBoundaryOffset, validatedInputDisplay } from "../../tui/components/input-box";
+import { visibleWidth } from "../../tui/components/width";
+import type { Message } from "../../ai/types";
+
+/** Editor-only references. Expansion is one pass so pasted marker-like text stays literal. */
+export class CompactPasteStore {
+  private pastes = new Map<string, string>();
+  private nextId = 0;
+
+  store(content: string): string {
+    if (!content) return "";
+    const lines = content.split(/\r\n|\r|\n/);
+    const columns = lines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+    const marker = `[Paste #${++this.nextId}, ${lines.length} lines, ${columns} cols]`;
+    this.pastes.set(marker, content);
+    return marker;
+  }
+
+  expand(text: string): string {
+    return text.replace(/\[Paste #\d+, \d+ lines, \d+ cols\]/g, marker => this.pastes.get(marker) ?? marker);
+  }
+
+  has(text: string): boolean {
+    return this.expand(text) !== text;
+  }
+
+  snapshot(text: string, canonical: string): NonNullable<Message["inputDisplay"]> {
+    // Path attachments can change a hidden paste's content. Store a fresh reference
+    // to the final canonical text rather than persisting stale offsets.
+    if (this.expand(text) !== canonical) return this.snapshot(this.store(canonical), canonical);
+    const pastes: NonNullable<Message["inputDisplay"]>["pastes"] = [];
+    let delta = 0;
+    for (const match of text.matchAll(/\[Paste #\d+, \d+ lines, \d+ cols\]/g)) {
+      const content = this.pastes.get(match[0]);
+      if (content === undefined) continue;
+      const start = match.index + delta;
+      pastes.push({ marker: match[0], start, end: start + content.length });
+      delta += content.length - match[0].length;
+    }
+    return { text, textLength: canonical.length, pastes };
+  }
+
+  restore(message: Pick<Message, "content" | "inputDisplay">): string {
+    const display = validatedInputDisplay(message);
+    const canonical = display ? message.content.slice(0, display.textLength) : message.content;
+    if (display) {
+      let next = 0;
+      return display.text.replace(/\[Paste #\d+, \d+ lines, \d+ cols\]/g, marker => {
+        const paste = display.pastes[next];
+        if (paste?.marker === marker) {
+          next += 1;
+          return this.store(canonical.slice(paste.start, paste.end));
+        }
+        // Literal marker-shaped text must not resolve through another history entry.
+        return this.store(marker);
+      });
+    }
+    return /[\x00-\x1f\x7f]|\[Paste #\d+, \d+ lines, \d+ cols\]/.test(canonical) || canonical.length > 1000
+      ? this.store(canonical) : canonical;
+  }
+
+  clear(): void {
+    this.pastes.clear();
+    this.nextId = 0;
+  }
+}
 
 
 export interface InFlightAbortHarness {
@@ -298,6 +363,7 @@ export interface PromptInputQueue {
   pastedLines: string[];
   /** True while a bracketed paste spans chunks (between \x1b[200~ and \x1b[201~). */
   inPaste: boolean;
+  compactFilter?: PromptKeyFilterState;
 }
 
 /** Typed (non-paste) keystrokes: printable chars build the partial, Enter promotes
@@ -377,6 +443,8 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
  * box stays the single source of truth and the user presses Enter once more at
  * the real prompt to run it. */
 function feedLivePromptSegment(state: PromptInputQueue, segment: string): boolean {
+  // Live capture has an implicit append cursor, so forward Delete is a no-op.
+  segment = segment.replaceAll("\u001b[3~", "");
   if (!segment || segment.includes("\u001b") || segment.includes("\u0003")) return false;
   let accepted = false;
   const normalized = segment.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -418,13 +486,7 @@ function feedLivePromptPasteBody(state: PromptInputQueue, body: string, multilin
   return true;
 }
 
-export function captureLivePromptInputChunk(
-  state: PromptInputQueue,
-  chunk: string,
-  opts: { multiline?: boolean } = {},
-): boolean {
-  if (!chunk) return false;
-  const multiline = opts.multiline !== false;
+function feedLivePromptChunk(state: PromptInputQueue, chunk: string, multiline: boolean): boolean {
   let accepted = false;
   let rest = chunk;
   while (rest.length > 0) {
@@ -443,6 +505,34 @@ export function captureLivePromptInputChunk(
     }
   }
   return accepted;
+}
+
+export function captureLivePromptInputChunk(
+  state: PromptInputQueue,
+  chunk: string,
+  opts: { multiline?: boolean; storePaste?: (content: string) => string } = {},
+): boolean {
+  if (!chunk) return false;
+  const multiline = opts.multiline !== false;
+  if (!opts.storePaste) return feedLivePromptChunk(state, chunk, multiline);
+  state.compactFilter ??= { inPaste: false };
+  const rl: PromptKeyFilterRl = { line: state.partial, cursor: state.partial.length };
+  let accepted = false;
+  const filtered = filterPromptInputChunk(chunk, rl, {
+    loneLfShiftEnter: false, slashMatchCount: 0, historyPanelOpen: false, columns: 80,
+    storePaste: opts.storePaste,
+    atomicMarkers: true,
+    appendOnly: true,
+    flushInput(text) {
+      state.partial = rl.line;
+      if (feedLivePromptChunk(state, text, multiline)) accepted = true;
+      rl.line = state.partial;
+      rl.cursor = state.partial.length;
+    },
+  }, state.compactFilter);
+  if (rl.line !== state.partial) accepted = true;
+  state.partial = rl.line;
+  return feedLivePromptChunk(state, filtered.out, multiline) || accepted;
 }
 
 /**
@@ -845,6 +935,13 @@ export interface PromptKeyFilterEnv {
   historyPanelOpen: boolean;
   /** `process.stdout.columns ?? 80` — the raw column count BEFORE the box's own insets. */
   columns: number;
+  /** Collapse pasted DATA before readline sees it; omitted by legacy/non-display callers. */
+  storePaste?: (content: string) => string;
+  atomicMarkers?: boolean;
+  /** Live drafts expose an append caret for atomic edits, not idle navigation. */
+  appendOnly?: boolean;
+  /** Deliver preceding coalesced keystrokes before inspecting readline's live caret. */
+  flushInput?: (text: string) => void;
 }
 
 /** Carried across chunks: a bracketed paste can span several stdin chunks, so the
@@ -858,6 +955,7 @@ export interface PromptKeyFilterEnv {
 export interface PromptKeyFilterState {
   inPaste: boolean;
   carry?: string;
+  pasteBody?: string;
   /** The previous chunk's forwarded output ended in a bare `\r` (Enter). A `\n` at the
    *  START of the next chunk is then the second half of a split CRLF — swallow it, or
    *  (with the default-on lone-LF rule) it would insert a phantom break at the fresh
@@ -919,6 +1017,8 @@ export function filterPromptInputChunk(
   env: PromptKeyFilterEnv,
   state: PromptKeyFilterState,
 ): PromptKeyFilterResult {
+  const atomicRl = rl;
+  if (env.appendOnly) rl = null;
   // Re-attach any byte run carried from the previous chunk (a split paste marker or a
   // dangling `\r`), then hold back a fresh trailing partial so a bracketed-paste marker —
   // or a `\r\n` straddling this read boundary — is never half-interpreted. Carrying is
@@ -946,12 +1046,42 @@ export function filterPromptInputChunk(
   // Empty-line Backspace guard: a standalone Backspace with an empty buffer is a no-op
   // that some Bun readline builds turn into a spurious `close` (hard exit) — drop it
   // before it reaches readline. Forwarded normally inside a paste or with text present.
-  if (!state.inPaste && isStandaloneBackspace(data) && !(rl?.line ?? "")) {
+  if (!state.inPaste && isStandaloneBackspace(data) && !(atomicRl?.line ?? "")) {
     return { out: "", drop: true };
+  }
+  // Only explicit paste transports and unbracketed multi-line/large chunks qualify.
+  // Ordinary coalesced typing/IME commits must never be replaced by a marker.
+  if (env.storePaste && !state.inPaste && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(data) &&
+      (/[\r\n][\s\S]/.test(data) || data.length > 1000)) {
+    return { out: env.storePaste(data), drop: false };
   }
   let out = "";
   let i = 0;
   while (i < data.length) {
+    const extendedEdit = env.atomicMarkers && !state.inPaste && atomicRl && data[i] === "\u001b"
+      ? matchExtendedKey(data, i) : null;
+    if (env.atomicMarkers && !state.inPaste && atomicRl &&
+        (data[i] === "\u007f" || data[i] === "\b" || data.startsWith("\u001b[3~", i) || extendedEdit?.out === "\u007f")) {
+      const backward = data[i] !== "\u001b" || extendedEdit?.out === "\u007f";
+      const length = extendedEdit?.len ?? (backward ? 1 : 4);
+      if (out && env.flushInput) { env.flushInput(out); out = ""; }
+      let removed = false;
+      if (!out) {
+        for (const match of atomicRl.line.matchAll(/\[Paste #\d+, \d+ lines, \d+ cols\]|#image\d{2,}(?!\d)/g)) {
+          const start = match.index;
+          const end = start + match[0].length;
+          if (backward ? atomicRl.cursor > start && atomicRl.cursor <= end : atomicRl.cursor >= start && atomicRl.cursor < end) {
+            atomicRl.line = atomicRl.line.slice(0, start) + atomicRl.line.slice(end);
+            atomicRl.cursor = start;
+            removed = true;
+            break;
+          }
+        }
+      }
+      if (!removed) out += extendedEdit?.out ?? data.slice(i, i + length);
+      i += length;
+      continue;
+    }
     // A lone Esc keystroke that the PREVIOUS chunk carried, now followed by bytes that
     // cannot continue an escape sequence (`ESC [` / `ESC O`): drop the ESC instead of
     // forwarding it. readline's key decoder otherwise holds a dangling ESC as a pending
@@ -965,9 +1095,26 @@ export function filterPromptInputChunk(
       i += 1;
       continue;
     }
-    if (!state.inPaste && data.startsWith(PASTE_START, i)) { state.inPaste = true; out += PASTE_START; i += PASTE_START.length; continue; }
-    if (state.inPaste && data.startsWith(PASTE_END, i)) { state.inPaste = false; out += PASTE_END; i += PASTE_END.length; continue; }
+    if (!state.inPaste && data.startsWith(PASTE_START, i)) {
+      state.inPaste = true;
+      if (env.storePaste) state.pasteBody = "";
+      out += PASTE_START; i += PASTE_START.length; continue;
+    }
+    if (state.inPaste && data.startsWith(PASTE_END, i)) {
+      if (env.storePaste) {
+        out += env.storePaste(state.pasteBody ?? "");
+        state.pasteBody = undefined;
+      }
+      state.inPaste = false; out += PASTE_END; i += PASTE_END.length; continue;
+    }
     if (state.inPaste) {
+      if (env.storePaste) {
+        const end = data.indexOf(PASTE_END, i);
+        const next = end < 0 ? data.length : end;
+        state.pasteBody = (state.pasteBody ?? "") + data.slice(i, next);
+        i = next;
+        continue;
+      }
       if (data.startsWith("\r\n", i)) { out += MULTILINE_SENTINEL; i += 2; continue; }
       if (data[i] === "\n" || data[i] === "\r") { out += MULTILINE_SENTINEL; i += 1; continue; }
       // Pasted DATA: drop whole ANSI escape sequences (e.g. the `\x1b[31m` color codes in
@@ -1036,7 +1183,13 @@ export function filterPromptInputChunk(
     // Without this, readline receives an unknown sequence and the key is simply DEAD —
     // the reported "esc 키 (또 ctrl+c) 입력이 안되는 문제".
     const ext = matchExtendedKey(data, i);
-    if (ext) { out += ext.out; i += ext.len; continue; }
+    if (ext) {
+      // The host owns Escape/clear. Forwarding its decoded byte leaves readline
+      // waiting for a Meta chord and consumes the next ordinary typed character.
+      if (ext.out !== "\u001b") out += ext.out;
+      i += ext.len;
+      continue;
+    }
     // Up/Down between the box's visual rows (textarea feel) for any MULTI-ROW draft;
     // at the top/bottom edge a soft-wrapped one-liner falls through to history recall,
     // but a genuine multi-line draft swallows the key (the "↓ cuts text" fix).

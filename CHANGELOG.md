@@ -9,6 +9,14 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+### Changed
+- Pasted TUI text is displayed as `[Paste #N, L lines, C cols]`, and attached images as `#image01`, `#image02`, without rendering image pixels. Submission keeps the underlying text and selected image payloads; terminal-control escapes retain the existing paste sanitation policy.
+- Accumulate bracketed paste bodies in chunk-sized spans instead of per-character strings, reducing temporary allocation and capture latency. Reproduce measurements with `bun scripts/benchmark-compact-paste.ts`.
+
+### Fixed
+- Include paused subagents in session-wide cancellation, reject terminal-state resume without creating phantom workers, and report paused or cancelled-but-unsettled work accurately during bounded waits.
+- Preserve independent fanout results and error-only child reports when another child fails during setup or reporting. Invalid explicit subagent targets no longer broaden into cancel-all operations.
+
 ## [0.12.35] - 2026-11-11
 _Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started._
 

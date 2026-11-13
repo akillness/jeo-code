@@ -39,8 +39,7 @@ import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
 import { renderInputBox, type HighlightRange } from "./components/input-box";
-import { renderImageAttachments } from "./components/image-preview";
-import { detectImageProtocol } from "./terminal-image";
+import { imageTag } from "../util/file-attachment";
 import type { ImageAttachment } from "../ai/types";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
@@ -891,35 +890,20 @@ export class LaunchTui {
   /** Flush a `user` card into scrollback so a submitted query stays visible there
    *  (gjc parity), instead of only as the transient HUD turn-title / a status notice.
    *  Shared by the prompt that STARTS a turn and the mid-turn steering flush.
-   *  `images` (clipboard/drag-drop/file-path attachments on THIS prompt) render as
-   *  an inline picture directly below the card on a terminal that speaks the kitty
-   *  or iTerm2 graphics protocol (gjc TUI-image parity); every other terminal, the
-   *  alt screen, and non-TTY output keep the existing text-only card unchanged. */
+   *  Attachments stay in the model request; this surface renders numbered text tags only. */
   flushUserCard(text: string, images?: ImageAttachment[]): void {
-    const t = (text ?? "").trim();
+    let t = (text ?? "").trim();
     if (!t || this.finished) return;
+    const missing = images?.flatMap((_image, index) => {
+      const tag = imageTag(index + 1);
+      return new RegExp(`${tag}(?!\\d)`).test(t) ? [] : [tag];
+    });
+    if (missing?.length) t += ` ${missing.join(" ")}`;
     const cols = Math.max(20, size().cols - 1);
     const lines = this.renderUserCard(t, cols);
     if (lines.length) this.appendLedger(lines.join("\n"), "card");
-    if (images?.length) this.flushImageAttachments(images, cols);
   }
 
-  /** Render `images` (see {@link flushUserCard}) straight into scrollback via
-   *  `insertAbove`, bypassing `appendLedger`'s width-wrap path: an inline image
-   *  escape sequence is not text — `wrapTextWithAnsi`/`visibleWidth` would measure
-   *  its base64 payload as thousands of display columns and mangle it. Inline mode
-   *  only (alt screen has no scrollback to flush into; non-TTY has no terminal to
-   *  draw into) — every other mode already shows the "N image(s) attached" note
-   *  inline in the prompt text itself via `[image #N]` tags, unchanged. */
-  private flushImageAttachments(images: ImageAttachment[], cols: number): void {
-    if (!this.inline || this.finished) return;
-    const protocol = detectImageProtocol(process.env, this.tty);
-    const muted = this.theme.color ? chalk.dim : (s: string) => s;
-    const lines = renderImageAttachments(images, { cols, protocol, muted });
-    if (lines.length === 0) return;
-    this.recordActivity(`⧉ ${images.length} image(s) rendered`);
-    this.renderer.insertAbove(`${lines.join("\n")}\n`);
-  }
 
   /** Mid-turn steering query → a `user` card in scrollback (accepted input that is
    *  now driving the running turn). Alias of {@link flushUserCard}. */

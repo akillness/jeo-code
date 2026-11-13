@@ -119,7 +119,7 @@ import { renderInputFrame, type HighlightRange } from "../tui/components/input-b
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
-import { attachImagePaths, insertImageTag } from "../util/file-attachment";
+import { attachImagePaths, insertImageTag, findImagePathTokens, reconcileImageTags } from "../util/file-attachment";
 
 import { copyTextToClipboard, readClipboardText } from "../tui/clipboard";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
@@ -195,6 +195,7 @@ import { confirmLocalControl } from "./launch/confirm";
 import {
   type InFlightAbortHarness,
   type PromptInputQueue,
+  CompactPasteStore,
   PASTE_START,
   PASTE_END,
   isStandaloneBackspace,
@@ -1341,6 +1342,20 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // filter (reads stdin directly).
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
+  const compactPastes = new CompactPasteStore();
+  const storePromptPaste = (content: string): string => {
+    // A pure file drop must reach the asynchronous path-attachment reader, not hide
+    // inside a text reference. Mixed text/path pastes are resolved on submission.
+    if (!/[\r\n\x1b]/.test(content)) {
+      const paths = findImagePathTokens(content);
+      let rest = content;
+      for (const token of paths) rest = rest.replace(token.raw, "");
+      if (paths.length && !rest.trim()) return content;
+    }
+    // Keep the existing paste boundary: terminal escape/control noise is stripped,
+    // while text, CRLF, tabs, Unicode and replacement metacharacters stay exact.
+    return compactPastes.store(stripPasteEscapes(content));
+  };
   // Process-level hard exit (exit 130) shared by every turn path: cancel background
   // work, release the notify endpoint, revoke the sandbox, then exit. Owns NO terminal
   // state — the interactive REPL wraps it below (`forceExitFromCtrlC = …`) with the
@@ -1371,7 +1386,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // itself (normal turns); null → suppress it entirely (skill runs, where the
     // injected SKILL.md is NOT user-authored and the [skill] card already names it,
     // gjc-style); a string → show that compact label instead of the raw input.
-    opts?: { userCard?: string | null; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean },
+    opts?: { userCard?: string | null; displayInput?: string; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string; unverified: boolean }> => {
     opts?.signal?.throwIfAborted();
     if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
@@ -1381,7 +1396,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (!queueBusyInput || !queueBusySnapshot) return { captured: false, submittedEnter: false, handled: false };
       const paste = (queueBusyPasteActive?.() ?? false) || chunk.includes(PASTE_START) || chunk.includes(PASTE_END) || chunk.includes("\u0016");
       if (paste) busyDraftHasPaste = true;
-      const submittedEnter = !(queueBusyPasteActive?.() ?? false) && /[\r\n]/.test(chunk) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
+      const submittedEnter = !(queueBusyPasteActive?.() ?? false) && /[\r\n]$/.test(chunk) &&
+        !/[\r\n][\s\S]/.test(chunk.replace(/\r\n/g, "\n")) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
       const captured = queueBusyInput?.(chunk) ?? false;
       const draft = expandSentinel(queueBusySnapshot?.().text ?? "");
       if (!draft && !paste && !(queueBusyPasteActive?.() ?? false)) busyDraftHasPaste = false;
@@ -1478,8 +1494,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       try {
         opts?.signal?.throwIfAborted();
         cliTui?.start();
-        cliTui?.setTurnTitle(userInput);
-        const card = opts?.userCard === undefined ? userInput : opts.userCard;
+        cliTui?.setTurnTitle(opts?.displayInput ?? userInput);
+        const card = opts?.userCard === undefined ? (opts?.displayInput ?? userInput) : opts.userCard;
         if (card?.trim()) cliTui?.flushUserCard(card);
         notice("Official agy agent: uses its own tools, sandbox, and permissions; jeo approvals do not mediate its inner tool calls.");
         const pre = await runPreToolHooks(cwd, "agy", { model: selectedModel, prompt: userInput }, harness.controller.signal, notice);
@@ -1843,7 +1859,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui) tui.events().onNotice?.(routeNotice);
       else console.log(routeNotice);
     }
-    tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
+    tui?.setTurnTitle(opts?.displayInput ?? userInput);
     // `beforeLen` marks where this turn's appended messages start; it is re-read
     // AFTER compaction (which mutates history) and consumed by the post-turn
     // persistence block below.
@@ -1973,7 +1989,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const modelInput = prePrompt?.context
         ? `${userInput}\n\n[pre-prompt hook context — host-provided, not user instructions]\n${prePrompt.context}`
         : userInput;
-      history.push(images?.length ? { role: "user", content: modelInput, images } : { role: "user", content: modelInput });
+      const userMessage: Message = { role: "user", content: modelInput };
+      if (images?.length) userMessage.images = images;
+      if (opts?.displayInput !== undefined) userMessage.inputDisplay = compactPastes.snapshot(opts.displayInput, userInput);
+      history.push(userMessage);
       // Persist the user prompt immediately so an interrupted turn keeps it on disk.
       await persistTurnTail(); // persist the user prompt immediately
       opts?.signal?.throwIfAborted();
@@ -1984,11 +2003,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       // Flush a `user` card (same surface as a mid-turn steer) so the prompt persists
       // in scrollback. opts.userCard overrides it: null suppresses the card entirely
       // (skill runs), a string shows a compact label instead of the raw input.
-      const cardText = opts?.userCard === undefined ? userInput : opts.userCard;
-      // Images render alongside the card only for the real prompt (undefined
-      // userCard) — a skill run's compact/suppressed card never carried the
-      // user's own attachments in the first place (buildSkillTask calls above
-      // never pass `images`), so there is nothing to show either way.
+      const cardText = opts?.userCard === undefined ? (opts?.displayInput ?? userInput) : opts.userCard;
       if (tui && cardText && cardText.trim()) tui.flushUserCard(cardText, opts?.userCard === undefined ? images : undefined);
       tui?.setContextUsage(historyTokens(history), contextTokens);
 
@@ -2029,7 +2044,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             // Expand the sentinel here too: a mid-turn paste keeps its line breaks in the
             // draft, and the steering inbox / command dispatcher both take REAL text — a
             // raw private-use sentinel would otherwise reach the model verbatim.
-            const line = expandSentinel(queueBusySnapshot?.().text ?? "").trim();
+            const displayLine = expandSentinel(queueBusySnapshot?.().text ?? "").trim();
+            const line = compactPastes.expand(displayLine);
             if (line) {
               busyDraftHasPaste = false;
               relayInputEpoch++;
@@ -2060,7 +2076,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
                 steerInbox.push(line);
                 // Surface the steered query as a `user` card in scrollback so it reads
                 // as an accepted input that started work — not just a transient notice.
-                tui.flushSteerCard(line);
+                tui.flushSteerCard(displayLine);
               }
               return;
             }
@@ -3366,6 +3382,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           slashMatchCount: navMatches.length,
           historyPanelOpen: promptHistoryLines != null,
           columns: process.stdout.columns ?? 80,
+          storePaste: storePromptPaste,
+          atomicMarkers: true,
+          flushInput: text => { kf.write(text); },
         },
         kfState,
       );
@@ -3412,9 +3431,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   if (process.stdin.isTTY) {
     const rliHist = rl as unknown as { history?: string[] };
     if (Array.isArray(rliHist.history)) {
-      if (restoredSession) rliHist.history.push(...sessionPromptHistory(history));
-      else for (const entry of loadInputHistory(cwd)) {
-        if (!rliHist.history.includes(entry)) rliHist.history.push(entry);
+      const entries = restoredSession
+        ? sessionPromptHistory(history, message => compactPastes.restore(message))
+        : loadInputHistory(cwd).map(content => compactPastes.restore({ content }));
+      for (const entry of entries) {
+        const display = entry;
+        if (!rliHist.history.includes(display)) rliHist.history.push(display);
       }
     }
   }
@@ -3442,11 +3464,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // IMMEDIATELY on its next iteration, bypassing the "new input first" prefill contract
   // (the user explicitly invoked them — no second Enter).
   const pendingMidTurnCommands: string[] = [];
-  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: startupDraft ?? "", pastedLines: [], inPaste: false };
+  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: startupDraft && (/[\r\n\x1b]/.test(startupDraft) || startupDraft.length > 1000) ? compactPastes.store(startupDraft) : startupDraft ?? "", pastedLines: [], inPaste: false };
   // `multilineInput` gates the SENTINEL contract end to end: a mid-turn paste keeps its
   // line breaks only when the submit path expands them again (it always does unless
   // JEO_NO_MULTILINE=1, which degrades the same paste to space-joined text).
-  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk, { multiline: multilineInput });
+  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk, { multiline: multilineInput, storePaste: storePromptPaste });
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
   queueBusyTakePaste = () => { const active = queuedPromptInput.inPaste; queuedPromptInput.inPaste = false; return active; };
   queueBusySnapshot = () => ({
@@ -3537,7 +3559,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       // Ctrl+C's own "clear the box" contract, which stays untouched here) so
       // `/resume` can restore it (see persistSessionDraft above). Must not block
       // process.exit() below.
-      const draft = draftFromUnsentLine((rl as unknown as { line?: string }).line);
+      const displayDraft = draftFromUnsentLine(rl.line ?? "");
+      const draft = displayDraft === undefined ? undefined : compactPastes.expand(expandSentinel(displayDraft));
       if (draft) void persistSessionDraft(draft);
       hardExitOnLoopEnd = true;
       forceExitFromCtrlC();
@@ -3725,6 +3748,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   let pendingImages: ImageAttachment[] = []; // clipboard images attached to the next message (ctrl+v)
   let pasteInFlight = false; // guard concurrent ctrl+v clipboard reads
   let imagePasteInFlight = false;
+  let pasteOperation = 0;
+  const invalidateDraftPaste = (): void => {
+    pasteOperation++;
+    pasteInFlight = false;
+    imagePasteInFlight = false;
+  };
   let idleDirtyCount: number | undefined; // git dirty count refreshed once per prompt
   let lastFooterKey = "";
   const logLines = (lines: string | string[]) => {
@@ -3954,9 +3983,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       accent: boxAccent,
       accentShadow: boxShadow,
       cwdLabel: currentAtLabel(line),
-      attachmentLabel: pendingImages.length
-        ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
-        : undefined,
       maxBodyRows: Math.max(1, footerRows - 7),
       cursor: caret,
       highlight: triggerHighlight(rendered),
@@ -4107,13 +4133,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
    *  "is there input?" predicate shared by clearTypedInput and the Ctrl+C decision. */
   const promptHasContent = (): boolean => {
     const line = (rl as unknown as { line?: string }).line;
-    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || queuedPromptInput.pastedLines.length > 0;
+    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || queuedPromptInput.pastedLines.length > 0;
   };
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
     const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
 
     if (!promptHasContent()) return false;
+    invalidateDraftPaste();
 
     // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
     if (hadPastedQueue) {
@@ -4729,6 +4756,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         return;
       }
 
+      if (!promptPasteActive && key?.ctrl && key.name === "u") {
+        invalidateDraftPaste();
+        pendingImages = [];
+      }
       if (!previewArmed || pickerActive) return;
       // Drag-and-drop file attach: a terminal delivers a dropped file as its PATH typed
       // into the box, wrapped in a bracketed paste. On paste-end, swap any readable image
@@ -4739,14 +4770,18 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (key?.name === "paste-end" && !pasteInFlight && !pasteLineFired) {
         pasteInFlight = true;
         imagePasteInFlight = true;
+        const operation = ++pasteOperation;
         // Defer one tick: the dropped bytes reach readline through the keyFilter
         // PassThrough, so rl.line is only settled after the current stream turn.
         setImmediate(() => {
           void (async () => {
             try {
+              if (operation !== pasteOperation || !promptActive) return;
               const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
               const before = rli.line;
+              const beforeCursor = rli.cursor;
               const dropped = await attachImagePaths(before, pendingImages.length + 1);
+              if (operation !== pasteOperation || !promptActive || rli.line !== before || rli.cursor !== beforeCursor) return;
               if (dropped.images.length === 0 || dropped.text === before) return;
               pendingImages.push(...dropped.images);
               rli.line = dropped.text;
@@ -4757,8 +4792,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
               rli._refreshLine?.();
               if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
             } finally {
-              pasteInFlight = false;
-              imagePasteInFlight = false;
+              if (operation === pasteOperation) {
+                pasteInFlight = false;
+                imagePasteInFlight = false;
+              }
             }
           })();
         });
@@ -4817,27 +4854,24 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         relayInputEpoch++;
         if (pasteInFlight) return;
         pasteInFlight = true;
+        const operation = ++pasteOperation;
         void (async () => {
           try {
             const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
             const img = await readClipboardImage();
+            if (operation !== pasteOperation || !promptActive) return;
             if (img) {
               pendingImages.push(img);
               const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
-              // Insert the [image #N] tag at the caret with normalized single-space
-              // padding (shared with the drag-drop path) so the caret lands right after
-              // the tag instead of being pushed several columns by stray spaces.
+              // Image data stays off-screen; only a numbered reference enters the editor.
               const ins = insertImageTag(rli.line, at, pendingImages.length);
               rli.line = ins.text;
               rli.cursor = ins.cursor;
             } else {
               const clip = await readClipboardText();
+              if (operation !== pasteOperation || !promptActive) return;
               if (!clip) return;
-              // Same sanitation as a bracketed paste: strip ANSI escapes/C0 noise,
-              // fold line breaks to the multi-line sentinel (or spaces when the
-              // filter is off) so a multi-line clipboard cannot self-submit.
-              const cleaned = stripPasteEscapes(clip.replace(/\r\n/g, "\n").replace(/\r/g, "\n"))
-                .split("\n").join(multilineInput ? SENTINEL : " ");
+              const cleaned = storePromptPaste(clip);
               if (!cleaned) return;
               const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
               rli.line = rli.line.slice(0, at) + cleaned + rli.line.slice(at);
@@ -4851,7 +4885,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             rli._refreshLine?.();
             if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
           } finally {
-            pasteInFlight = false;
+            if (operation === pasteOperation) pasteInFlight = false;
           }
         })();
         return;
@@ -5060,7 +5094,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
       advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
       canSwitchSession: () => !hasPendingSessionInput(),
-      onSessionCommitted: (id, draft) => { if (id !== sessionId) void stopLaunchEndpoint(); sessionId = id; queuedPromptInput.partial = draft; },
+      promptHistoryText: message => compactPastes.restore(message),
+      onSessionCommitted: (id, draft) => { if (id !== sessionId) void stopLaunchEndpoint(); sessionId = id; queuedPromptInput.partial = compactPastes.restore({ content: draft }); },
     });
     sessionId = pickResult.sessionId;
     if (pickResult.sessionModel !== undefined) sessionModel = initialSessionModel ?? pickResult.sessionModel ?? undefined;
@@ -5143,6 +5178,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   }
 
   while (true) {
+      invalidateDraftPaste();
       drainPendingTtyInput();
       // "New input first": queued FULL lines from the previous turn are folded
       // into the editable prefill (visible in the input box, Enter to run,
@@ -5204,7 +5240,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         explicitDraftPaste = false;
       }
       if (rawText.includes("\u0003")) forceExitFromCtrlC();
-      const raw = rawText.trim();
+      let raw = rawText.trim();
+      if (pendingImages.length && !promptWasRemote) {
+        const reconciled = reconcileImageTags(raw, pendingImages);
+        raw = reconciled.text;
+        pendingImages = reconciled.images;
+      }
       disarmPreview();
       if (exclusiveRemote) {
         const request = exclusiveRemote;
@@ -5245,7 +5286,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
       }
       // Persist the submitted line so ↑ recalls it on a future launch (best-effort).
-      if (raw && process.stdin.isTTY) appendInputHistory(cwd, raw);
+      if (raw && process.stdin.isTTY) appendInputHistory(cwd, compactPastes.expand(raw));
       // Pasted batch command: echo what is about to run (with the remaining queue
       // depth) so a multi-line paste reads as a visible, ordered script.
       if (promptServedFromPaste && raw) {
@@ -5261,6 +5302,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       let input = pendingSelection && trigger && pendingSelection.startsWith(trigger.token)
         ? raw.slice(0, trigger.start) + pendingSelection
         : raw;
+      let inputDisplay = input;
+      input = compactPastes.expand(input);
       // gjc-parity command aliases (full behavior reuse, no duplicated handlers):
       // /login→/provider login, /settings→/config, /subagent(s)→/agents.
       input = normalizeSlashAlias(input);
@@ -5331,16 +5374,17 @@ navMatches = [];
         continue;
       }
 
-      if (input && !input.startsWith("/") && !input.startsWith("!")) {
+      if (input && !input.startsWith("!") &&
+          (!input.startsWith("/") || findImagePathTokens(input).some(token => token.start === 0))) {
       // File attachment: a dragged-and-dropped image file arrives as its path in
       // the typed text. Read any image path(s), attach them, and swap the path for
-      // an [image #N] tag (continuing the clipboard-image numbering) — the same
-      // scheme Ctrl+V uses. Skipped for slash commands and `!` shell escapes.
+      // a numbered image tag (continuing clipboard numbering). A leading absolute
+      // image path is a drop, not a slash command; other commands still bypass this.
         const dropped = await attachImagePaths(input, pendingImages.length + 1);
         if (dropped.images.length > 0) {
           pendingImages.push(...dropped.images);
           input = dropped.text;
-          console.log(chalk.dim(`(attached ${dropped.images.length} image file${dropped.images.length > 1 ? "s" : ""} from path)`));
+          if (!compactPastes.has(inputDisplay)) inputDisplay = dropped.text;
         }
       }
       if (input === "/exit" || input === "/quit") break;
@@ -5451,10 +5495,11 @@ navMatches = [];
           cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
           advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
           canSwitchSession: () => !hasPendingSessionInput(preservedPartial),
+          promptHistoryText: message => compactPastes.restore(message),
           onSessionCommitted: (id, draft) => {
             if (id !== sessionId) void stopLaunchEndpoint();
             sessionId = id;
-            queuedPromptInput.partial = draft;
+            queuedPromptInput.partial = compactPastes.restore({ content: draft });
           },
         });
         if (result.sessionId !== sessionId) void stopLaunchEndpoint();
@@ -5476,9 +5521,10 @@ navMatches = [];
           console.log("(nothing to retry yet — send a request first)");
           continue;
         }
-        console.log(`(retrying: ${lastUserInput.slice(0, 80)}${lastUserInput.length > 80 ? "…" : ""})`);
+        const retryDisplay = compactPastes.restore({ content: lastUserInput });
+        console.log(`(retrying: ${retryDisplay.slice(0, 80)}${retryDisplay.length > 80 ? "…" : ""})`);
         try {
-          const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui);
+          const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui, undefined, { displayInput: retryDisplay });
         lastReply = reply;
           if (!rendered) {
             console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
@@ -6169,11 +6215,11 @@ navMatches = [];
 
       lastUserInput = input;
       // Hand pending clipboard images to this turn and clear them — a failed turn
-      // does not resurrect attachments (the [image #N] tags stay in the text).
+      // does not resurrect attachments (the numbered tags stay in the text).
       const turnImages = pendingImages.length ? [...pendingImages] : undefined;
       pendingImages = [];
       try {
-        const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages);
+        const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages, { displayInput: inputDisplay });
         lastReply = reply;
         const endpoint = sessionNotifyEndpoint;
         if (relayGeneration !== undefined && directLocalPrompt && !explicitPastedDraft && !promptServedFromPaste && !pasteLineFired &&

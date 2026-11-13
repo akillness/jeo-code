@@ -105,7 +105,6 @@ export class SubagentRegistry {
   private readonly entries = new Map<string, Entry>();
   private readonly seq = new Map<string, number>();
   private readonly steerInboxes = new Map<string, string[]>();
-  private readonly pausedIds = new Set<string>();
 
   /** Register and START a detached run; returns the (running) record immediately. */
   launch(role: string, task: string, runner: DetachedRunner, options: { readOnly?: boolean } = {}): SubagentRecord {
@@ -133,7 +132,7 @@ export class SubagentRegistry {
         if (record.status === "cancelled") return;
         record.status = res.success ? "completed" : "failed";
         record.success = res.success;
-        record.resumable = true;
+        record.resumable = false;
         record.result = truncateDetachedResult(res.output || res.error || "");
       } catch (err) {
         // A mutating runner may throw after a partial workspace change; retain
@@ -141,7 +140,7 @@ export class SubagentRegistry {
         if (!entry.readOnly) record.mutationMayHaveOccurred = true;
         if (record.status === "cancelled") return;
         record.status = "failed";
-        record.resumable = true;
+        record.resumable = false;
         record.result = truncateDetachedResult(err instanceof Error ? err.message : String(err));
       } finally {
         entry.settled = true;
@@ -163,6 +162,11 @@ export class SubagentRegistry {
 
   running(): SubagentRecord[] {
     return this.list().filter(r => r.status === "running");
+  }
+
+  /** Runners that have not settled, including pending pause/cancel requests. */
+  pending(): SubagentRecord[] {
+    return [...this.entries.values()].filter(entry => !entry.settled).map(entry => entry.record);
   }
 
   /** Return mutating runs whose runner has not settled, including cancelled runs. */
@@ -233,7 +237,6 @@ export class SubagentRegistry {
       if (!rec) continue;
       if (rec.status === "running") {
         this.steer(id, directive);
-        this.pausedIds.add(id);
         rec.status = "paused";
         rec.resumable = true;
       }
@@ -243,11 +246,10 @@ export class SubagentRegistry {
     return out;
   }
 
-  /** Resume a paused (or resumable completed) subagent with follow-up instructions. */
+  /** Redirect a still-live run; settled runners cannot be restarted. */
   resume(id: string, message = DEFAULT_RESUME_MESSAGE): { success: boolean; record?: SubagentRecord; error?: string } {
     const rec = this.get(id);
     if (!rec) return { success: false, error: `No subagent matches ${id}.` };
-    this.pausedIds.delete(id);
     if (rec.status === "paused") {
       rec.status = "running";
       this.steer(id, message);
@@ -257,19 +259,15 @@ export class SubagentRegistry {
       this.steer(id, message);
       return { success: true, record: rec };
     }
-    // If completed or failed, steer queues message for any attached listener
-    rec.status = "running";
-    rec.resumable = true;
-    this.steer(id, message);
-    return { success: true, record: rec };
+    return { success: false, record: rec, error: `Cannot resume '${id}': the ${rec.status} run cannot accept instructions. Launch a new task instead.` };
   }
 
-  /** Cancel the given ids (or all running, when empty): aborts the run and marks the
-   *  record cancelled. Already-terminal records are returned unchanged. */
+  /** Cancel the given ids (or all running/paused, when empty). Already-terminal
+   *  records are returned unchanged; runner settlement remains separately tracked. */
   cancel(ids: string[]): SubagentRecord[] {
     const out: SubagentRecord[] = [];
-    for (const id of ids) {
-      this.pausedIds.delete(id);
+    const targets = ids.length ? ids : this.pending().filter(rec => rec.status === "running" || rec.status === "paused").map(rec => rec.id);
+    for (const id of targets) {
       const e = this.entries.get(id);
       if (!e) continue;
       if (e.record.status === "running" || e.record.status === "paused") {
@@ -283,8 +281,8 @@ export class SubagentRegistry {
     return out;
   }
 
-  /** Abort every still-running subagent (session teardown / Ctrl-C). */
+  /** Abort every running or pause-requested subagent during session teardown. */
   cancelAll(): SubagentRecord[] {
-    return this.cancel(this.running().map(r => r.id));
+    return this.cancel([]);
   }
 }

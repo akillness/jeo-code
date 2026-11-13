@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { formatTranscript } from "../src/tui/components/transcript";
 import type { Message } from "../src/ai/types";
 import chalk from "chalk";
+import { CompactPasteStore } from "../src/commands/launch/input";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -60,11 +61,11 @@ test("formatTranscript maxTurns keeps only the last n exchanges with a hidden ma
   expect(all).not.toContain("hidden");
 });
 
-test("formatTranscript clips long bodies and handles empty history", () => {
+test("formatTranscript clips long assistant replies and handles empty history", () => {
   const long = Array.from({ length: 20 }, (_, i) => `line-${i}`).join("\n");
   const messages: Message[] = [
-    { role: "user", content: long },
-    { role: "assistant", content: "short answer" },
+    { role: "user", content: "inspect this report" },
+    { role: "assistant", content: long },
   ];
   const out = formatTranscript(messages, { color: false, bodyLines: 4 }).map(stripAnsi).join("\n");
   expect(out).toContain("line-3");
@@ -179,3 +180,71 @@ test("formatTranscript sanitizes tool paths and results without stripping its ow
     chalk.level = previousLevel;
   }
 });
+
+test("formatTranscript uses persisted compact display without replacing the canonical prompt", () => {
+  const store = new CompactPasteStore();
+  const display = `typed ${store.store("private-first\r\n한🙂\t$&")} after`;
+  const content = store.expand(display);
+  const message: Message = {
+    role: "user", content,
+    inputDisplay: store.snapshot(display, content),
+  };
+  const text = formatTranscript([message], { color: false }).join("\n");
+  expect(text).toContain(display);
+  expect(text).not.toContain("private-first");
+  expect(message.content).toBe(content);
+});
+
+for (const { name, content, expected } of [
+  { name: "ordinary typed line", content: "typed instruction", expected: "typed instruction" },
+  { name: "1000-column boundary", content: "x".repeat(1000), expected: "x".repeat(1000) },
+  { name: "1001-column large paste", content: "x".repeat(1001), expected: "[Paste #2, 1 lines, 1001 cols]" },
+  { name: "legacy CRLF with Unicode", content: "한🙂\r\nwide", expected: "[Paste #2, 2 lines, 4 cols]" },
+]) {
+  test(`formatTranscript renders ${name} without exposing a legacy paste body`, () => {
+    const text = formatTranscript([{ role: "user", content: "earlier" }, { role: "user", content }], { color: false }).join("\n");
+    expect(text).toContain(`  ${expected}`);
+    if (expected !== content) expect(text).not.toContain(content);
+  });
+}
+
+test("formatTranscript classifies protocol feedback by canonical content before compact display", () => {
+  const store = new CompactPasteStore();
+  const display = store.store("real prompt");
+  const messages: Message[] = [
+    { role: "user", content: "real prompt", inputDisplay: store.snapshot(display, "real prompt") },
+    { role: "assistant", content: JSON.stringify({ tool: "read", arguments: { path: "report.txt" } }) },
+    { role: "user", content: "Tool [read] result (ok):\nread result", inputDisplay: { text: "not a new user prompt", pastes: [], textLength: 40 } },
+    { role: "assistant", content: "answer" },
+  ];
+  const text = formatTranscript(messages, { color: false }).join("\n");
+  expect(text).toContain("turn 1/1");
+  expect(text).toContain(display);
+  expect(text).toMatch(/✔ .*report\.txt/);
+  expect(text).toContain("read result");
+  expect(text).not.toContain("not a new user prompt");
+});
+
+test("formatTranscript image history keeps numbered references without image payload or terminal escapes", () => {
+  const image = { mediaType: "image/png", data: Buffer.from("private-image-data").toString("base64") };
+  const text = formatTranscript([{ role: "user", content: "compare screenshots", images: [image, image] }], { color: false }).join("\n");
+  expect(text).toContain("#image01 #image02");
+  expect(text).toContain("compare screenshots");
+  expect(text).not.toContain(image.data);
+  expect(text).not.toContain("\x1b_G");
+  expect(text).not.toContain("\x1b]1337;File=");
+});
+
+for (const { name, inputDisplay } of [
+  { name: "non-string display", inputDisplay: { text: 42, pastes: [], textLength: 4 } },
+  { name: "inconsistent replacement", inputDisplay: { text: "DIFFERENT", pastes: [], textLength: 4 } },
+  { name: "out-of-range hidden span", inputDisplay: { text: "[Paste #1, 1 lines, 4 cols]", pastes: [{ marker: "[Paste #1, 1 lines, 4 cols]", start: 0, end: 99 }], textLength: 4 } },
+]) {
+  test(`formatTranscript rejects ${name} metadata without losing canonical content`, () => {
+    const messages = JSON.parse(JSON.stringify([{ role: "user", content: "SAFE", inputDisplay }]));
+    const text = formatTranscript(messages, { color: false }).join("\n");
+    expect(text).toContain("  SAFE");
+    expect(text).not.toContain("DIFFERENT");
+    expect(text).not.toContain("[Paste #1");
+  });
+}

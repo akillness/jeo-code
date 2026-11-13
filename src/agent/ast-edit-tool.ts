@@ -35,7 +35,7 @@ function pathsOf(args: Record<string, any>): string[] {
 }
 
 export function createAstEditTool(): ToolHandler {
-  return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+  return async (args: Record<string, any>, cwd: string, _onProgress?: (partialOutput: string) => void, signal?: AbortSignal): Promise<ToolResult> => {
     const pattern = typeof args.pattern === "string" ? args.pattern.trim() : "";
     if (!pattern) {
       return { success: false, output: "", error: `ast_edit requires a non-empty "pattern".` };
@@ -107,7 +107,7 @@ export function createAstEditTool(): ToolHandler {
       }
 
       const rel = path.relative(cwd, abs) || abs;
-      const res = await writeTool(rel, newText, cwd);
+      const res = await writeTool(rel, newText, cwd, signal);
       if (res.success) mutationMayHaveOccurred = true;
       if (!res.success) {
         return { success: false, output: "", error: `${rel}: ${res.error ?? "write failed"}`, mutationMayHaveOccurred: res.mutationMayHaveOccurred === true || mutationMayHaveOccurred };

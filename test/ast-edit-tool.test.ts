@@ -78,3 +78,42 @@ test("ast_edit operates across multiple files under a directory path", async () 
   expect(await fs.readFile(path.join(cwd, "a.ts"), "utf-8")).toContain('logger.info("a")');
   expect(await fs.readFile(path.join(cwd, "b.ts"), "utf-8")).toContain('logger.info("b")');
 });
+
+for (const cancelled of [true, false]) {
+  test(`ast_edit cancellation: ${cancelled ? "aborted signal preserves every file" : "live signal commits every rewrite"}`, async () => {
+    const cwd = await tmpDir();
+    try {
+      const originals = {
+        "a.ts": 'console.log("first");\nconst keep = 1;\n',
+        "b.ts": 'console.log("second");\n',
+      };
+      for (const [file, content] of Object.entries(originals)) {
+        await fs.writeFile(path.join(cwd, file), content);
+      }
+      const controller = new AbortController();
+      if (cancelled) controller.abort();
+
+      const result = await createAstEditTool()(
+        { pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)", paths: ["a.ts", "b.ts"] },
+        cwd,
+        undefined,
+        controller.signal,
+      );
+
+      for (const [file, original] of Object.entries(originals)) {
+        expect(await fs.readFile(path.join(cwd, file), "utf-8")).toBe(
+          cancelled ? original : original.replace("console.log", "logger.info"),
+        );
+      }
+      expect(result.success).toBe(!cancelled);
+      if (cancelled) {
+        expect(result.error).toContain("Operation cancelled");
+        expect(result.mutationMayHaveOccurred).not.toBe(true);
+      } else {
+        expect(result.output).toContain("2 replacement(s) across 2 file(s)");
+      }
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+}

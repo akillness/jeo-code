@@ -48,6 +48,22 @@ test("formatTaskSubEvent treats only explicit false as incomplete", () => {
   expect(out).not.toContain("(incomplete)");
 });
 
+for (const kind of ["start", "step", "tool", "error", "done"] as const) {
+  test(`detached carry: plain ${kind} rows distinguish simultaneous same-role runs`, () => {
+    const render = (detachedId: string) => formatTaskSubEvent({
+      role: "executor", kind, detachedId, detail: "read src/agent/engine.ts", success: kind !== "error",
+    }).replace(/\x1b\[[0-9;]*m/g, "");
+    const first = render("detached-17");
+    const second = render("detached-18");
+    expect(first).toContain("EXECUTOR");
+    expect(first).toContain("detached-17");
+    expect(first).not.toContain("detached-18");
+    expect(second).toContain("detached-18");
+    expect(second).not.toContain("detached-17");
+    expect(first).not.toBe(second);
+  });
+}
+
 test("end-to-end: a piped one-shot turn prints the per-step flow (not just the final reply)", async () => {
   let turn = 0;
   await mock.module("../src/agent/loop", () => ({

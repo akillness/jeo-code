@@ -212,6 +212,7 @@ export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string
     `task   single: {role?, task, context?}  —  fan-out: {role?, tasks:["task 1", "task 2", ...]} ` +
     `— delegate to a subagent (role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
     `'tasks' MUST be a real JSON array (of strings, or {task, context?} objects) — NEVER a JSON-stringified array, NEVER a single task string. ` +
+    `Detached execution is single-task only: {role?, task, context?, detached:true}; fan-out cannot be detached. ` +
     `All items in 'tasks' run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
   );
 }
@@ -737,7 +738,11 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     const tasksArg = typeof args.tasks === "string"
       ? (() => { try { const p = JSON.parse(args.tasks as string); return Array.isArray(p) ? p : args.tasks; } catch { return args.tasks; } })()
       : args.tasks;
+    const detached = args.detached === true || args.detached === "true";
     if (Array.isArray(tasksArg)) {
+      if (detached) {
+        return { success: false, output: "", error: "Detached execution supports a single task only; fan-out 'tasks' cannot be detached." };
+      }
       const items = (tasksArg as unknown[])
         .map(entry => {
           if (typeof entry === "string") return { task: entry.trim(), context: "" };
@@ -862,7 +867,11 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // parent can keep working, then list/inspect/await/cancel via the `subagent`
     // tool. Live peer messaging (steer/irc) DOES reach a detached run — it drains
     // its own registry inbox (registry.steerDrainFor(id)) between its own steps.
-    if (args.detached === true && opts.registry) {
+    if (detached && opts.registry) {
+      // Pause/cancel requests do not release capacity until the runner settles.
+      if (opts.registry.pending().length >= MAX_FANOUT) {
+        return { success: false, output: "", error: `Detached task limit is ${MAX_FANOUT} unsettled runs. Await a runner's settlement before launching another task.` };
+      }
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
         runOne(role, taskText, ctx(args.context), cwd, {
           signal,

@@ -44,7 +44,8 @@ function streamResultSuffix(tool: string, ok: boolean, output: string | undefine
 
 export function formatTaskSubEvent(e: TaskSubEvent): string {
   const role = e.role || "subagent";
-  const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
+  const roleLabel = e.detachedId ? `${role.toUpperCase()}[${e.detachedId}]`
+    : e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
   const tokTag = e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : "";
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";

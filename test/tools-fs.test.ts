@@ -669,3 +669,76 @@ test("bashTool: a pre-aborted signal returns immediately without leaving a child
   await new Promise(r => setTimeout(r, 200));
   expect(await countStrayProcesses(marker)).toBe(0);
 });
+
+const cancellableMutations = [
+  {
+    name: "write",
+    run: (cwd: string, signal: AbortSignal) => writeTool("created/note.txt", "written", cwd, signal),
+    entries: ["created", "created/note.txt", "retained", "retained/child.txt", "victim.txt"],
+    contents: { "created/note.txt": "written", "victim.txt": "original", "retained/child.txt": "keep" },
+  },
+  {
+    name: "edit",
+    run: (cwd: string, signal: AbortSignal) => editTool("victim.txt", "<<<<<<< SEARCH\noriginal\n=======\nchanged\n>>>>>>>", cwd, signal),
+    entries: ["retained", "retained/child.txt", "victim.txt"],
+    contents: { "victim.txt": "changed", "retained/child.txt": "keep" },
+  },
+  {
+    name: "mkdir",
+    run: (cwd: string, signal: AbortSignal) => mkdirTool("created/nested", cwd, signal),
+    entries: ["created", "created/nested", "retained", "retained/child.txt", "victim.txt"],
+    contents: { "victim.txt": "original", "retained/child.txt": "keep" },
+  },
+  {
+    name: "delete file",
+    run: (cwd: string, signal: AbortSignal) => deleteTool("victim.txt", cwd, false, signal),
+    entries: ["retained", "retained/child.txt"],
+    contents: { "retained/child.txt": "keep" },
+  },
+  {
+    name: "delete directory",
+    run: (cwd: string, signal: AbortSignal) => deleteTool("retained", cwd, true, signal),
+    entries: ["victim.txt"],
+    contents: { "victim.txt": "original" },
+  },
+];
+
+for (const mutation of cancellableMutations) {
+  for (const cancellation of ["before dispatch", "during mutation guard", "not cancelled"]) {
+    test(`filesystem cancellation: ${mutation.name}, ${cancellation}`, async () => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-fs-cancel-"));
+      try {
+        await fs.writeFile(path.join(cwd, "victim.txt"), "original");
+        await fs.mkdir(path.join(cwd, "retained"));
+        await fs.writeFile(path.join(cwd, "retained/child.txt"), "keep");
+        const controller = new AbortController();
+        if (cancellation === "before dispatch") controller.abort();
+
+        const pending = mutation.run(cwd, controller.signal);
+        // Each mutator awaits the filesystem-backed authorization guard before
+        // committing. Abort before that await settles, without a timer or mock.
+        if (cancellation === "during mutation guard") controller.abort();
+        const result = await pending;
+
+        if (cancellation === "not cancelled") {
+          expect((await fs.readdir(cwd, { recursive: true })).sort()).toEqual(mutation.entries);
+          for (const [file, content] of Object.entries(mutation.contents)) {
+            expect(await fs.readFile(path.join(cwd, file), "utf-8")).toBe(content);
+          }
+          expect(result.success).toBe(true);
+        } else {
+          expect((await fs.readdir(cwd, { recursive: true })).sort()).toEqual([
+            "retained", "retained/child.txt", "victim.txt",
+          ]);
+          expect(await fs.readFile(path.join(cwd, "victim.txt"), "utf-8")).toBe("original");
+          expect(await fs.readFile(path.join(cwd, "retained/child.txt"), "utf-8")).toBe("keep");
+          expect(result.success).toBe(false);
+          expect(result.error).toContain("Operation cancelled");
+          expect(result.mutationMayHaveOccurred).not.toBe(true);
+        }
+      } finally {
+        await fs.rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+}

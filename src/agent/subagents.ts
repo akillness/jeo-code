@@ -303,7 +303,7 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
   if (prefixes && prefixes.length > 0) {
     const inner = DEFAULT_TOOLS.bash;
     const guarded: Record<string, ToolHandler> = { ...DEFAULT_TOOLS };
-    guarded.bash = async (a, cwd, onProgress) => {
+    guarded.bash = async (a, cwd, onProgress, signal) => {
       const command = String(a.command ?? a.cmd ?? "");
       if (!bashCommandAllowed(command, prefixes)) {
         return {
@@ -314,7 +314,7 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
             `Received: ${command.trim().slice(0, 120)}`,
         };
       }
-      return inner(a, cwd, onProgress);
+      return inner(a, cwd, onProgress, signal);
     };
     SANDBOX_MEDIATED_TOOLS.add(guarded.bash);
     return guarded;

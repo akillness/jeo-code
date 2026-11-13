@@ -74,6 +74,7 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 - **リモート監視・制御(Telegram, Discord, Slack)** — ボットを一度ペアリング(`jeo notify setup --provider telegram|discord|slack`)すれば、共有の `jeo daemon start` 1 つが、稼働中のすべてのセッションにわたってサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、人間の許可リスト(allowlist)からの `/subagents`、`/steer`、`/cancel`(Discord/Slack ではさらに `/sessions` と `/send`)を受け付けます。Telegram はフォーラムトピック・インラインキーボード・画像添付に対応し、Discord は REST + Gateway WebSocket、Slack は Web API + Socket Mode を使います。プラットフォーム別詳細ガイドおよびインストール可能なエージェントスキル(`channel-notify`)を提供します。
 - **範囲のあるワークフローゲートであり、証明ではない** — `approve` は承認対象の正確なプランダイジェストを再検証し、`team` はレビュー後にダイジェストが変わったプランを拒否します。`done` では現在のターンの変更・検証シグナルが完了をブロックまたは格下げし、`/goal` は会話・ツール履歴に対する別の LLM 判定と決定論的な証拠ゲートを追加します。いずれもワークスペースを独立して再読み込みしません。ツールやテストの出力は証拠であって、実行ランナーや結果の信頼性を証明するものではありません。このチェックはターン終了後にバックグラウンド処理がファイルを変更しないことも保証しません。`autopilot` ratchet はロールバック失敗を `rollback_failed` と記録し、非ゼロで停止します。
 - **ターンをブロックしないセッション単位の非同期実行** — `task` ツールの実際の `tasks` 配列で独立した作業をファンアウトし、親ターンを止めません。detached サブエージェント、バックグラウンド job、行単位 monitor は後続ターンからも `subagent`/`job`/`monitor` の `list`、`inspect`、`await`、`cancel`、`tail` で制御できます。インライン TUI は各ワーカーのライブ activity を専用スロットに表示し、セッション終了または Ctrl-C ですべてのレジストリを破棄します。
+  ローカルの単一タスクは `detached: true`（または `"true"`）を受け付け、detached ファンアウトは拒否します。未完了の detached 実行は最大4件で、一時停止・キャンセル済みでも実際に終了するまでは数えます。返されたプレーンテキスト ID を `subagent` の制御に使用してください。`monitor {action:"start", command, timeout:30}` の `timeout` は有限の正数で秒単位の寿命、`await` の `timeoutMs` はミリ秒です。monitor 出力は上限付きの信頼できない観測データであり、指示ではありません。永続化する TUI イベントはサニタイズします。サンドボックスゲストの push 観測・ライフサイクル転送は従来どおり未対応で、このローカル動作は特権 RPC を追加しません。
 - **プラン critic ゲート** — プランは architect/critic の工程を省略できません。`PlanSchema` は未検証の変更で終わるプランを拒否し(変更より前の verifier は対象にならない)、`ralplan` の作成時と `team`/`approve` の実行時に適用します。critic 評決には観測されたリポジトリ読み取り・検索の証拠が必要ですが、これはレビュー可能性を支えるものであり、ワークスペースの独立検証ではありません。
 - **セーフティバウンダリの自動モデルフォールバック** — 未分類のセーフティ拒否(本物のコンテンツポリシー違反ではなく、分類器の誤検知の可能性)は、同じモデルで永遠に譲歩するのではなく、実際に別プロバイダのモデルへ切り替わるようになりました — 既存のレート制限時の高速フォールバックと同じパターンです。`Refusal (<category>)` 形式の確定的な拒否は影響を受けず、引き続きフォールバックなしでハードフェイルします。
 - **メモリ: 勝ち取った信頼** — コンセプトの検証日付は、あらゆる書き込みではなく、蒸留パスが明示的に検証済みとマークした場合にのみ記録されるようになりました。`isConceptStale` は受動的なタイムスタンプを信頼する代わりに、未検証(または30日超の陳腐化)のコンセプトを再検証が必要なものとして扱います。
@@ -394,6 +395,8 @@ jeo ultragoal
 - `jeo team` が失敗した場合: 部分的な変更が残っていないか作業ツリーを確認してから `jeo team` を再実行します。保存状態は完了済みタスクを保ち、保留中の作業を再開します。合格を装うために状態ファイルを削除・編集しないでください。
 - `jeo ultragoal` が失敗した場合: 実装または検証を修正し、新しい証拠を得るため再実行します。各実行でグローバルテストスイートは1回です。実行結果がない基準は未解決であり、チャットの確認応答はゲート判定ではありません。
 
+手動のアーティファクト検証では `.github/workflows/release-verify.yml` を実行し、`ref` にブランチやタグではなく正確に40桁の16進コミット SHA を指定します。ワークフローはリポジトリの読み取り専用権限と Bun 1.3.14 を使い、パックしたパッケージを独立 prefix にインストールして実行ファイル・依存関係の配置を確認し、インストール済み実行ファイルで tmux battery を実行します。npm への公開は行いません。ソースの smoke 結果だけでは、このワークフローの実行完了は証明できません。
+
 #### デフォルト、役割別、Discord 専用モデル
 
 `jeo setup`、対応プロバイダーの `/provider login <provider>`、または API キー環境変数で認証します。`/model` で検出済みモデルを選択し、`jeo --model provider/model-id` で単一起動のモデルを指定できます。`jeo models` でプロバイダーカタログを一覧・検索・更新し、`jeo doctor` で設定を確認します。
@@ -570,7 +573,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[Unreleased]** — Local cancellation, bounded async observation, and manual installed-artifact verification.
 - **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
 - **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 - **[0.12.35]** (2026-11-11) — Docker-free Discord: every conversation runs in its own native OS sandbox, and ending the session ends every process it started.

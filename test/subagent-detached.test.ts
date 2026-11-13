@@ -1,10 +1,12 @@
-import { test, expect, mock, afterEach } from "bun:test";
+import { test, expect, mock, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolResult } from "../src/agent/tools";
 import { MAX_DETACHED_RESULT_BYTES, SubagentRegistry } from "../src/agent/subagent-registry";
 import { createSubagentTool } from "../src/agent/subagent-tool";
+import * as loop from "../src/agent/loop";
+import { createTaskTool } from "../src/agent/task-tool";
 
 afterEach(() => {
   mock.restore();
@@ -431,3 +433,201 @@ test("registry: setActivity tracks live subagent activity in list and inspect", 
   expect(reg.get(rec.id)?.activity).toBeUndefined();
 });
 
+
+const mergeDone = JSON.stringify({
+  tool: "done",
+  arguments: { reason: "Summary: finished\nChanged Files: none\nVerification: reviewed" },
+});
+
+test("merge regression: detached string true returns a controllable handle before the runner settles", async () => {
+  const cwd = await tmpDir();
+  const reg = new SubagentRegistry();
+  const entered = Promise.withResolvers<void>();
+  const response = Promise.withResolvers<string>();
+  const provider = spyOn(loop, "callLlm").mockImplementation(async () => {
+    entered.resolve();
+    return response.promise;
+  });
+  const dispatch = createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })({
+    role: "executor", task: "hold this task", detached: "true",
+  }, cwd);
+  try {
+    await entered.promise;
+    expect(reg.pending().map(record => record.id)).toEqual(["executor-1"]);
+    const receipt = await dispatch;
+    expect(receipt.success).toBe(true);
+    expect(receipt.output).toContain("[detached] launched");
+    expect(receipt.output).toContain("executor-1");
+    const inspection = await createSubagentTool(reg)({ action: "inspect", id: "executor-1" }, cwd);
+    expect(inspection.output).toContain("[RUNNING]");
+  } finally {
+    reg.cancelAll();
+    response.resolve(mergeDone);
+    await dispatch;
+    await reg.awaitIds(reg.list().map(record => record.id));
+    provider.mockRestore();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+for (const heldState of ["running", "paused", "cancelled"] as const) {
+  test(`merge regression: fifth detached task is refused while four ${heldState} runners are unsettled`, async () => {
+    const cwd = await tmpDir();
+    const reg = new SubagentRegistry();
+    const response = Promise.withResolvers<string>();
+    const entered = Promise.withResolvers<void>();
+    let started = 0;
+    const provider = spyOn(loop, "callLlm").mockImplementation(() => {
+      if (++started === 4) entered.resolve();
+      return response.promise;
+    });
+    const control = createSubagentTool(reg);
+    const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg });
+    const completed = reg.launch("executor", "settled success", async () => ({ success: true, output: "completed report" }));
+    const failed = reg.launch("executor", "settled failure", async () => ({ success: false, output: "failed report" }));
+    const cancelled = reg.launch("executor", "settled cancellation", async () => ({ success: true, output: "late report" }));
+    reg.cancel([cancelled.id]);
+    await reg.awaitIds([completed.id, failed.id, cancelled.id]);
+    try {
+      for (let i = 0; i < 4; i++) {
+        const receipt = await tool({ role: "executor", task: `held task ${i}`, detached: true }, cwd);
+        expect(receipt.success).toBe(true);
+      }
+      await entered.promise;
+      const activeIds = reg.pending().map(record => record.id);
+      expect(activeIds).toHaveLength(4);
+      if (heldState === "paused") reg.pause([activeIds[0]!]);
+      if (heldState === "cancelled") reg.cancel([activeIds[0]!]);
+
+      const refused = await tool({ role: "executor", task: "must not launch yet", detached: true }, cwd);
+      expect(refused.success).toBe(false);
+      expect(refused.error).toMatch(/(?:limit|cap|at most|maximum|already|active).*4|4.*(?:active|running|limit|cap)/i);
+      expect(reg.pending().map(record => record.id)).toEqual(activeIds);
+      expect((await control({ action: "inspect", id: completed.id }, cwd)).output).toContain("completed report");
+      expect((await control({ action: "inspect", id: failed.id }, cwd)).output).toContain("failed report");
+      expect((await control({ action: "inspect", id: cancelled.id }, cwd)).output).toContain("[CANCELLED]");
+
+      response.resolve(mergeDone);
+      await reg.awaitIds(activeIds);
+      const replacement = await tool({ role: "executor", task: "capacity released after settlement", detached: true }, cwd);
+      expect(replacement.success).toBe(true);
+      expect(replacement.output).toContain("[detached] launched");
+    } finally {
+      reg.cancelAll();
+      response.resolve(mergeDone);
+      await reg.awaitIds(reg.list().map(record => record.id));
+      provider.mockRestore();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const detached of [true, "true"]) {
+  for (const tasks of [["first assignment", "second assignment"], JSON.stringify(["first assignment", "second assignment"])]) {
+    test(`merge regression: detached fanout is rejected for ${typeof detached} flag and ${typeof tasks} tasks`, async () => {
+      const cwd = await tmpDir();
+      const reg = new SubagentRegistry();
+      const provider = spyOn(loop, "callLlm").mockResolvedValue(mergeDone);
+      try {
+        const result = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })({
+          role: "executor", tasks, detached,
+        }, cwd);
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/detached/i);
+        expect(result.error).toMatch(/single|fan.?out|tasks/i);
+        expect(reg.list()).toEqual([]);
+      } finally {
+        reg.cancelAll();
+        await reg.awaitIds(reg.list().map(record => record.id));
+        provider.mockRestore();
+        await fs.rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("merge regression: cancelling a detached write while directory creation is pending prevents the file commit", async () => {
+  const cwd = await tmpDir();
+  const reg = new SubagentRegistry();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const targetDirectory = path.join(cwd, "pending-write");
+  const originalMkdir = fs.mkdir;
+  const mkdir = spyOn(fs, "mkdir").mockImplementation(async (...args: Parameters<typeof fs.mkdir>) => {
+    if (String(args[0]) === targetDirectory) {
+      entered.resolve();
+      await release.promise;
+    }
+    return originalMkdir(...args);
+  });
+  const provider = spyOn(loop, "callLlm").mockResolvedValue(JSON.stringify({
+    tool: "write", arguments: { filePath: "pending-write/result.txt", content: "must never commit" },
+  }));
+  try {
+    const receipt = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })({
+      role: "executor", task: "write a result", detached: true,
+    }, cwd);
+    expect(receipt.success).toBe(true);
+    await entered.promise;
+    reg.cancel(["executor-1"]);
+    expect(reg.inFlightMutators().map(record => record.id)).toEqual(["executor-1"]);
+    release.resolve();
+    await reg.awaitIds(["executor-1"]);
+    expect(await fs.readFile(path.join(targetDirectory, "result.txt"), "utf8").catch(error => error.code)).toBe("ENOENT");
+    expect(reg.get("executor-1")!.status).toBe("cancelled");
+    expect(reg.inFlightMutators()).toEqual([]);
+  } finally {
+    reg.cancelAll();
+    release.resolve();
+    await reg.awaitIds(reg.list().map(record => record.id));
+    mkdir.mockRestore();
+    provider.mockRestore();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")("merge regression: cancelling detached bash terminates the active local child before runner settlement", async () => {
+  const cwd = await tmpDir();
+  const reg = new SubagentRegistry();
+  const pidPath = path.join(cwd, "child.pid");
+  const childScript = path.join(cwd, "child.cjs");
+  await fs.writeFile(childScript, 'require("node:fs").watch(".", () => {}); require("node:fs").writeFileSync("child.pid", String(process.pid));');
+  const readyEvents = fs.watch(cwd, { signal: AbortSignal.timeout(5_000) });
+  const provider = spyOn(loop, "callLlm").mockResolvedValue(JSON.stringify({
+    tool: "bash", arguments: { command: `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(childScript)}` },
+  }));
+  let childPid: number | undefined;
+  const childAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw error;
+    }
+  };
+  try {
+    const receipt = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })({
+      role: "executor", task: "run the cancellable local child", detached: true,
+    }, cwd);
+    expect(receipt.success).toBe(true);
+    for await (const event of readyEvents) {
+      if (event.filename !== "child.pid") continue;
+      const value = await fs.readFile(pidPath, "utf8");
+      if (!/^\d+$/.test(value)) continue;
+      childPid = Number(value);
+      break;
+    }
+    expect(childAlive(childPid!)).toBe(true);
+    reg.cancel(["executor-1"]);
+    await reg.awaitIds(["executor-1"], 1_500);
+    expect(reg.pending().map(record => record.id)).toEqual([]);
+    expect(childAlive(childPid!)).toBe(false);
+    expect(reg.get("executor-1")!.status).toBe("cancelled");
+  } finally {
+    await readyEvents.return?.();
+    reg.cancelAll();
+    const ownedPid = childPid ?? Number(await fs.readFile(pidPath, "utf8").catch(() => "0"));
+    if (ownedPid > 0 && childAlive(ownedPid)) process.kill(ownedPid, "SIGKILL");
+    await reg.awaitIds(reg.list().map(record => record.id));
+    provider.mockRestore();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});

@@ -25,17 +25,27 @@ export interface MonitorRecord {
   persistent: boolean;
 }
 
+export interface MonitorEvent {
+  type: "start" | "line" | "done";
+  record: MonitorRecord;
+  line?: string;
+}
+
 export type MonitorLineHandler = (record: MonitorRecord, line: string) => void | Promise<void>;
 
 export interface MonitorRegistryOptions {
   /** Called once for every complete stdout/stderr line. */
   onLine?: MonitorLineHandler;
+  /** Lifecycle callbacks run once at launch and after true process/pipe settlement. */
+  onStart?: (record: MonitorRecord) => void | Promise<void>;
+  onDone?: (record: MonitorRecord) => void | Promise<void>;
 }
 
 interface Entry {
   record: MonitorRecord;
   promise: Promise<void>;
   cancel?: () => boolean;
+  deadlineTimer?: NodeJS.Timeout;
   /** SIGKILL reached the pinned process group. */
   killDelivered?: boolean;
   /** Termination of every process holding the monitor's group or pipes cannot be confirmed. */
@@ -63,9 +73,18 @@ export class MonitorRegistry {
   private readonly active = new Set<string>();
   private readonly pendingMutations = new Set<string>();
   private readonly onLine?: MonitorLineHandler;
+  private readonly onStart?: MonitorRegistryOptions["onStart"];
+  private readonly onDone?: MonitorRegistryOptions["onDone"];
+  private readonly observations: string[] = [];
+  private observationChars = 0;
+  private observationsTruncated = false;
   private seq = 0;
   constructor(options: MonitorRegistryOptions | MonitorLineHandler = {}) {
     this.onLine = typeof options === "function" ? options : options.onLine;
+    if (typeof options !== "function") {
+      this.onStart = options.onStart;
+      this.onDone = options.onDone;
+    }
   }
 
   private append(id: string, chunk: string): void {
@@ -81,7 +100,43 @@ export class MonitorRegistry {
     this.buffers.set(id, buf);
   }
 
+  private notify(handler: MonitorRegistryOptions["onStart"], record: MonitorRecord): void {
+    try {
+      void Promise.resolve(handler?.({ ...record })).catch(() => undefined);
+    } catch {
+      // Display failures cannot alter process ownership or settlement.
+    }
+  }
+
+  private observe(record: MonitorRecord, line: string): void {
+    const label = `[monitor ${record.id}]\n`;
+    const observation = label + line.slice(0, NOTICE_CHAR_LIMIT - label.length);
+    if (observation.length < label.length + line.length) this.observationsTruncated = true;
+    if (this.observations.length >= NOTICE_COUNT_LIMIT || this.observationChars + observation.length > NOTICE_CHAR_LIMIT) {
+      this.observationsTruncated = true;
+      return;
+    }
+    this.observations.push(observation);
+    this.observationChars += observation.length;
+  }
+
+  /** Drain untrusted observations without acknowledging process mutations or completion. */
+  drainObservations(): string[] {
+    const observations = this.observations.splice(0);
+    if (this.observationsTruncated) {
+      const marker = "[monitor observations truncated; inspect monitor tail for full buffered output]";
+      while (observations.length >= NOTICE_COUNT_LIMIT || this.observationChars + marker.length > NOTICE_CHAR_LIMIT) {
+        this.observationChars -= observations.pop()!.length;
+      }
+      observations.push(marker);
+    }
+    this.observationChars = 0;
+    this.observationsTruncated = false;
+    return observations;
+  }
+
   private async emit(record: MonitorRecord, line: string): Promise<void> {
+    this.observe(record, line);
     try {
       await this.onLine?.(record, line);
     } catch {
@@ -162,7 +217,14 @@ export class MonitorRegistry {
   }
 
   /** Spawn and start a monitor; returns its running record immediately. */
-  start(command: string, cwd: string, persistentOrOptions: boolean | { persistent?: boolean } = false): MonitorRecord {
+  start(command: string, cwd: string, persistentOrOptions: boolean | { persistent?: boolean; timeout?: number } = false): MonitorRecord {
+    if (typeof persistentOrOptions !== "boolean" && persistentOrOptions.persistent !== undefined && typeof persistentOrOptions.persistent !== "boolean") {
+      throw new TypeError("monitor 'persistent' must be a boolean.");
+    }
+    const timeout = typeof persistentOrOptions === "boolean" ? undefined : persistentOrOptions.timeout;
+    if (timeout !== undefined && (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0)) {
+      throw new TypeError("monitor 'timeout' must be finite positive seconds.");
+    }
     this.seq += 1;
     const id = `monitor-${this.seq}`;
     const persistent = typeof persistentOrOptions === "boolean"
@@ -177,6 +239,7 @@ export class MonitorRegistry {
       persistent,
     };
     this.buffers.set(id, "");
+    this.notify(this.onStart, record);
 
     let shell: LeasedShell;
     try {
@@ -188,6 +251,7 @@ export class MonitorRegistry {
       this.pendingMutations.add(id);
       const failed: Entry = { record, promise: Promise.resolve() };
       this.entries.set(id, failed);
+      this.notify(this.onDone, record);
       return record;
     }
 
@@ -208,6 +272,15 @@ export class MonitorRegistry {
     const queue: NoticeQueue = { tails: [Promise.resolve(), Promise.resolve()], count: 0, chars: 0, overflow: false, firstLineClaimed: false };
     const drains = Promise.all([this.drain(entry, shell.stdout, queue, 0), this.drain(entry, shell.stderr, queue, 1)]);
     this.entries.set(id, entry);
+    if (timeout !== undefined) {
+      const deadline = Date.now() + timeout * 1000;
+      const scheduleDeadline = (): void => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { this.cancel([id]); return; }
+        entry.deadlineTimer = setTimeout(scheduleDeadline, Math.min(remaining, 2_147_483_647));
+      };
+      scheduleDeadline();
+    }
     entry.promise = (async () => {
       try {
         const exitCode = await shell.exit;
@@ -250,12 +323,14 @@ export class MonitorRegistry {
         record.status = "failed";
         this.append(id, err instanceof Error ? err.message : String(err));
       } finally {
+        clearTimeout(entry.deadlineTimer);
         shell.release();
         await shell.reaped;
         shell.dispose();
         if (!entry.incomplete) this.active.delete(id);
         this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
+        this.notify(this.onDone, record);
       }
     })();
     // Keep the promise observed even when callers only use list/tail; all paths

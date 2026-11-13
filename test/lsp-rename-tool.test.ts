@@ -71,3 +71,38 @@ test("lsp_rename refuses to rename at a non-renameable position", async () => {
   expect(res.success).toBe(false);
   expect(res.error).toContain("Cannot rename");
 });
+
+for (const cancelled of [true, false]) {
+  test(`lsp_rename cancellation: ${cancelled ? "aborted signal preserves definition and references" : "live signal commits definition and references"}`, async () => {
+    const cwd = await fixture();
+    try {
+      const originalA = await fs.readFile(path.join(cwd, "a.ts"), "utf-8");
+      const originalB = await fs.readFile(path.join(cwd, "b.ts"), "utf-8");
+      const controller = new AbortController();
+      if (cancelled) controller.abort();
+
+      const result = await createLspRenameTool()(
+        { file: "a.ts", line: 1, symbol: "greet", new_name: "salute", apply: true },
+        cwd,
+        undefined,
+        controller.signal,
+      );
+
+      expect(await fs.readFile(path.join(cwd, "a.ts"), "utf-8")).toBe(
+        cancelled ? originalA : 'export function salute(name: string): string {\n  return "hi " + name;\n}\n',
+      );
+      expect(await fs.readFile(path.join(cwd, "b.ts"), "utf-8")).toBe(
+        cancelled ? originalB : 'import { salute } from "./a";\nconsole.log(salute("world"));\nsalute("again");\n',
+      );
+      expect(result.success).toBe(!cancelled);
+      if (cancelled) {
+        expect(result.error).toContain("Operation cancelled");
+        expect(result.mutationMayHaveOccurred).not.toBe(true);
+      } else {
+        expect(result.output).toContain("Renamed 4 occurrence(s) across 2 file(s)");
+      }
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+}

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "../src/agent/loop";
 import { appendSubagentMessage, createSession, loadSession } from "../src/agent/session";
+import { taskToolProtocolLine } from "../src/agent/task-tool";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
@@ -26,6 +27,13 @@ test("taskToolProtocolLine: spells out single vs fan-out shapes with a concrete 
   expect(line).toContain("MUST be a real JSON array");
   expect(line).toContain("NEVER a JSON-stringified array");
   expect(line).toContain("NEVER a single task string");
+});
+
+test("merge regression: task protocol advertises detached single-task control and excludes fanout", () => {
+  const line = taskToolProtocolLine();
+  expect(line).toMatch(/detached:true/);
+  expect(line).toMatch(/single.?task.{0,60}only|only.{0,60}single.?task/i);
+  expect(line).toMatch(/(?:fan.?out|tasks\[\]).{0,60}(?:cannot|not|never).{0,30}detach|detach.{0,60}(?:cannot|not|never).{0,30}(?:fan.?out|tasks\[\])/i);
 });
 
 test("createTaskTool: executor delegates, runs a tool, then completes on done", async () => {

@@ -1411,3 +1411,36 @@ test("LaunchTui: the live-frame interval skips scheduled frames while write() si
     vi.useRealTimers();
   }
 });
+
+test("monitor carry: lifecycle output survives finish as sanitized monitor activity, not subagent progress", () => {
+  const writes: string[] = [];
+  const final: string[] = [];
+  const log = spyOn(console, "log").mockImplementation((...values: unknown[]) => { final.push(values.join(" ")); });
+  const tui = new LaunchTui({ model: "m1", tty: false, write: text => { writes.push(text); } });
+  const record = {
+    id: "monitor-41", command: "watch build", cwd: process.cwd(),
+    status: "running" as const, startedAt: 1, persistent: true,
+  };
+  try {
+    tui.start();
+    tui.onMonitorEvent({ type: "start", record });
+    tui.onMonitorEvent({ type: "line", record, line: "\x1b[2J\x1b]0;spoofed title\x07build passed" });
+    tui.onMonitorEvent({ type: "done", record: { ...record, status: "exited", exitCode: 0, finishedAt: 2 } });
+    tui.finish("parent finished");
+    const persisted = final.join("\n");
+    const clean = persisted.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(clean).toContain("monitor-41");
+    expect(clean).toContain("build passed");
+    expect(clean).toMatch(/Monitor.*monitor-41.*started/i);
+    expect(clean).toMatch(/Monitor.*monitor-41.*done/i);
+    expect(clean.indexOf("started")).toBeLessThan(clean.indexOf("build passed"));
+    expect(clean.indexOf("build passed")).toBeLessThan(clean.lastIndexOf("done"));
+    expect(persisted).not.toContain("\x1b[2J");
+    expect(persisted).not.toContain("\x1b]0;");
+    expect(persisted).not.toContain("\x07");
+    expect(clean.split("\n").filter(line => line.includes("monitor-41")).some(line => line.includes("[AGENT]"))).toBe(false);
+  } finally {
+    tui.finish("");
+    log.mockRestore();
+  }
+});

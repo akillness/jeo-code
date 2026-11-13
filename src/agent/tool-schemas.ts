@@ -126,6 +126,7 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
         command: STRING,
         cwd: STRING,
         persistent: { type: "boolean" },
+        timeout: { type: "number", exclusiveMinimum: 0, description: "Optional monitor lifetime in seconds (finite and positive); distinct from the await timeoutMs." },
         ids: { type: "array", items: STRING },
         id: STRING,
         timeoutMs: { type: "number" },

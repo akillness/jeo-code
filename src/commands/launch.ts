@@ -23,7 +23,7 @@ import { jeoHomeDir, notifySessionsDir } from "../agent/notify/paths";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
 import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../agent/monitor-tool";
-import { MonitorRegistry } from "../agent/monitor-registry";
+import { MonitorRegistry, type MonitorEvent } from "../agent/monitor-registry";
 import { JobRegistry } from "../agent/job-registry";
 import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
 import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
@@ -1264,12 +1264,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   let activeTui: LaunchTui | null = null;
   let activeAgyController: AbortController | undefined;
   let activeAgyTurn: Promise<AgyTurnResult> | undefined;
+  const showMonitorEvent = (event: MonitorEvent): void => {
+    if (activeTui) { activeTui.onMonitorEvent(event); return; }
+    const detail = event.type === "start" ? `started · ${event.record.command}`
+      : event.type === "line" ? event.line ?? ""
+        : `done · ${event.record.status.toUpperCase()}${event.record.exitCode != null ? ` (exit code ${event.record.exitCode})` : ""}`;
+    console.log(sanitizeForTerminal(`[monitor ${event.record.id}] ${detail}`).replace(/\n/g, " "));
+  };
   const monitorRegistry = new MonitorRegistry({
-    onLine: (record, line) => {
-      const notice = `[monitor ${record.id}] ${line}`;
-      if (activeTui) activeTui.events().onNotice?.(notice);
-      else console.log(notice);
-    },
+    onStart: record => showMonitorEvent({ type: "start", record }),
+    onLine: (record, line) => showMonitorEvent({ type: "line", record, line }),
+    onDone: record => showMonitorEvent({ type: "done", record }),
   });
   sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
 
@@ -1359,7 +1364,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   let displayDetachedEvent = (line: string, _event: TaskSubEvent): void => { console.log(line); };
   const showDetachedEvent = (event: TaskSubEvent): void => {
     const line = formatTaskSubEvent(event);
-    if (line) displayDetachedEvent(`${sanitizeForTerminal(line)} [${sanitizeForTerminal(event.detachedId ?? "")}]`, event);
+    if (line) displayDetachedEvent(sanitizeForTerminal(line), event);
   };
   const flushDetachedEvents = (): void => {
     for (const item of pendingDetachedEvents.splice(0)) {
@@ -2492,6 +2497,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           signal: ac.signal,
           sessionKey: cacheKey,
           steer: drainSteer,
+          monitor: () => monitorRegistry.drainObservations(),
           // Withheld when routing is off: the bail predicates only make sense paired
           // with the reroute loop below, which `routingEnabled` also gates.
           ...(routingEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
@@ -2642,6 +2648,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             signal: ac.signal,
             sessionKey: turnSessionKey,
             steer: drainSteer,
+            monitor: () => monitorRegistry.drainObservations(),
             // Deliberately NOT wiring rateLimitFallbackAvailable here: this repair
             // retry has no reroute loop around it (unlike runLoopWithModel's
             // routeFallbackAttempt loop) — bailing the retry ladder early on a 429

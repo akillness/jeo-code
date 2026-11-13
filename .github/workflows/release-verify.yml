@@ -1,0 +1,165 @@
+name: Verify release artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Immutable commit SHA to verify (exactly 40 hexadecimal characters)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERIFY_SHA: ${{ inputs.ref }}
+    steps:
+      - name: Validate immutable commit SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERIFY_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::ref must be an immutable 40-character hexadecimal commit SHA"
+            exit 1
+          fi
+
+      - name: Checkout exact commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert checked-out commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${VERIFY_SHA,,}" ]]; then
+            echo "::error::Checked-out HEAD does not match the requested commit SHA"
+            exit 1
+          fi
+          echo "Verified checkout: $ACTUAL_SHA"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Setup Node for package verification
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build hands source
+        run: bun run build:hands
+
+      - name: Provision Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Provision sandbox Docker image (oven/bun:1.3.14)
+        run: |
+          set -euo pipefail
+          docker pull oven/bun:1.3.14
+          docker image inspect oven/bun:1.3.14 >/dev/null
+
+      - name: Run browser hard gate
+        run: bun run verify:browser
+
+      - name: Run sandbox hard gate
+        run: bun run verify:sandbox
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test (everything except the browser tool)
+        env:
+          JEO_SKIP_BROWSER_TESTS: "1"
+        run: bun test
+
+      - name: Test the browser tool with Chromium required
+        env:
+          JEO_REQUIRE_BROWSER: "1"
+        run: bun test test/browser-tool.test.ts
+
+      - name: Check package contents
+        run: bun run pack:check
+
+      - name: Install packed tarball into an independent prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACT_DIR="$(mktemp -d "$RUNNER_TEMP/jeo-artifact.XXXXXX")"
+          PREFIX="$(mktemp -d "$RUNNER_TEMP/jeo-installed.XXXXXX")"
+          WORK="$(mktemp -d "$RUNNER_TEMP/jeo-smoke.XXXXXX")"
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          TARBALL="$(npm pack --silent --pack-destination "$ARTIFACT_DIR")"
+          cd "$WORK"
+          npm install --global --prefix "$PREFIX" "$ARTIFACT_DIR/$TARBALL" --no-audit --no-fund
+          test -x "$PREFIX/bin/jeo"
+          {
+            echo "JEO_VERIFY_PREFIX=$PREFIX"
+            echo "JEO_VERIFY_WORK=$WORK"
+            echo "JEO_VERIFY_VERSION=$EXPECTED_VERSION"
+            echo "JEO_CLI=$PREFIX/bin/jeo"
+          } >> "$GITHUB_ENV"
+
+      - name: Smoke-test installed executable and dependency layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset NODE_PATH
+          cd "$JEO_VERIFY_WORK"
+          ACTUAL_VERSION="$("$JEO_CLI" --version)"
+          test "$ACTUAL_VERSION" = "jeo v$JEO_VERIFY_VERSION"
+          "$JEO_CLI" --help > help.txt
+          grep -Fq 'Usage:' help.txt
+          grep -Fq 'Commands:' help.txt
+          bun -e '
+            import { realpathSync } from "node:fs";
+            import { createRequire } from "node:module";
+            import { isAbsolute, relative, sep } from "node:path";
+            const prefix = realpathSync(process.env.JEO_VERIFY_PREFIX);
+            const insidePrefix = (path) => {
+              const rel = relative(prefix, realpathSync(path));
+              if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)) {
+                throw new Error("Installed artifact resolved outside its independent prefix: " + path);
+              }
+            };
+            const cli = realpathSync(process.env.JEO_CLI);
+            insidePrefix(cli);
+            const manifest = prefix + "/lib/node_modules/jeo-code/package.json";
+            insidePrefix(manifest);
+            const require = createRequire(manifest);
+            const pkg = require(manifest);
+            if (pkg.version !== process.env.JEO_VERIFY_VERSION) {
+              throw new Error("Installed package version does not match the packed source");
+            }
+            for (const dependency of Object.keys(pkg.dependencies)) {
+              insidePrefix(require.resolve(dependency));
+            }
+            await import(prefix + "/lib/node_modules/jeo-code/src/cli/runner.ts");
+            await import(prefix + "/lib/node_modules/jeo-code/src/commands/launch.ts");
+            console.log("Installed executable, version, help and dependency layout verified");
+          '
+
+      - name: Provision tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      - name: Run installed-executable tmux battery
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d "$RUNNER_TEMP/jeo-tmux-home.XXXXXX")"
+          export PATH="$JEO_VERIFY_PREFIX/bin:$PATH"
+          unset NODE_PATH
+          bash scripts/tmux-verify.sh battery

@@ -20,6 +20,8 @@ import { renderFooter, type FooterData } from "./components/footer";
 import { renderForgeMark, forgeMarkHeight, forgeMarkFrameCount, forgeBeat } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
+import type { MonitorEvent } from "../agent/monitor-registry";
+import { sanitizeForTerminal } from "./components/code-view";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
@@ -117,6 +119,7 @@ export interface AgentEventsLike {
   onToolResult?(tool: string, success: boolean, output: string): void;
   onToolProgress?(tool: string, partial: string): void;
   onNotice?(message: string): void;
+  onMonitorEvent?(event: MonitorEvent): void;
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
   onModelStream?(textSoFar: string): void;
   onReasoningStream?(textSoFar: string): void;
@@ -742,6 +745,7 @@ export class LaunchTui {
         this.retryNotice = msg;
         this.draw();
       },
+      onMonitorEvent: event => this.onMonitorEvent(event),
       onBudget: (limit: number, reason: string) => {
         // Retry flow: the step budget extended itself — update the live
         // `step N/M` denominators and leave one durable ledger line.
@@ -1074,6 +1078,20 @@ export class LaunchTui {
       return `plan ${done}/${this.todos.length} complete`;
     }
     return "thinking through the next tool call";
+  }
+
+  /** Background process output is durable display data, never agent activity. */
+  onMonitorEvent(event: MonitorEvent): void {
+    if (this.finished) return;
+    const id = sanitizeForTerminal(event.record.id).replace(/\n/g, " ");
+    const detail = event.type === "start"
+      ? `started · ${event.record.command}`
+      : event.type === "line"
+        ? event.line ?? ""
+        : `done · ${event.record.status.toUpperCase()}${event.record.exitCode != null ? ` (exit code ${event.record.exitCode})` : ""}`;
+    const safe = sanitizeForTerminal(detail).replace(/\n/g, " ");
+    this.appendLedger(`[MONITOR] ${id} ${safe}\n`, "monitor");
+    this.draw();
   }
 
   /**

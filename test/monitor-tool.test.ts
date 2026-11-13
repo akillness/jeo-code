@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, vi } from "bun:test";
 import { MonitorRegistry } from "../src/agent/monitor-registry";
 import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../src/agent/monitor-tool";
 
@@ -264,3 +264,61 @@ test.skipIf(process.platform !== "win32")("Windows monitor cancellation remains 
     await registry.awaitIds([monitor.id], 2500);
   }
 }, 5000);
+
+for (const [name, argument] of [
+  ["string persistent", { persistent: "true" }],
+  ["numeric persistent", { persistent: 1 }],
+  ["null persistent", { persistent: null }],
+  ["string timeout", { timeout: "1" }],
+  ["zero timeout", { timeout: 0 }],
+  ["negative timeout", { timeout: -1 }],
+  ["NaN timeout", { timeout: Number.NaN }],
+  ["infinite timeout", { timeout: Number.POSITIVE_INFINITY }],
+] as const) {
+  test(`monitor carry: rejects ${name} before launching a process`, async () => {
+    const registry = new MonitorRegistry();
+    const tool = createMonitorTool(registry);
+    try {
+      const result = await tool({ action: "start", command: "exit 0", ...argument }, cwd);
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch("persistent" in argument ? /persistent.*boolean/i : /timeout.*finite.*positive.*seconds/i);
+      expect(registry.list()).toEqual([]);
+      expect(result.mutationMayHaveOccurred).not.toBe(true);
+    } finally {
+      await cleanup(registry);
+    }
+  });
+}
+
+test.skipIf(process.platform === "win32")("monitor carry: lifetime timeout uses seconds and settles the pinned process with mutation evidence", async () => {
+  const lines: string[] = [];
+  const ready = lineBarrier(lines, 1);
+  const registry = new MonitorRegistry({
+    onLine: (_record, line) => { lines.push(line); ready.notify(); },
+  });
+  const tool = createMonitorTool(registry);
+  vi.useFakeTimers();
+  try {
+    const started = await tool({
+      action: "start", command: "printf 'deadline-ready\\n'; sleep 30", persistent: true, timeout: 1,
+    }, cwd);
+    expect(started.success).toBe(true);
+    await ready.promise;
+    const monitor = registry.list()[0]!;
+    vi.advanceTimersByTime(999);
+    expect(registry.get(monitor.id)!.status).toBe("running");
+    vi.advanceTimersByTime(1);
+    expect(registry.get(monitor.id)!.status).toBe("killed");
+    vi.useRealTimers();
+    const result = await tool({ action: "await", ids: [monitor.id], timeoutMs: 3_000 }, cwd);
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("KILLED");
+    expect(result.mutationMayHaveOccurred).toBe(true);
+    expect(registry.cancellable()).toEqual([]);
+    expect(registry.unobserved()).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    registry.cancelAll();
+    await registry.awaitIds(registry.list().map(record => record.id));
+  }
+});

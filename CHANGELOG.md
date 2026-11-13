@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
+_Local cancellation, bounded async observation, and manual installed-artifact verification._
+
+### Fixed
+- Local filesystem mutations and `bash` honor cancellation at execution boundaries; operations already committed retain their mutation evidence rather than implying rollback.
+- Detached single tasks accept `detached: true` or `detached: "true"`, reject detached fan-out, cap unsettled runs at four, and return stable plain-text IDs. Pause or cancellation does not release capacity before the runner settles.
+- Local monitors accept a finite positive `timeout` in seconds, bound queued untrusted observations, and sanitize durable TUI events. Sandbox guest push observation and lifecycle forwarding remain unsupported at baseline; no privileged RPC is added.
+
+### Changed
+- Restore the manual `release-verify` workflow with an exact 40-hex-character commit SHA and read-only repository permissions. It verifies an independently installed packed package and runs the installed executable through the tmux battery; it does not publish a release.
+
 
 ## [0.12.37] - 2026-11-13
 _Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals._

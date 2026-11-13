@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
@@ -9,6 +9,11 @@ import type { Message } from "../src/agent/loop";
 
 test("resuming another session replaces transcript, retry state and prompt history", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-session-switch-"));
+  const displayed: string[] = [];
+  // Resume writes the transcript directly; logLines is the width-clipped picker path.
+  const output = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    displayed.push(args.map(String).join(" "));
+  });
   try {
     const first = await createSession(cwd);
     const second = await createSession(cwd);
@@ -23,11 +28,10 @@ test("resuming another session replaces transcript, retry state and prompt histo
     await updateSessionDraft(second.id, "second draft", cwd);
     const history: Message[] = [{ role: "system", content: "system" }];
     const rl = { history: [] as string[] };
-    const displayed: string[] = [];
     const context = {
       cwd, history, rl, noSession: false, sessionId: undefined, sessionModel: undefined,
       advanceSessionBoxColor: () => {}, disarmPreview: () => {}, clearScreen: () => "",
-      freshWelcomeLines: () => [], logLines: (lines: string[]) => displayed.push(...lines),
+      freshWelcomeLines: () => [], logLines: () => {},
       runSelectPicker: async () => {},
     };
     await runSessionSlash(`/session resume ${first.id}`, context);
@@ -43,6 +47,7 @@ test("resuming another session replaces transcript, retry state and prompt histo
     expect(displayed.join("\n")).toContain("second answer");
     expect(displayed.join("\n")).not.toContain("first answer");
   } finally {
+    output.mockRestore();
     await fs.rm(cwd, { recursive: true, force: true });
   }
 });

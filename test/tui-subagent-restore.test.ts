@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +10,10 @@ import { CompactPasteStore } from "../src/commands/launch/input";
 
 test("subagent history survives reload and resume without presenting unfinished work as completed", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agent-restore-"));
+  const displayed: string[] = [];
+  const output = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    displayed.push(args.map(String).join(" "));
+  });
   try {
     const session = await createSession(cwd);
     await appendSubagentEvent(session.id, { runId: "complete-run", role: "reviewer", kind: "start", detail: "Review the patch" }, cwd);
@@ -23,12 +27,11 @@ test("subagent history survives reload and resume without presenting unfinished 
     expect(loaded.subagentEvents.map(event => event.kind)).toEqual(["start", "tool", "done", "start"]);
     expect(loaded.subagentEvents.map(event => event.runId)).toEqual(["complete-run", "complete-run", "complete-run", "open-run"]);
     const history: Message[] = [{ role: "system", content: "system" }];
-    const displayed: string[] = [];
     await runSessionSlash(`/session resume ${session.id}`, {
       cwd, history, noSession: false, sessionId: undefined, sessionModel: undefined,
       rl: { history: [] }, advanceSessionBoxColor: () => {}, disarmPreview: () => {},
       clearScreen: () => "", freshWelcomeLines: () => [],
-      logLines: lines => displayed.push(...lines), runSelectPicker: async () => {},
+      logLines: () => {}, runSelectPicker: async () => {},
     });
     const text = displayed.join("\n").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     expect(text).toContain("Patch reviewed");
@@ -37,6 +40,7 @@ test("subagent history survives reload and resume without presenting unfinished 
     expect(text).not.toContain("transient thought");
     expect(text).not.toMatch(/TESTER[^\n]*\bdone\b/i);
   } finally {
+    output.mockRestore();
     await fs.rm(cwd, { recursive: true, force: true });
   }
 });
@@ -81,6 +85,10 @@ test("concurrent header rewrites preserve appended messages and subagent events"
 
 test("reload and resume preserve actual conversation and subagent records in file order", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agent-timeline-"));
+  const displayed: string[] = [];
+  const output = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    displayed.push(args.map(String).join(" "));
+  });
   try {
     const session = await createSession(cwd);
     const start = { runId: "r1", role: "reviewer", kind: "start" as const, detail: "Review task" };
@@ -101,12 +109,11 @@ test("reload and resume preserve actual conversation and subagent records in fil
       "message", "subagent_event", "subagent_message", "subagent_message", "subagent_event", "message",
     ]);
     const history: Message[] = [{ role: "system", content: "system" }];
-    const displayed: string[] = [];
     await runSessionSlash(`/session resume ${session.id}`, {
       cwd, history, noSession: false, sessionId: undefined, sessionModel: undefined,
       rl: { history: [] }, advanceSessionBoxColor: () => {}, disarmPreview: () => {},
       clearScreen: () => "", freshWelcomeLines: () => [],
-      logLines: lines => displayed.push(...lines), runSelectPicker: async () => {},
+      logLines: () => {}, runSelectPicker: async () => {},
     });
     const text = displayed.join("\n").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const markers = ["First user prompt", "Review task", "Inspect the parser", "Parser finding: preserves order", "Review complete", "First assistant answer", "Later answer 7"];
@@ -117,6 +124,7 @@ test("reload and resume preserve actual conversation and subagent records in fil
       previous = index;
     }
   } finally {
+    output.mockRestore();
     await fs.rm(cwd, { recursive: true, force: true });
   }
 });

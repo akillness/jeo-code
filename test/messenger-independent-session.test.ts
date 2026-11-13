@@ -18,6 +18,7 @@ import type { SandboxSupervisor } from "../src/agent/sandbox/types";
 const baseMessage: MessengerMessage = {
 	platform: "discord",
 	accountId: "bot",
+	guildId: "guild",
 	channelId: "channel-1",
 	senderId: "user-1",
 	messageId: "msg-1",

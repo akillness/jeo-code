@@ -46,6 +46,15 @@ function canonicalPath(target: string): string {
     try { return path.join(fs.realpathSync(parent), ...suffix.reverse()); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Host action path could not be verified");
+      // A failed realpath is not proof of absence (older Bun rejects some valid POSIX names).
+      // Only genuinely missing entries may become an unresolved new-file suffix.
+      let absent = false;
+      try { fs.lstatSync(parent); }
+      catch (entryError) {
+        if ((entryError as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Host action path could not be verified");
+        absent = true;
+      }
+      if (!absent) throw new Error("Host action path could not be verified");
       const next = path.dirname(parent);
       if (next === parent) throw new Error("Host action path could not be verified");
       suffix.push(path.basename(parent));

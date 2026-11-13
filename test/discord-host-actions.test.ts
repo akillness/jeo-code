@@ -63,8 +63,8 @@ async function fixture(notifyFailure = false) {
 	};
 }
 
-// These tests authorize inert descriptions. Only append-only writes inside each private
-// fixture are executed; no rm/install/push/deploy/system command reaches a host shell.
+// Authorization effects are append-only fixture writes; shell fixture checks only
+// read synthetic private markers. No rm/install/push/deploy/system command executes.
 const dangerousCommands = [
 	["delete", "rm -rf generated"],
 	["npm install", "npm install left-pad"],
@@ -405,6 +405,19 @@ for (const alias of ["relative", "symlink"] as const) test(`shell reads cannot b
 	} finally { await f.close(); }
 });
 
+test("a dangling symlink cannot redirect an ordinary write into private session storage", async () => {
+	const f = await fixture();
+	try {
+		await fs.mkdir(f.config.sessionDir);
+		const link = path.join(f.root, "new-report.txt");
+		await fs.symlink(path.join(f.config.sessionDir, "not-created.json"), link);
+		const action: DiscordHostAction = { kind: "tool", tool: "write", cwd: f.root, args: { path: link, content: "changed" } };
+		expect((await f.start(action)).allowed).toBe(false);
+		expect(await f.effects()).toBe("");
+		expect(f.notices).toEqual([]);
+	} finally { await f.close(); }
+});
+
 for (const [name, command] of [
 	["clustered sort output option", "sort -no../outside input"],
 	["recursive symlink-following grep", "grep -RS . ."],
@@ -434,6 +447,11 @@ for (const [name, alias, command] of [
 		const target = path.join(f.config.sessionDir, "private-fixture.txt");
 		await fs.writeFile(target, "private fixture, not a credential\n");
 		await fs.symlink(target, path.join(f.root, alias));
+		// Prove the same POSIX shell bytes actually reach the synthetic private
+		// target, including a literal backslash inside double quotes on Linux.
+		const shell = Bun.spawn(["/bin/sh", "-c", command], { cwd: f.root, stdout: "pipe", stderr: "pipe" });
+		const [exitCode, stdout, stderr] = await Promise.all([shell.exited, new Response(shell.stdout).text(), new Response(shell.stderr).text()]);
+		expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "private fixture, not a credential\n", stderr: "" });
 		expect((await f.start(f.action(command), "private read")).allowed).toBe(false);
 		expect(await f.effects()).toBe("");
 		expect(f.notices).toEqual([]);

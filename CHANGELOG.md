@@ -24,6 +24,7 @@ _Opt-in Discord host workers with retained per-thread Git worktrees and exact-ac
 - Remove external-project references from the multilingual README guides and implementation comments without changing existing session-import compatibility.
 
 ### Fixed
+- Discord host authorization fails closed when path canonicalization cannot verify an existing filesystem entry, including Bun 1.3.14's literal-backslash symlink case. Genuinely missing worktree output files remain eligible for ordinary write authorization.
 - Resume menus restore complete conversation lines and editable drafts without moving the cursor to the start. Selecting another transcript in a sandboxed TUI closes the old session scope before creating a fresh sandbox, so input continues without reusing earlier access grants.
 
 ## [0.12.36] - 2026-11-13

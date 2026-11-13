@@ -9,9 +9,14 @@ if (binary !== undefined) {
   await fs.access(binary, constants.X_OK);
   command.splice(0, 2, binary);
 }
+const acknowledgeStdin = binary === undefined && process.env.JEO_TEST_DISCORD_STDIN === "1";
+if (acknowledgeStdin) command.splice(1, 0, "--preload", path.resolve(import.meta.dir, "discord-control-stdin.ts"));
 
 // Keep the PTY leader alive until cleanup; SIGTERM lets launch revoke its real sandbox first.
-const child = Bun.spawn(command, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+const child = Bun.spawn(command, {
+  stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  ...(acknowledgeStdin ? { ipc(message: { type: string; data: string }) { process.send?.(message); } } : {}),
+});
 let stopping = false;
 const stop = async () => {
   if (stopping) return;

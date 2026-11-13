@@ -636,10 +636,16 @@ test("a text-only message during an active turn steers that turn exactly once", 
 test("busy image queue accepts eight turns in FIFO order and rejects the ninth", async () => {
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
+  const finishLastTurn = Promise.withResolvers<void>();
   const seen: string[] = [];
+  let finalTurnQuestionCount = 0;
   runAgentLoopDelegate = async history => {
     const users = history.filter((entry): entry is { role: string; content: string } => !!entry && typeof entry === "object" && "role" in entry && entry.role === "user" && "content" in entry && typeof entry.content === "string");
     seen.push(users.at(-1)?.content ?? "");
+    if (seen.length === 9) {
+      finalTurnQuestionCount = questionCalls.length;
+      await finishLastTurn.promise;
+    }
     if (seen.length === 1) { started.resolve(); await release.promise; }
     return { done: true, steps: 1, doneReason: "test" };
   };
@@ -664,11 +670,14 @@ test("busy image queue accepts eight turns in FIFO order and rejects the ninth",
     release.resolve();
     await waitForCondition(() => seen.length === 9, 15_000);
     expect(seen).toEqual(["initial request", ...Array.from({ length: 8 }, (_, i) => `image ${i + 1}`)]);
-    await waitForCondition(() => questionCalls.length >= 2, 10_000);
+    finishLastTurn.resolve();
+    // Each queued injection aborts its own question; only a newer prompt can accept /exit.
+    await waitForCondition(() => questionCalls.length > finalTurnQuestionCount, 10_000);
     questionCalls[questionCalls.length - 1]!.resolve("/exit");
     await done;
   } finally {
     release.resolve();
+    finishLastTurn.resolve();
   }
 }, 45_000);
 

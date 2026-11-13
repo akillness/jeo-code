@@ -7,6 +7,7 @@ import * as path from "node:path";
 const CLI = path.resolve(import.meta.dir, "../src/cli.ts");
 const GUARDIAN = path.resolve(import.meta.dir, "fixtures/sandbox-terminal-guardian.ts");
 const USER = "222222222222222222";
+const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
 
 function sse(text: string) {
   return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
@@ -57,6 +58,8 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
 
   let output = "";
   let outputWaiters: (() => void)[] = [];
+  let consumedStdin = "";
+  const stdinWaiters: (() => void)[] = [];
   const pending = new Set<string>();
   let typedCharacter = "";
   let discoveryEvents = 0;
@@ -80,7 +83,7 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     return promise;
   };
   const waitOutput = (needle: string, from = 0) => phase(`output ${JSON.stringify(needle)} from ${from}`, async () => {
-    while (!output.slice(from).includes(needle)) await nextOutput();
+    while (!plain(output.slice(from)).includes(needle)) await nextOutput();
   });
   const typed = (text: string) => phase(`typing ${JSON.stringify(text)}`, async () => {
     let index = 0;
@@ -108,13 +111,17 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     if (!dropWatchEvents) void scanDiscovery();
   });
   // Real HOME is preserved for Docker; only a dummy key for the local fake OpenAI endpoint is passed (no real provider/bot credentials).
-  const env = { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", JEO_CONFIG_DIR: config, OPENAI_API_KEY: "sk-test-fake-local-openai-key",JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) };
+  const env = { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", JEO_CONFIG_DIR: config, OPENAI_API_KEY: "sk-test-fake-local-openai-key",JEO_STATIC_MEMORY: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(pasteAbort && !binary ? { JEO_TEST_DISCORD_STDIN: "1" } : {}), ...(binary ? { JEO_TEST_CLI_BINARY: binary } : {}) };
   const cliExited = Promise.withResolvers<number>();
   let cliExitCode: number | undefined;
   const proc = Bun.spawn([process.execPath, GUARDIAN, process.execPath, CLI, "launch", "--no-skills", "--model", "openai/pty-model", ...(noTui ? ["--no-tui"] : [])], {
     cwd: workspace, env, terminal, detached: true,
     ipc(message) {
       if (message.type === "exit") { cliExitCode = message.exitCode; cliExited.resolve(message.exitCode); }
+      if (message.type === "stdin-consumed") {
+        consumedStdin += message.data;
+        for (const resolve of stdinWaiters.splice(0)) resolve();
+      }
     },
   });
   void proc.exited.then(code => rejectDeadline(new Error(`PTY guardian exited unexpectedly: ${code}`)));
@@ -235,8 +242,23 @@ for (const [noTui, priorPaste, localTurn, relayTurn, cancelFirst, pasteAbort, dr
     await phase("provider ready", () => providerReady.promise);
     if (pasteAbort) {
       const beforePaste = output.length;
-      terminal.write("\u001b[200~paste before abort");
-      await waitOutput("paste before abort", beforePaste);
+      // Complete one paste for the display barrier, then leave another open across cancellation.
+      const beforeInput = consumedStdin.length;
+      const paste = "\u001b[200~paste before abort\u001b[201~\u001b[200~paste before abort";
+      terminal.write(paste);
+      await phase("compact paste display", async () => {
+        while (!/\[Paste #\d+, 1 lines, 18 cols\]/.test(plain(output.slice(beforePaste)))) await nextOutput();
+      });
+      // Source-only IPC proves the OPEN suffix was consumed even if the PTY split the write.
+      // Compiled executables retain their original guardian and the real display barrier.
+      if (!binary) await phase("open paste consumed", async () => {
+        while (!consumedStdin.slice(beforeInput).includes(paste)) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          stdinWaiters.push(resolve);
+          await promise;
+        }
+      });
+      expect(plain(output.slice(beforePaste))).not.toContain("paste before abort");
     }
     if (cancelFirst) {
       ws.send(JSON.stringify({ type: "remote_cancel", sessionId: discovery.id, reqId }));

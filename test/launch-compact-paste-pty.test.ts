@@ -59,7 +59,9 @@ test("launch PTY: compact paste survives editing, submit, recall, reset and mixe
   } });
   await fs.writeFile(path.join(config, "config.json"), JSON.stringify({
     providers: {}, defaultModel: "openai/pty-model", openaiBaseUrl: `http://127.0.0.1:${provider.port}/v1`,
-    sandbox: { backend: "native" },
+    sandbox: process.platform === "linux"
+      ? { backend: "docker", image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 64, cpus: 1 } }
+      : { backend: "native" },
     routing: { enabled: false }, computer: { enabled: false }, gitAutoCommit: false,
   }));
   const decoder = new TextDecoder();

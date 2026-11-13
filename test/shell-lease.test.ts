@@ -40,7 +40,22 @@ async function readPid(dir: string): Promise<number> {
 }
 
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+  if (process.platform !== "linux") return true;
+  try {
+    // kill(pid, 0) also succeeds for terminated orphans awaiting init's wait().
+    // The comm field can contain spaces and ')'; state follows its last ')'.
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
+    return state !== "Z" && state !== "X";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function slurp(reader: { read(): Promise<{ done?: boolean; value?: Uint8Array }> }): Promise<string> {
@@ -151,6 +166,7 @@ test.skipIf(!posix)("killGroup reaches a lingering descendant while the lease is
   try {
     expect(await shell.exit).toBe(0);
     const pid = await readPid(dir);
+    expect(alive(pid)).toBe(true);
     const drains = Promise.all([slurp(shell.stdout), slurp(shell.stderr)]);
     expect(await settlesWithin(drains, 300)).toBe(false);
     expect(shell.killGroup()).toBe("delivered");

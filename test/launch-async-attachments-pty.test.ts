@@ -52,7 +52,10 @@ test("launch PTY: deferred clipboard and file reads cannot resurrect cleared dra
   } });
   await fs.writeFile(path.join(config, "config.json"), JSON.stringify({
     providers: {}, defaultModel: "openai/async-fixture-model", openaiBaseUrl: `http://127.0.0.1:${provider.port}/v1`,
-    sandbox: { backend: "native" }, routing: { enabled: false }, computer: { enabled: false }, gitAutoCommit: false,
+    sandbox: process.platform === "linux"
+      ? { backend: "docker", image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 64, cpus: 1 } }
+      : { backend: "native" },
+    routing: { enabled: false }, computer: { enabled: false }, gitAutoCommit: false,
   }));
   const decoder = new TextDecoder();
   const terminal = new Bun.Terminal({ cols: 160, rows: 40, data(_terminal, bytes) {
@@ -161,7 +164,7 @@ test("launch PTY: deferred clipboard and file reads cannot resurrect cleared dra
     clearTimeout(watchdog);
     for (const release of providerReleases) release();
     const cleanup = Promise.withResolvers<never>();
-    // Bound process cleanup, not test progress: the child must revoke its real native sandbox before removal.
+    // Bound process cleanup, not test progress: the child must revoke its real sandbox before removal.
     const timer = setTimeout(() => cleanup.reject(new Error("Async attachment PTY cleanup timed out")), 10_000);
     try {
       if (proc.exitCode === null) proc.send("stop");

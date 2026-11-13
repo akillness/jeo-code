@@ -53,7 +53,8 @@ interface Worker {
 }
 
 /** Resident sessions the pool keeps, and the number of turns it runs at once. */
-export const MESSENGER_SESSION_LIMIT = 16;
+export const MESSENGER_SESSION_LIMIT = 8;
+
 /** Operator-visible worker stderr is bounded per worker so a chatty worker cannot flood the gateway log. */
 export const MESSENGER_WORKER_DIAGNOSTIC_LINES = 20;
 const MAX_DIAGNOSTIC_LINE_LENGTH = 300;
@@ -89,7 +90,7 @@ function diagnosticLine(text: string): string {
 	return line.length > MAX_DIAGNOSTIC_LINE_LENGTH ? `${line.slice(0, MAX_DIAGNOSTIC_LINE_LENGTH - 1)}…` : line;
 }
 
-export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, limit = MESSENGER_SESSION_LIMIT, idleTimeoutMs = 5 * 60_000, shutdownTimeoutMs = 5_000, options: MessengerSessionPoolOptions = {}): MessengerSessionPool {
+export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, limit = MESSENGER_SESSION_LIMIT, idleTimeoutMs = 10 * 60_000, shutdownTimeoutMs = 5_000, options: MessengerSessionPoolOptions = {}): MessengerSessionPool {
 	const workers = new Map<string, Worker>();
 	const allWorkers = new Map<Worker, string>();
 	const exits = new Map<Promise<number>, Worker>();

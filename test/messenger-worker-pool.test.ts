@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +7,48 @@ import { createMessengerCliReply } from "../src/commands/messenger";
 import { selectDiscordModel } from "../src/messenger/model-selection";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
+
+test("default idle timeout retires a reused worker after ten minutes", async () => {
+  const scheduled: Array<{ callback: () => void; delay: number }> = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) => {
+    scheduled.push({ callback, delay });
+    return realSetTimeout(callback, delay);
+  }) as typeof setTimeout);
+  const workers: { killed: boolean }[] = [];
+  const spawn = (() => {
+    const worker = { killed: false };
+    workers.push(worker);
+    const exit = Promise.withResolvers<number>();
+    let out!: ReadableStreamDefaultController<Uint8Array>;
+    let err!: ReadableStreamDefaultController<Uint8Array>;
+    const stdout = new ReadableStream<Uint8Array>({ start(c) { out = c; } });
+    const stderr = new ReadableStream<Uint8Array>({ start(c) { err = c; } });
+    return {
+      stdout, stderr, exited: exit.promise,
+      kill() { worker.killed = true; out.close(); err.close(); exit.resolve(0); },
+      stdin: { write() { out.enqueue(new TextEncoder().encode('JEO_MESSENGER_RESULT "ok"\n')); }, flush() {}, end() {} },
+    };
+  }) as unknown as typeof Bun.spawn;
+  const pool = createMessengerSessionPool(spawn);
+  const signal = new AbortController().signal;
+  try {
+    expect(await pool.turn("one", ["worker"], "/tmp", {}, "first", signal)).toBe("ok");
+    expect(await pool.turn("one", ["worker"], "/tmp", {}, "again", signal)).toBe("ok");
+    expect(workers).toHaveLength(1);
+    const idleTimers = scheduled.filter(entry => entry.delay === 600_000);
+    expect(idleTimers).toHaveLength(2);
+    idleTimers[1]!.callback();
+    expect(workers[0]!.killed).toBe(true);
+    expect(await pool.turn("one", ["worker"], "/tmp", {}, "after idle", signal)).toBe("ok");
+    expect(workers).toHaveLength(2);
+  } finally {
+    await pool.close();
+    timer.mockRestore();
+  }
+});
+
+
 
 const message: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "channel", senderId: "owner", messageId: "1", text: "hello", direct: true, mentioned: false };
 // Discord now always requires the sandbox section; limits mirror the required contract.
@@ -57,7 +99,9 @@ test("conversation workers are reused, isolated, evicted and closed", async () =
   const config: MessengerConfig = { cwd: workspace, sessionDir, sandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"] } } };
   const workers: { id: number; killed: boolean; requests: string[]; kills: number; frames: unknown[] }[] = [];
   const spawnOptions: { ipc?: unknown; serialization?: unknown }[] = [];
-  const spawn = ((_argv: string[], options: { env: Record<string, string>; ipc?: unknown; serialization?: unknown }) => {
+  const commands: string[][] = [];
+  const spawn = ((argv: string[], options: { env: Record<string, string>; ipc?: unknown; serialization?: unknown }) => {
+    commands.push(argv);
     const nonce = options.env.JEO_MESSENGER_SHUTDOWN_NONCE;
     if (!nonce) throw new Error("parent did not supply a shutdown nonce");
     spawnOptions.push(options);
@@ -100,10 +144,16 @@ test("conversation workers are reused, isolated, evicted and closed", async () =
     expect(workers).toHaveLength(1);
     expect(await reply({ ...message, senderId: "second" }, signal)).toBe("worker 1: hello");
     expect(workers[0]!.requests).toEqual(["hello", "again"]);
-    for (let i = 2; i < 17; i++) await reply({ ...message, senderId: `user-${i}` }, signal);
-    expect(workers).toHaveLength(17);
-    expect(workers[0]!.killed).toBe(true);
-    expect(await reply(message, signal)).toBe("worker 17: hello");
+    for (let i = 2; i < 8; i++) await reply({ ...message, senderId: `user-${i}` }, signal);
+    expect(workers).toHaveLength(8);
+    expect(await reply(message, signal)).toBe("worker 0: hello"); // Refresh the oldest session.
+    expect(await reply({ ...message, senderId: "user-8" }, signal)).toBe("worker 8: hello");
+    expect(workers[0]!.killed).toBe(false);
+    expect(workers[1]!.killed).toBe(true);
+    expect(await reply({ ...message, senderId: "second" }, signal)).toBe("worker 9: hello");
+    const resumedId = (command: string[]) => command[command.indexOf("--resume") + 1];
+    expect(commands[1]).toContain("--resume");
+    expect(resumedId(commands[9]!)).toBe(resumedId(commands[1]!));
   } finally { await reply.close(); await fs.rm(root, { recursive: true, force: true }); }
   expect(workers.every(worker => worker.killed)).toBe(true);
   // Protected graceful retirement/close never signals; each worker got exactly one exact private frame.

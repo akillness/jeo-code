@@ -119,6 +119,7 @@ Example for a sandboxed Telegram file (the `sandbox` block is as shown above):
 - Later messages in that thread continue the same session and do not need a mention. Anyone allowlisted can participate.
 - A DM stays in the DM channel with its own per-user session.
 - Messenger conversations are headless `launch --print --literal-worker --resume <id>` processes, one reusable worker per conversation. They do not attach to an interactive `jeo` terminal session.
+- The pool keeps up to eight conversation workers and retires an idle worker after ten minutes. At capacity, a new conversation evicts the least recently used idle worker; a later message resumes its persisted session in a new worker. Protected workers must finish the required cleanup before their capacity is reused.
 - Requests are queued in arrival order. One turn runs per conversation at a time; different conversations run concurrently (the CLI uses concurrency 4). Authenticated `/sandbox` controls bypass the model queue.
 - Ordering is per conversation. A request waiting behind an earlier request of the same conversation stays in the queue and holds no slot. For a Discord top-level message, admission is ordered per channel in arrival order, and the reply thread is created only after the request claims a queue slot. At most 100 requests may be queued or preparing at once; a request beyond that is marked failed and creates no thread, and a later redelivery is accepted once capacity returns.
 

@@ -1,5 +1,5 @@
 /**
- * Inline terminal image protocols (gjc TUI-parity): detect whether the attached
+ * Inline terminal image protocols: detect whether the attached
  * terminal can render a real bitmap inline, and encode `ImageAttachment` bytes into
  * the matching escape sequence — Kitty graphics protocol (also implemented by
  * Ghostty and WezTerm) or iTerm2's OSC 1337 inline-image protocol. Sixel is
@@ -83,7 +83,7 @@ export function detectImageProtocol(env: EnvLike = process.env, isTty = false): 
 
   // tmux/screen strip TERM_PROGRAM but usually preserve $TERM as "tmux-256color" /
   // "screen.xterm-kitty" etc. — fall back to sniffing $TERM for a kitty signature
-  // (gjc parity: the same fallback it applies for tmux-wrapped kitty sessions).
+  // Use the fallback for tmux-wrapped kitty sessions.
   const term = (env.TERM ?? "").toLowerCase();
   if (term.includes("kitty")) return ImageProtocol.Kitty;
   if ((term.startsWith("tmux") || term.startsWith("screen")) && env.KITTY_LISTEN_ON) return ImageProtocol.Kitty;
@@ -97,7 +97,7 @@ let cellPixelSizeOverride: CellPixelSize | undefined;
  *  the fit computation. jeo does not query the terminal for real font metrics (that
  *  needs a synchronous escape round-trip on startup, which risks hanging on a
  *  terminal that never answers) — 9x18 is the common monospace-at-default-size
- *  figure (matches gjc's default) and only affects the ASPECT-RATIO fit, not
+ *  figure and only affects the ASPECT-RATIO fit, not
  *  correctness: a wrong guess makes the preview a bit larger/smaller, never
  *  corrupts output. Overridable for unusually large/small fonts. */
 export function getCellPixelSize(env: EnvLike = process.env): CellPixelSize {

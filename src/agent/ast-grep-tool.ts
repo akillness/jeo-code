@@ -1,6 +1,6 @@
 /**
  * `ast_grep` tool — structural (AST-based) code search for TypeScript/JavaScript,
- * gjc `ast_grep` parity via a pure-TS metavariable matcher (see `ast-match.ts`),
+ * using a pure-TS metavariable matcher (see `ast-match.ts`),
  * scoped to `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.mts`/`.cts` — NOT the native
  * ast-grep binary and NOT multi-language. Read-only; safe for every subagent role.
  */

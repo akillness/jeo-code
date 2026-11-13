@@ -1,6 +1,5 @@
 /**
  * Anthropic (Claude Pro/Max) OAuth — real PKCE flow.
- * Faithful port of gjc's packages/ai/src/utils/oauth/anthropic.ts.
  *
  * The resulting access token is used as `Authorization: Bearer` with the
  * `anthropic-beta: oauth-2025-04-20` header against api.anthropic.com/v1/messages.

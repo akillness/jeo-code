@@ -21,8 +21,8 @@ export function notifyDir(): string {
 }
 
 /** Per-process session discovery files live here; the daemon scans this directory
- *  for live sessions (`<sessionId>.json`), same shape as gjc's `readEndpoint`/
- *  `scanRoots` (a loopback WebSocket URL + auth token per session). */
+ *  for live sessions (`<sessionId>.json`), each containing a loopback WebSocket
+ *  URL and auth token for the session. */
 export function notifySessionsDir(): string {
   return path.join(notifyDir(), "sessions");
 }
@@ -32,14 +32,14 @@ export function notifySessionEndpointPath(sessionId: string): string {
 }
 
 /** Persisted per-session forum-topic map (`sessionId -> {topicId, name, createdAt}`),
- *  survives daemon restarts (gjc `telegram-topics.json` parity). Only written/read
+ *  survives daemon restarts. Only written/read
  *  when `notifications.telegram.perSessionTopics` is enabled. */
 export function notifyTopicsPath(): string {
   return path.join(notifyDir(), "telegram-topics.json");
 }
 
-/** Singleton lock for the daemon process (Telegram allows only one `getUpdates`
- *  long-poll owner per bot token — gjc's rationale for a daemon lock/state file). */
+/** Singleton lock for the daemon process: Telegram allows only one `getUpdates`
+ *  long-poll owner per bot token, requiring a daemon lock/state file. */
 export function notifyDaemonLockPath(): string {
   return path.join(notifyDir(), "daemon.lock");
 }

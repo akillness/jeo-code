@@ -7,7 +7,7 @@ import { relabelProviderError } from "./errors";
 import { companyLabel } from "../model-catalog";
 
 /**
- * Kimi (Moonshot) — two credential-dependent backends (gjc parity):
+ * Kimi (Moonshot) — two credential-dependent backends:
  * - API key (KIMI_API_KEY / `providers.kimi`): OpenAI-compatible cloud API at
  *   https://api.moonshot.ai/v1. Thinking models (kimi-thinking-preview) stream
  *   reasoning via `reasoning_content`/`<think>` → onReasoning.
@@ -16,7 +16,7 @@ import { companyLabel } from "../model-catalog";
  *   adapter), authenticated with `Authorization: Bearer` + X-Msh-* device headers.
  */
 export const KIMI_BASE_URL = "https://api.moonshot.ai/v1";
-// gjc: KIMI_ANTHROPIC_BASE_URL — the SDK/adapter appends /v1/messages, so no /v1 here.
+// The SDK/adapter appends /v1/messages, so no /v1 here.
 export const KIMI_ANTHROPIC_BASE_URL = "https://api.kimi.com/coding";
 
 const openaiCompatKimi = makeOpenAICompatibleAdapter({ name: "kimi", baseUrl: KIMI_BASE_URL });

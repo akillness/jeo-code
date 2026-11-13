@@ -1,5 +1,5 @@
 /**
- * Lone-surrogate sanitization for provider request bodies (gjc 0.8.1 parity).
+ * Lone-surrogate sanitization for provider request bodies.
  *
  * Tool-call arguments, tool-result output, and message content are embedded raw into
  * provider request bodies before `JSON.stringify`. A truncated multi-byte emoji (or

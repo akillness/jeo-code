@@ -370,7 +370,7 @@ export async function maybeCompact(
 
   const olderFormatted = formatMessagesForSummaryByTokens(older, maxSummaryInputTokens);
 
-  // gjc-style file-operation preservation (plan/gjc-inheritance.md B8, gjc
+  // Preserve file-operation information during compaction.
   // CompactionDetails 계승): the summary model may drop WHICH files were touched —
   // extract them mechanically from the to-be-summarized messages and pin them
   // into the prompt so post-compaction turns keep their file context.
@@ -508,15 +508,14 @@ export interface HandoffResult {
 const MIN_HANDOFF_MESSAGES = 2;
 
 /**
- * Generate a bounded, read-only handoff document from the CURRENT history —
- * jeo-native subset of gjc `/handoff` parity. Unlike `maybeCompact`, this
- * NEVER mutates `history`: jeo has no ACP/SDK-broker managed-session boundary
- * to hand off INTO, so this is a display/export operation (like
- * `exportSession`), not a session-transition primitive. It reuses the same
- * LLM summarizer and touched-file extraction as compaction so the base shape
- * (state/decisions/files/open TODOs) matches what `/compact` already
- * produces, then appends the optional focus text as its OWN trailing
- * section — append-only, it never edits the base sections.
+ * Generate a bounded, read-only handoff document from the CURRENT history.
+ * Unlike `maybeCompact`, this NEVER mutates `history`: jeo has no
+ * ACP/SDK-broker managed-session boundary to hand off INTO, so this is a
+ * display/export operation (like `exportSession`), not a session-transition
+ * primitive. It reuses the same LLM summarizer and touched-file extraction
+ * as compaction so the base shape (state/decisions/files/open TODOs) matches
+ * what `/compact` already produces, then appends the optional focus text as
+ * its OWN trailing section — append-only, it never edits the base sections.
  */
 export async function buildHandoffDocument(
   history: Message[],

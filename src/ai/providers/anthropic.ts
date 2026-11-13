@@ -16,10 +16,10 @@ const DEPRECATED_TEMPERATURE = "`temperature` is deprecated for this model.";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 /** Betas needed for API-key requests: interleaved-thinking enables thinking+tools,
- *  context-management matches gjc's default beta set (sent on ALL requests),
+ *  context-management is in the default beta set (sent on ALL requests),
  *  prompt-caching-scope gives scoped cache breakpoints.
- *  ponytail: fine-grained-tool-streaming-2025-05-14 — gjc sends it and repairs truncated
- *  tool-argument JSON; jeo parses accumulated tool JSON without that repair pass, so the
+ *  ponytail: fine-grained-tool-streaming-2025-05-14 can emit truncated tool-argument
+ *  JSON that needs a repair pass; jeo parses accumulated tool JSON without one, so the
  *  beta stays off until a repair step exists. */
 const ANTHROPIC_API_KEY_BETA = [
   "interleaved-thinking-2025-05-14",
@@ -36,7 +36,7 @@ const ANTHROPIC_OAUTH_BETA = [
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 
 /** The interleaved-thinking beta drives BUDGET-based thinking+tools. Adaptive-display models
- *  (Opus 4.7+) use adaptive thinking and DON'T need it — gjc drops it for these so the legacy
+ *  (Opus 4.7+) use adaptive thinking and DON'T need it — it is dropped for these so the legacy
  *  beta doesn't shadow the adaptive transport. */
 function anthropicBetaHeader(betas: string[], model: string): string {
   const filtered = supportsAdaptiveThinkingDisplay(model)
@@ -94,16 +94,16 @@ function anthropicSystemBlocks(
   }
   if (blocks.length === 0) return undefined;
 
-  // Prompt caching (gjc parity): Anthropic cache breakpoints are cumulative. Put a
+  // Prompt caching: Anthropic cache breakpoints are cumulative. Put a
   // single breakpoint on the last system block so Claude Code OAuth prelude + the
   // real system prompt are cached together without burning multiple slots.
   blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: "ephemeral" } };
   return blocks;
 }
 
-/** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Tiers match
- *  gjc's ANTHROPIC_THINKING table: low/medium/high ALL enable thinking with scaling
- *  depth — reasoning works at every thinking level (gajae parity).
+/** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens).
+ *  low/medium/high ALL enable thinking with scaling
+ *  depth — reasoning works at every thinking level.
  *  Only an UNSET effort stays non-thinking (the explicit /fast off path). The "xhigh" row is
  *  correct-by-table even though upstream currently folds xhigh→high before it arrives. */
 function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh", maxTokens: number): number | undefined {
@@ -155,7 +155,7 @@ function anthropicFallbackModels(model: string, credential: Credential, baseUrl:
 /** Adaptive thinking `display` is supported starting with Opus 4.7. Without it, Opus 4.7/4.8
  *  OMIT thinking content entirely (tokens billed, signature present, but zero visible thought —
  *  the "reasoning doesn't show" bug). Older adaptive models (Opus 4.6, Sonnet 4.6+) reject the
- *  field, so it is gated to Opus ≥ 4.7 and every 5th-gen+ model. (gjc: supportsAdaptiveThinkingDisplay) */
+ *  field, so it is gated to Opus ≥ 4.7 and every 5th-gen+ model. */
 function supportsAdaptiveThinkingDisplay(model: string): boolean {
   const v = parseAnthropicVersion(model);
   if (!v) return false;
@@ -166,7 +166,7 @@ function supportsAdaptiveThinkingDisplay(model: string): boolean {
   return v.kind === "opus" && v.major === 4 && v.minor >= 7;
 }
 
-/** Thinking transport for a model (gjc parity — inferThinkingControlMode):
+/** Thinking transport for a model:
  *  - Anthropic ≥ 4.6 → "adaptive" (model decides depth; effort rides output_config, NO budget)
  *  - Anthropic 4.5 sonnet/opus → "budget-effort" (budget_tokens + output_config effort)
  *  - otherwise (incl. Haiku 4.5) → "budget" (budget_tokens only).
@@ -185,7 +185,7 @@ function anthropicThinkingMode(model: string): AnthropicThinkingMode {
 }
 
 /** Map jeo's reasoning effort to Anthropic's adaptive/output_config effort literal. jeo folds
- *  xhigh→high upstream, so only low/medium/high arrive here. (gjc: mapEffortToAnthropicAdaptiveEffort) */
+ *  xhigh→high upstream, so only low/medium/high arrive here. */
 function anthropicAdaptiveEffort(effort: NonNullable<CallOptions["reasoningEffort"]>): "low" | "medium" | "high" {
   switch (effort) {
     case "low": return "low";
@@ -271,7 +271,7 @@ export function anthropicPayload(
   const maxTokens = stream ? requestedMax : Math.min(requestedMax, NON_STREAM_MAX_TOKENS);
   const effort = options.reasoningEffort;
   const thinkingEnabled = effort !== undefined;
-  // gjc parity: pick the thinking transport per model. Adaptive (Opus/Sonnet 4.6+) carries NO
+  // Pick the thinking transport per model. Adaptive (Opus/Sonnet 4.6+) carries NO
   // budget_tokens — depth rides output_config.effort. budget/budget-effort still use a budget.
   const thinkingMode = thinkingEnabled ? anthropicThinkingMode(model) : "budget";
   const thinkingBudget = thinkingEnabled && thinkingMode !== "adaptive"
@@ -280,7 +280,7 @@ export function anthropicPayload(
   // Reconstruct native tool_use / tool_result / thinking blocks for same-model turns when
   // thinking is enabled (and not stripped by a fail-safe retry); else plain string/image.
   const anthropicMessages = buildAnthropicMessages(messages, options.model, thinkingEnabled && !stripArtifacts);
-  // Conversation prompt caching (gjc parity — the main same-model latency gap):
+  // Conversation prompt caching (the main same-model latency gap):
   // one breakpoint on the LAST message caches the entire conversation prefix, so
   // each agent-loop step only pays input processing for the new tail instead of
   // re-ingesting the whole growing history. Combined with the system-block
@@ -402,7 +402,7 @@ function isEffortUnsupportedError(status: number, detail: string): boolean {
   return status === 400 && /effort/i.test(detail) && /output_config|not support/i.test(detail);
 }
 
-/** gjc parity (getSafeAnthropicHeaderEvidence): fold Anthropic's rate-limit response
+/** Fold Anthropic's rate-limit response
  *  headers into a 429's error detail so the retry classifier can see them. The decisive
  *  usage-exhaustion signal (`anthropic-ratelimit-unified-overage-disabled-reason:
  *  out_of_credits`) often arrives ONLY as a header — without this, an out-of-credits 429
@@ -576,7 +576,7 @@ export const anthropicAdapter: ProviderAdapter = {
     const toolBlocks = new Map<number, { name: string; args: string }>();
     // Thinking blocks stream as content_block_start(type:thinking) + thinking_delta(text)
     // + signature_delta(signature). Accumulate per index and emit one ReasoningArtifact per
-    // block on stream end so the signed thought can be replayed (gajae continuity).
+    // block on stream end so the signed thought can be replayed (continuity across turns).
     const thinkBlocks = new Map<number, { text: string; signature?: string }>();
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let evt: {
@@ -727,7 +727,7 @@ function claudeCodeOAuthHeaders(stream: boolean, model: string): Record<string, 
 function headersFor(credential: Credential, stream: boolean, model: string, baseUrl?: string, disableFallback = false): Record<string, string> {
   if (credential.kind === "oauth") {
     // OAuth against a NON-Anthropic base (Kimi Code, …): plain bearer, no Claude-Code
-    // cloaking headers/betas. gjc parity: buildAnthropicHeaders' generic-bearer branch.
+    // cloaking headers/betas.
     if (baseUrl) {
       return {
         accept: stream ? "text/event-stream" : "application/json",

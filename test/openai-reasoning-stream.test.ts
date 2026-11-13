@@ -33,7 +33,7 @@ async function drain(model: string, chunks: object[]): Promise<{ text: string; r
   }
 }
 
-// gjc parity: OpenAI-compatible reasoning models (xAI Grok, DeepSeek, llama.cpp, …)
+// OpenAI-compatible reasoning models (xAI Grok, DeepSeek, llama.cpp, …)
 // stream reasoning as a SEPARATE delta field, not in `content`. jeo must route it to
 // the reasoning channel and keep `content` as the visible answer.
 
@@ -151,7 +151,7 @@ test("non-reasoning model and custom baseUrl stay on chat completions", async ()
   expect(b.hitChat).toBe(true);
 });
 
-// gjc parity: native reasoning must be ENABLED per the backend's thinkingFormat, or the
+// Native reasoning must be ENABLED per the backend's thinkingFormat, or the
 // model never emits reasoning to surface. openaiRequest writes the right request param.
 function bodyOf(model: string, reasoningFormat?: "openai" | "openrouter" | "qwen" | "zai"): Record<string, unknown> {
   const req = openaiRequest([{ role: "user", content: "x" }], { model, reasoningEffort: "medium", reasoningFormat } as never, cred, true);

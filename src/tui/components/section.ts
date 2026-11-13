@@ -1,9 +1,7 @@
 /**
  * Section layout primitives — a small shadcn/ui-inspired design-token layer for the
  * terminal TUI. shadcn's discipline is *consistent vertical rhythm* (`space-y-*`) and
- * *card grouping* with a muted header (`CardHeader` + `text-muted-foreground`). The
- * gjc reference TUI does the same with `├─ Output ─┤` style dividers between a tool
- * block and its output.
+ * *card grouping* with a muted header (`CardHeader` + `text-muted-foreground`).
  *
  * These helpers give the live frame one shared spacing token (`SECTION_GAP`) and a
  * muted card-header divider (`sectionLabel`) so the in-frame stages (plan / activity /
@@ -22,9 +20,8 @@ export interface SectionLabelOpts {
 
 /**
  * A muted card-header divider spanning `width` columns: `── Plan ─────────────`.
- * Mirrors shadcn's `CardHeader` (a muted title) and gjc's `├─ Output ─┤` separators,
- * so each stage block is announced by a low-contrast label rather than running into
- * the previous block.
+ * Uses a muted title like shadcn's `CardHeader`, so each stage block is announced
+ * by a low-contrast label rather than running into the previous block.
  */
 export function sectionLabel(title: string, width: number, opts: SectionLabelOpts = {}): string {
   const unicode = opts.unicode !== false;

@@ -35,7 +35,7 @@ function withSearchEnv(env: Record<string, string>, fn: () => Promise<void>): Pr
   });
 }
 
-// ── Provider chain resolution (gjc semantics — never hardcoded to one backend) ──
+// ── Provider chain resolution (never hardcoded to one backend) ──
 
 test("resolveSearchChain: DuckDuckGo is ALWAYS the terminal fallback", async () => {
   await withSearchEnv({}, async () => {
@@ -103,7 +103,7 @@ test("resolveSearchChain: preferred provider without credentials is skipped (no 
   });
 });
 
-// ── DuckDuckGo parsers (live-HTML shape pinned by fixtures; gjc port) ─────────
+// ── DuckDuckGo parsers (live-HTML shape pinned by fixtures) ─────────
 
 const DDG_HTML_FIXTURE = `
 <div class="result">

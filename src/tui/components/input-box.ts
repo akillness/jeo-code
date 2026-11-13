@@ -154,7 +154,7 @@ function normalizeHighlights(
 }
 
 /**
- * Boxed input prompt (gjc-style): a `>` marker leads the first body row, the typed
+ * Boxed input prompt: a `>` marker leads the first body row, the typed
  * text (or a dim placeholder) follows, and the caret cell is reported so the caller
  * can park the REAL terminal cursor right after `>` — moving with the arrow keys.
  */

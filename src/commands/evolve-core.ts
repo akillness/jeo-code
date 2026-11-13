@@ -2,7 +2,7 @@ import { consultGjcForEvolution } from "../agent/dev/evolution-bridge";
 import chalk from "chalk";
 
 /**
- * jeo evolve-core: Triggers a self-evolution turn using gjc as a guide.
+ * jeo evolve-core: Triggers a self-evolution turn via the evolution bridge.
  */
 export async function runEvolveCoreCommand(args: string[]): Promise<void> {
   const cwd = process.cwd();

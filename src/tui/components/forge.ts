@@ -38,8 +38,8 @@ export interface ForgeBoxOptions {
    *  codes, so the fill spans each row. Identity/omitted = transparent card. Patch
    *  `diffPaint` rows set their own background and intentionally override it. */
   fill?: (s: string) => string;
-  /** In-flight shading: render the card as a flat DIMMED block (gjc-style "not done
-   *  yet" look). Strips inner color and wraps every row in `chalk.dim`, so a live
+  /** In-flight shading: render the card as a flat DIMMED block to indicate it is
+   *  not done yet. Strips inner color and wraps every row in `chalk.dim`, so a live
    *  card reads as shaded until the result arrives and the normal formatted card
    *  replaces it. Overrides `fill`/`flow` coloring. */
   dim?: boolean;
@@ -73,7 +73,7 @@ export function redactSecrets(input: string): string {
 }
 
 /**
- * Sentinel for a labeled in-box divider (e.g. the gjc-style `Output` rule between a command
+ * Sentinel for a labeled in-box divider (e.g. the `Output` rule between a command
  * echo and its output body). It is `#`-prefixed so app-side helpers that scan summary lines for
  * the command (skipping `#` notes) never surface it; formatForgeBox rewrites it into a real
  * bordered divider row at render time, where the unicode/ASCII glyph set is known.
@@ -138,7 +138,7 @@ function numberedPreviewLines(text: string, maxLines: number, maxChars: number, 
 }
 
 /**
- * Render an edit tool's `editBlock` as gjc-style diff lines for the forge card:
+ * Render an edit tool's `editBlock` as diff lines for the forge card:
  *  - SEARCH/REPLACE hunks → `- old` / `+ new` rows per hunk (capped), closed by a
  *    `~N hunk(s) · +A −R line(s)` summary divider row.
  *  - `≔` line-directives → the payload as `+ added` rows with a `+A line(s)` summary.
@@ -219,7 +219,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   if (normalized === "bash") {
     const command = stringArg(args, "command", "cmd") ?? "";
     const timeout = stringArg(args, "timeoutMs", "timeout");
-    // gjc-style command echo: prefix the (redacted, capped) command with `$ `.
+    // Command echo: prefix the (redacted, capped) command with `$ `.
     const commandLines = previewLines(command, 8, 800);
     const lines = [`$ ${commandLines[0] ?? ""}`, ...commandLines.slice(1)];
     const cwdKey = Object.keys(args).find(k => /^(cwd|workingdir|workingdirectory|subdir|dir)$/i.test(k));
@@ -269,7 +269,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   if (normalized === "edit") {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const editBlock = stringArg(args, "editBlock", "edit") ?? "";
-    // gjc-style diff view: SEARCH/REPLACE hunks render as -old/+new lines with a
+    // Diff view: SEARCH/REPLACE hunks render as -old/+new lines with a
     // hunk/line summary; ≔ directives render their payload as +added lines. Raw
     // fallback keeps unknown formats visible. Plain +/- prefixes (no ANSI) keep
     // the card byte-stable across color modes.
@@ -348,7 +348,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   return { title: `${safeTool} arguments`, language: "json", lines: jsonPreview(args) };
 }
 
-/** Parsed gjc-style Web Search card pieces, reconstructed from the structured
+/** Parsed Web Search card pieces, reconstructed from the structured
  *  `web_search` tool output (see `formatWebSearchOutput` in agent/web-search.ts). */
 export interface WebSearchCard {
   /** `Provider · N sources` header meta for the card title (e.g. `Anthropic · 18 sources`). */
@@ -357,10 +357,10 @@ export interface WebSearchCard {
 }
 
 /**
- * Build the gjc-style Web Search card body from the tool's structured output:
+ * Build the Web Search card body from the tool's structured output:
  * `Query:` line, then `Answer` / `Sources` / `Metadata` divider sections with
- * tree-glyph (`├─`/`└─`) rows and `… N more` truncation — visually mirroring
- * gjc's web_search renderer. Returns null when the output does not carry the
+ * tree-glyph (`├─`/`└─`) rows and `… N more` truncation.
+ * Returns null when the output does not carry the
  * structured shape (errors fall back to the generic result card).
  */
 export function webSearchCardLines(output: string, opts: { unicode?: boolean } = {}): WebSearchCard | null {
@@ -392,7 +392,7 @@ export function webSearchCardLines(output: string, opts: { unicode?: boolean } =
   const queryLine = (sections.get("__head__") ?? []).find(l => l.startsWith("Query: "));
   if (queryLine) lines.push(queryLine);
 
-  // Answer: tree-glyph preview, capped like gjc's collapsed card.
+  // Answer: capped tree-glyph preview for the collapsed card.
   const MAX_ANSWER = 3;
   lines.push(forgeDivider("Answer"));
   const answerShown = answer.slice(0, MAX_ANSWER);
@@ -439,7 +439,7 @@ export function summarizeForgeResult(tool: string, success: boolean, output: str
   let body = output || "<no output>";
   let exitNote: string | null = null;
   if (normalized === "bash") {
-    // gjc-style: the engine prefixes failed bash output with `Exit code N` — surface it
+    // The engine prefixes failed bash output with `Exit code N` — surface it
     // as a trailing `Command exited with code N` line below the output body instead.
     const m = body.match(/^Exit code (-?\d+)\n?/);
     if (m) {
@@ -596,7 +596,7 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
         : padded;
     return paint(glyphs.v) + body + shadow(glyphs.v);
   };
-  // gjc-style clip hint: the hidden remainder is reachable via Ctrl+O. Two clip
+  // Clip hint: the hidden remainder is reachable via Ctrl+O. Two clip
   // layers can produce an overflow marker — previewLines() at the SUMMARIZE
   // stage ("… N more line(s)") and the box's own maxLines cut below; both must
   // carry the hint, so summarize-stage markers are rewritten here where the

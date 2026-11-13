@@ -1,8 +1,8 @@
 /**
  * Human-scale duration + token-usage formatting for status lines.
  *
- * gjc renders elapsed time at minute granularity once a turn crosses 60s
- * ("took 3 steps in 1m 45s"), and surfaces live token usage per turn. These
+ * Elapsed time uses minutes and seconds once a turn crosses 60s
+ * ("took 3 steps in 1m 45s"), alongside live token usage per turn. These
  * helpers are pure so both the TUI footer/summary and the plain stream sink
  * share one formatting contract.
  */

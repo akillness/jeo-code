@@ -1,6 +1,6 @@
 /**
- * Best-effort, synchronous, owner-only crash log — gjc PR #3051 parity, scoped to
- * jeo-native persistence only (no daily-logger/archive infrastructure ported).
+ * Best-effort, synchronous, owner-only crash log, scoped to
+ * jeo-native persistence only (no daily-logger/archive infrastructure).
  *
  * Written directly from `src/cli.ts`'s process-level `uncaughtException`/
  * `unhandledRejection` handler, BEFORE the clean "error: …" line hits stderr, so a

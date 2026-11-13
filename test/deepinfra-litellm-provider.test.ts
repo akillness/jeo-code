@@ -4,9 +4,9 @@ import { PROVIDER_NAMES, providerEnvVar, describeProvider } from "../src/ai/prov
 import { companyLabel } from "../src/ai/model-catalog";
 import { openaiCompatDef } from "../src/ai/providers/openai-compatible-catalog";
 
-// gjc parity: current gjc `packages/ai/src/models.json` provider list has these two
+// The provider catalog explicitly lists these two providers
 // entries jeo lacked (verified directly against a shallow clone of the real, public
-// gajae-code source — not inferred). Both are catalog-driven OpenAI-compatible clouds
+// (not inferred). Both are catalog-driven OpenAI-compatible clouds
 // (ONE table row each, per openai-compatible-catalog.ts's own design), registered
 // generically — no bespoke adapter code needed.
 

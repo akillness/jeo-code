@@ -24,7 +24,7 @@ export function providerHint(s: ProviderStatus, unicode = true): string {
 
 /** Build provider choices, ready providers first (stable within each group). When
  *  `current` is given, that provider's row is marked `· ● current` so the active
- *  provider is obvious in the picker (gjc-style). */
+ *  provider is obvious in the picker. */
 export function buildProviderChoices(statuses: ProviderStatus[], unicode = true, current?: ProviderName): SelectItem<ProviderName>[] {
   const sorted = [...statuses].sort((a, b) => (a.ready === b.ready ? 0 : a.ready ? -1 : 1));
   return sorted.map(s => ({
@@ -61,7 +61,7 @@ export function loginExpiryLabel(expires: number | undefined, now: number = Date
 
 /** Right-aligned hint for a `/login` row: live OAuth login status (account + expiry)
  *  rather than generic readiness. Logged-in providers show a check + account/expiry;
- *  others show a muted "not logged in". gjc-parity for the login selector. */
+ *  others show a muted "not logged in". */
 export function loginHint(s: ProviderStatus, unicode = true): string {
   if (!s.loggedIn) return unicode ? "\u00b7 not logged in" : "not logged in";
   const parts: string[] = [unicode ? "\u2713 logged in" : "logged in"];
@@ -72,7 +72,7 @@ export function loginHint(s: ProviderStatus, unicode = true): string {
 }
 
 /** Build `/login` choices: logged-in providers first, each row badged with its live
- *  OAuth login status (account/expiry). Pure builder mirroring gjc's OAuth selector. */
+ *  OAuth login status (account/expiry). Pure builder. */
 export function buildLoginChoices(statuses: ProviderStatus[], unicode = true): SelectItem<ProviderName>[] {
   const sorted = [...statuses].sort((a, b) => (!!a.loggedIn === !!b.loggedIn ? 0 : a.loggedIn ? -1 : 1));
   return sorted.map(s => ({
@@ -98,7 +98,7 @@ export function subscriptionHint(s: ProviderStatus, unicode = true): string {
 
 /** Build the combined "OAuth / subscription" login choices: OAuth providers (logged-in
  *  first, badged with account/expiry) followed by subscription-tier providers (active
- *  first, badged with token status). Pure builder mirroring gjc's onboarding selector. */
+ *  first, badged with token status). Pure builder. */
 export function buildSubscriptionLoginChoices(
   oauthStatuses: ProviderStatus[],
   subscriptionStatuses: ProviderStatus[],
@@ -137,12 +137,12 @@ export function renderLoginPicker(list: SelectList<ProviderName>, opts: RenderSe
   return renderSelectList(list, { title: "Select provider to login", rows: 8, ...opts });
 }
 
-/** The ways to onboard a provider, mirroring gjc's `/provider` onboarding selector:
+/** The ways to onboard a provider through the `/provider` onboarding selector:
  *  log in to an OAuth/subscription provider, register an API-compatible endpoint, or
  *  store an API key for one of the bundled API-key-only providers (groq, deepseek, …). */
 export type OnboardingAction = "oauth-login" | "api-key" | "api-add";
 
-/** Build the bare-`/provider` onboarding choices (gjc-parity interactive selector).
+/** Build the bare-`/provider` onboarding choices for the interactive selector.
  *  Pure builder: OAuth-login first (the common path), then API-key providers, then a
  *  custom API-compatible endpoint. */
 export function buildOnboardingChoices(unicode = true): SelectItem<OnboardingAction>[] {

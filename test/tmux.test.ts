@@ -426,7 +426,7 @@ test("tmuxProfileCommands: gjc-parity profile — mouse, markers, clipboard, cop
   expect(cmds[0]!.args[0]).toBe("set-window-option");
   // mouse on follows: the load-bearing wheel→copy-mode scrollback switch.
   expect(cmds[1]!.args.slice(-2)).toEqual(["mouse", "on"]);
-  // Ownership + identity markers (gjc @gjc-* parity).
+  // Ownership + identity markers.
   expect(byDesc["mark jeo tmux ownership"]!.slice(-2)).toEqual(["@jeo-profile", "1"]);
   expect(byDesc["record jeo branch identity"]!.slice(-2)).toEqual(["@jeo-branch", "main"]);
   expect(byDesc["record jeo project identity"]!.slice(-2)).toEqual(["@jeo-project", "/home/u/proj"]);
@@ -552,7 +552,7 @@ test("runLaunchCommand (tmux-launched inner process): registers a self-close exi
 
     // A crash-net exit (1) leaves the session alone — remain-on-exit preserves the
     // dead pane's final screen for forensic tmux attach/capture-pane instead of the
-    // whole session silently vanishing (gjc #1746 class).
+    // whole session silently vanishing.
     spawnSyncCalls.length = 0;
     exitHandler!(1);
     expect(spawnSyncCalls.some(c => c[0] === "tmux" && c[1] === "kill-session")).toBe(false);
@@ -697,7 +697,7 @@ test("currentTmuxClipboardCommands: in-session clipboard repair targets the CURR
   expect(currentTmuxClipboardCommands({ JEO_TMUX_PROFILE: "0" }, { platform: "darwin", which })).toEqual([]);
 });
 
-// gjc launch-tmux parity (#1376): a DETACHED new-session defaults to 80x24, so the
+// A DETACHED new-session defaults to 80x24, so the
 // inner jeo's first frames render mis-wrapped until attach. The launch path sizes the
 // session to the caller terminal via -x/-y and re-asserts with resize-window pre-attach.
 test("callerTmuxTerminalSize: TTY with known dimensions → size; non-TTY or bogus dims → undefined", async () => {

@@ -113,9 +113,9 @@ function codePointAndLength(s: string, i: number): { cp: number; length: number 
  * Resolve the visual CLUSTER starting at `s[i]` (not an SGR escape or tab — callers
  * handle those separately) into its total consumed UTF-16 length and DISPLAY width,
  * absorbing variation selectors, skin-tone modifiers, keycap combiners, combining
- * marks, and ZWJ-joined sequences into ONE atomic unit (gjc parity: "preserve …
- * Unicode grapheme semantics for … Korean tone marks, VS16 emoji presentation, ZWJ,
- * keycaps, and emoji modifiers").
+ * marks, and ZWJ-joined sequences into ONE atomic unit. This preserves Unicode
+ * grapheme semantics for Korean tone marks, VS16 emoji presentation, ZWJ,
+ * keycaps, and emoji modifiers.
  *
  * Per-code-point summing (the old behavior) over- or under-counts every one of these:
  * 👍🏽 (thumbs-up + Fitzpatrick modifier) summed to 4 columns where a terminal renders

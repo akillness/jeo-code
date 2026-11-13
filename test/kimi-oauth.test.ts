@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { pollForToken, refreshKimiToken, requestDeviceAuthorization, loginKimi } from "../src/auth/flows/kimi";
 
-// Kimi Code device-code OAuth (RFC 8628) — gjc parity: authorization_pending → poll,
+// Kimi Code device-code OAuth (RFC 8628): authorization_pending → poll,
 // slow_down → widen interval, access_denied/expired_token → terminal, refresh keeps
 // the old refresh token when the response omits one.
 

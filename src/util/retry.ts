@@ -33,7 +33,7 @@ export interface RetryOptions {
   rateLimitRetries?: number;
   /** Opt-in ceiling on a 429's server-directed retry delay: set it and a delay beyond it fails
    *  fast with the original error instead of sleeping. Unset (the default) honors ANY
-   *  server-directed delay in full, however long — gjc parity: a generic rate limit is retried
+   *  server-directed delay in full, however long: a generic rate limit is retried
    *  forever, not treated as fatal past some arbitrary budget. Usage/quota-limit errors
    *  (`isUsageLimitError`) are unaffected either way: `defaultRetryable` already classifies
    *  them non-retryable before this wait is ever computed. Pair with `signal` so an unbounded
@@ -51,7 +51,7 @@ export function defaultRetryable(err: unknown): boolean {
   }
   // Persistent usage/quota limits (e.g. a subscription window exhausted) never clear
   // within a retry budget — fail fast so the caller can switch model/provider instead
-  // of sitting through the whole backoff ladder (gjc parity: QUOTA_EXHAUSTED is not
+  // of sitting through the whole backoff ladder (QUOTA_EXHAUSTED is not
   // retried like a per-minute 429).
   if (isUsageLimitError(err)) {
     return false;
@@ -154,7 +154,7 @@ export function defaultRetryable(err: unknown): boolean {
 // Synthetic per-minute floor for a 429 that carries NO server `Retry-After` (see
 // `rateLimitMinDelayMs`) — caps the escalating floor so a SILENT rate limit still waits a
 // realistic window instead of ~8s. Does NOT cap a genuine server-directed Retry-After: a
-// provider that names its own wait is authoritative and is honored in full (gjc parity);
+// provider that names its own wait is authoritative and is honored in full;
 // `rateLimitMaxServerDelayMs` is the opt-in ceiling for a caller that truly cannot wait that long.
 const RATE_LIMIT_FLOOR_CAP_MS = 30_000;
 
@@ -208,7 +208,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       const capped = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
       // Equal jitter: half fixed + half random → [0.5x, 1x] of the capped backoff.
       const jittered = capped / 2 + random() * (capped / 2);
-      // Server `Retry-After` wins, honored IN FULL (no cap — gjc parity: even a multi-hour
+      // Server `Retry-After` wins, honored IN FULL (no cap — even a multi-hour
       // provider-directed window is retried, never silently compressed). For rate limits,
       // apply the floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
       // burn the 429 budget back-to-back with no real pause. The floor escalates per attempt
@@ -301,13 +301,12 @@ function errorMessageOf(err: unknown): string {
 }
 
 /**
- * Persistent usage/quota-limit detection (gjc parity: `isUsageLimitError`). These are
+ * Persistent usage/quota-limit detection (`isUsageLimitError`). These are
  * subscription/window limits ("usage limit reached", "quota exceeded", model/message
  * window limits, credit exhaustion, Anthropic ACCOUNT-level exhaustion) that need a
  * model or credential switch — retrying within seconds is pure waste, unlike a
  * per-minute 429. Bare "resource exhausted" (gRPC capacity wording) stays transient;
- * only the qualified "Resource has been exhausted (… quota/limit)" form is persistent
- * (gjc fixture parity: rate-limit-utils.test.ts).
+ * only the qualified "Resource has been exhausted (… quota/limit)" form is persistent.
  */
 const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?exceeded|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
 export function isUsageLimitError(err: unknown): boolean {
@@ -321,7 +320,7 @@ export function isUsageLimitError(err: unknown): boolean {
  *  fail fast on it: a refusal is DETERMINISTIC for the same conversation content —
  *  transport-level resends of an identical payload just burn billed calls. The
  *  engine's refusal ladder (resend → context reset → guidance strip, then unbounded
- *  capped backoff — gjc parity: a refusal is never terminal) is the correct recovery
+ *  capped backoff; a refusal is never terminal) is the correct recovery
  *  layer because it MUTATES the context between attempts. */
 export function isRefusalError(err: unknown): boolean {
   return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|(?:block|finish)Reason=(?:SAFETY|PROHIBITED_CONTENT|BLOCKLIST|RECITATION|SPII)|Refusal \(\w+\)/i.test(errorMessageOf(err));

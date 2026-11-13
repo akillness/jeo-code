@@ -138,7 +138,7 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
 | `/computer [status\|on\|off]` | 이 세션의 fail-closed 데스크톱 자동화 도구 켜기/끄기 |
 | `/new` · `/sessions` | 새 세션 시작 또는 저장된 세션 목록 표시 |
-| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo 세션을 재개하거나 읽기 전용 정확 버전 GJC v5 브랜치를 새 Jeo 세션으로 가져오기 |
+| `/resume [id]` | 저장된 Jeo 세션을 id 또는 고유 id 접두사로 재개; id를 생략하면 선택 창 열기 |
 | `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | 릴리스 노트 표시 · 이 세션의 백그라운드 job 조회·대기·취소 |
 | `/history [n\|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
 | `/retry` · `/btw <q>` | 마지막 요청 재시도 · 히스토리에 안 남는 사이드 질문 |
@@ -513,10 +513,6 @@ bun run dev:doctor          # 전역 `jeo`가 이 소스를 실행하는지 보�
 CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리즈 게시 시 자동, 또는 `workflow_dispatch` 수동 실행(드라이런 옵션). 워크플로는 브라우저 하드 게이트·타입체크·테스트(브라우저 도구 테스트는 별도 프로세스)·`pack:check`·패키징된 tarball 부팅 스모크를 거친 뒤 `npm publish --provenance`를 실행합니다.
 
 배포는 **npm trusted publishing(OIDC)** 을 사용합니다 — 교체·유출·2FA 예외가 필요한 `NPM_TOKEN` 시크릿이 없습니다(npm은 2026년 8월부터 2FA 우회 토큰을 제한하고 2027년 1월에 해당 토큰의 직접 배포를 종료합니다). npmjs.com에서 1회 설정: 패키지 `jeo-code` → Settings → Trusted Publisher → GitHub Actions, owner `akillness`, repository `jeo-code`, workflow `npm-publish.yml`, environment 비움. 잡에는 `permissions.id-token: write`와 npm ≥ 11.5.1이 필요합니다(워크플로가 npm을 직접 업그레이드).
-
-## 감사의 말 (Acknowledgements)
-
-[gajae-code](https://github.com/Yeachan-Heo/gajae-code)에 깊은 감사를 드립니다.
 
 ## 변경 이력 (Changelog)
 

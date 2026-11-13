@@ -1,10 +1,10 @@
 /**
- * StepBudget — gjc-style flexible step budgeting ("retry flow") for the agent loop.
+ * StepBudget — flexible step budgeting ("retry flow") for the agent loop.
  *
  * Replaces the bare `step <= maxSteps` counter with a budget that EXTENDS itself
  * while the turn is demonstrably making progress (recent tool calls succeeding on
- * distinct targets) and fails fast into consolidation when it is stalled. Mirrors
- * gjc's provider retry budgets: a base budget, a bounded number of extensions, an
+ * distinct targets) and fails fast into consolidation when it is stalled. Uses
+ * a base budget, a bounded number of extensions, an
  * absolute hard cap, and explicit fail-fast classes (a stalled window — too many
  * failures or no distinct targets — never earns an extension).
  *
@@ -252,7 +252,7 @@ export class StepBudget {
   }
 }
 /**
- * A concise, gjc-style label for a tool call's actual TARGET (file / command / glob) —
+ * A concise label for a tool call's actual TARGET (file / command / glob) —
  * not just the bare tool name plus its full argument blob. Two calls that touch the SAME
  * target (e.g. `edit src/x.ts` twice with different bodies) collapse to the same target
  * key here even though `hashSignature` of their full arguments differs. Shared by the

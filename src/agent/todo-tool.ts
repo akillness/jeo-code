@@ -1,8 +1,7 @@
 /**
- * `todo` tool — lets the agent declare and update a structured task plan,
- * mirroring gjc's `todo_write`. The plan is surfaced live in the TUI (a
- * status-colored checklist) so the user can see what the agent intends to do
- * and how far it has progressed.
+ * `todo` tool — lets the agent declare and update a structured task plan.
+ * The plan is surfaced live in the TUI (a status-colored checklist) so the
+ * user can see what the agent intends to do and how far it has progressed.
  *
  * The model resends the full list each call with updated statuses; the tool
  * normalizes loose status strings and auto-promotes the first pending item to

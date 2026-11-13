@@ -1,7 +1,7 @@
 /**
  * `jeo daemon status|start|stop|reload` — manage the shared Telegram/Discord/Slack
- * notification/subagent-control daemon (gjc `gjc daemon` parity, scoped to
- * jeo's one daemon kind). See `src/agent/notify/daemon-control.ts`.
+ * notification/subagent-control daemon (scoped to jeo's one daemon kind).
+ * See `src/agent/notify/daemon-control.ts`.
  */
 import { daemonStatus, startDaemon, stopDaemon, reloadDaemon } from "../agent/notify/daemon-control";
 

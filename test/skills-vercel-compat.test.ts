@@ -42,7 +42,7 @@ beforeAll(async () => {
     "---\nname: ralph-loop\ndescription: persistent verify-before-done loop\n---\n\nLoop until verified.",
   );
 
-  // 3. jeo's self-contained agent-skills dir (gjc-structure parity, under .jeo not .gjc).
+  // 3. jeo's self-contained agent-skills dir under .jeo.
   await fs.mkdir(path.join(home, ".jeo", "agent", "skills", "jeo-only"), { recursive: true });
   await fs.writeFile(
     path.join(home, ".jeo", "agent", "skills", "jeo-only", "SKILL.md"),
@@ -76,7 +76,7 @@ test("skillDirs covers Vercel canonical, agent-targeted, and jeo's own .jeo/agen
   expect(dirs).toContain(path.join(home, ".agents", "skills"));
   expect(dirs).toContain(path.join(cwd, ".claude", "skills"));
   expect(dirs).toContain(path.join(cwd, ".agents", "skills"));
-  // jeo no longer piggybacks on gjc's namespace — it owns a `.jeo` tree instead.
+  // jeo owns a `.jeo` tree for its namespace.
   expect(dirs.some(d => d.includes(`${path.sep}.gjc${path.sep}`))).toBe(false);
   // jeo-native project dir stays highest-precedence among scanned defaults.
   expect(dirs.indexOf(path.join(cwd, ".jeo", "skills"))).toBeGreaterThan(dirs.indexOf(path.join(cwd, ".agents", "skills")));

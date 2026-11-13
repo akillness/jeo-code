@@ -1,14 +1,13 @@
 /**
- * High-level per-tab helpers for the `browser` tool (gjc `browser` parity, via
- * Playwright instead of puppeteer — jeo-code already ships `playwright` for its own
- * test suite; this reuses it rather than adding a second automation dependency).
+ * High-level per-tab helpers for the `browser` tool via Playwright.
+ * jeo-code already ships `playwright` for its own test suite; this reuses it
+ * rather than adding a second automation dependency.
  *
- * `observe()` mirrors gjc's accessibility-snapshot-first philosophy: it returns a
- * bounded list of interactive elements (role/name/value) instead of a raw DOM dump
- * or a screenshot, and tags each one with a `data-jeo-observe-id` attribute so a
- * later `act`/`run` call can address it by stable numeric `id` instead of a fragile
- * CSS selector or pixel coordinates. Ids are stable until the next `observe()`/
- * navigation, exactly like the real tool's contract.
+ * `observe()` returns a bounded accessibility-oriented list of interactive
+ * elements (role/name/value) instead of a raw DOM dump or a screenshot, and tags
+ * each one with a `data-jeo-observe-id` attribute so a later `act`/`run` call can
+ * address it by stable numeric `id` instead of a fragile CSS selector or pixel
+ * coordinates. Ids are stable until the next `observe()` or navigation.
  */
 import type { Page } from "playwright";
 

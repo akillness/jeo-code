@@ -1,7 +1,7 @@
 /**
- * `browser` tool — headless Chromium automation via Playwright (gjc `browser`
- * parity — see `browser-session.ts`'s header for the exact scope: headless-only,
- * no profile/CDP/Electron attach, no stealth patches). MUTATING: drives a real
+ * `browser` tool — headless Chromium automation via Playwright.
+ * See `browser-session.ts`'s header for the exact scope: headless-only,
+ * no profile/CDP/Electron attach, no stealth patches. MUTATING: drives a real
  * browser and can run arbitrary page/host JS via `run`, so it is excluded from
  * read-only subagent roles the same way `bash`/`computer`/`debug` are.
  */

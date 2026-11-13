@@ -143,7 +143,7 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/computer [status\|on\|off]` | Toggle the fail-closed desktop-automation tool for this session |
 | `/new` · `/sessions` | Start a fresh session or list saved sessions |
-| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Resume a Jeo session or import a read-only exact-version GJC v5 branch into a fresh Jeo session |
+| `/resume [id]` | Resume a saved Jeo session by id or unique id prefix; with no id, open the picker |
 | `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
 | `/history [n\|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
@@ -502,10 +502,6 @@ bun run dev:doctor          # report whether global `jeo` runs this source (link
 CI publishes via `.github/workflows/npm-publish.yml` — triggered by a published GitHub release, or manually with `workflow_dispatch` (optional dry-run). The workflow runs the browser hard gate, typecheck, the test suite (browser tool tests in their own process), `pack:check`, a packed-tarball boot smoke, then `npm publish --provenance`.
 
 Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` secret to rotate, leak, or exempt from 2FA (npm restricts bypass-2FA tokens from Aug 2026 and ends direct publishing with them in Jan 2027). One-time setup on npmjs.com: package `jeo-code` → Settings → Trusted Publisher → GitHub Actions, owner `akillness`, repository `jeo-code`, workflow `npm-publish.yml`, environment blank. The job needs `permissions.id-token: write` and npm ≥ 11.5.1 (the workflow upgrades npm itself).
-
-## Acknowledgements
-
-Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the inspiration.
 
 ## Changelog
 

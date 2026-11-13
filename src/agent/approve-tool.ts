@@ -1,13 +1,12 @@
 /**
  * `approve` tool — lets the agent itself flip a `jeo ralplan` plan's `approved`
- * flag so `jeo team`/`jeo ultragoal` can execute it, wrapping the exact same
+ * flag so `jeo team`/`jeo ultragoal` can execute it, wrapping the same
  * content gate the `jeo approve` CLI command enforces (src/commands/approve.ts's
  * `approvePlan`): schema shape, known subagent roles, a persisted [OKAY]
  * consensus verdict, and a hash match against what the consensus critic
- * reviewed. 2026-07: previously this flag could ONLY be flipped by a human
- * running `jeo approve <path>` in their own terminal — that identity gate is
- * removed per explicit user direction (gjc-style: the agent can act on its own
- * plans). The plan-QUALITY gate above is unchanged and still refuses a
+ * reviewed. As of 2026-07, approval no longer requires a human running
+ * `jeo approve <path>` in their own terminal: the agent can approve its own
+ * plans. The plan-quality gate remains unchanged and refuses a
  * schema-invalid, unreviewed, or post-review-edited plan no matter who calls it.
  */
 import type { ToolHandler } from "./engine";

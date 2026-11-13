@@ -27,9 +27,9 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   let budget: number;
   switch (effectiveEffort) {
     // low/medium/high ALL enable thinking with scaling depth — reasoning works at
-    // every thinking level (gajae parity). Only an UNSET effort
+    // every thinking level. Only an UNSET effort
     // (and no in-name depth marker) falls through to the floor.
-    // Tier values mirror gjc's GOOGLE_THINKING table (stream.ts).
+    // Tier values are thinking-token budgets per effort level.
     case "low": budget = 4096; break;
     case "medium": budget = 8192; break;
     case "high": budget = 16384; break;
@@ -54,15 +54,15 @@ function geminiNamedEffort(m: string): CallOptions["reasoningEffort"] | undefine
     : undefined;
 }
 
-/** Gemini 3.x is driven by the `thinkingLevel` ENUM, not a numeric budget (gjc
- *  inferThinkingControlMode: gemini family with version.major === 3 → "google-level";
- *  everything else stays on the numeric thinkingBudget). */
+/** Gemini 3.x is driven by the `thinkingLevel` ENUM, not a numeric budget (gemini
+ *  family with version.major === 3 → "google-level"; everything else stays on the
+ *  numeric thinkingBudget). */
 export function geminiUsesThinkingLevel(model: string): boolean {
   const ver = model.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
   return !!ver && Number(ver[1]) === 3;
 }
 
-/** Effort → Google `thinkingLevel` enum value (gjc mapEffortToGoogleThinkingLevel):
+/** Effort → Google `thinkingLevel` enum value:
  *  low→LOW, medium→MEDIUM, high/xhigh→HIGH. */
 export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEffort"]> | "xhigh"): "LOW" | "MEDIUM" | "HIGH" {
   switch (effort) {
@@ -75,9 +75,9 @@ export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEf
 }
 
 /** The `thinkingConfig` object for a Gemini request, or undefined to omit it entirely:
- *  gemini-3.x → thinkingLevel enum (numeric budgets are NOT sent — gjc emits level XOR
+ *  gemini-3.x → thinkingLevel enum (numeric budgets are NOT sent — level XOR
  *  budget, never both); with no effort requested (and no in-name marker) the config is
- *  omitted so the model keeps its default (gjc parity: thinking not enabled → no config).
+ *  omitted so the model keeps its default (thinking not enabled → no config).
  *  Other thinking-capable models → numeric thinkingBudget; pre-2.5 → undefined. */
 export type GeminiThinkingConfig =
   | { includeThoughts: true; thinkingLevel: "LOW" | "MEDIUM" | "HIGH" }
@@ -174,7 +174,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
   if (thinking !== undefined) {
     generationConfig.thinkingConfig = thinking;
     if ("thinkingBudget" in thinking && thinking.thinkingBudget > 0) {
-      // Additive budget (gjc stream.ts): the caller's maxTokens is the DESIRED OUTPUT;
+      // Additive budget: the caller's maxTokens is the DESIRED OUTPUT;
       // thought tokens ride ON TOP of it, capped at the model's output limit — otherwise
       // thinking silently eats the visible-answer budget (the MAX_TOKENS empty-reply bug).
       // ponytail: 65536 hard cap — swap in the model's catalog max-output once a cheap
@@ -186,7 +186,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
   const payload: Record<string, unknown> = { contents, generationConfig };
   if (systemPrompt) payload.systemInstruction = { parts: [{ text: systemPrompt }] };
   if (options.tools?.length) {
-    // NATIVE function-calling (gjc/antigravity parity): declare the toolset so the
+    // NATIVE function-calling: declare the toolset so the
     // model emits functionCall parts instead of hand-formatting the JSON tool protocol
     // (which weaker models mangle — wasted steps + apology prose leaking into replies).
     payload.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: sanitizeGeminiToolParameters(t.parameters) })) }];
@@ -211,7 +211,7 @@ export function geminiRequest(messages: Message[], options: CallOptions, credent
 
 const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 
-/** gemini-cli identification headers Cloud Code Assist expects (gjc parity). */
+/** gemini-cli identification headers Cloud Code Assist expects. */
 export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
   const version = jeoEnv("GEMINI_CLI_VERSION") || "0.49.0";
   return {
@@ -222,7 +222,7 @@ export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
 
 /**
  * Cloud Code Assist request for a Google OAuth (gemini-cli) credential — the
- * gemini-cli/gjc call path. OAuth tokens carry cloud-platform scope and target
+ * gemini-cli call path. OAuth tokens carry cloud-platform scope and target
  * cloudcode-pa.googleapis.com, NOT the public generativelanguage API, so a
  * plain `jeo auth login gemini` works without any GEMINI_API_KEY. The body
  * wraps the standard payload as `{ project, model, request }`.
@@ -299,7 +299,7 @@ function captureGeminiSignatures(chunk: GeminiChunk, options: CallOptions, seen:
     }
   }
 }
-/** Native Gemini functionCall parts → {tool, arguments} (gjc/antigravity parity). Kept
+/** Native Gemini functionCall parts → {tool, arguments}. Kept
  *  separate from textOf so the re-serialized canonical JSON envelope drives the loop. */
 function geminiFunctionCallsOf(chunk: GeminiChunk): { tool: string; arguments: Record<string, unknown> }[] {
   const parts = chunk.candidates?.[0]?.content?.parts ?? [];
@@ -344,7 +344,7 @@ function throwIfGoogleStreamError(
  * Cloud Code Assist SSE turn for a Google OAuth credential: resolves the
  * projectId (stored → env → lazy loadCodeAssist/onboardUser discovery), POSTs
  * the gemini-cli request, and yields text deltas. Usage is reported ONCE after
- * the stream (thought tokens count as output, gjc parity). Shared by both
+ * the stream (thought tokens count as output). Shared by both
  * `call` (concatenates) and `stream` (yields through).
  */
 async function* ccaTurn(messages: Message[], options: CallOptions, credential: Credential & { kind: "oauth" }): AsyncGenerator<string> {

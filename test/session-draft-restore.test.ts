@@ -5,7 +5,7 @@ import * as os from "node:os";
 import { createSession, loadSession, updateSessionDraft } from "../src/agent/session";
 import { runSessionSlash } from "../src/commands/launch/session-slash";
 
-// Proves the gajae-code-inspired "unsent prompt survives /resume" feature:
+// Proves the "unsent prompt survives /resume" feature:
 // updateSessionDraft persists/clears the header field, and runSessionSlash's
 // `/session resume` path surfaces it back out so the REPL can prefill the box.
 

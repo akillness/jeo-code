@@ -432,7 +432,7 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     return 0;
   }
   // Bare invocation or a leading global flag (e.g. `jeo`, `jeo --tmux`,
-  // `jeo --tmux --worktree <path>`) routes to the interactive agent — gjc parity.
+  // `jeo --tmux --worktree <path>`) routes to the interactive agent.
   if (!first || first.startsWith("-")) {
     const run = await findCommand("launch")!.loader();
     await run(argv);

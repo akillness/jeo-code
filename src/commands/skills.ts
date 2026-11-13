@@ -29,7 +29,7 @@ export interface SkillSyncResult {
 }
 
 /** Reconcile the bundled workflow skills against `dir` (default {@link userSkillsDir}).
- *  Default install preserves existing local files (gjc `setup defaults` parity):
+ *  Default install preserves existing local files:
  *  missing skills are installed, differing ones preserved unless `force`. `check`
  *  is a pure drift report — it writes nothing. Returns a structured result so the
  *  CLI wrapper owns all console output / exit codes. */
@@ -93,7 +93,7 @@ async function runSkillsSync(cleanArgs: string[], isJson: boolean, cwd: string):
     console.log(`\nWrote ${result.wrote} file(s)${preserved ? `, preserved ${preserved} local copy(ies) (use --force to overwrite)` : ""}.`);
   }
 
-  // --check is CI-usable: non-zero exit signals drift (gjc `setup defaults --check` parity).
+  // --check is CI-usable: non-zero exit signals drift.
   if (check && result.drift) process.exitCode = 1;
 }
 
@@ -129,7 +129,7 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
   const isJson = args.includes("--json");
   const cleanArgs = args.filter(a => a !== "--json");
 
-  // `jeo skills --write [dir]` materializes bundled skill docs to disk (gjc-style SKILL.md files).
+  // `jeo skills --write [dir]` materializes bundled skill docs to disk (SKILL.md-style files).
   if (cleanArgs[0] === "--write") {
     const dir = cleanArgs[1] ? path.resolve(cwd, cleanArgs[1]) : path.join(getLocalJeoDir(cwd), "skills");
     await fs.mkdir(dir, { recursive: true });
@@ -141,9 +141,9 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
     return;
   }
 
-  // `jeo skills sync [--check|--force] [dir]` — bundled skill inspection & safe install
-  // (gjc `setup defaults --check/--force` parity): install missing bundled skills into
-  // ~/.jeo/skills, preserve existing local copies by default, and report drift.
+  // `jeo skills sync [--check|--force] [dir]` — bundled skill inspection & safe install:
+  // install missing bundled skills into ~/.jeo/skills, preserve existing local copies
+  // by default, and report drift.
   if (cleanArgs[0] === "sync") {
     await runSkillsSync(cleanArgs, isJson, cwd);
     return;

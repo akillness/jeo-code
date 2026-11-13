@@ -1,5 +1,5 @@
 /**
- * Google Cloud Code Assist project discovery — gjc parity.
+ * Google Cloud Code Assist project discovery.
  *
  * gemini-cli style: POST v1internal:loadCodeAssist to find an existing
  * cloudaicompanionProject; when the account has none, onboard the default
@@ -22,7 +22,7 @@ const GEMINI_CLI_METADATA = Object.freeze({
   pluginType: "GEMINI",
 });
 
-/** Antigravity desktop-app discovery metadata (gjc parity). */
+/** Antigravity desktop-app discovery metadata. */
 export const ANTIGRAVITY_DISCOVERY_METADATA = Object.freeze({
   ideType: "ANTIGRAVITY",
   platform: "PLATFORM_UNSPECIFIED",
@@ -56,7 +56,7 @@ export interface DiscoverProjectOptions {
   /** Per-request deadline; a stalled discovery fetch must NEVER hang the turn
    *  forever (round-5 #2 — this path runs BEFORE the manager's guarded call). */
   requestTimeoutMs?: number;
-  /** Antigravity semantics (gjc google-antigravity discoverProject): when the account
+  /** Antigravity semantics: when the account
    *  reports a tier but names no project, ONBOARD the default/legacy tier instead of
    *  demanding an explicit workspace project. The gemini-cli flow keeps the strict
    *  workspace hint (default false). */
@@ -153,7 +153,7 @@ export async function discoverGoogleProjectId(
     const existing = readProjectId(data.cloudaicompanionProject) ?? envProjectId;
     if (existing) return existing;
     if (!opts.alwaysOnboard) throw new Error(WORKSPACE_PROJECT_HINT);
-    // alwaysOnboard: fall through and provision the default/legacy tier (gjc antigravity parity).
+    // alwaysOnboard: fall through and provision the default/legacy tier.
   }
 
   // Not onboarded yet: provision the default tier (free tier needs no project).

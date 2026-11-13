@@ -10,7 +10,7 @@ import chalk from "chalk";
 import { boxBlock, BOX_UNICODE, BOX_ASCII } from "../tui/components/layout";
 
 // ---- "What's New" release notes ---------------------------------------------
-// Mirrors gjc's post-upgrade release-notes surface. The bundled CHANGELOG.md
+// Post-upgrade release notes use the bundled CHANGELOG.md
 // (shipped via package.json `files`) is always the RUNNING version's changelog,
 // so after a `bun install -g jeo-code` upgrade the next launch reads the NEW
 // notes offline. `jeo whats-new` shows them on demand; `jeo update --install`
@@ -254,7 +254,7 @@ export async function writeLastSeenVersion(version: string): Promise<void> {
  * Launch-time hook: returns rendered notes the FIRST time jeo runs after an
  * upgrade, then records the current version so it never repeats. A fresh install
  * (no prior state) records silently and shows nothing — only genuine upgrades
- * surface notes, matching gjc / npm update-notice behaviour.
+ * surface notes.
  */
 export async function consumeLaunchWhatsNew(opts?: WhatsNewRenderOpts): Promise<string[] | null> {
   const current = pkg.version;

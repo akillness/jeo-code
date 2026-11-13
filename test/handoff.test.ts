@@ -1,7 +1,7 @@
 import { test, expect, mock } from "bun:test";
 import type { Message } from "../src/agent/loop";
 
-// jeo-native subset of gjc `/handoff` parity — see src/agent/compaction.ts's
+// jeo-native `/handoff` subset — see src/agent/compaction.ts's
 // buildHandoffDocument, src/commands/launch/slash-views.ts's
 // parseHandoffCommand/handoffLines, and the `compaction.handoffFocus` field on
 // src/agent/config-schema.ts's ConfigSchema.

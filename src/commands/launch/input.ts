@@ -538,7 +538,7 @@ export function captureLivePromptInputChunk(
 /**
  * Whether an in-flight readline line buffer (captured right before a hard
  * exit — Ctrl+D/EOF/disconnected terminal) should be persisted as an unsent
- * draft (gajae-code "unsent prompt survives /resume" parity). Whitespace-only
+ * draft (an unsent prompt survives /resume). Whitespace-only
  * or empty input is never a real draft. Pure predicate so the exit-path
  * wiring in launch.ts (which owns the actual persistence side effect) stays
  * thin and this decision is independently testable.

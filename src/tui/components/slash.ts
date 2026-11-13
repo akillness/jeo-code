@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { editDistance } from "../../ai/model-catalog-compat";
 
 /** Order-preserving subsequence test: every char of `needle` appears in `hay`
- *  left-to-right (gjc-style fuzzy match, e.g. "expt" ⊑ "export"). */
+ *  left-to-right (fuzzy match, e.g. "expt" ⊑ "export"). */
 function subsequence(needle: string, hay: string): boolean {
   if (needle === "") return true;
   let i = 0;
@@ -73,7 +73,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
 
 export const SLASH_COMMANDS = SLASH_COMMAND_DETAILS.map(c => c.command);
 
-/** Bundled command name → lowercased description (gjc §2.1 description matching). */
+/** Bundled command name → lowercased description for description matching. */
 export const SLASH_COMMAND_DESCRIPTIONS = new Map<string, string>(
   SLASH_COMMAND_DETAILS.map(c => [c.command, c.description.toLowerCase()]),
 );
@@ -85,9 +85,9 @@ export function mergeSlashCommandDetails(extra: readonly SlashCommandInfo[] = []
 }
 
 /** Return the slash commands that match `input` (case-insensitive). Prefix matches
- *  come first; a fuzzy subsequence fallback (gjc-style, e.g. `/expt` → `/export`)
+ *  come first; a fuzzy subsequence fallback (e.g. `/expt` → `/export`)
  *  follows so typos / abbreviations still surface a command. When NOTHING matches
- *  the name, fall back to a description substring match (gjc §2.1) so intent-style
+ *  the name, fall back to a description substring match so intent-style
  *  queries with no literal name match still resolve — e.g. `/oauth` → `/login`,
  *  `/clipboard` → `/dump`. A bare `/` lists every command. Empty for non-slash input. */
 export function matchSlash(input: string, commands: string[] = SLASH_COMMANDS): string[] {
@@ -111,7 +111,7 @@ export function isSlashAttempt(input: string): boolean {
 }
 
 /** Near-miss slash commands for a true typo — edit distance ≤ 2 on the command body,
- *  excluding the prefix/fuzzy hits `matchSlash` already surfaces. gjc parity for the
+ *  excluding the prefix/fuzzy hits `matchSlash` already surfaces. Supports the
  *  `/provicer` → `/provider` correction. Ranked closest-first and capped. */
 export function suggestSlashCommands(input: string, commands: string[] = SLASH_COMMANDS, limit = 3): string[] {
   if (!input.startsWith("/")) return [];
@@ -191,7 +191,7 @@ function renderPreviewRows(
   const start = Math.max(0, Math.min(sel - Math.floor(slots / 2), n - slots));
   const lines: string[] = [];
   // Position counter (1-based) of the selected row within the full match list,
-  // shown on a "more" marker so an overflowing list reads like gjc's `(3/33)`.
+  // shown on a "more" marker to indicate position in an overflowing list, e.g. `(3/33)`.
   // When nothing is selected, the window starts at the top → `(1/total)`.
   const counter = `(${sel + 1}/${n})`;
   const below = n - (start + slots);
@@ -202,7 +202,7 @@ function renderPreviewRows(
 }
 
 /** Skills matching a `$keyword` probe (no space yet). Prefix matches come first,
- *  then a fuzzy subsequence fallback (gjc-style, e.g. `$dintv` → `$deep-interview`).
+ *  then a fuzzy subsequence fallback (e.g. `$dintv` → `$deep-interview`).
  *  A bare `$` lists every skill. */
 function dollarMatches(trimmed: string, skills: readonly SkillPreviewItem[]): SkillPreviewItem[] {
   const prefix = trimmed.slice(1).toLowerCase();
@@ -275,9 +275,9 @@ export function allTriggerTokens(line: string): ActiveTrigger[] {
 
 /**
  * Compact live preview shown beneath the input box while a `/command` or
- * `$skill` keyword is being typed — at any position in the line (mention-style,
- * gjc/Codex parity): `"do X then /mo"` previews commands, `"…then $te"`
- * previews skills. Returns matching usages + descriptions, capped, or [] when
+ * `$skill` keyword is being typed — at any position in the line (mention-style):
+ * `"do X then /mo"` previews commands, `"…then $te"` previews skills.
+ * Returns matching usages + descriptions, capped, or [] when
  * no trigger token is active (finished words stay popup-free). Match ORDER is
  * preserved from matchSlash/dollarMatches so prefix hits sit above fuzzy hits.
  */

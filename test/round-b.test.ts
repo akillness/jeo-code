@@ -282,7 +282,7 @@ test("resolveRetryOptions: defaults still engage when unset (regression guard)",
   const o = resolveRetryOptions(undefined);
   expect(o.rateLimitRetries).toBe(6);
   expect(o.rateLimitMinDelayMs).toBe(2000);
-  // gjc parity: no default server-delay ceiling — a generic 429 honors however long
+  // No default server-delay ceiling — a generic 429 honors however long
   // the server asks (fail-fast stays available as explicit opt-in config only).
   expect(o.rateLimitMaxServerDelayMs).toBeUndefined();
   expect(o.retries).toBeUndefined();
@@ -319,7 +319,7 @@ test("retryableStream: a generous deadline does not disturb a healthy stream", a
 
 test("retryableStream: an ACTIVELY-emitting reasoning stream that runs past the OLD 300s threshold is NOT aborted (GPT-5.5/o3 xhigh regression)", async () => {
   // Reproduces the reported bug at compressed scale: a stream emitting continuously
-  // (reasoning deltas, gjc-style) for LONGER than the old 300s hard deadline used to
+  // (reasoning deltas) for LONGER than the old 300s hard deadline used to
   // die with "stream exceeded the overall deadline" even though it was actively
   // producing tokens the whole time. Scale factor here: 60ms deadline stands in for
   // 30min, so 15ms (stands in for the old ~7.5min blown-past-300s point) proves a

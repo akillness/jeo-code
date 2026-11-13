@@ -1,6 +1,6 @@
 /**
- * In-process detached-subagent registry (gjc `subagent`/`job` parity, scoped down
- * to one runtime). The synchronous `task` tool blocks the parent until a subagent
+ * In-process detached-subagent registry, scoped to one runtime.
+ * The synchronous `task` tool blocks the parent until a subagent
  * finishes; a DETACHED launch registers the run here and returns immediately, so
  * the parent can keep working and later list / inspect / await / cancel it via the
  * `subagent` control tool. Concurrency is real (JS event loop): a detached run's

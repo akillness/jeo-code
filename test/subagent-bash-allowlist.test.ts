@@ -10,7 +10,7 @@ import {
 } from "../src/agent/subagents";
 import { DEFAULT_TOOLS } from "../src/agent/engine";
 
-// B5 redesign (plan/gjc-inheritance.md cycle 10): a mutating role MAY declare a
+// B5 redesign (cycle 10): a mutating role MAY declare a
 // bash allowlist in the registry; subagentToolset() then wraps bash so every
 // shell segment must start with an allowed prefix. The registry definition is
 // the runtime constraint — no config plumbing.

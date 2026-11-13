@@ -22,7 +22,7 @@ export interface EvolutionTheme {
   gradients: readonly StageGradient[];
   /** Whether the theme emits color at all (`mono` = false → plain output). */
   color: boolean;
-  /** Accent hex for UI chrome — borders, prompt mark, model status bar (gjc-style). */
+  /** Accent hex for UI chrome — borders, prompt mark, model status bar. */
   accent: string;
   /** Shadow hex for the "shaded" box edges (bottom/right). A REAL darker hue —
    *  not ANSI dim — so the lit/shaded two-tone reads as depth even on terminals

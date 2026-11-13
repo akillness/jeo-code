@@ -334,7 +334,7 @@ export function userSkillsDir(): string {
  *  Covered install layouts:
  *  - Vercel `npx skills add [-g]` canonical store: `.agents/skills/` (project + ~)
  *  - Vercel agent-targeted installs (`-a claude-code`): `.claude/skills/` (project + ~)
- *  - jeo agent skills (self-contained `.jeo` namespace, gjc-structure parity):
+ *  - jeo agent skills (self-contained `.jeo` namespace):
  *    `<config>/agent/skills/` (+ project `<cwd>/.jeo/agent/skills/`)
  *  - jeo-native flat: `<config>/skills/`, `<cwd>/.jeo/skills/`, then `JEO_SKILLS_DIR`. */
 export function skillDirs(cwd: string = process.cwd()): string[] {
@@ -853,7 +853,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
   return [...byName.values()];
 }
 
-/** gjc-style skill-invocation card body (the `[skill]` block shown in the TUI
+/** Skill-invocation card body (the `[skill]` block shown in the TUI
  *  when `$name`//skill runs): name, resolved SKILL.md path (or the bundled
  *  module path), and the prompt size actually injected. Pure — testable. */
 export function skillInvocationCard(skill: SkillDoc, intent?: string): string[] {
@@ -861,7 +861,7 @@ export function skillInvocationCard(skill: SkillDoc, intent?: string): string[] 
   // jeo-ref tree-connector detail: the skill name leads, resolved metadata hangs
   // off ├─/└─ connectors so the card scans like the reference's Skill panel. The
   // intent (when given) is shown here so it isn't lost — the injected SKILL.md is
-  // NOT echoed as a user box (gjc-style: compact card, not the raw doc).
+  // NOT echoed as a user box: compact card, not the raw doc.
   const trimmedIntent = intent?.trim();
   const intentLine = trimmedIntent
     ? [`├─ intent: ${trimmedIntent.length > 88 ? `${trimmedIntent.slice(0, 87)}…` : trimmedIntent}`]

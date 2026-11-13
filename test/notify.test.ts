@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { shouldBell, emitBell, maybeBell, type NotifyConfig } from "../src/util/notify";
 
-// gajae-code 0.7.8 parity: terminal-bell notifications, off by default.
+// Terminal-bell notifications, off by default.
 
 test("shouldBell: off by default (no config, no env)", () => {
   expect(shouldBell("complete", undefined, {})).toBe(false);

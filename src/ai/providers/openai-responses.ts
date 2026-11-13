@@ -25,7 +25,7 @@ export const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
 const CODEX_ORIGINATOR = "codex_cli_rs";
 
-/** Codex-CLI-shaped User-Agent (gjc getCodexUserAgent parity: `originator/version (platform release; arch)`).
+/** Codex-CLI-shaped User-Agent (`originator/version (platform release; arch)`).
  *  Sent on BOTH the OAuth and api-key paths — without it Bun's default UA leaks to the backend. */
 export function codexUserAgent(): string {
   return `${CODEX_ORIGINATOR}/${pkg.version} (${os.platform()} ${os.release()}; ${os.arch()})`;
@@ -112,7 +112,7 @@ export function codexResponsesRequest(
     input,
     stream: true, // the Codex backend only streams
     store: false,
-    // Provider-side prompt caching (gjc parity): key the cache on the stable session id
+    // Provider-side prompt caching: key the cache on the stable session id
     // so an agent loop replaying the same history each step re-reads a cached prefix.
     ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
   };
@@ -121,14 +121,14 @@ export function codexResponsesRequest(
     payload.tools = options.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: false }));
     payload.tool_choice = "auto";
   }
-  // Map thinkingLevel → reasoning effort for Codex reasoning models (gjc parity).
+  // Map thinkingLevel → reasoning effort for Codex reasoning models.
   // Drop out-of-enum values instead of forwarding them — the backend 400s on unknown efforts.
   if (options.reasoningEffort && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
     // `summary: "auto"` makes the backend stream reasoning-summary deltas so the live
     // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
     payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
   }
-  // Cap the response length (gjc parity) on the PUBLIC Responses API only. The ChatGPT/Codex
+  // Cap the response length on the PUBLIC Responses API only. The ChatGPT/Codex
   // OAuth backend 400s on this parameter ({"detail":"Unsupported parameter: max_output_tokens"}),
   // so the cap is applied inside the api_key branch below.
   // OAuth → the undocumented ChatGPT/Codex backend (codex headers + account-id).
@@ -156,7 +156,7 @@ export function codexResponsesRequest(
     accept: "text/event-stream",
   };
   if (accountId) headers["chatgpt-account-id"] = accountId;
-  // Correlation headers (gjc parity): the Codex backend keys its prompt cache on the
+  // Correlation headers: the Codex backend keys its prompt cache on the
   // session/conversation pair; x-client-request-id aids server-side tracing.
   if (promptCacheKey) {
     headers.session_id = promptCacheKey;
@@ -166,7 +166,7 @@ export function codexResponsesRequest(
   return { url: CODEX_RESPONSES_URL, headers, body: JSON.stringify(sanitizeJsonStrings(payload)) };
 }
 
-/** gjc parity (normalizeOpenAIResponsesPromptCacheKey): well-formed unicode, ≤64 chars
+/** Normalize the prompt-cache key: well-formed unicode, ≤64 chars
  *  verbatim, longer keys hashed to a stable compact form. */
 export function normalizePromptCacheKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey || sessionKey.length === 0) return undefined;

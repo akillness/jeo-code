@@ -127,10 +127,10 @@ export interface ThinkingLevelChoiceOptions {
 }
 
 /**
- * gajae-code-parity reasoning menu (gjc's `#renderThinkingMenu`): the per-target
- * "Reasoning for …" choices shown after a model is picked. Each level renders as
- * `<level> — <description> (<tokens>)` with the current level flagged. Role
- * targets gain a leading `inherit` row. Pure — fully unit-testable.
+ * Per-target reasoning menu: the "Reasoning for …" choices shown after a model
+ * is picked. Each level renders as `<level> — <description> (<tokens>)` with the
+ * current level flagged. Role targets gain a leading `inherit` row.
+ * Pure — fully unit-testable.
  */
 export function buildThinkingLevelChoices(
   current: string | undefined,

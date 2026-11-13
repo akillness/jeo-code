@@ -1,6 +1,5 @@
 /**
- * Per-SESSION loopback WebSocket endpoint (gjc per-session-thread parity —
- * see the Tier 2 contract in CHANGELOG history). One endpoint lives for the
+ * Per-SESSION loopback WebSocket endpoint. One endpoint lives for the
  * whole interactive REPL lifetime (created once `sessionId` is established,
  * stopped at process exit), multiplexing TWO frame families over the SAME
  * connection:

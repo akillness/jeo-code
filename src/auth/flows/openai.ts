@@ -1,6 +1,5 @@
 /**
  * OpenAI (ChatGPT / Codex) OAuth — real PKCE flow with device-code fallback.
- * Faithful port of gjc's packages/ai/src/utils/oauth/openai-codex.ts.
  *
  * NOTE: tokens minted here authenticate against OpenAI's ChatGPT/Codex
  * backend. jeo's default `openai` adapter targets the Chat Completions API,
@@ -20,7 +19,7 @@ const SCOPE = "openid profile email offline_access";
 const TIMEOUT_MS = 15_000;
 const JWT_AUTH_CLAIM = "https://api.openai.com/auth";
 const JWT_PROFILE_CLAIM = "https://api.openai.com/profile";
-// Device-code (headless) fallback endpoints — gjc openai-codex.ts DEVICE_* parity.
+// Device-code (headless) fallback endpoints.
 const DEVICE_USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 const DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";
 const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback";
@@ -70,7 +69,7 @@ async function exchangeCodeForToken(code: string, verifier: string, redirectUri:
   }
   const { accountId, email } = profileFromToken(data.access_token);
   if (!accountId) {
-    // gjc parity (openai-codex.ts:139-141): a Codex token without a chatgpt_account_id
+    // A Codex token without a chatgpt_account_id
     // claim is unusable for the request path — fail the login instead of storing it.
     throw new Error("Failed to extract accountId from token");
   }
@@ -108,7 +107,7 @@ class OpenAIOAuthFlow extends OAuthCallbackFlow {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
       // "codex_cli_rs" for self-consistency with jeo's request path (openai-responses.ts
-      // sends the same originator header) — deliberate divergence from gjc's "opencode" default.
+      // sends the same originator header).
       originator: "codex_cli_rs",
     });
     return { url: `${AUTHORIZE_URL}?${params.toString()}`, instructions: "Complete login in your browser." };
@@ -125,7 +124,7 @@ export async function loginOpenAI(ctrl: OAuthController): Promise<OAuthCredentia
   } catch (err) {
     // OpenAI requires the FIXED redirect http://localhost:1455/auth/callback, so a busy
     // port cannot fall back to a random one. Fall back to the device-code flow instead
-    // (gjc loginOpenAICodexDevice parity) — no local callback server needed.
+    // (no local callback server needed).
     if (err instanceof CallbackPortUnavailableError) {
       ctrl.onProgress?.(`Port ${CALLBACK_PORT} is busy — falling back to device-code login.`);
       return loginOpenAIDevice(ctrl);
@@ -136,10 +135,9 @@ export async function loginOpenAI(ctrl: OAuthController): Promise<OAuthCredentia
 
 /**
  * Login using OpenAI's device-code (headless) flow — no local callback server.
- * Port of gjc's loginOpenAICodexDevice (openai-codex.ts): request a user code,
- * surface it via the controller, poll for the authorization code (403/404 =
- * authorization pending), then run the standard token exchange against the
- * fixed device redirect URI.
+ * Request a user code, surface it via the controller, poll for the authorization
+ * code (403/404 = authorization pending), then run the standard token exchange
+ * against the fixed device redirect URI.
  */
 export async function loginOpenAIDevice(ctrl: OAuthController): Promise<OAuthCredentials> {
   ctrl.onProgress?.("Initiating device authorization…");
@@ -186,7 +184,7 @@ export async function loginOpenAIDevice(ctrl: OAuthController): Promise<OAuthCre
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
-    // 403/404 = authorization pending, keep polling (gjc wire parity).
+    // 403/404 = authorization pending, keep polling.
     if (pollResponse.status === 403 || pollResponse.status === 404) continue;
     if (!pollResponse.ok) {
       throw new Error(`Device token polling failed: ${pollResponse.status}`);

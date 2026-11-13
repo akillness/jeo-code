@@ -3,7 +3,7 @@
  * (`model-discovery.ts`) with capability metadata from the static catalog
  * (`model-catalog.ts`). This is the bridge that lets the TUI show context window,
  * max output, thinking levels, and image support next to the models a user can
- * *actually* use right now (gjc provider-table parity, applied to live results).
+ * *actually* use right now (catalog metadata applied to live results).
  * Pure functions over discovery results + catalog; no I/O.
  */
 import type { ProviderModelsResult } from "./model-discovery";

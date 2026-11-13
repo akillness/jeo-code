@@ -1,6 +1,6 @@
 /**
  * Antigravity OAuth — Google authorization-code flow with the Antigravity
- * desktop-app client (gjc parity). The Antigravity/Cloud Code Assist agent
+ * desktop-app client. The Antigravity/Cloud Code Assist agent
  * backend rejects gemini-cli client tokens (PERMISSION_DENIED), so Antigravity
  * models need this dedicated login: different client id/secret, extra scopes
  * (cclog, experimentsandconfigs), and ANTIGRAVITY discovery metadata.
@@ -56,7 +56,7 @@ export function discoverAntigravityProjectId(
   return discoverGoogleProjectId(accessToken, {
     metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA },
     extraHeaders: { "User-Agent": getAntigravityUserAgent() },
-    // gjc antigravity parity: a reported tier without a project ONBOARDS the
+    // A reported tier without a project ONBOARDS the
     // default/legacy tier instead of throwing the workspace-project hint.
     alwaysOnboard: true,
     onProgress: opts.onProgress,

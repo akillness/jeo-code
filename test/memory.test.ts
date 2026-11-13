@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// hermes-style local experience memory (plan/gjc-inheritance.md B6):
+// Local experience memory:
 // session end distills durable learnings into .jeo/memory/MEMORY.md (one model
 // call, merge-with-existing, atomic write, best-effort); the next session
 // injects the doc back under a hard char cap. JEO_NO_MEMORY=1 disables both.

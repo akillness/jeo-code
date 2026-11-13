@@ -33,9 +33,8 @@ export interface ToolResult {
 }
 
 /**
- * Directories that pollute `find`/`search` results and waste time: VCS, build
- * artifacts, dependency trees, and jeo's own runtime dir. gjc's native search
- * respects ignore files; this is the pure-TS equivalent.
+ * Directories excluded to avoid polluting `find`/`search` results and wasting
+ * time: VCS, build artifacts, dependency trees, and jeo's own runtime dir.
  */
 export const IGNORED_DIRS = [
   "node_modules",
@@ -120,7 +119,7 @@ export async function assertBashAllowed(
  * Parse a read line selector into sorted, merged, inclusive [start,end] ranges.
  * Segments are comma-separated; each is one of: "a-b" (range), "a-" (a→EOF),
  * "a" (single line), or "a+n" (n lines starting at a). Out-of-range starts are
- * dropped; an explicit "a-b" with b<a is an error. Mirrors gjc's read selectors.
+ * dropped; an explicit "a-b" with b<a is an error.
  */
 export function parseLineSelector(spec: string | number, total: number): { ranges: [number, number][] } | { error: string } {
   // Field crash guard: models pass `lineRange: 10` (number) or other JSON junk —
@@ -163,7 +162,7 @@ export function parseLineSelector(spec: string | number, total: number): { range
   return { ranges: merged };
 }
 
-// ── hashline-lite (plan/gjc-inheritance.md B2, gjc hashline 경량 계승) ──
+// ── hashline-lite ──
 // Every annotated read line carries a 2-char CONTENT anchor: `42ab|text`. The
 // hash depends only on the line's content (trailing whitespace/CR ignored), so
 // sibling edits that shift line numbers keep the anchor valid. The edit tool
@@ -194,7 +193,7 @@ function stripAnchorPrefixes(block: string): string | null {
   if (!lines.every(l => l.trim() === "" || ANCHOR_PREFIX_RE.test(l))) return null;
   return lines.map(l => l.replace(ANCHOR_PREFIX_RE, "")).join("\n");
 }
-// ── Blind-edit guard (plan/gjc-inheritance.md B7, gjc edit/file-read-cache 계승) ──
+// ── Blind-edit guard ──
 // `read` records that this session has SEEN a path; a line-range `edit` with
 // no hash anchors on either bound refuses to run against a path never read
 // this session (see the narrow guard below in editTool). NOTE: this module
@@ -480,7 +479,7 @@ export async function readTool(
       return { success: false, output: "", error: 'read requires a non-empty "filePath".' };
     }
     const absPath = path.resolve(cwd, filePath);
-    // gjc parity: reading a directory returns its listing instead of an EISDIR error.
+    // Reading a directory returns its listing instead of an EISDIR error.
     const st = await fs.stat(absPath).catch(() => null);
     if (st?.isDirectory()) {
       if (raw || lineRange || summary) {
@@ -492,7 +491,7 @@ export async function readTool(
     if (st?.isFile()) markRead(absPath); // arm the blind-edit read-first guard
 
     if (raw) {
-      // Verbatim bytes, no "N|" line prefixes (gjc `:raw`), char-capped for context safety.
+      // Verbatim bytes, no "N|" line prefixes (`:raw`), char-capped for context safety.
       const MAX_CHARS = 50_000;
       if (content.length > MAX_CHARS) {
         return { success: true, output: content.slice(0, MAX_CHARS) + `\n…(raw truncated at ${MAX_CHARS} of ${content.length} chars; drop raw and pass lineRange to read a slice)` };
@@ -675,7 +674,7 @@ export async function editTool(
           `Current content:\n${excerptForRecovery(content, lineNo)}`,
       };
     };
-    // hashline 3-way re-map (plan/gjc-inheritance.md cycle 9): content-only
+    // hashline 3-way re-map: content-only
     // hashes mean a line that sibling edits SHIFTED still carries its anchor.
     // When a supplied anchor no longer sits at its line number, look within a
     // ±window for the UNIQUE line carrying that anchor and relocate the edit
@@ -824,7 +823,7 @@ export async function editTool(
               ? " The first search line IS present, so the mismatch is below it."
               : "";
             const which = hunks.length > 1 ? ` (hunk ${i + 1}/${hunks.length})` : "";
-            // gjc-style recovery (plan/gjc-inheritance.md B3.5): re-present the CURRENT
+            // Recovery: re-present the CURRENT
             // content around the best anchor so the failed edit costs ONE retry, not a
             // separate read round-trip — failed edits are the #1 step-budget waste.
             const anchorIdx = firstLine.trim() ? working.split("\n").findIndex(l => l.includes(firstLine.trim())) : -1;
@@ -1323,7 +1322,7 @@ export async function searchTool(
 /**
  * List a single directory's entries (read-only): directories first (with a
  * trailing `/`), then files, alphabetically. Hidden entries are included. This
- * gives the model gjc-style directory inspection without shelling out to `ls`.
+ * gives the model directory inspection without shelling out to `ls`.
  */
 export async function lsTool(
   dirPath: string = ".",

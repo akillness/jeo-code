@@ -1,6 +1,5 @@
 /**
- * Local experience memory — hermes-style 경험→증류 학습 루프의 jeo 경량판
- * (plan/gjc-inheritance.md B6; gjc memories/ 2-phase consolidation 참조).
+ * Local experience memory — a lightweight experience-distillation learning loop.
  *
  * Session end distills durable learnings (repo facts, commands that work,
  * gotchas, user preferences) into the OKF concept bundle under `.jeo/memory/`
@@ -8,7 +7,7 @@
  * each concept; a legacy single `MEMORY.md` doc is the fallback when the model
  * returns plain text. The next session reads the bundle back (bundle-first, then
  * MEMORY.md) and injects it into the system prompt under a hard char cap —
- * local-first (nullclaw/zeroclaw), no remote backend, disable with JEO_NO_MEMORY=1.
+ * local-first, no remote backend, disable with JEO_NO_MEMORY=1.
  */
 import * as fs from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";

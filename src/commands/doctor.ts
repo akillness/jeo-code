@@ -578,7 +578,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   headerLines.push(`Color support:  Level ${chalk.level} (${chalk.level > 0 ? chalk.green("enabled") : "disabled"})`);
 
   console.log("");
-  // gjc/forge-style bordered card, width-scaled off the live terminal (same
+  // Forge-style bordered card, width-scaled off the live terminal (same
   // formatForgeBox + scaleForgeWidth the interactive TUI's tool cards use) so the
   // panel reflows cleanly on any width instead of raw unbounded console.log lines.
   // scaleForgeWidth floors at 24 (its own minimum readable card width, shared by

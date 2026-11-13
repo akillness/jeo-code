@@ -54,7 +54,7 @@ test("mono theme is colorless; others emit color", () => {
   expect(getTheme("matrix").color).toBe(true);
 });
 
-// gajae-code 0.7.3 parity: gruvbox-dark built-in theme, selectable via /theme.
+// gruvbox-dark built-in theme, selectable via /theme.
 test("gruvbox-dark is a registered colored theme with canonical gruvbox accent", () => {
   const t = getTheme("gruvbox-dark");
   expect(t.name).toBe("gruvbox-dark");

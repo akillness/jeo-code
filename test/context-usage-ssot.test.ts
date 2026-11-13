@@ -2,7 +2,7 @@ import { test, expect, mock } from "bun:test";
 import { runAgentLoop } from "../src/agent/engine";
 import { LaunchTui } from "../src/tui/app";
 
-// gjc v0.10.1 parity: "make provider-reported usage the SSOT for context tokens/%".
+// Provider-reported usage is the single source of truth for context tokens and percentage.
 //
 // Before this fix, `LaunchTui`'s footer context meter (`ctx NN%/max` in the status
 // bar) was seeded ONCE per turn from a client-side character-count estimate
@@ -82,7 +82,7 @@ test("LaunchTui footer: contextUsedTokens is overwritten by the provider's own l
   ev.onUsage?.({ inputTokens: 47_832, outputTokens: 210 }, { inputTokens: 47_832, outputTokens: 210 });
 
   // The footer's context meter must now show the PROVIDER's number, not the stale
-  // pre-call estimate — this is the exact drift gjc's fix eliminates.
+  // A pre-call estimate can drift from provider-reported usage.
   expect(internals.footer.contextUsedTokens).toBe(47_832);
   expect(internals.footer.contextUsedTokens).not.toBe(1_234);
   // contextMaxTokens (the catalog ceiling) is untouched by onUsage — only the used

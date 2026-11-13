@@ -33,7 +33,7 @@ export interface ChatOptions {
   /** NATIVE tool-calling function declarations (forwarded to capable adapters). */
   tools?: import("../ai/types").NativeToolSchema[];
   /** Stable per-conversation key (session id) for provider-side prompt caching
-   *  (gjc parity: prompt_cache_key / session_id correlation on Codex/Responses). */
+   *  through prompt_cache_key / session_id correlation on Codex/Responses. */
   sessionKey?: string;
 }
 

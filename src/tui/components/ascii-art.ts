@@ -475,7 +475,7 @@ export function forgeMarkFrameCount(): number {
   return FORGE_MARK_FRAMES.length;
 }
 
-/** Grand hero variant for the welcome forge box (gjc-style spacious banner): the same
+/** Grand hero variant for the welcome forge box with a spacious banner: the same
  *  crayfish line-board emblem rendered large — the pincer claws and central eyeglass
  *  bridge drawn as wider 3×-thick rounded outline tubes (╭╮╰╯ + ─│), no fill, no letters.
  *  Width-1 glyphs only so padding/centering math stays exact, with renderForgeMark's

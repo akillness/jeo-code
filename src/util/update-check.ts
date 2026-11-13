@@ -71,7 +71,7 @@ export async function checkForUpdate(deps?: UpdateCheckDeps): Promise<UpdateChec
 // The live npm check often loses the startup race, so the "New version" banner
 // rarely shows even when an update exists. Persisting the last-known-latest lets
 // the NEXT launch render the banner INSTANTLY from disk (and offline), while a
-// background refresh keeps the cache fresh. Mirrors gjc / npm update notices.
+// Background refresh keeps the update-notice cache fresh.
 
 interface CachedUpdateCheck {
   latest: string;

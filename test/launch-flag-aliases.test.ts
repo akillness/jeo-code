@@ -161,7 +161,7 @@ test("parseFlags: --append-system-prompt literal + @file + missing file", () => 
   expect(flags3.errors[0]).toContain("failed to read system prompt file");
 });
 test("normalizeSlashAlias rewrites gjc-parity command aliases (preserving args)", () => {
-  // gjc-parity: bare `/login` → onboarding selector (same as bare `/provider`);
+  // Bare `/login` → onboarding selector (same as bare `/provider`);
   // `/login <provider>` → direct OAuth-login alias.
   expect(normalizeSlashAlias("/login")).toBe("/provider");
   expect(normalizeSlashAlias("/login gemini")).toBe("/provider login gemini");

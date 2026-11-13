@@ -3,9 +3,8 @@
  * clipboard/drag-drop/file-path attachments already supported by
  * `util/file-attachment.ts` and `util/clipboard-image.ts`) to the inline-image
  * escape sequences in `terminal-image.ts`, producing one stacked block ready for
- * `Renderer.insertAbove` — gjc TUI-parity: jeo could already ATTACH an image to a
- * turn, this is the missing DISPLAY half (the transcript previously showed only a
- * `⧉ N image(s) attached` count, never the picture itself).
+ * `Renderer.insertAbove`. Displays the attached images themselves in the
+ * transcript rather than only a `⧉ N image(s) attached` count.
  */
 import type { ImageAttachment } from "../../ai/types";
 import { detectImageProtocol, renderInlineImage, type ImageProtocol } from "../terminal-image";

@@ -1,5 +1,5 @@
 /**
- * User-defined ("custom") provider registry — gjc/gajae-code parity.
+ * User-defined ("custom") provider registry.
  *
  * jeo ships a fixed, data-driven catalog of OpenAI/Anthropic-compatible clouds
  * (`OPENAI_COMPAT_PROVIDERS`). That table is compiled in: a user could not point jeo
@@ -100,7 +100,7 @@ export const RESERVED_PROVIDER_IDS: readonly string[] = [
   "rm",
 ];
 
-/** Same grammar gajae-code enforces: lowercase, starts alphanumeric, `.`/`_`/`-` inside. */
+/** Provider id grammar: lowercase, starts alphanumeric, `.`/`_`/`-` inside. */
 export const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 const MAX_PROVIDER_ID_LENGTH = 48;
@@ -139,7 +139,7 @@ export function assertValidProviderId(rawId: string, reserved: readonly string[]
   return id;
 }
 
-/** Parse a compatibility flag the way gajae-code does (accepts the common aliases). */
+/** Parse a compatibility flag (accepts the common aliases). */
 export function parseProviderCompatibility(value: string): ProviderCompatibility {
   const v = value.trim().toLowerCase();
   if (v === "openai" || v === "openai-compatible" || v === "oai" || v === "chat" || v === "completions") return "openai";

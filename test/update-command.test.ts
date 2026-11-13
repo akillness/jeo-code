@@ -193,7 +193,7 @@ test("update - --install triggers when newer and fails", async () => {
   expect(process.exitCode).toBe(1);
 });
 
-// gajae-code 0.7.8 parity (#1280): a nonzero bun/npm exit is recoverable when the
+// A nonzero bun/npm exit is recoverable when the
 // requested version actually landed — verified by the active runtime on PATH.
 test("update - install reports failure but runtime verifies → recovered success", async () => {
   let whatsNewShown = false;

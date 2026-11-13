@@ -50,7 +50,7 @@ export function tmuxSessionName(cwd: string, branch: string, flags: LaunchFlags)
 }
 
 /**
- * Count uncommitted git entries for the `⑂ <branch> ?N` footer dirty flag (gjc parity).
+ * Count uncommitted git entries for the `⑂ <branch> ?N` footer dirty flag.
  * One `git status --porcelain` spawn per CALL; callers invoke it once per turn start, not
  * per render. Returns undefined when not a repo / git absent / clean.
  */
@@ -94,7 +94,7 @@ export function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Caller-terminal dimensions for a detached `tmux new-session` (gjc launch-tmux parity #1376). */
+/** Caller-terminal dimensions for a detached `tmux new-session`. */
 export interface TmuxTerminalSize {
   columns: number;
   rows: number;
@@ -201,15 +201,14 @@ export interface TmuxProfileCommand {
 }
 
 /**
- * gjc-parity tmux profile for jeo-OWNED sessions (mirrors gjc's
- * `buildGjcTmuxProfileCommands`). Applied right after `new-session`, before attach:
+ * tmux profile for jeo-OWNED sessions. Applied right after `new-session`, before attach:
  *  - `mouse on` (session-scoped): wheel-up enters copy-mode over the REAL pane
  *    history — this is what makes the mid-turn scrollback (ledger lines flushed
  *    above the inline live frame) reachable with the mouse wheel. Wheel-down at
  *    the bottom drops back out. `JEO_TMUX_MOUSE=0` opts out.
  *  - ownership/identity markers (`@jeo-profile`, `@jeo-branch`, `@jeo-project`):
- *    lets tooling tell jeo-owned sessions apart from user sessions (gjc parity
- *    with `@gjc-*`). Never applied to foreign sessions.
+ *    lets tooling tell jeo-owned sessions apart from user sessions.
+ *    Never applied to foreign sessions.
  *  - `set-clipboard on` + a readable copy-mode `mode-style`: text selected while
  *    wheel-scrolled back is visibly highlighted and lands on the system clipboard
  *    (OSC52). `JEO_TMUX_PROFILE=0` opts out of these cosmetic extras while keeping
@@ -246,9 +245,9 @@ export function tmuxProfileCommands(
   // uncaught exception, or an external SIGKILL/OOM the JS layer never sees.
   // Without this, an unexpected exit leaves zero forensic trace: the pane's
   // final screen (including any printed error) vanishes with the session
-  // before a supervisor's next poll can observe it — the exact "GJC tmux
-  // sessions vanish repeatedly ... no SIGKILL/OOM/panic in the watch logs"
-  // failure class. `runLaunchCommand`'s exit hook (see
+  // before a supervisor's next poll can observe it, leaving no SIGKILL/OOM/panic
+  // evidence in the watch logs.
+  // `runLaunchCommand`'s exit hook (see
   // {@link shouldSelfCloseTmuxSession}) still self-closes the session on the
   // intentional "happy path" (clean success / deliberate Ctrl-C hard exit), so
   // normal `/exit` UX is unchanged. `JEO_TMUX_REMAIN_ON_EXIT=0` opts out.
@@ -359,7 +358,7 @@ export function currentTmuxClipboardCommands(
 }
 
 /**
- * Resolve a git worktree path (gjc `--worktree <path>` parity). If the path
+ * Resolve a git worktree path (`--worktree <path>`). If the path
  * already exists it is reused as-is; otherwise a new worktree is created on a
  * branch derived from the path basename. Returns the absolute worktree path.
  */

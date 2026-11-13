@@ -38,7 +38,7 @@ function adapterFor(def: OpenAICompatProviderDef): ProviderAdapter {
     : makeOpenAICompatibleAdapter({ name: def.name, baseUrl: def.baseUrl, thinkingFormat: def.thinkingFormat });
 }
 
-// gjc-style data-driven providers: every catalog entry gets a thin factory adapter,
+// Data-driven providers: every catalog entry gets a thin factory adapter,
 // selected by wire protocol. Add a provider by adding ONE catalog row.
 for (const def of OPENAI_COMPAT_PROVIDERS) {
   providerRegistry.register(def.name, adapterFor(def));

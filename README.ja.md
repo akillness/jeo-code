@@ -102,7 +102,7 @@ jeo --tmux               # 独立した tmux セッションで実行
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
 | `/computer [status\|on\|off]` | このセッションのフェイルクローズドなデスクトップ自動化ツールを切替 |
 | `/new` · `/sessions` | 新しいセッションを開始、または保存済みセッションを一覧表示 |
-| `/resume [id\|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo セッションを再開、または読み取り専用の正確なバージョンの GJC v5 ブランチを新しい Jeo セッションへインポート |
+| `/resume [id]` | 保存済みの Jeo セッションを ID または一意の ID 接頭辞で再開。ID を省略すると選択画面を開く |
 | `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | リリースノートを表示 · 現在のセッションのバックグラウンドジョブを確認・待機・キャンセル |
 | `/history [n\|all]` · `/export` | 作業アクティビティ履歴を読みやすくスクロールバックへ再出力・トランスクリプト出力 |
 | `/retry` · `/btw <q>` | 直前要求の再試行 · 履歴に残らないサイド質問 |
@@ -458,10 +458,6 @@ bun run dev:doctor          # グローバル `jeo` がこのソースを実行�
 CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリース公開時に自動、または `workflow_dispatch` の手動実行(ドライラン可)。ワークフローはブラウザのハードゲート・型チェック・テスト(ブラウザツールのテストは別プロセス)・`pack:check`・パック済み tarball の起動スモークを経て `npm publish --provenance` を実行します。
 
 公開には **npm trusted publishing(OIDC)** を使います — ローテーション・漏洩・2FA 免除が必要な `NPM_TOKEN` シークレットは存在しません(npm は 2026 年 8 月から 2FA バイパストークンを制限し、2027 年 1 月にそのトークンによる直接公開を終了します)。npmjs.com での一度きりの設定: パッケージ `jeo-code` → Settings → Trusted Publisher → GitHub Actions、owner `akillness`、repository `jeo-code`、workflow `npm-publish.yml`、environment は空欄。ジョブには `permissions.id-token: write` と npm ≥ 11.5.1 が必要です(ワークフローが npm 自体を更新します)。
-
-## 謝辞 (Acknowledgements)
-
-[gajae-code](https://github.com/Yeachan-Heo/gajae-code) に多大な感謝を。
 
 ## 変更履歴 (Changelog)
 

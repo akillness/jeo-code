@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { editTool, lineAnchor } from "../src/agent/tools";
 
-// hashline 3-way re-map (plan/gjc-inheritance.md cycle 9): content-only hashes
+// Hashline 3-way re-map (cycle 9): content-only hashes
 // mean a line that sibling edits SHIFTED keeps its anchor. When the supplied
 // anchor no longer sits at its line number, the edit tool relocates the target
 // by a uniform delta instead of wasting a retry — but only when the relocation

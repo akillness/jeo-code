@@ -503,7 +503,7 @@ test("handleUpdate ignores updates without message text", async () => {
   await daemon.handleUpdate(update(999));
   expect(telegram.sent.length).toBe(0);
 });
-// ── Inline keyboards / callback data (gjc parity) ────────────────────────────────
+// ── Inline keyboards / callback data ────────────────────────────────
 
 test("cancelCallbackData round-trips through parseCallbackData", () => {
   const data = cancelCallbackData("abcd1234", "executor-1");
@@ -1008,7 +1008,7 @@ test("a transient attachment download failure is retried without forwarding its 
   expect(telegram.reactions).toHaveLength(0);
 });
 
-// ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
+// ── Bounded download size ──────────────────────
 
 test("an oversized inbound photo reports failure and delivers its caption without an image", async () => {
   const telegram = new FakeTelegramApi();
@@ -1100,7 +1100,7 @@ test("fail-closed privacy gate: a non-private paired chat (group) blocks per-ses
   expect(telegram.sent.length).toBe(2);
   expect(telegram.chatsChecked.length).toBe(1);
 });
-// ── pollTelegramLoop error backoff (jeo-native subset of GJC v0.11.10 #3048) ─────
+// ── pollTelegramLoop error backoff ─────
 
 /** Minimal daemon for exercising `start()`'s `pollTelegramLoop`: no real
  *  session scan (empty `readdir`) and an injected `sleep` so backoff delays

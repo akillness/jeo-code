@@ -1,6 +1,6 @@
 /**
  * `debug` tool — Node.js debugging via the in-process CDP client in
- * `debug-session.ts` (gjc `debug` parity, Node.js JS/TS ONLY — no Bun target, no
+ * `debug-session.ts` (Node.js JS/TS ONLY — no Bun target, no
  * DAP wire protocol, no other languages; see that file's header for the full scope
  * statement). MUTATING: runs arbitrary user code as a real OS process, so it is
  * excluded from read-only subagent roles the same way `bash`/`computer` are.

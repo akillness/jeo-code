@@ -1,8 +1,8 @@
 /**
  * `irc` tool — lets the PARENT list running DETACHED subagents as "peers" and send
- * a live message to one or all of them (gjc `irc` parity, scoped to an in-process
+ * a live message to one or all of them, scoped to an in-process
  * registry: no separate peer directory, no channels — a running detached subagent
- * IS a peer). Built entirely on `SubagentRegistry.running()` / `.steer()`; this file
+ * IS a peer. Built entirely on `SubagentRegistry.running()` / `.steer()`; this file
  * holds no state of its own.
  *
  * Delivery mechanism is identical to `subagent {action:"steer"}` — a pushed message

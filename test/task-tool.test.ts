@@ -403,7 +403,7 @@ test("createTaskTool: a 'tasks' string that is NOT valid JSON (or parses to some
 
 test("createTaskTool: executor fan-out runs CONCURRENTLY, bounded like the read-only roles (gjc parity)", async () => {
   // jeo previously force-serialized the mutating executor's `tasks` batch (concurrency
-  // 1) even though gjc's own task tool parallelizes independent executor work by
+  // 1) independent executor work can run in parallel by
   // default — a batch of disjoint-file executor tasks used to visibly run one at a
   // time. It must now run with the same bounded concurrency as read-only roles.
   let concurrent = 0;

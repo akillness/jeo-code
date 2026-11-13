@@ -1,8 +1,7 @@
 /**
  * `task` tool — lets the interactive agent (and any tool-loop caller) delegate a
  * bounded sub-assignment to one of the bundled subagent roles
- * (executor / planner / architect / critic), mirroring gjc's `task` role-agent
- * surface.
+ * (executor / planner / architect / critic).
  *
  * The subagent runs its own `runAgentLoop` with a role-specific system prompt,
  * model, step budget, and toolset (read-only roles physically cannot mutate the
@@ -93,7 +92,7 @@ export interface TaskToolOptions {
   onEvent?: (ev: TaskSubEvent) => void;
   /** Actual conversation messages, distinct from display-only progress events. */
   onSubagentMessage?: (record: SubagentMessage) => void;
-  /** Mid-turn steering drain (gjc parity): an additional user query typed while a
+  /** Mid-turn steering drain: an additional user query typed while a
    *  subagent works is forwarded live. A single-task run forwards to the one active
    *  subagent. Any fan-out batch (both roles now run CONCURRENTLY, bounded at
    *  MAX_FANOUT) routes through a broadcast hub (createSteerHub) so every running
@@ -110,9 +109,7 @@ export interface TaskToolOptions {
 }
 
 /** Max concurrent subagents in a fan-out batch (both read-only AND the mutating
- *  executor role — gjc parity: gjc's own `task` tool runs independent tasks
- *  concurrently by default and only sequences work that shares a large evolving
- *  artifact). A model batching executor tasks is expected to scope each one to
+ *  executor role). A model batching executor tasks is expected to scope each one to
  *  disjoint files (documented in `taskToolProtocolLine`); overlapping scopes
  *  should either run sequentially (separate `task` calls) or coordinate — jeo has
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
@@ -371,7 +368,7 @@ export async function runSubagentOnce(
 
   const initialModel = opts.modelOverride || resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
-  // gjc parity: a role may pin its own reasoning budget; absent = inherit the
+  // A role may pin its own reasoning budget; absent = inherit the
   // session/global thinking level (the "(inherit)" row in the picker).
   const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
   const projectContext = preloadedContext ?? await loadProjectContext(cwd);
@@ -403,7 +400,7 @@ export async function runSubagentOnce(
   // Per-run prompt-cache key: the subagent replays its own growing history each
   // step, so a stable key (even across a model switch below — a stale cache key
   // on a NEW provider is simply unused, never wrong) gets provider cache hits
-  // (gjc sub-session parity).
+  // (sub-session behavior).
   const sessionKey = crypto.randomUUID();
 
   // --- Rate-limit fast fallback (mirrors launch.ts's `rateLimitFallbackAvailable`/
@@ -767,7 +764,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
             `Split into ≤${MAX_SERIAL_EXECUTOR}-task batches or sequential task calls.`,
         };
       }
-      // Spawn-gate lite (plan/gjc-inheritance.md B9, gjc spawn-gate 계승): a batch
+      // Spawn-gate lite: a batch
       // wider than MAX_FANOUT is refused BEFORE any subagent launches unless the
       // model justifies the parallelism — silent capping hid the cost decision.
       // NOTE: the justification permits a LARGER QUEUE only; running concurrency
@@ -786,7 +783,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         }
       }
       // Both roles fan out CONCURRENTLY, bounded at the account's effective limit
-      // (gjc parity — see MAX_FANOUT's docstring for the disjoint-file-scope expectation
+      // See MAX_FANOUT's docstring for the disjoint-file-scope expectation
       // this relies on). `config.subagentConcurrency` tunes it per machine so a
       // rate-limited account can drop below the default instead of backoff-storming.
       const fanoutLimit = resolveFanoutLimit(opts.config as { subagentConcurrency?: number });
@@ -876,7 +873,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         { readOnly: role.readOnly },
       );
 
-      // Remote subagent visibility/control over Telegram (gjc daemon parity, see
+      // Remote subagent visibility/control over Telegram (see
       // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.
       ensureSessionNotifyEndpoint(opts.registry, cwd, opts.sessionEndpoint);
 

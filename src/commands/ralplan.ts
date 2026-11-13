@@ -282,7 +282,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
       return { ok: false, reason: "aborted" };
     }
 
-    // Three chained role passes, each consuming the prior output (gjc consensus).
+    // Three chained role passes, each consuming the prior output.
     log("  [1/3] Planner drafting the task sequence…");
     if (opts.onProgress) {
       opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Planner drafting" });

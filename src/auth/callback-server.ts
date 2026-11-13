@@ -1,8 +1,7 @@
 /**
  * Local OAuth callback server + flow base class.
  *
- * Pure-TS / Bun.serve reimplementation of gjc's
- * `packages/ai/src/utils/oauth/callback-server.ts`. Handles:
+ * Pure-TS / Bun.serve implementation. Handles:
  *  - preferred-port binding with random fallback (unless a fixed redirectUri is required)
  *  - CSRF state validation
  *  - browser callback OR manual paste of the redirect URL / code (whichever lands first)
@@ -195,7 +194,7 @@ export abstract class OAuthCallbackFlow {
       Bun.serve({
         hostname: this.callbackHostname,
         port,
-        reusePort: false, // gjc parity: never share the port — a busy port must FAIL, not silently split traffic
+        reusePort: false, // never share the port — a busy port must FAIL, not silently split traffic
         fetch: req => this.#handle(req, expectedState),
       });
     try {
@@ -242,7 +241,7 @@ export abstract class OAuthCallbackFlow {
     });
 
     return new Response(renderHtml(ok, message), {
-      status: ok ? 200 : 500, // gjc parity: provider/CSRF failures are server-side errors (500), not 400
+      status: ok ? 200 : 500, // provider/CSRF failures are server-side errors (500), not 400
       headers: { "content-type": "text/html" },
     });
   }
@@ -276,7 +275,7 @@ export abstract class OAuthCallbackFlow {
               .then(input => {
                 const parsed = parseCallbackInput(input);
                 if (!parsed.code) return null;
-                // gjc parity: a bare pasted code WITHOUT a state is accepted (the provider
+                // A bare pasted code WITHOUT a state is accepted (the provider
                 // may strip it); only an explicitly MISMATCHED state is rejected.
                 if (expectedState && parsed.state && parsed.state !== expectedState) return null;
                 return { code: parsed.code, state: parsed.state ?? "" } as CallbackResult;

@@ -173,7 +173,7 @@ test("attachImagePaths: cursor falls back to text end when nothing is attached",
   expect(none.cursor).toBe("no paths here".length);
 });
 
-// gjc parity (#2658 "safely attach multiple pasted image paths" — source-size bound,
+// Safely attach multiple pasted image paths — source-size bound,
 // scoped down for jeo's simpler single-read attach path): the REAL filesystem reader
 // (attachImagePaths's default, unlike the injected `read` fakes above) must reject an
 // oversized file BEFORE reading it fully into memory, and must never hang/OOM trying.

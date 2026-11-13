@@ -1,14 +1,12 @@
 /**
- * Named-tab browser session registry (gjc `browser` parity, via Playwright — already
- * a jeo-code dependency for its own test suite, so this reuses it rather than adding
- * a second automation engine). One shared headless Chromium instance is launched
- * lazily on the first `open()` and kept alive across calls; tabs are addressed by
- * name and reused ("open once, reuse many times" — the real tool's stated contract).
+ * Named-tab browser session registry via Playwright — already a jeo-code dependency
+ * for its own test suite, so this reuses it rather than adding a second automation
+ * engine. One shared headless Chromium instance is launched lazily on the first
+ * `open()` and kept alive across calls; tabs are addressed by name and reused.
  *
- * Scope, stated honestly: headless Chromium only for v1 — no existing Chrome profile
- * attach, no Electron/CDP-endpoint connect, no stealth-mode patches. Those are real
- * gaps versus the full tool; a plain headless session covers the large majority of
- * "fetch/observe/click through a page" agent use cases.
+ * Scope: headless Chromium only for v1 — no existing Chrome profile attach,
+ * no Electron/CDP-endpoint connect, no stealth-mode patches. A plain headless
+ * session supports fetching, observing, and clicking through pages.
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createTab, type Tab } from "./browser-tab";

@@ -271,7 +271,7 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
   expect(listeners.size).toBe(0);
 });
 
-// gjc-parity (logs/gjc-tui-study analysis Gap C): the /exit path prints a resume
+// The /exit path prints a resume
 // pointer using the same convention as the --list handler.
 
 test("formatResumeHint matches the --list handler convention", () => {

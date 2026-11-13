@@ -61,7 +61,7 @@ test("subagent loop honors a role's step budget when the model never signals don
   const result = await runAgentLoop([{ role: "system" as const, content: "sys" }], {
     cwd: process.cwd(),
     maxSteps: 4,
-    // Production subagent delegation (task-tool/team) disables the gjc step-extension
+    // Production subagent delegation (task-tool/team) disables the step-extension
     // flow so a role's step contract stays exact — mirror that here.
     budget: { maxExtensions: 0 },
     tools: subagentToolset(critic),

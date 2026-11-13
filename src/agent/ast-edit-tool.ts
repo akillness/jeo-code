@@ -1,6 +1,6 @@
 /**
- * `ast_edit` tool — structural (AST-based) codemod for TypeScript/JavaScript, gjc
- * `ast_edit` parity via the same pure-TS metavariable matcher as `ast_grep`. MUTATING:
+ * `ast_edit` tool — structural (AST-based) codemod for TypeScript/JavaScript,
+ * using the same pure-TS metavariable matcher as `ast_grep`. MUTATING:
  * excluded from read-only subagent roles (see `subagents.ts`'s `MUTATING` set).
  *
  * Each match is replaced by rendering the `replacement` template — `$NAME`/`$$$NAME`

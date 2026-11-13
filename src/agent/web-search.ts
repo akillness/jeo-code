@@ -1,7 +1,7 @@
 /**
- * web_search — provider-chain web search (gjc parity).
+ * web_search — provider-chain web search.
  *
- * Mirrors gjc's `web/search` design instead of hardcoding one backend:
+ * Selects providers instead of hardcoding one backend:
  *
  *   1. An explicitly preferred provider (`JEO_SEARCH_PROVIDER`) that is
  *      available is primary.
@@ -18,7 +18,7 @@
  *      live provider data, never canned.
  *
  * Providers are tried in order; a runtime failure fails over to the next.
- * The structured text output doubles as the source for the TUI's gjc-style
+ * The structured text output doubles as the source for the TUI's
  * Web Search card (Query / Answer / Sources / Metadata sections — see
  * `webSearchCardLines` in tui/components/forge.ts).
  */
@@ -407,7 +407,7 @@ async function searchGemini(req: SearchRequest): Promise<WebSearchResponse> {
   return parsed;
 }
 
-// ── DuckDuckGo provider (keyless terminal fallback; gjc port) ────────────────
+// ── DuckDuckGo provider (keyless terminal fallback) ────────────────
 
 const DDG_HTML_ENDPOINT = "https://html.duckduckgo.com/html/";
 const DDG_LITE_ENDPOINT = "https://lite.duckduckgo.com/lite/";
@@ -540,7 +540,7 @@ async function ddgFetchAndParse(endpoint: "html" | "lite", query: string, df: st
   return parsed;
 }
 
-/** Keyless DuckDuckGo search with endpoint rotation + backoff (gjc port). It
+/** Keyless DuckDuckGo search with endpoint rotation + backoff. It
  *  throws on total failure rather than returning an empty success — real
  *  results or an explicit error, never a fabricated response. */
 async function searchDuckDuckGo(req: SearchRequest): Promise<WebSearchResponse> {
@@ -571,7 +571,7 @@ async function searchDuckDuckGo(req: SearchRequest): Promise<WebSearchResponse> 
   );
 }
 
-// ── Provider chain (gjc resolveProviderChain semantics) ──────────────────────
+// ── Provider chain ──────────────────────
 
 const PROVIDERS: Record<SearchProviderDef["id"], SearchProviderDef> = {
   anthropic: {
@@ -612,7 +612,7 @@ const PROVIDERS: Record<SearchProviderDef["id"], SearchProviderDef> = {
   },
 };
 
-/** Active model provider → its native search provider (gjc MODEL_PROVIDER_TO_SEARCH).
+/** Maps the active model provider to its native search provider.
  *  Providers without a jeo-native search implementation fall through to DuckDuckGo. */
 const MODEL_PROVIDER_TO_SEARCH: Record<string, SearchProviderDef["id"]> = {
   anthropic: "anthropic",
@@ -628,7 +628,7 @@ const MODEL_PROVIDER_TO_SEARCH: Record<string, SearchProviderDef["id"]> = {
 let activeModelHint: string | undefined;
 
 /** Called by the agent loop with the session's active model id, so the chain is
- *  active-model-gated like gjc (never credential-scanning across providers). */
+ *  active-model-gated (never credential-scanning across providers). */
 export function setWebSearchActiveModel(model: string | undefined): void {
   activeModelHint = model;
 }
@@ -653,7 +653,7 @@ async function activeModelProviderName(): Promise<string | undefined> {
 }
 
 /**
- * Resolve the ordered provider chain for a search request (gjc semantics):
+ * Resolve the ordered provider chain for a search request:
  * explicit preferred provider (when available) → active model's native search
  * (when ITS credentials exist) → DuckDuckGo as the always-on terminal fallback.
  */
@@ -688,7 +688,7 @@ function hostnameOf(url: string): string {
 /**
  * Format the unified response as structured text. This single string serves
  * BOTH consumers: the LLM (sectioned answer + numbered sources/citations) and
- * the TUI card renderer, which splits it back into the gjc-style
+ * the TUI card renderer, which splits it back into the
  * Query / Answer / Sources / Metadata card sections.
  */
 export function formatWebSearchOutput(query: string, r: WebSearchResponse): string {

@@ -1,15 +1,14 @@
 /**
- * Per-session forum-topic registry for the threaded session surface (gjc
- * `topic-registry.ts` parity, adapted: numeric topicId, no identitySent
- * tracking).
+ * Per-session forum-topic registry for the threaded session surface, with
+ * numeric topicId and no identitySent tracking.
  *
  * Each jeo session owns one active Telegram forum topic in the paired private
  * DM. The topic is created via `createForumTopic`, reused while the session
  * remains active, and removed from the registry when the daemon deletes it on
- * shutdown. Unlike gjc, this registry does NOT track whether the one-time
- * identity header has been sent — that is a session-side decision (the
- * session-endpoint owns a simple boolean for "have I sent my own identity
- * this run") and does not need to survive daemon restarts.
+ * shutdown. This registry does NOT track whether the one-time identity header
+ * has been sent — that is a session-side decision (the session-endpoint owns
+ * a simple boolean for "have I sent my own identity this run") and does not
+ * need to survive daemon restarts.
  *
  * State is a plain serializable map persisted beside the daemon state files;
  * topic creation is injected so this module is pure and unit-testable without

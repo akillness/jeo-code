@@ -136,13 +136,13 @@ export interface CallOptions {
   signal?: AbortSignal;
   /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
   reasoningEffort?: "low" | "medium" | "high" | "none";
-  /** How an OpenAI-compatible backend enables/streams native reasoning (gjc parity):
+  /** How an OpenAI-compatible backend enables/streams native reasoning:
    *  "openai" → `reasoning_effort`; "openrouter" → `reasoning: {effort}`; "qwen" →
    *  `enable_thinking: true`; "zai" → `thinking: {type:"enabled"}`. Set per provider by
    *  the openai-compatible factory; without it a model never emits reasoning to surface. */
   reasoningFormat?: "openai" | "openrouter" | "qwen" | "zai";
   /** Stable per-conversation key (the session id) for provider-side prompt caching.
-   *  gjc parity: the Codex/Responses backends key their prompt cache on
+   *  The Codex/Responses backends key their prompt cache on
    *  `prompt_cache_key` (+ `session_id`/`conversation_id` headers on the Codex
    *  backend), so an agent loop replaying the same history each step gets cache
    *  hits instead of full-prompt re-reads. Optional — absent for one-shot calls. */

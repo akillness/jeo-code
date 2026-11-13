@@ -602,7 +602,7 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
             deps.showWhatsNew?.();
           }
         } else {
-          // gajae-code 0.7.8 parity (#1280): a nonzero bun/npm exit is NOT always a
+          // A nonzero bun/npm exit is NOT always a
           // real failure — Bun tarball-extraction errors can exit nonzero AFTER the
           // requested version actually landed. Before reporting failure, verify the
           // active `jeo` on PATH: if it now reports >= latest, treat it as recovered.

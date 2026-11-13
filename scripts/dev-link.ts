@@ -1,6 +1,6 @@
 /**
- * Dev linking & drift doctor (gjc `dev:link` / `dev:doctor` parity, adapted for
- * jeo's pure-TypeScript-on-Bun runtime — there are no native bindings to load).
+ * Dev linking & drift doctor, built for jeo's pure-TypeScript-on-Bun runtime —
+ * there are no native bindings to load.
  *
  *   bun scripts/dev-link.ts link      # symlink global `jeo` -> this checkout's src/cli.ts
  *   bun scripts/dev-link.ts doctor    # report whether global `jeo` runs from this source
@@ -12,7 +12,7 @@
  * `linked` (this source), `drift` (a compiled binary or an npm-installed copy), or
  * `missing` (no `jeo` on PATH).
  *
- * Unlike gjc there is no `build:native` prerequisite: jeo has zero native deps, so a
+ * There is no `build:native` prerequisite: jeo has zero native deps, so a
  * bare symlink to `src/cli.ts` (shebang `#!/usr/bin/env bun`) is fully functional.
  */
 import * as fs from "node:fs";

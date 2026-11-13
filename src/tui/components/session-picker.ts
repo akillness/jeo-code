@@ -1,10 +1,10 @@
 /**
- * Rich, gjc-style session picker for `/resume`.
+ * Rich session picker for `/resume`.
  *
- * Mirrors Gajae-Code's session selector UX: a search/filter line at the top, a
- * scrolling window of multi-line entries (title + dimmed first-message preview +
- * a "relative time · size · N msgs" metadata line), a position indicator, and a
- * footer with Del-to-delete / Enter-to-resume / Esc-to-cancel hints.
+ * Displays a search/filter line at the top, a scrolling window of multi-line
+ * entries (title + dimmed first-message preview + a "relative time · size · N msgs"
+ * metadata line), a position indicator, and a footer with Del-to-delete /
+ * Enter-to-resume / Esc-to-cancel hints.
  *
  * Pure rendering — no I/O. The owning REPL drives navigation/deletion via the
  * `SessionPicker` model and feeds the rendered lines to its picker loop.
@@ -27,7 +27,7 @@ export function formatBytes(n: number | undefined): string {
   return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[i]}`;
 }
 
-/** Relative "X ago" timestamp, matching gjc's session-selector phrasing. */
+/** Relative "X ago" timestamp for the session selector. */
 export function formatRelativeTime(fromMs: number | undefined, nowMs: number = Date.now()): string {
   if (typeof fromMs !== "number" || !Number.isFinite(fromMs) || fromMs <= 0) return "unknown";
   const diff = Math.max(0, nowMs - fromMs);
@@ -146,7 +146,7 @@ export interface RenderSessionPickerOptions {
   confirmDeleteId?: string;
 }
 
-/** Render a `SessionPicker` to lines (gjc-style multi-line entries). Pure. */
+/** Render a `SessionPicker` to lines with multi-line entries. Pure. */
 export function renderSessionPicker(picker: SessionPicker, opts: RenderSessionPickerOptions = {}): string[] {
   const unicode = opts.unicode !== false;
   const color = opts.color !== false;
@@ -162,7 +162,7 @@ export function renderSessionPicker(picker: SessionPicker, opts: RenderSessionPi
   const titleLines = opts.title ? opts.title.split("\n") : [];
   for (const t of titleLines) out.push(fit(t ? tint(t, chalk.bold) : ""));
 
-  // Search/filter line (gjc places an input box at the top).
+  // Search/filter line at the top.
   const q = picker.filter();
   const searchValue = q ? q : tint("type to filter", chalk.gray);
   out.push(fit(`${tint("search", chalk.gray)} ${tint(arrow, chalk.cyan)} ${searchValue}`));

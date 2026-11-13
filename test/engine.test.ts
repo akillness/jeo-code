@@ -40,7 +40,7 @@ test("extractJsonObject: throws on garbage", () => {
 });
 
 
-// --- gjc-robustness hardening: trailing commas + tool-key preference ---
+// --- Robustness hardening: trailing commas + tool-key preference ---
 
 test("extractJsonObject: tolerates a trailing comma before }", () => {
   expect(extractJsonObject('{"tool":"read","arguments":{"filePath":"a.ts",}}')).toEqual({

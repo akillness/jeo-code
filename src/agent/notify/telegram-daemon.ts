@@ -1,5 +1,5 @@
 /**
- * The managed Telegram daemon (gjc `notifications/telegram-daemon.ts` parity).
+ * The managed Telegram daemon.
  * Runs as ONE long-lived background process (singleton, enforced by
  * `daemon-control.ts`'s lock file — Telegram allows only one `getUpdates`
  * long-poll owner per bot token). It:
@@ -15,20 +15,18 @@
  *     <subagentId>`, `/help` — plus inline-keyboard button taps
  *     (`callback_query`) — back into the matching session's WebSocket.
  *
- * gjc-parity surface added on top of the plain-text core: forum topics (all
- * pushes carry the configured `message_thread_id`, inbound is topic-filtered),
- * inline keyboards (cancel buttons + `callback_query` handling), image
- * attachments (a session may push a `{type:"photo"}` frame relayed via
- * `sendPhoto`), a shared `RateLimitPool` (burst/steady-rate protection across
- * every session sharing this one bot token), and — when
- * `notifications.telegram.perSessionTopics` is enabled — a dynamic,
- * PER-SESSION forum topic (via `TopicRegistry`) that mirrors that session's
- * OWN activity (`identity_header`/`context_update`/`turn_stream` frames) and
- * accepts free-text replies (routed back as `user_message`) and
+ * Additional features include forum topics (all pushes carry the configured
+ * `message_thread_id`, inbound is topic-filtered), inline keyboards (cancel
+ * buttons + `callback_query` handling), image attachments (a session may push
+ * a `{type:"photo"}` frame relayed via `sendPhoto`), a shared `RateLimitPool`
+ * (burst/steady-rate protection across every session sharing this one bot
+ * token), and — when `notifications.telegram.perSessionTopics` is enabled —
+ * a dynamic, PER-SESSION forum topic (via `TopicRegistry`) that mirrors that
+ * session's OWN activity (`identity_header`/`context_update`/`turn_stream`
+ * frames) and accepts free-text replies (routed back as `user_message`) and
  * `/verbose`/`/lean`/`/redact` config commands, ALL scoped to that one
  * session's topic. The flat/global `topicId` behavior below is UNCHANGED when
- * `perSessionTopics` is off (or unset) — zero regression risk for existing
- * setups.
+ * `perSessionTopics` is off (or unset), preserving existing setups.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -49,9 +47,8 @@ import { parseSessionEndpoint } from "./session-discovery";
 
 /** Initial (and post-success-reset) delay before retrying a failed/non-ok
  *  `getUpdates` poll. Doubles on each consecutive failure up to
- *  `POLL_ERROR_BACKOFF_MAX_MS` (see `pollTelegramLoop`) — jeo-native subset of
- *  GJC v0.11.10 PR #3048's bounded backoff, adapted to jeo's DI/testing style
- *  instead of GJC's SDK/root-registry plumbing. */
+ *  `POLL_ERROR_BACKOFF_MAX_MS` (see `pollTelegramLoop`), providing bounded
+ *  backoff with dependency injection for testing. */
 const POLL_ERROR_BACKOFF_MIN_MS = 1_000;
 /** Ceiling for the doubling backoff above — repeated 409s (another
  *  `getUpdates` long-poll owner) or transient network errors must never
@@ -147,7 +144,7 @@ export const HELP_TEXT =
   "text to steer that session directly, or use /verbose, /lean, /verbosity lean|verbose, " +
   "/redact on|off to adjust how that session mirrors its activity here.";
 
-// ── Inline keyboards / callback data (gjc parity) ───────────────────────────────
+// ── Inline keyboards / callback data ───────────────────────────────
 
 /** Encode an inline-button cancel target. Kept short to stay under Telegram's
  *  64-byte `callback_data` cap. */
@@ -196,7 +193,7 @@ interface SessionConnection {
   verified?: boolean;
   /** Latest identity, once an `identity_header` frame arrives — used to name/
    *  rename the session's forum topic. `undefined` until then (topic still
-   *  gets created eagerly with a provisional short-id name, gjc parity). */
+   *  gets created eagerly with a provisional short-id name). */
   identity?: { repo: string; branch?: string; cwd: string };
   /** True once this session's per-session topic creation has been attempted
    *  and failed (e.g. Threaded Mode off) — stops a retry storm; falls back to

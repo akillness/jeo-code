@@ -1,10 +1,7 @@
 /**
- * `calc` tool — evaluate one or more arithmetic expressions (gjc parity:
- * `packages/coding-agent/src/tools/calculator.ts`, ported for jeo's plain
- * `ToolResult` contract; the tokenizer/parser/evaluator below are a faithful
- * port of gjc's recursive-descent implementation, verified against a direct
- * read of the real, public gajae-code source — TUI rendering is jeo's own,
- * gjc's bespoke `Component`/`Theme` renderer doesn't apply here).
+ * `calc` tool — evaluate one or more arithmetic expressions using a
+ * tokenizer, recursive-descent parser, and evaluator, returning results
+ * through jeo's plain `ToolResult` contract with TUI rendering handled separately.
  *
  * Supports: decimal (123, 3.14, .5), scientific notation (1e10, 2.5E-3),
  * hex (0xFF), binary (0b1010), octal (0o755) literals; +, -, *, /, %, and

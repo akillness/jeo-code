@@ -9,7 +9,7 @@ let llm: Mock<typeof loop.callLlm>;
 beforeEach(() => { llm = spyOn(loop, "callLlm"); });
 afterEach(() => { llm.mockRestore(); });
 
-// cycle 13 (plan/gjc-inheritance.md): post-turn hook output FEEDBACK. A post-turn
+// Cycle 13: post-turn hook output FEEDBACK. A post-turn
 // hook (e.g. `tsc --noEmit`) that exits non-zero now feeds its diagnostics back to
 // the model so it can self-correct in-loop — realized via the EXISTING hooks
 // extension point (no new dependency, no core bloat). The tool's own ok/fail is
@@ -116,7 +116,7 @@ test("a project-wide post-turn hook runs ONCE for a multi-call batch, not per ed
   expect(toolMsg.content).not.toContain("same diagnostics as above");
 });
 
-// cycle 14a (plan/gjc-inheritance.md round 4): match.tool accepts `|`-separated
+// cycle 14a (round 4): match.tool accepts `|`-separated
 // multi-tool values so one post-edit hook covers edit AND write in one entry
 // (round-3 critic A5 follow-up, explicitly endorsed as separable).
 

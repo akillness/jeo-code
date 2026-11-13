@@ -287,7 +287,7 @@ export async function runModelSlash(input: string, ctx: ModelSlashCtx): Promise<
   console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}${arg ? " — saved as default" : ""}`);
   if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'jeo setup'.`);
   // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
-  // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
+  // pins a non-Codex id with no local base URL to fall back to (readiness guard).
   // `isCodexModel` also accepts any id this session's OWN live discovery already
   // confirmed (see model-catalog.ts) — a static-list-only check here would falsely
   // warn about a model /model's own live picker just showed as valid.

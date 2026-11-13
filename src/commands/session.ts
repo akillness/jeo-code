@@ -22,7 +22,7 @@ interface SessionInfo {
   name: string;
   created: string;
   attached: boolean;
-  /** Carries the `@jeo-profile` ownership marker set by `jeo --tmux` (gjc `@gjc-profile` parity). */
+  /** Carries the `@jeo-profile` ownership marker set by `jeo --tmux`. */
   owned: boolean;
   /** `@jeo-branch` identity recorded at session creation, when present. */
   branch?: string;
@@ -158,7 +158,7 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
-    // Ownership gate (gjc parity): the `jeo-` name prefix allows directly,
+    // Ownership gate: the `jeo-` name prefix allows directly,
     // and any session carrying the `@jeo-profile` marker (set by `jeo --tmux`)
     // is jeo-owned regardless of its name. Everything else is refused.
     if (!name.startsWith("jeo-")) {

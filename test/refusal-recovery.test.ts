@@ -74,7 +74,7 @@ test("refusal ladder stage 2: reasoning artifacts + native tool-use replay are s
 });
 
 test("refusal rung 4: with nothing left to strip, the loop backoff-resends instead of surfacing an error, then recovers", async () => {
-  // gjc parity: a refusal is never a terminal turn error — after the context-mutating
+  // A refusal is never a terminal turn error — after the context-mutating
   // ladder is exhausted the loop keeps resending with capped exponential backoff.
   process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the test fast
   try {

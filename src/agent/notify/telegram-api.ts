@@ -1,9 +1,9 @@
 /**
- * Minimal Telegram Bot HTTP API client (gjc `telegram-reference.ts`/`telegram-cli.ts`
- * parity). Scoped to the calls the jeo daemon needs — identity verification,
- * outbound push, inbound long-poll — plus gjc's richer surface: forum topics
- * (`message_thread_id`), inline keyboards (`reply_markup` + `answerCallbackQuery`),
- * and image attachments (`sendPhoto`, photo given as a URL or `file_id`).
+ * Minimal Telegram Bot HTTP API client. Scoped to the calls the jeo daemon
+ * needs — identity verification, outbound push, inbound long-poll — plus
+ * forum topics (`message_thread_id`), inline keyboards (`reply_markup` +
+ * `answerCallbackQuery`), and image attachments (`sendPhoto`, photo given as
+ * a URL or `file_id`).
  */
 
 export interface TelegramChat {
@@ -13,7 +13,7 @@ export interface TelegramChat {
   username?: string;
 }
 
-/** Inline keyboard primitives (gjc parity). `callback_data` is capped by Telegram
+/** Inline keyboard primitives. `callback_data` is capped by Telegram
  *  at 64 bytes; the daemon keeps its payloads short (`cancel:<shortId>:<id>`). */
 export interface InlineKeyboardButton {
   text: string;
@@ -112,11 +112,10 @@ export type FetchLike = typeof fetch;
 export const MAX_TELEGRAM_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
 /** Lower/upper clamp bounds (seconds) for a bot-wide cooldown armed by a Bot API
- *  HTTP 429's `parameters.retry_after` (gjc v0.11.10 PR #3048 cooldown parity,
- *  adapted to jeo's injectable-fetch client). A malicious/buggy server can't
- *  lock the client out indefinitely (upper bound) or arm a near-0s cooldown
- *  that fails to protect against the retry storm the 429 was warning about
- *  (lower bound). */
+ *  HTTP 429's `parameters.retry_after`, using jeo's injectable-fetch client.
+ *  A malicious/buggy server can't lock the client out indefinitely (upper bound)
+ *  or arm a near-0s cooldown that fails to protect against the retry storm the
+ *  429 was warning about (lower bound). */
 export const TELEGRAM_COOLDOWN_MIN_SECONDS = 1;
 export const TELEGRAM_COOLDOWN_MAX_SECONDS = 3600;
 
@@ -226,7 +225,7 @@ export class TelegramApi {
   }
 
   /** Send a photo. `photo` is a public URL or a Telegram `file_id` (no local
-   *  multipart upload — jeo pushes URLs/ids, matching gjc's URL-attachment path). */
+   *  multipart upload — jeo pushes URLs/ids). */
   async sendPhoto(
     chatId: string | number,
     photo: string,
@@ -264,7 +263,7 @@ export class TelegramApi {
     return parsed;
   }
 
-  /** Create a forum topic in a chat with Threaded Mode enabled (gjc per-session topic parity). */
+  /** Create a forum topic in a chat with Threaded Mode enabled. */
   async createForumTopic(chatId: string | number, name: string): Promise<{ ok: boolean; result?: { message_thread_id: number } }> {
     return this.postJson<{ ok: boolean; result?: { message_thread_id: number } }>("createForumTopic", {
       chat_id: chatId,
@@ -272,7 +271,7 @@ export class TelegramApi {
     });
   }
 
-  /** Rename an existing forum topic, e.g. once a session's real title is known (gjc identity-rename parity). */
+  /** Rename an existing forum topic, e.g. once a session's real title is known. */
   async editForumTopic(chatId: string | number, messageThreadId: number, name: string): Promise<TelegramSendResult> {
     return this.postJson<TelegramSendResult>("editForumTopic", {
       chat_id: chatId,
@@ -329,12 +328,12 @@ export class TelegramApi {
     }
   }
 
-  /** Look up a chat's type; callers gate per-session topic creation on `result.type === "private"` (gjc `pairedChatIsPrivate` fail-closed parity). */
+  /** Look up a chat's type; callers fail closed by allowing per-session topic creation only when `result.type === "private"`. */
   async getChat(chatId: string | number): Promise<{ ok: boolean; result?: { type?: string } }> {
     return this.postJson<{ ok: boolean; result?: { type?: string } }>("getChat", { chat_id: chatId });
   }
 
-  /** Attach an emoji reaction to a message (gjc queued/consumed delivery double-check parity). */
+  /** Attach an emoji reaction to a message for queued/consumed delivery indicators. */
   async setMessageReaction(chatId: string | number, messageId: number, emoji: string): Promise<TelegramSendResult> {
     return this.postJson<TelegramSendResult>("setMessageReaction", {
       chat_id: chatId,
@@ -345,7 +344,7 @@ export class TelegramApi {
 }
 
 /** Mask a secret token for safe display: first 4 chars + length, never the rest
- *  (gjc `gjc notify status` masking parity — safe to paste into a support thread). */
+ *  — safe to paste into a support thread. */
 export function maskToken(token: string): string {
   if (!token) return "";
   return `${token.slice(0, 4)}…(len ${token.length})`;

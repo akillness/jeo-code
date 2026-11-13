@@ -107,7 +107,7 @@ export const ConfigSchema = z
     ]).optional(),
     /** Individually approved absolute global skill files for sandbox snapshots. */
     sandboxSkillAssets: z.array(z.string().min(1)).optional(),
-    /** Terminal-bell notifications (gajae-code 0.7.8 parity): emit an ASCII BEL
+    /** Terminal-bell notifications: emit an ASCII BEL
      *  (\x07) at notable interaction points so a backgrounded session pings the
      *  user. Off by default; `bell` is the master toggle, per-event flags refine it.
      *  Env `JEO_NOTIFY_BELL=1/0` force-overrides the master toggle. */
@@ -139,9 +139,9 @@ export const ConfigSchema = z
              *  topics enabled — daemon pushes go into this topic. Ignored for a
              *  session-owned topic when `perSessionTopics` is true. */
             topicId: z.number().optional(),
-            /** Auto-create and manage ONE forum topic per interactive session
-             *  (gjc per-session-thread parity), instead of the single flat/global
-             *  `topicId` above. Requires a private chat with Threaded Mode
+            /** Auto-create and manage ONE forum topic per interactive session,
+             *  instead of the single flat/global `topicId` above.
+             *  Requires a private chat with Threaded Mode
              *  enabled (fail-closed — see `TopicRegistry`).
              *  Off by default; existing flat-topic/no-topic setups are unaffected. */
             perSessionTopics: z.boolean().optional(),
@@ -174,7 +174,7 @@ export const ConfigSchema = z
     /** Most-recently-selected models, newest first (drives the default + pickers). */
     recentModels: z.array(z.string()).optional(),
     /**
-     * Provider retry budgets (gjc parity). `requestMaxRetries` is used for non-stream
+     * Provider retry budgets. `requestMaxRetries` is used for non-stream
      * calls and stream initial connections; `streamMaxRetries` is used for stream retries.
      * `maxRetries` is the fallback budget when either is unset; `maxDelayMs` caps backoff.
      */
@@ -202,7 +202,7 @@ export const ConfigSchema = z
       })
       .optional(),
     /**
-     * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id
+     * Per-subagent-role overrides. Keyed by role id
      * (executor / planner / architect / critic); each may pin a model and/or a
      * step budget. Tolerant of unknown keys.
      */
@@ -273,12 +273,12 @@ export const ConfigSchema = z
         enabled: z.boolean().optional(),
       })
       .optional(),
-    /** Threaded through the existing compaction/summary settings (gjc `/handoff`
-     *  parity, jeo-native subset). `handoffFocus` is an operator-configured
-     *  default focus text for the interactive `/handoff [focus]` command —
-     *  used ONLY when the command is invoked with no CLI-typed focus argument,
-     *  and always appended as its own trailing section (never merged into or
-     *  replacing the generated handoff document's base sections). */
+    /** Threaded through the existing compaction/summary settings.
+     *  `handoffFocus` is an operator-configured default focus text for the
+     *  interactive `/handoff [focus]` command — used ONLY when the command
+     *  is invoked with no CLI-typed focus argument, and always appended as
+     *  its own trailing section (never merged into or replacing the generated
+     *  handoff document's base sections). */
     compaction: z
       .object({
         handoffFocus: z.string().optional(),

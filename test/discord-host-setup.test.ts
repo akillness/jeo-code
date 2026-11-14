@@ -103,6 +103,22 @@ async function fixture() {
 
 const discordMessage: MessengerMessage = { platform: "discord", accountId: "bot", guildId: "guild", channelId: "thread", parentChannelId: "channel", threadId: "thread", senderId: "collaborator", messageId: "1", text: "work", direct: false, mentioned: false };
 
+for (const mode of [undefined, "sandbox"] as const) test(`new Discord profile defaults to host with computer, preserving explicit ${mode ?? "default"} mode`, async () => {
+	const f = await fixture();
+	try {
+		const project = await repository(path.join(f.root, "project"));
+		await setupDiscordMessenger({ configPath: f.configPath, projectPath: project, workerMode: mode, dmTest: false }, f.io, f.deps);
+		const loaded = await loadMessengerConfig(f.configPath);
+		expect(loaded.platforms.discord?.workerMode).toBe(mode ?? "host");
+		expect(loaded.toolNames).toContain("computer");
+		expect(loaded.cwd).toBe(project);
+		if (mode === undefined) {
+			expect(loaded.sandbox).toBeUndefined();
+			expect(f.notices.some(line => line.includes("same OS account"))).toBe(true);
+		} else expect(loaded.sandbox).toEqual({ backend: "native" });
+	} finally { await f.close(); }
+});
+
 for (const scenario of ["missing", "non-Git", "unborn", "file", "root", "profile-inside-project", "project-inside-profile", "sessions-inside-project", "project-inside-sessions", "private-common-dir"] as const) test(`host setup rejects ${scenario} before network, credential or profile mutation`, async () => {
 	const f = await fixture();
 	try {

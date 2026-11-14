@@ -18,7 +18,8 @@ const StoredOAuthSchema = z.object({
   projectId: z.string().optional(),
 });
 
-const OAuthEntry = z.union([z.string(), StoredOAuthSchema]);
+const OAuthSingleEntry = z.union([z.string(), StoredOAuthSchema]);
+const OAuthEntry = z.union([OAuthSingleEntry, z.array(OAuthSingleEntry)]);
 // Catalog-driven OpenAI-compatible providers contribute their own apiKey + oauth-slot
 // schema keys (incl. hyphenated names like `alibaba-coding-plan`), so config-file keys
 // are validated/kept rather than stripped. Adding a provider = one catalog row.
@@ -83,6 +84,8 @@ export const ConfigSchema = z
         ...compatOAuthSchema,
       })
       .optional(),
+    /** Optional additional API keys / subscription tokens per provider for circular pool rotation. */
+    providerPools: z.record(z.string(), z.array(z.string())).optional(),
     /** User-registered OpenAI/Anthropic-compatible providers, keyed by routing id.
      *  Unlike `openaiBaseUrl` (which rebinds the single built-in `openai` provider),
      *  each entry here is its own provider with its own prefix, models and credential. */

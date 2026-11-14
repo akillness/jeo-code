@@ -54,7 +54,7 @@ import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
 import type { Config } from "./state";
 import type { ProviderName } from "../ai/types";
-import type { AuthProvider } from "../auth";
+import { hasOAuthConfigured, apiKeyPoolFor, type AuthProvider } from "../auth";
 
 export type PromptTier = "trivial" | "standard" | "high" | "complex";
 
@@ -203,7 +203,7 @@ export function resetPromptRouterWarnings(): void {
  *  `undefined`. Production callers (`readGlobalConfig()`'s real `Config`) always
  *  provide both. */
 export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
-  Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>;
+  Partial<Pick<Config, "providers" | "providerPools" | "oauth" | "openaiBaseUrl">>;
 
 /** Cloud providers eligible for cross-provider auto-select (excludes local
  *  ollama/lmstudio, which are never a sensible "route to the cheapest/strongest"
@@ -219,7 +219,7 @@ function isCloudProvider(p: ProviderName): p is AuthProvider {
  *  a Gemini API key at execution time. A plain `oauth.gemini` token counts because
  *  Antigravity deliberately accepts it as a fallback credential. */
 function hasAntigravityOauth(config: RoutingConfig): boolean {
-  return !!(config.oauth?.antigravity || config.oauth?.gemini);
+  return hasOAuthConfigured(config.oauth?.antigravity) || hasOAuthConfigured(config.oauth?.gemini);
 }
 
 /** A model's classified credential-sharing SCOPE — models on the SAME scope share
@@ -250,12 +250,11 @@ export function credentialScopeFor(model: string, config: RoutingConfig): Creden
   const provider = resolveProvider(model);
   if (provider === "ollama" || provider === "lmstudio") return null; // keyless, no shared account limit
   if (provider === "antigravity") {
-    const hasOauth = !!(config.oauth?.antigravity || config.oauth?.gemini);
-    return hasOauth ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
+    return hasAntigravityOauth(config) ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
   }
   const auth = provider as AuthProvider;
-  const hasApiKey = !!config.providers?.[auth];
-  const hasOauth = !!config.oauth?.[auth];
+  const hasApiKey = apiKeyPoolFor(auth, { providers: config.providers ?? {}, providerPools: config.providerPools }).length > 0;
+  const hasOauth = hasOAuthConfigured(config.oauth?.[auth]);
   if (!hasApiKey && !hasOauth) return { kind: "no-credential", key: provider };
   // OAuth wins over a configured API key whenever it actually serves this model
   // (same precedence resolveCall/effectiveCredentialForProvider apply live) — that

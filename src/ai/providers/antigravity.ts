@@ -137,7 +137,17 @@ export async function resolveAntigravityProjectId(
     const owner = credential.provider === "antigravity" ? "antigravity" : "gemini";
     await saveConfigPatch(raw => {
       const stored = raw.oauth?.[owner];
-      if (!stored || typeof stored === "string" || stored.access !== credential.token || stored.projectId) return {};
+      if (!stored) return {};
+      if (Array.isArray(stored)) {
+        const idx = stored.findIndex(item => typeof item === "object" && item.access === credential.token && !item.projectId);
+        if (idx === -1) return {};
+        const nextPool = [...stored];
+        const target = nextPool[idx];
+        if (typeof target !== "object") return {};
+        nextPool[idx] = { ...target, projectId: id };
+        return { oauth: { ...raw.oauth, [owner]: nextPool } };
+      }
+      if (typeof stored === "string" || stored.access !== credential.token || stored.projectId) return {};
       return { oauth: { ...raw.oauth, [owner]: { ...stored, projectId: id } } };
     });
   });

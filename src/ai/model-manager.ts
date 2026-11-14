@@ -1,7 +1,18 @@
 import { providerRegistry } from "./provider-registry";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import { readGlobalConfig } from "../agent/state";
-import { resolveCredential, isOAuthProvider, type AuthProvider, type Credential } from "../auth";
+import {
+  resolveCredential,
+  rotateCredential,
+  hasUnblockedPoolSibling,
+  refreshOAuthToken,
+  hasOAuthConfigured,
+  apiKeyPoolFor,
+  isOAuthProvider,
+  type AuthProvider,
+  type Credential,
+  type RotateCredentialResult,
+} from "../auth";
 import "./register-providers"; // side-effect: registers built-in adapters into providerRegistry
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
@@ -10,12 +21,22 @@ import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCo
 import { xaiCredential } from "./providers/xai";
 import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { customProviderDef, resolveCustomApiKey } from "./providers/custom-providers";
-import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
+import {
+  withRetry,
+  defaultRetryable,
+  withConnectionContext,
+  isConnectionError,
+  isRateLimitError,
+  isUsageLimitError,
+  ConnectionContextError,
+  type RetryOptions,
+} from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
 import { listProviderModels } from "./model-discovery";
 import type { ProviderModelsResult } from "./model-discovery";
 import { kimiOauthAccountScope, openAIOauthAccountScope } from "./model-cache";
+import { createUsageAttempt, currentUsageScope, type UsageAttempt } from "../agent/usage-ledger";
 
 
 
@@ -355,16 +376,20 @@ export function oauthServesModel(provider: AuthProvider, model: string): boolean
  *   (openai→Codex ids only, kimi→Kimi Code ids only, gemini→nothing);
  * - a configured OpenAI base URL is the keyless local-proxy path — any model.
  */
-export function modelServableWithConfig(provider: ProviderName, model: string, config: Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>): boolean {
+export function modelServableWithConfig(
+  provider: ProviderName,
+  model: string,
+  config: Partial<Pick<Config, "providers" | "providerPools" | "oauth" | "openaiBaseUrl">>,
+): boolean {
   if (provider === "agy") return false;
   if (provider === "ollama" || provider === "lmstudio") return true;
-  if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini);
+  if (provider === "antigravity") return hasOAuthConfigured(config.oauth?.antigravity) || hasOAuthConfigured(config.oauth?.gemini);
   const custom = customProviderDef(provider);
   if (custom) return !custom.requiresApiKey || !!resolveCustomApiKey(custom);
   if (provider === "openai" && config.openaiBaseUrl) return true;
   const auth = provider as AuthProvider;
-  if (config.providers?.[auth]) return true;
-  if (config.oauth?.[auth]) return oauthServesModel(auth, model);
+  if (apiKeyPoolFor(auth, { providers: config.providers ?? {}, providerPools: config.providerPools }).length > 0) return true;
+  if (hasOAuthConfigured(config.oauth?.[auth])) return oauthServesModel(auth, model);
   return false;
 }
 
@@ -378,13 +403,13 @@ export function modelServableWithConfig(provider: ProviderName, model: string, c
 export function effectiveCredentialForProvider(
   provider: AuthProvider,
   credential: Credential,
-  config: Pick<Config, "providers">,
+  config: Pick<Config, "providers" | "providerPools">,
   model: string,
 ): Credential {
   if (credential.kind === "oauth") {
     if (oauthServesModel(provider, model)) return credential;
-    const apiKey = config.providers[provider];
-    if (apiKey) return { kind: "api_key", provider, token: apiKey };
+    const keys = apiKeyPoolFor(provider, config);
+    if (keys[0]) return { kind: "api_key", provider, token: keys[0], accountIndex: 0 };
     if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) {
       const hint = provider === "gemini"
         ? " Or use an antigravity/* model instead — the SAME Gemini models served OAuth-only via Cloud Code Assist (run 'jeo auth login antigravity')."
@@ -553,9 +578,9 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   }
 
   if (provider === "xai") {
-    const key = config.providers?.xai;
-    if (!key) throw new Error("No credential for provider 'xai'. Set XAI_API_KEY (or providers.xai in config).");
-    return { adapter, callOptions, credential: xaiCredential(key), retry, provider, baseUrl };
+    const cred = await resolveCredential("xai", { sessionKey: options.sessionKey });
+    if (cred.kind !== "api_key") throw new Error("No credential for provider 'xai'. Set XAI_API_KEY (or providers.xai in config).");
+    return { adapter, callOptions, credential: xaiCredential(cred.token), retry, provider, baseUrl };
   }
 
   if (provider === "antigravity") {
@@ -564,8 +589,10 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     // their own project/permissions — this is now the DEFAULT OAuth-served path for
     // Gemini models (google/gemini-* itself requires GEMINI_API_KEY, see
     // `oauthServesModel` above).
-    let credential = await resolveCredential("antigravity");
-    if (credential.kind !== "oauth") credential = await resolveCredential("gemini");
+    const credential = await resolveCredential("antigravity", {
+      sessionKey: options.sessionKey,
+      allowGeminiFallback: true,
+    });
     if (credential.kind !== "oauth") {
       throw new Error("Antigravity models use Google OAuth. Run 'jeo auth login antigravity' (recommended) or 'jeo auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
     }
@@ -585,7 +612,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   }
 
   const credentialProvider = provider as AuthProvider;
-  const credential = await resolveCredential(credentialProvider);
+  const credential = await resolveCredential(credentialProvider, { sessionKey: options.sessionKey });
   if (provider === "kimi") {
     const scope = await kimiOauthAccountScope(credential);
     setKimiAccountScope(scope);
@@ -637,9 +664,13 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
       callOptions.baseUrl = undefined;
     }
   }
-  const effective = provider === "kimi" && baseUrl && credential.kind === "oauth"
+  let effective = provider === "kimi" && baseUrl && credential.kind === "oauth"
     ? (config.providers.kimi ? { kind: "api_key" as const, provider: "kimi" as const, token: config.providers.kimi } : { kind: "none" as const, provider: "kimi" as const })
     : effectiveCredentialForProvider(credentialProvider, credential, config, model);
+  if (credential.kind === "oauth" && effective.kind === "api_key" && apiKeyPoolFor(credentialProvider, config).length > 1) {
+    const pooledKey = await resolveCredential(credentialProvider, { sessionKey: options.sessionKey, preferKind: "api_key" });
+    if (pooledKey.kind === "api_key") effective = pooledKey;
+  }
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
   if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !oauthServesModel("openai", model)) {
     throw new Error(
@@ -852,71 +883,288 @@ export async function* retryableStream(
   }
 }
 
-export function createModelManager(): ModelManager {
+function errorStatusOf(err: unknown): number | undefined {
+  if (typeof err === "object" && err !== null && "status" in err) {
+    const raw = err.status;
+    const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+    if (Number.isFinite(n)) return n;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = /\bHTTP\s+(\d{3})\b|\b(401|402|403|429)\b/.exec(msg);
+  return match ? Number(match[1] ?? match[2]) : undefined;
+}
+
+function isPoolRotatableError(err: unknown): boolean {
+  if (isUsageLimitError(err) || isRateLimitError(err)) return true;
+  const status = errorStatusOf(err);
+  if (status === 401 || status === 402 || status === 403 || status === 429) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /insufficient credit|billing (?:is )?not enabled|free trial quota|rejected the credential/i.test(msg);
+}
+
+function isAuthRejectionError(err: unknown): boolean {
+  const status = errorStatusOf(err);
+  return status === 401 || status === 403;
+}
+
+function formatRotationNotice(
+  provider: ProviderName,
+  rotation: RotateCredentialResult,
+): string {
+  const fromWho = rotation.fromLabel ? ` (${rotation.fromLabel})` : "";
+  const toWho = rotation.toLabel ? ` (${rotation.toLabel})` : "";
+  const reason = rotation.reason.replace(/_/g, " ");
+  return `[auth-pool] ${provider} account #${rotation.fromIndex + 1}${fromWho} hit ${reason} — rotating to account #${rotation.toIndex + 1}/${rotation.total}${toWho}`;
+}
+
+function normalizeRotatedCredential(provider: ProviderName, cred: Credential): Credential {
+  if (provider === "xai" && cred.kind === "api_key") {
+    return xaiCredential(cred.token);
+  }
+  return cred;
+}
+
+function buildPoolRetryOptions(baseRetry: RetryOptions, canRotateNow: boolean): RetryOptions {
+  if (!canRotateNow) return baseRetry;
+  const basePred = baseRetry.isRetryable ?? defaultRetryable;
+  return {
+    ...baseRetry,
+    isRetryable: (err, attempt) => {
+      if (isPoolRotatableError(err)) return false;
+      return basePred(err, attempt);
+    },
+  };
+}
+
+export function createModelManager(resolve = resolveCall): ModelManager {
   return {
     resolveProvider,
     async call(messages, options = {}) {
-      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolveCall(options);
-      return withConnectionContext(
-        () => withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry),
-        provider,
-        baseUrl,
-      );
+      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolve(options);
+      if (credential.kind === "none") {
+        const callAttempt = async () => {
+          const scope = currentUsageScope();
+          const attempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+          try {
+            return await adapter.call(messages, { ...callOptions, onUsageSnapshot: usage => attempt?.onUsage(usage), onUsage: usage => { attempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential);
+          } finally {
+            attempt?.finish();
+          }
+        };
+        return withConnectionContext(() => withRetry(callAttempt, retry), provider, baseUrl);
+      }
+
+      const authProvider = provider as AuthProvider;
+      const allowGeminiFallback = provider === "antigravity";
+      let activeCredential: Credential = credential;
+      const triedTokens = new Set<string>([credential.token]);
+      let refreshedCurrent = false;
+
+      while (true) {
+        const canRotate = await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback });
+        const attemptRetry = buildPoolRetryOptions(retry, canRotate);
+        const callAttempt = async () => {
+          const scope = currentUsageScope();
+          const attempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+          try {
+            return await adapter.call(
+              messages,
+              {
+                ...callOptions,
+                onUsageSnapshot: usage => attempt?.onUsage(usage),
+                onUsage: usage => {
+                  attempt?.onUsage(usage);
+                  callOptions.onUsage?.(usage);
+                },
+                signal: withTimeout(callOptions.signal, callTimeoutMs()),
+              },
+              activeCredential,
+            );
+          } finally {
+            attempt?.finish();
+          }
+        };
+        try {
+          return await withConnectionContext(() => withRetry(callAttempt, attemptRetry), provider, baseUrl);
+        } catch (err) {
+          if (callOptions.signal?.aborted || !isPoolRotatableError(err)) throw err;
+
+          if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
+            refreshedCurrent = true;
+            const refreshed = await refreshOAuthToken(activeCredential.provider, {
+              accountIndex: activeCredential.accountIndex,
+              force: true,
+            }).catch(() => undefined);
+            if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {
+              activeCredential = normalizeRotatedCredential(provider, refreshed.credential);
+              if (activeCredential.kind !== "none") triedTokens.add(activeCredential.token);
+              continue;
+            }
+          }
+
+          const rotation = await rotateCredential(authProvider, activeCredential, err, {
+            sessionKey: callOptions.sessionKey,
+            allowGeminiFallback,
+          });
+          if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) {
+            throw err;
+          }
+          triedTokens.add(rotation.credential.token);
+          refreshedCurrent = false;
+          activeCredential = normalizeRotatedCredential(provider, rotation.credential);
+          if (provider === "kimi") {
+            setKimiAccountScope(await kimiOauthAccountScope(activeCredential));
+          }
+          options.onNotice?.(formatRotationNotice(provider, rotation));
+        }
+      }
     },
     async *stream(messages, options = {}) {
-      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolveCall(options, "stream");
+      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolve(options, "stream");
       if (adapter.stream) {
         const streamFn = adapter.stream.bind(adapter);
-        // Per-attempt abort controller fired by the idle timeout — so a stalled stream
-        // is cancelled, but a long, actively-emitting generation is NOT killed by a
-        // total wall-clock cap. The caller's signal (Ctrl-C) is preserved via composeAbort.
-        // JEO_STREAM_MAX_MS opts in to an OVERALL deadline (round-14): non-interactive
-        // runs can bound a slow-drip stream the per-chunk idle alone never catches.
-        let attempt: AbortController | null = null;
-        // Heartbeat: a long server-side "thinking" phase emits no yielded chunk, so the
-        // idle watchdog would otherwise look stalled and trip a false idle-stall retry.
-        // Two heartbeat sources bump lastActivityAt: (1) reasoning/thinking deltas routed
-        // to onReasoning, and (2) onStreamActivity — the wire-level heartbeat fired on ANY
-        // bytes from the provider stream (SSE keepalive/ping comments, events that never
-        // become a chunk). The watchdog re-arms while ANY activity advances and aborts only
-        // a genuinely dead stream (zero bytes for the idle window).
-        let lastActivityAt = Date.now();
-        const bump = () => { lastActivityAt = Date.now(); };
-        const userOnReasoning = callOptions.onReasoning;
-        const userOnReasoningStart = callOptions.onReasoningStart;
-        const liveOptions: CallOptions = {
-          ...callOptions,
-          onReasoning: (delta: string) => { bump(); userOnReasoning?.(delta); },
-          onReasoningStart: () => { bump(); userOnReasoningStart?.(); },
-          // Wire-level heartbeat: ANY bytes from the provider stream (SSE keepalive/ping
-          // comments, events that never become a chunk) stamp activity, so the idle
-          // watchdog re-arms for a connected-but-quiet stream and aborts only a dead one.
-          onStreamActivity: bump,
-        };
-        const makeIter = () => {
-          attempt = new AbortController();
-          const signal = composeAbort(callOptions.signal, attempt.signal);
-          return streamFn(messages, { ...liveOptions, signal }, credential)[Symbol.asyncIterator]();
-        };
-        const maxMs = streamMaxMs();
-        try {
-          yield* retryableStream(makeIter, retry, {
-            idleMs: streamIdleMs(),
-            ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
-            lastActivityAt: () => lastActivityAt,
-            onIdle: () => attempt?.abort(),
-          });
-        } catch (err) {
-          if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
-          throw err;
+        const authProvider = provider as AuthProvider;
+        const allowGeminiFallback = provider === "antigravity";
+        let activeCredential: Credential = credential;
+        const triedTokens = new Set<string>(credential.kind !== "none" ? [credential.token] : []);
+        let refreshedCurrent = false;
+
+        while (true) {
+          const canRotate = activeCredential.kind !== "none"
+            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback }));
+          const attemptRetry = buildPoolRetryOptions(retry, canRotate);
+          const abortRef: { current: AbortController | null } = { current: null };
+          let usageAttempt: UsageAttempt | undefined;
+          let lastActivityAt = Date.now();
+          const bump = () => { lastActivityAt = Date.now(); };
+          const userOnReasoning = callOptions.onReasoning;
+          const userOnReasoningStart = callOptions.onReasoningStart;
+          const liveOptions: CallOptions = {
+            ...callOptions,
+            onReasoning: (delta: string) => { bump(); userOnReasoning?.(delta); },
+            onReasoningStart: () => { bump(); userOnReasoningStart?.(); },
+            onStreamActivity: bump,
+          };
+          const makeIter = () => {
+            usageAttempt?.finish();
+            const scope = currentUsageScope();
+            usageAttempt = scope ? createUsageAttempt({ ...scope, provider, model: callOptions.model }) : undefined;
+            const thisAttempt = usageAttempt;
+            const currentAttempt = new AbortController();
+            abortRef.current = currentAttempt;
+            const signal = composeAbort(callOptions.signal, currentAttempt.signal);
+            const onUsage: CallOptions["onUsage"] = usage => { thisAttempt?.onUsage(usage); liveOptions.onUsage?.(usage); };
+            return streamFn(
+              messages,
+              { ...liveOptions, onUsageSnapshot: usage => thisAttempt?.onUsage(usage), onUsage, signal },
+              activeCredential,
+            )[Symbol.asyncIterator]();
+          };
+          const maxMs = streamMaxMs();
+          let yieldedAny = false;
+          try {
+            for await (const chunk of retryableStream(makeIter, attemptRetry, {
+              idleMs: streamIdleMs(),
+              ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
+              lastActivityAt: () => lastActivityAt,
+              onIdle: () => abortRef.current?.abort(),
+            })) {
+              yieldedAny = true;
+              yield chunk;
+            }
+            return;
+          } catch (err) {
+            if (yieldedAny || callOptions.signal?.aborted || activeCredential.kind === "none" || !isPoolRotatableError(err)) {
+              if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
+              throw err;
+            }
+
+            if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
+              refreshedCurrent = true;
+              const refreshed = await refreshOAuthToken(activeCredential.provider, {
+                accountIndex: activeCredential.accountIndex,
+                force: true,
+              }).catch(() => undefined);
+              if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {
+                activeCredential = normalizeRotatedCredential(provider, refreshed.credential);
+                if (activeCredential.kind !== "none") triedTokens.add(activeCredential.token);
+                continue;
+              }
+            }
+
+            const rotation = await rotateCredential(authProvider, activeCredential, err, {
+              sessionKey: callOptions.sessionKey,
+              allowGeminiFallback,
+            });
+            if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) {
+              if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
+              throw err;
+            }
+            triedTokens.add(rotation.credential.token);
+            refreshedCurrent = false;
+            activeCredential = normalizeRotatedCredential(provider, rotation.credential);
+            if (provider === "kimi") {
+              setKimiAccountScope(await kimiOauthAccountScope(activeCredential));
+            }
+            options.onNotice?.(formatRotationNotice(provider, rotation));
+          } finally {
+            abortRef.current?.abort();
+            usageAttempt?.finish();
+          }
         }
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
-        yield await withConnectionContext(
-          () => withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry),
-          provider,
-          baseUrl,
-        );
+        const authProvider = provider as AuthProvider;
+        const allowGeminiFallback = provider === "antigravity";
+        let activeCredential: Credential = credential;
+        const triedTokens = new Set<string>(credential.kind !== "none" ? [credential.token] : []);
+        let refreshedCurrent = false;
+
+        while (true) {
+          const canRotate = activeCredential.kind !== "none"
+            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback }));
+          const attemptRetry = buildPoolRetryOptions(retry, canRotate);
+          const callAttempt = async () => {
+            const scope = currentUsageScope();
+            const usageAttempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+            try {
+              return await adapter.call(
+                messages,
+                { ...callOptions, onUsageSnapshot: usage => usageAttempt?.onUsage(usage), onUsage: usage => { usageAttempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: withTimeout(callOptions.signal, callTimeoutMs()) },
+                activeCredential,
+              );
+            } finally {
+              usageAttempt?.finish();
+            }
+          };
+          try {
+            yield await withConnectionContext(() => withRetry(callAttempt, attemptRetry), provider, baseUrl);
+            return;
+          } catch (err) {
+            if (callOptions.signal?.aborted || activeCredential.kind === "none" || !isPoolRotatableError(err)) throw err;
+            if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
+              refreshedCurrent = true;
+              const refreshed = await refreshOAuthToken(activeCredential.provider, {
+                accountIndex: activeCredential.accountIndex,
+                force: true,
+              }).catch(() => undefined);
+              if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {
+                activeCredential = normalizeRotatedCredential(provider, refreshed.credential);
+                if (activeCredential.kind !== "none") triedTokens.add(activeCredential.token);
+                continue;
+              }
+            }
+            const rotation = await rotateCredential(authProvider, activeCredential, err, {
+              sessionKey: callOptions.sessionKey,
+              allowGeminiFallback,
+            });
+            if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) throw err;
+            triedTokens.add(rotation.credential.token);
+            refreshedCurrent = false;
+            activeCredential = normalizeRotatedCredential(provider, rotation.credential);
+            options.onNotice?.(formatRotationNotice(provider, rotation));
+          }
+        }
       }
     },
   };

@@ -4,8 +4,17 @@
  * each provider, how it will authenticate (API key / OAuth / keyless / none),
  * its effective base URL, and whether it is ready to serve a request.
  */
-import { readGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
-import { isOAuthProvider, API_KEY_ONLY_PROVIDERS, type AuthProvider, type Credential } from "../auth";
+import { readGlobalConfig, type Config, type OAuthEntry, type OAuthPoolEntry } from "../agent/state";
+import {
+  isOAuthProvider,
+  API_KEY_ONLY_PROVIDERS,
+  normalizeOAuthPool,
+  oauthEntryAccess,
+  oauthEntryDead as isEntryDead,
+  apiKeyPoolFor,
+  type AuthProvider,
+  type Credential,
+} from "../auth";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
@@ -46,6 +55,10 @@ export interface ProviderStatus {
   oauthEmail?: string;
   /** Epoch ms expiry of the stored OAuth access token, when known. */
   oauthExpires?: number;
+  /** Number of OAuth accounts in the provider's login pool (when > 0). */
+  poolSize?: number;
+  /** Number of API keys in the provider's key pool (when > 0). */
+  apiKeyPoolSize?: number;
   /** True for user-registered custom providers (`config.customProviders`). */
   custom?: boolean;
 }
@@ -83,39 +96,31 @@ export function credentialLabel(kind: CredentialKind): string {
   }
 }
 
-function oauthAccess(stored: string | StoredOAuth | undefined): string | undefined {
-  if (!stored) return undefined;
-  return typeof stored === "string" ? stored : stored.access;
+function pickLiveOAuthEntry(raw: OAuthPoolEntry | undefined): OAuthEntry | undefined {
+  const pool = normalizeOAuthPool(raw);
+  return pool.find(entry => !isEntryDead(entry)) ?? pool[0];
 }
 
-/** Login metadata (account email / expiry) from a stored OAuth record, when present. */
-function oauthLoginInfo(stored: string | StoredOAuth | undefined): { loggedIn: boolean; oauthEmail?: string; oauthExpires?: number } {
-  if (!stored) return { loggedIn: false };
-  if (typeof stored === "string") return { loggedIn: true };
-  return { loggedIn: true, oauthEmail: stored.email, oauthExpires: stored.expires };
+/** Login metadata (account email / expiry) from a stored OAuth pool, when present. */
+function oauthLoginInfo(raw: OAuthPoolEntry | undefined): { loggedIn: boolean; oauthEmail?: string; oauthExpires?: number; poolSize: number } {
+  const pool = normalizeOAuthPool(raw);
+  if (pool.length === 0) return { loggedIn: false, poolSize: 0 };
+  const active = pickLiveOAuthEntry(raw) ?? pool[0]!;
+  if (typeof active === "string") return { loggedIn: true, poolSize: pool.length };
+  return { loggedIn: true, oauthEmail: active.email, oauthExpires: active.expires, poolSize: pool.length };
 }
 
-/** True when a stored OAuth entry is DEFINITIVELY unusable right now: its access
- *  token is past expiry AND it has no refresh token to recover with. This is the
- *  gap `ready` used to miss — checking only "is a credential object present",
- *  never whether it's actually alive — so a session could route to a provider
- *  whose OAuth died (refresh token revoked/missing) and only discover that via a
- *  raw 401 from the real API call, after routing had already committed to it.
- *  An expired token WITH a refresh token is NOT flagged dead: `resolveCredential`
- *  (the real call path) auto-refreshes those before use, so a live refresh token
- *  self-heals without ever reaching this check. Legacy string-only stored tokens
- *  (no tracked expiry) are never flagged dead either — there's nothing to check. */
-function oauthEntryDead(stored: string | StoredOAuth | undefined): boolean {
-  if (!stored || typeof stored === "string") return false;
-  return !!stored.expires && stored.expires <= Date.now() && !stored.refresh;
+function oauthPoolDead(raw: OAuthPoolEntry | undefined): boolean {
+  const pool = normalizeOAuthPool(raw);
+  return pool.length > 0 && pool.every(entry => isEntryDead(entry));
 }
 
 function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
-  const stored = cfg.oauth?.[provider];
-  const oauth = oauthAccess(stored);
+  const stored = pickLiveOAuthEntry(cfg.oauth?.[provider]);
+  const oauth = oauthEntryAccess(stored);
   if (oauth) return { kind: "oauth", provider, token: oauth, projectId: typeof stored === "object" ? stored.projectId : undefined };
-  const key = cfg.providers?.[provider];
-  if (key) return { kind: "api_key", provider, token: key };
+  const keys = apiKeyPoolFor(provider, cfg);
+  if (keys[0]) return { kind: "api_key", provider, token: keys[0] };
   return { kind: "none", provider };
 }
 
@@ -179,14 +184,16 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   }
   if ((API_KEY_ONLY_PROVIDERS as readonly string[]).includes(name)) {
     // API-key-only providers (xai/kimi): no OAuth flow — ready when their key is set.
-    const key = cfg.providers?.[name as AuthProvider];
+    const keys = apiKeyPoolFor(name as AuthProvider, cfg);
     const envVar = providerEnvVar(name);
+    const suffix = keys.length > 1 ? ` (${keys.length} keys)` : "";
     return {
       name,
-      kind: key ? "api_key" : "none",
-      label: key ? credentialLabel("api_key") : `none (set ${envVar})`,
+      kind: keys[0] ? "api_key" : "none",
+      label: keys[0] ? `${credentialLabel("api_key")}${suffix}` : `none (set ${envVar})`,
       envVar,
-      ready: !!key,
+      ready: !!keys[0],
+      apiKeyPoolSize: keys.length,
     };
   }
   const ownProvider = name as AuthProvider;
@@ -199,34 +206,37 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   const effective = name === "antigravity" ? cred : effectiveCredential(credentialProvider, cred, cfg);
   const kind: CredentialKind = effective.kind === "api_key" ? "api_key" : effective.kind === "oauth" ? "oauth" : "none";
   const baseUrl = name === "openai" && kind !== "oauth" ? cfg.openaiBaseUrl : undefined;
-  let ready = kind === "api_key" || (kind === "oauth" && !oauthEntryDead(cfg.oauth?.[credentialProvider])) || (name === "openai" && !!cfg.openaiBaseUrl);
+  const oauthPool = normalizeOAuthPool(cfg.oauth?.[credentialProvider]);
+  const keyPool = apiKeyPoolFor(credentialProvider, cfg);
+  let ready = kind === "api_key" || (kind === "oauth" && !oauthPoolDead(cfg.oauth?.[credentialProvider])) || (name === "openai" && !!cfg.openaiBaseUrl);
   let label = ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind);
   if (name === "antigravity") {
-    const hasOwnOAuth = ownCred.kind === "oauth" && !oauthEntryDead(cfg.oauth?.antigravity);
-    const hasGeminiFallback = !hasOwnOAuth && configuredCredential("gemini", cfg).kind === "oauth" && !oauthEntryDead(cfg.oauth?.gemini);
+    const ownPool = normalizeOAuthPool(cfg.oauth?.antigravity);
+    const hasOwnOAuth = ownCred.kind === "oauth" && !oauthPoolDead(cfg.oauth?.antigravity);
+    const geminiPool = normalizeOAuthPool(cfg.oauth?.gemini);
+    const hasGeminiFallback = !hasOwnOAuth && configuredCredential("gemini", cfg).kind === "oauth" && !oauthPoolDead(cfg.oauth?.gemini);
     const ownDead = ownCred.kind === "oauth" && !hasOwnOAuth;
     ready = hasOwnOAuth || hasGeminiFallback;
     label = hasOwnOAuth
-      ? "OAuth (Antigravity Cloud Code Assist)"
+      ? `OAuth (Antigravity Cloud Code Assist${ownPool.length > 1 ? ` · ${ownPool.length} accounts` : ""})`
       : hasGeminiFallback
-        ? "OAuth (Cloud Code Assist via gemini login fallback)"
+        ? `OAuth (Cloud Code Assist via gemini login fallback${geminiPool.length > 1 ? ` · ${geminiPool.length} accounts` : ""})`
         : ownDead
           ? "OAuth expired, no refresh token — run 'jeo auth login antigravity' to re-authenticate"
           : "none (run 'jeo auth login antigravity')";
   } else if (name === "gemini" && kind === "oauth") {
-    // OAuth alone no longer serves google/gemini-* (the gemini-cli/Cloud Code Assist
-    // masquerade was removed) — GEMINI_API_KEY is required. The SAME models remain
-    // OAuth-only reachable via antigravity/*.
     ready = false;
     label = "OAuth catalog only; set GEMINI_API_KEY, or use antigravity/* models (Cloud Code Assist)";
   } else if (kind === "oauth" && isOAuthProvider(credentialProvider) && OAUTH_FLOW_REGISTRY[credentialProvider].verifiedEndToEnd === false) {
     ready = false;
     label = "OAuth (API key needed)";
-  } else if (kind === "oauth" && oauthEntryDead(cfg.oauth?.[credentialProvider])) {
+  } else if (kind === "oauth" && oauthPoolDead(cfg.oauth?.[credentialProvider])) {
     label = `OAuth expired, no refresh token — run 'jeo auth login ${credentialProvider}' to re-authenticate`;
+  } else if (kind === "oauth" && oauthPool.length > 1) {
+    label = `${label} (${oauthPool.length} accounts)`;
+  } else if (kind === "api_key" && keyPool.length > 1) {
+    label = `${label} (${keyPool.length} keys)`;
   }
-  // Login status reflects the provider's OWN stored OAuth (e.g. "logged in to antigravity"),
-  // independent of any cross-provider credential fallback used for readiness.
   const login = oauthLoginInfo(cfg.oauth?.[ownProvider]);
   return {
     name,
@@ -238,6 +248,8 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     loggedIn: login.loggedIn,
     oauthEmail: login.oauthEmail,
     oauthExpires: login.oauthExpires,
+    poolSize: login.poolSize,
+    apiKeyPoolSize: keyPool.length,
   };
 }
 

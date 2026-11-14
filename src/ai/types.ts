@@ -105,6 +105,13 @@ export interface ToolResultRecord {
 export interface Usage {
   inputTokens?: number;
   outputTokens?: number;
+  /** Disjoint provider-reported token counts, when available. */
+  inputUncachedTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  /** Provider-reported model identifier, when different from the requested model. */
+  servedModel?: string;
   /** Generation duration in ms, when the provider reports it. */
   durationMs?: number;
 }
@@ -132,6 +139,8 @@ export interface CallOptions {
   numCtx?: number;
   /** Optional sink for provider-reported token usage. */
   onUsage?: (usage: Usage) => void;
+  /** Internal cumulative provider snapshot; does not feed aggregate UI counters. */
+  onUsageSnapshot?: (usage: Usage) => void;
   /** Abort in-flight provider requests (Ctrl-C / timeout / supersede). */
   signal?: AbortSignal;
   /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
@@ -152,6 +161,8 @@ export interface CallOptions {
    *  Returning `false` aborts the retry immediately instead of backing off and
    *  re-attempting (see util/retry.ts's RetryOptions.onRetry). */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
+  /** Optional status notice sink (e.g. account pool failover notices). NOT forwarded to adapters. */
+  onNotice?: (message: string) => void;
   /** Streaming sink for native model reasoning/thinking text deltas (separate from the
    *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
    *  thought text. */

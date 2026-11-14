@@ -57,6 +57,7 @@ async function invokeCallLlm(history: Message[], options: {
   signal?: AbortSignal;
   onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
+  onNotice?: (message: string) => void;
   onToken?: (delta: string) => void;
   onReasoning?: (delta: string) => void;
   onReasoningStart?: () => void;
@@ -960,6 +961,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               onReasoning,
               onReasoningStart: ev.onReasoningStart,
               onReasoningArtifact,
+              onNotice: ev.onNotice,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
               // of the retries that DID happen. A rate limit with a fallback model ready

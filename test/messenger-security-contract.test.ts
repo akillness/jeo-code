@@ -141,7 +141,7 @@ test("Discord setup rejects an invalid explicit Docker sandbox without prompting
   expect(await fs.readFile(configPath, "utf8")).toBe(original);
 });
 
-for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh: "fresh Discord setup creates a workspace accepted by sandbox policy", migration: "Discord setup reports missing-cwd migration to a sandbox-eligible workspace", private: "Discord setup refuses a private configured workspace without replacing the config" }[scenario], async () => {
+for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh: "explicit sandbox Discord setup creates a workspace accepted by sandbox policy", migration: "Discord setup reports missing-cwd migration to a sandbox-eligible workspace", private: "Discord setup refuses a private configured workspace without replacing the config" }[scenario], async () => {
   const root = await directory();
   const script = path.join(root, "setup-check.ts");
   const setupModule = path.resolve(import.meta.dir, "../src/messenger/discord-setup.ts");
@@ -182,7 +182,7 @@ for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh:
       send(data: string) { if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", user: { id: "bot" }, resume_gateway_url: "wss://gateway.discord.gg" } }) }))); }
       close() {}
     }
-    const setup = () => setupDiscordMessenger({ configPath, dmTest: false }, {
+    const setup = () => setupDiscordMessenger({ configPath, dmTest: false, ...(${scenario === "fresh"} ? { workerMode: "sandbox" as const } : {}) }, {
       interactive: true, say(message: string) { notices.push(message); }, ask: async () => { const answer = answers.shift(); if (!answer) throw new Error("Unexpected prompt"); return answer; },
       askSecret: async () => { throw new Error("Unexpected credential prompt"); },
     }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fakeFetch as typeof fetch, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"] });

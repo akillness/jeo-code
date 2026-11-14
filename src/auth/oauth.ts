@@ -1,5 +1,5 @@
 import type { AuthProvider, OAuthProvider } from "./storage";
-import { setOauthToken, clearOauthToken, setOauthCredential } from "./storage";
+import { setOauthToken, removeOAuthAccount, setOauthCredential } from "./storage";
 import { OAUTH_FLOW_REGISTRY } from "./flows";
 import type { OAuthController } from "./types";
 
@@ -73,25 +73,39 @@ export async function openInBrowser(url: string): Promise<void> {
  * the local callback server, wait for the code (or manual paste), exchange it,
  * and persist the full credential set (access + refresh + expiry).
  */
-export async function interactiveLogin(provider: OAuthProvider, ctrl: OAuthController): Promise<{ email?: string }> {
+export async function interactiveLogin(
+  provider: OAuthProvider,
+  ctrl: OAuthController,
+  opts?: { replaceAll?: boolean },
+): Promise<{ email?: string; poolSize: number; added: boolean }> {
   const flow = OAUTH_FLOW_REGISTRY[provider];
   const creds = await flow.login(ctrl);
-  await setOauthCredential(provider, {
-    access: creds.access,
-    refresh: creds.refresh,
-    expires: creds.expires,
-    accountId: creds.accountId,
-    email: creds.email,
-    projectId: creds.projectId,
-  });
-  return { email: creds.email };
+  const res = await setOauthCredential(
+    provider,
+    {
+      access: creds.access,
+      refresh: creds.refresh,
+      expires: creds.expires,
+      accountId: creds.accountId,
+      email: creds.email,
+      projectId: creds.projectId,
+    },
+    opts,
+  );
+  return { email: creds.email, poolSize: res.poolSize, added: res.added };
 }
 
 /** Non-interactive entry: stash a pre-acquired bearer (no refresh metadata). */
-export async function loginOAuth(provider: AuthProvider, token: string): Promise<void> {
-  await setOauthToken(provider, token);
+export async function loginOAuth(
+  provider: AuthProvider,
+  token: string,
+  opts?: { replaceAll?: boolean },
+): Promise<{ poolSize: number; added: boolean }> {
+  const res = await setOauthToken(provider, token, opts);
+  return { poolSize: res.poolSize, added: res.added };
 }
 
-export async function logoutOAuth(provider: AuthProvider): Promise<boolean> {
-  return clearOauthToken(provider);
+export async function logoutOAuth(provider: AuthProvider, selector?: number | string): Promise<boolean> {
+  const res = await removeOAuthAccount(provider, selector);
+  return res.removed;
 }

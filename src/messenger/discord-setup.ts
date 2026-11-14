@@ -664,7 +664,8 @@ export async function setupDiscordMessenger(
 	const existing = await readExistingConfig(configPath);
 	const platforms = isRecord(existing?.platforms) ? existing.platforms : {};
 	const previous = isRecord(platforms.discord) ? platforms.discord : {};
-	const workerMode = options.workerMode ?? previous.workerMode;
+	// New profiles use CLI-trusted host sessions; never silently migrate an existing sandbox profile.
+	const workerMode = options.workerMode ?? previous.workerMode ?? (existing ? undefined : "host");
 	if (workerMode !== undefined && workerMode !== "sandbox" && workerMode !== "host")
 		throw new Error('Discord worker mode must be "sandbox" or "host"');
 	if (options.projectPath !== undefined && (typeof options.projectPath !== "string" || !options.projectPath || options.projectPath.trim() !== options.projectPath || /[\u0000-\u001f\u007f]/u.test(options.projectPath)))

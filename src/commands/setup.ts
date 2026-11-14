@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { saveGlobalConfig, readGlobalConfig, readRawGlobalConfig, type Config } from "../agent/state";
 import {
   interactiveLogin,
-  getStoredOAuth,
+  hasOAuthConfigured,
   OAUTH_FLOW_REGISTRY,
   openInBrowser,
   type AuthProvider,
@@ -150,8 +150,8 @@ export async function runSetupCommand(): Promise<void> {
           // question queues behind the stale paste prompt.
           ac.abort();
         }
-        const stored = await getStoredOAuth(choice as AuthProvider);
-        if (stored) next.oauth[choice] = stored;
+        const updatedRaw = await readRawGlobalConfig();
+        if (updatedRaw.oauth?.[choice]) next.oauth[choice] = updatedRaw.oauth[choice];
         console.log(`[SUCCESS] OAuth login complete for ${choice}${email ? ` (${email})` : ""}.`);
       } catch (err) {
         console.log(`[FAILED] OAuth login: ${(err as Error).message}`);
@@ -160,7 +160,7 @@ export async function runSetupCommand(): Promise<void> {
         if (key.trim()) next.providers[choice] = key.trim();
       }
     }
-    const openAiCodexOnly = choice === "openai" && !!next.oauth.openai && !next.providers.openai;
+    const openAiCodexOnly = choice === "openai" && hasOAuthConfigured(next.oauth.openai) && !next.providers.openai;
     const recommended = recommendedModelsFor(choice, 5, { codex: openAiCodexOnly });
     const fallbackModel = recommended[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice];
     console.log(`\nRecommended ${choice}${openAiCodexOnly ? " Codex OAuth" : ""} models:`);

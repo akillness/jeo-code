@@ -9,6 +9,7 @@
  * `task` itself, so delegation cannot recurse infinitely.
  */
 import { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopResult, type ToolHandler } from "./engine";
+import { currentUsageScope, withChildUsageScope } from "./usage-ledger";
 import { toolTarget } from "./step-budget";
 
 import type { ToolResult } from "./tools";
@@ -339,6 +340,9 @@ export async function runSubagentOnce(
   cwd: string,
   opts: RunSubagentOptions,
 ): Promise<SubagentRunResult> {
+  if (currentUsageScope()?.role === "parent") {
+    return withChildUsageScope(() => runSubagentOnce(role, taskText, context, cwd, opts));
+  }
   if (opts.sandbox && currentSandboxExecution() !== opts.sandbox) {
     return withSandboxExecution(opts.sandbox, () => runSubagentOnce(role, taskText, context, cwd, opts));
   }

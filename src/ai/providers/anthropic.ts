@@ -525,7 +525,7 @@ export const anthropicAdapter: ProviderAdapter = {
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
     const result = (await response.json()) as { model?: string; content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; stop_details?: { category?: string }; usage?: AnthropicUsage };
-    if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
+    if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), inputUncachedTokens: result.usage.input_tokens, cacheReadTokens: result.usage.cache_read_input_tokens, cacheWriteTokens: result.usage.cache_creation_input_tokens, outputTokens: result.usage.output_tokens, servedModel: result.model });
     if (!result.content.some(c => (c.type === "text" && c.text) || (c.type === "tool_use" && c.name)) && result.stop_reason && !["end_turn", "tool_use", "stop_sequence"].includes(result.stop_reason)) {
       throw emptyCompletionError(result.stop_reason, result.stop_details?.category);
     }
@@ -560,6 +560,7 @@ export const anthropicAdapter: ProviderAdapter = {
     const response = await postAnthropic(messages, options, credential, true);
     if (!response.body) return;
     let cachedInput: number | undefined;
+    let cachedUsage: AnthropicUsage | undefined;
     let yieldedAny = false;
     let stopReason: string | undefined;
     let stopCategory: string | undefined;
@@ -647,13 +648,15 @@ export const anthropicAdapter: ProviderAdapter = {
           // sink can't double-count input (and a pre-first-chunk retry that replays
           // message_start is harmless).
           cachedInput = totalInputTokens(evt.message.usage);
+          cachedUsage = evt.message.usage;
+          options.onUsageSnapshot?.({ inputUncachedTokens: cachedUsage.input_tokens, cacheReadTokens: cachedUsage.cache_read_input_tokens, cacheWriteTokens: cachedUsage.cache_creation_input_tokens, servedModel });
         }
       } else if (evt.type === "message_stop") {
         terminal = true;
       } else if (evt.type === "message_delta") {
         if (evt.delta?.stop_reason) { stopReason = evt.delta.stop_reason; terminal = true; }
         if (evt.delta?.stop_details?.category) stopCategory = evt.delta.stop_details.category;
-        if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
+        if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, inputUncachedTokens: cachedUsage?.input_tokens, cacheReadTokens: cachedUsage?.cache_read_input_tokens, cacheWriteTokens: cachedUsage?.cache_creation_input_tokens, outputTokens: evt.usage.output_tokens, servedModel });
       }
     }
     if (!yieldedAny && !toolBlocks.size && stopReason && !["end_turn", "tool_use", "stop_sequence"].includes(stopReason)) {

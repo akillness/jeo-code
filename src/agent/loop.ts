@@ -1,4 +1,5 @@
 import { createModelManager, type Message as AiMessage } from "../ai";
+import type { CallOptions, NativeToolSchema, ReasoningArtifact, Usage } from "../ai/types";
 
 export type Message = AiMessage;
 
@@ -10,30 +11,24 @@ export interface ChatOptions {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
-  /** Provider reasoning depth (mapped from the live session thinking level). When set it
-   *  overrides the global config-derived effort, so `/thinking` and `--thinking` reach the
-   *  provider's actual reasoning budget (Anthropic budget_tokens / OpenAI reasoning_effort /
-   *  Gemini thinkingBudget), not just the max-token ceiling. */
-  reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
+  /** Provider reasoning depth (mapped from the live session thinking level). */
+  reasoningEffort?: CallOptions["reasoningEffort"];
   jsonMode?: boolean;
   signal?: AbortSignal;
-  onUsage?: (usage: import("../ai/types").Usage) => void;
-  /** Notified before each provider auto-retry backoff wait (e.g. rate limits).
-   *  Returning `false` aborts the retry immediately (see ai/types.ts's CallOptions). */
+  onUsage?: (usage: Usage) => void;
+  /** Notified before each provider auto-retry backoff wait (e.g. rate limits). */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
-  /** When set, the response is consumed via the provider STREAM and each text delta is
-   *  delivered here (concatenation equals the returned string). Absent ⇒ a single
-   *  non-streaming `call()` (unchanged behavior for non-interactive/test callers). */
+  /** Optional status notice sink (e.g. account pool failover notices). */
+  onNotice?: (message: string) => void;
+  /** When set, the response is consumed via the provider STREAM and each text delta is delivered here. */
   onToken?: (delta: string) => void;
   /** Streaming sink for native reasoning/thinking deltas (drives the dimmed live view). */
   onReasoning?: (delta: string) => void;
-  /** Streaming sink for provider-native reasoning ARTIFACTS (signature / thoughtSignature /
-   *  reasoning item id+encrypted) — the replay channel, separate from onReasoning. */
-  onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
+  /** Streaming sink for provider-native reasoning ARTIFACTS. */
+  onReasoningArtifact?: (artifact: ReasoningArtifact) => void;
   /** NATIVE tool-calling function declarations (forwarded to capable adapters). */
-  tools?: import("../ai/types").NativeToolSchema[];
-  /** Stable per-conversation key (session id) for provider-side prompt caching
-   *  through prompt_cache_key / session_id correlation on Codex/Responses. */
+  tools?: NativeToolSchema[];
+  /** Stable per-conversation key (session id) for provider-side prompt caching. */
   sessionKey?: string;
 }
 

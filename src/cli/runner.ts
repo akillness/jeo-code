@@ -25,8 +25,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "auth",
-    summary: "Real OAuth (PKCE) login + token storage with auto-refresh.",
-    usage: "auth [login|logout|refresh|status] [provider] [--token <bearer>]",
+    summary: "OAuth & multi-account login pool with auto-refresh and circular rate-limit rotation.",
+    usage: "auth [status|login|logout|refresh|import|pool|use|rotate|reset-cooldown] [provider] [--token <bearer>] [--replace]",
     loader: async () => {
       const m = await import("../commands/auth");
       return args => m.runAuthCommand(args);

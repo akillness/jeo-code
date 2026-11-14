@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.40] - 2026-11-14
+_Multi-account login pool with circular rate-limit and usage-limit failover._
+
+### Added
+- **Multi-account login pool (`src/auth/storage.ts`, `src/ai/model-manager.ts`):** `config.oauth.<provider>` now accepts a single credential or an array of credentials (`OAuthPoolEntry`), and `config.providerPools.<provider>` stores additional API keys/subscription tokens alongside `config.providers.<provider>`. Logging in with `jeo auth login <provider>` (or `/login <provider>`) upserts accounts into the provider's pool by account identity (`email` / `accountId` / `projectId` / token hash) without overwriting sibling accounts (`--replace` resets the pool to a single account).
+- **Circular account failover on rate/usage limits:** when an active account hits a usage/quota limit, HTTP 429 rate limit, HTTP 402 billing block, or HTTP 401/403 credential rejection (after attempting a single-slot OAuth token refresh), `ModelManager.call` and `ModelManager.stream` mark that account's slot on cooldown (`retry-after` or class-specific backoff) and immediately rotate circularly (`1 → 2 → … → N → 1`) to the next unblocked account in the pool without burning backoff delay. Streaming fails over only before the first chunk is yielded, never replaying partial output.
+- **Pool inspection and rotation commands (`src/commands/auth.ts`, `src/commands/launch.ts`):** added `jeo auth pool [list|add|remove|use|next|reset]`, `jeo auth rotate <provider>`, `jeo auth use <provider> <index|email|next>`, `jeo auth reset-cooldown [provider]`, per-account `jeo auth logout <provider> [index|email]`, and REPL `/auth` and `/provider pool` commands.
+
+
 ## [0.12.39] - 2026-11-13
 _Discord setup, gateway session recovery, and host action authorization fixes._
 

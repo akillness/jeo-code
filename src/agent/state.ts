@@ -39,6 +39,10 @@ export interface StoredOAuth {
   email?: string;
   projectId?: string;
 }
+/** Single persisted OAuth entry (bearer string or full StoredOAuth record). */
+export type OAuthEntry = string | StoredOAuth;
+/** Single OAuth entry or a pool of OAuth accounts for circular failover. */
+export type OAuthPoolEntry = OAuthEntry | OAuthEntry[];
 
 /**
  * Hook events. `pre-tool`/`post-turn`/`post-implementation` are the original tool-loop
@@ -65,6 +69,8 @@ export interface Config {
    *  User-registered custom provider ids are published into this same map by
    *  `withEnvOverlay` so credential resolution needs no second lookup path. */
   providers: Partial<Record<AuthProvider, string>>;
+  /** Optional additional API keys / subscription tokens per provider (pooled after `providers[p]`). */
+  providerPools?: Partial<Record<AuthProvider, string[]>>;
   /** User-registered OpenAI/Anthropic-compatible providers (`/provider add`), keyed by
    *  routing id. Each is a full provider: own prefix, base URL, models and credential. */
   customProviders?: Record<string, CustomProviderConfig>;
@@ -74,7 +80,7 @@ export interface Config {
    * an API key is broader and wins whenever both key + OAuth exist. API-key-only
    * providers never populate OAuth; the key exists for index-compatibility.
    */
-  oauth?: Partial<Record<AuthProvider, string | StoredOAuth>>;
+  oauth?: Partial<Record<AuthProvider, OAuthPoolEntry>>;
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
   /** Ollama context window (`num_ctx`); overrides the server's small default. Env: OLLAMA_NUM_CTX. */
@@ -357,7 +363,13 @@ function envOAuth(): NonNullable<Config["oauth"]> {
  *  selection (including per-role subagent overrides) despite the key being present. */
 function withEnvOverlay(cfg: Config): Config {
   const envTok = envOAuth();
-  const oauth = { ...envTok, ...(cfg.oauth ?? {}) };
+  const oauth: NonNullable<Config["oauth"]> = { ...(cfg.oauth ?? {}) };
+  for (const [k, v] of Object.entries(envTok) as [AuthProvider, OAuthPoolEntry | undefined][]) {
+    if (!v) continue;
+    const cur = oauth[k];
+    const empty = cur === undefined || (Array.isArray(cur) && cur.length === 0);
+    if (empty) oauth[k] = v;
+  }
   // Disk wins when it is a real key; env fills missing/blank gaps. A hand-edited
   // empty string should not mask a valid environment credential.
   const providers: Config["providers"] = { ...(cfg.providers ?? {}) };
@@ -485,6 +497,9 @@ function salvageCredentials(base: Config, parsed: ParsedFile): Config {
   if (ro.oauth && typeof ro.oauth === "object") base.oauth = structuredClone(ro.oauth) as Config["oauth"];
   if (ro.providers && typeof ro.providers === "object") {
     base.providers = { ...base.providers, ...(structuredClone(ro.providers) as Config["providers"]) };
+  }
+  if (ro.providerPools && typeof ro.providerPools === "object") {
+    base.providerPools = structuredClone(ro.providerPools) as Config["providerPools"];
   }
   return base;
 }

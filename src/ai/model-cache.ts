@@ -21,7 +21,7 @@ import * as path from "node:path";
 import { jeoEnv } from "../util/env";
 import { recordLiveCodexModels, recordLiveKimiCodeModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope, setKimiAccountScope } from "./model-catalog";
 import type { Credential } from "../auth";
-import { getStoredOAuth, snapshotProvider } from "../auth/storage";
+import { getStoredOAuth, getStoredOAuthPool, snapshotProvider } from "../auth/storage";
 import { getAntigravityUserAgent } from "./providers/antigravity";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import type { ProviderName } from "./types";
@@ -69,7 +69,9 @@ export async function openAIOauthAccountScope(credential?: Credential): Promise<
     selected = { kind: "oauth", provider: "openai", token: snapshot.oauth };
   }
   if (selected.kind !== "oauth" || selected.provider !== "openai") return undefined;
-  const stored = await getStoredOAuth("openai");
+  const pool = await getStoredOAuthPool("openai");
+  const matched = pool.find(item => typeof item === "object" && item.access === selected.token);
+  const stored = (typeof matched === "object" ? matched : undefined) ?? await getStoredOAuth("openai");
   const accountId = extractChatgptAccountId(selected.token)
     || (stored?.access === selected.token ? stored.accountId?.trim() : undefined);
   return accountId || `token:${createHash("sha256").update(selected.token).digest("hex")}`;
@@ -100,7 +102,9 @@ export async function antigravityAccountScope(credential?: Credential): Promise<
     }
     if (selected.kind !== "oauth" || (selected.provider !== "antigravity" && selected.provider !== "gemini")) return undefined;
     const providerSlot = selected.provider;
-    const stored = await getStoredOAuth(providerSlot).catch(() => undefined);
+    const pool = await getStoredOAuthPool(providerSlot).catch(() => []);
+    const matched = pool.find(item => typeof item === "object" && item.access === selected.token);
+    const stored = (typeof matched === "object" ? matched : undefined) ?? await getStoredOAuth(providerSlot).catch(() => undefined);
     const accessMatches = stored?.access === selected.token;
     const email = accessMatches ? stored?.email?.trim().toLowerCase() : "";
     const identity = accessMatches

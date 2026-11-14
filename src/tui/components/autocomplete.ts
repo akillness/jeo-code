@@ -287,6 +287,11 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       if (argIndex === 0) return finish(["login", "key", "add", "list", "remove", "presets", "help"], "subcommand");
       const sub = tokens[1]?.toLowerCase();
       if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
+      if (sub === "pool") {
+        if (argIndex === 1) return finish(["list", "next", "use", "add", "remove", "reset"], "subcommand");
+        if (argIndex === 2) return finish(cloud, "provider");
+        return { completions: [], token, kind: "none" };
+      }
       // Removal only ever targets a CUSTOM provider, so completing built-ins here would
       // just offer choices the command refuses.
       if (sub === "remove" || sub === "rm" || sub === "delete") {
@@ -304,6 +309,15 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     }
     case "/logout":
       return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
+    case "/auth": {
+      const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
+      if (argIndex === 0) return finish(["status", "pool", "next", "rotate", "use", "reset", "login"], "subcommand");
+      const sub = tokens[1]?.toLowerCase();
+      if (sub === "next" || sub === "rotate" || sub === "use" || sub === "reset" || sub === "login" || sub === "pool") {
+        return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
+      }
+      return { completions: [], token, kind: "none" };
+    }
     case "/agents": {
       if (argIndex === 0) return finish(["edit", ...ctx.roleIds], "role");
       if (argIndex === 1) return finish(["reset", "thinking", "maxSteps", ...rankedModelPool(ctx)], "model");

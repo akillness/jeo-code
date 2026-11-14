@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import { MUTATION_NUDGE_PREFIX } from "../agent/loop-guards";
 import { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
+import { withUsageScope } from "../agent/usage-ledger";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
 
@@ -36,7 +37,7 @@ import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
 import { snapshotSandboxSkillAssets, prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots, skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { routeSkillsForTask, skillAdvisoryRoutingNote } from "../agent/skill-router";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
-import { interactiveOAuthLogin } from "./auth";
+import { interactiveOAuthLogin, runAuthCommand } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
@@ -141,6 +142,7 @@ import { tmpdir } from "node:os";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
 import {
+  sessionsDir,
   createSession,
   appendMessage,
   appendMessages,
@@ -2828,9 +2830,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   };
 
 
-  const runTurn = (...args: Parameters<typeof runTurnScoped>) => turnSandboxScope
+  const withCurrentSessionUsage = <T>(run: () => T): T => sessionId
+    ? withUsageScope({ file: path.join(sessionsDir(cwd), "usage", `${sessionId}.jsonl`), sessionId, role: "parent" }, run)
+    : run();
+  const runTurn = (...args: Parameters<typeof runTurnScoped>) => withCurrentSessionUsage(() => turnSandboxScope
     ? withSandboxExecution(turnSandboxScope, () => runTurnScoped(...args))
-    : runTurnScoped(...args);
+    : runTurnScoped(...args));
 
   const joinedArgs = flags.message;
   const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;
@@ -5558,7 +5563,7 @@ navMatches = [];
         const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
         const contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
-        const res = await maybeCompact(history, { model: activeModel, force: true, contextTokens });
+        const res = await withCurrentSessionUsage(() => maybeCompact(history, { model: activeModel, force: true, contextTokens }));
         if (res.error) {
           console.error(chalk.red(res.error));
         } else if (res.compacted) {
@@ -5729,14 +5734,14 @@ navMatches = [];
           // a huge thinking budget before the first byte.
           process.stdout.write("btw> ");
           let streamed = "";
-          const answer = await callLlm(side, {
+          const answer = await withCurrentSessionUsage(() => callLlm(side, {
             model: sessionModel || defaultModel,
             maxTokens: thinkingMaxTokens("low"),
             onToken: delta => {
               streamed += delta;
               process.stdout.write(delta);
             },
-          });
+          }));
           if (!streamed.trim() && answer.trim()) process.stdout.write(answer.trim());
           process.stdout.write("\n");
         } catch (err) {
@@ -5890,6 +5895,7 @@ navMatches = [];
           "                         manage: /provider list   ·   /provider remove <id>",
           "                         legacy (rebinds openai/): /provider add --base-url <url>   ·   clear: /provider add clear",
           "  Logout               : /logout <provider>",
+          "  Login pool           : /provider pool [list|next|use|add|remove|reset]   (alias: /auth)",
           "  Headless OAuth        : paste the redirect URL or code when the login prompt asks.",
           "Switch the active model or provider with /model.",
         ];
@@ -6027,8 +6033,9 @@ navMatches = [];
           }
           console.log(`Starting OAuth login for ${target}…`);
           try {
-            const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
-            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.jeo/config.json.`);
+            const { email, poolSize } = await interactiveOAuthLogin(target as AuthProvider, rl);
+            const poolSuffix = poolSize > 1 ? ` (pool: ${poolSize} accounts, circular failover active)` : "";
+            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}${poolSuffix}. Tokens saved to ~/.jeo/config.json.`);
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
             if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
@@ -6054,6 +6061,11 @@ navMatches = [];
             rli.line = "";
             rli.cursor = 0;
           }
+          continue;
+        }
+        if (name === "pool") {
+          await runAuthCommand(["pool", ...tokens.slice(1)]);
+          await refreshLiveModelsCache();
           continue;
         }
         // `/provider presets` → the preset catalog (fixed + parameterized gateways).
@@ -6142,15 +6154,27 @@ navMatches = [];
         console.log("Run /model to pick any provider's model (or /model <id|#N>). /provider now only onboards — see /provider help.");
         continue;
       }
+      if (input === "/auth" || input.startsWith("/auth ")) {
+        const authTokens = input.slice(5).trim().split(/\s+/).filter(Boolean);
+        await runAuthCommand(authTokens.length ? authTokens : ["pool"]);
+        await refreshLiveModelsCache();
+        continue;
+      }
       if (input.startsWith("/logout") && (input === "/logout" || input[7] === " ")) {
-        const cloud = ["anthropic", "openai", "gemini", "antigravity"];
-        const target = input.substring(7).trim().split(/\s+/).map(t => t.toLowerCase()).find(t => cloud.includes(t));
+        const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
+        const parts = input.substring(7).trim().split(/\s+/).filter(Boolean);
+        const target = parts.map(t => t.toLowerCase()).find(t => cloud.includes(t));
+        const selector = target ? parts.find(t => t.toLowerCase() !== target) : undefined;
         if (!target) {
-          console.log("Usage: /logout <anthropic|openai|gemini|antigravity>");
+          console.log("Usage: /logout <anthropic|openai|gemini|antigravity|kimi> [index|email]");
           continue;
         }
-        const removed = await logoutOAuth(target as AuthProvider);
-        console.log(removed ? `[SUCCESS] Removed OAuth token for ${target}.` : `No OAuth token stored for ${target}.`);
+        const removed = await logoutOAuth(target as AuthProvider, selector);
+        if (selector) {
+          console.log(removed ? `[SUCCESS] Removed account '${selector}' from ${target} pool.` : `No matching account '${selector}' in ${target} pool.`);
+        } else {
+          console.log(removed ? `[SUCCESS] Removed OAuth token(s) for ${target}.` : `No OAuth token stored for ${target}.`);
+        }
         await refreshLiveModelsCache();
         continue;
       }

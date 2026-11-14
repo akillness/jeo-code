@@ -87,6 +87,7 @@ test("/provider completes onboarding + custom-registry subcommands; switching mo
   expect(complete("/provider ", ctx()).completions).toEqual([
     "login",
     "key",
+    "pool",
     "add",
     "list",
     "remove",
@@ -94,8 +95,7 @@ test("/provider completes onboarding + custom-registry subcommands; switching mo
     "help",
   ]);
   // `/provider login ` → OAuth-capable cloud providers
-  expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
-  // `/provider add ` → custom-provider flags (named registry + legacy `clear`)
+  expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity", "kimi"]);
   expect(complete("/provider add ", ctx()).completions).toEqual([
     "--id",
     "--base-url",
@@ -125,7 +125,7 @@ test("/provider add --preset completes preset ids; /provider remove completes ON
 });
 
 test("/logout completes cloud provider names", () => {
-  expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
+  expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity", "kimi"]);
 });
 
 test("/agents and /model subagent complete role ids, models, thinking, and maxSteps keywords", () => {
@@ -231,7 +231,7 @@ test("/theme completes the bundled theme names", () => {
 test("/login completes the OAuth-capable cloud providers", () => {
   const r = complete("/login ", ctx());
   expect(r.kind).toBe("provider");
-  expect(r.completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
+  expect(r.completions).toEqual(["anthropic", "openai", "gemini", "antigravity", "kimi"]);
   expect(complete("/login o", ctx()).completions).toEqual(["openai"]);
 });
 

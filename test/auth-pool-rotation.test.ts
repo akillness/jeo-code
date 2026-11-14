@@ -225,7 +225,7 @@ test("Circular rotation (rotateCredential & resolveCredential): rotates 1 -> 2 -
   expect(c1.kind).toBe("oauth");
   if (c1.kind !== "oauth") throw new Error("expected oauth credential");
   expect(c1.token).toBe("tok-1");
-  expect(c1.accountIndex).toBe(0);
+  expect((await snapshotProvider("anthropic")).accounts?.find(a => a.active)?.index).toBe(0);
   expect(await hasUnblockedPoolSibling("anthropic", c1)).toBe(true);
 
   // Account 1 hits usage limit -> rotates 1 -> 2.
@@ -331,7 +331,7 @@ test("Per-slot definitive refresh failure: invalid_grant on expired slot 1 remov
   expect(resolved.kind).toBe("oauth");
   if (resolved.kind !== "oauth") throw new Error("expected oauth credential");
   expect(resolved.token).toBe("tok-healthy-2");
-  expect(resolved.accountEmail).toBe("healthy@example.com");
+  expect((await snapshotProvider("anthropic")).oauthEmail).toBe("healthy@example.com");
 
   const remainingPool = await getStoredOAuthPool("anthropic");
   expect(remainingPool).toHaveLength(1);

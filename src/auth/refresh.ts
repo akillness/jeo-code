@@ -15,7 +15,7 @@ export type { RefreshResult };
  */
 export async function refreshOAuthToken(
   provider: AuthProvider,
-  opts?: { identityKey?: string; accountIndex?: number; force?: boolean },
+  opts?: { identityKey?: string; accountIndex?: number; token?: string; force?: boolean },
 ): Promise<RefreshResult> {
   return refreshOAuthSlot(provider, opts);
 }

@@ -90,21 +90,8 @@ export function isOAuthProvider(p: AuthProvider): p is OAuthProvider {
 }
 
 export type Credential =
-  | {
-      kind: "oauth";
-      provider: AuthProvider;
-      token: string;
-      projectId?: string;
-      accountIndex?: number;
-      accountEmail?: string;
-      accountId?: string;
-    }
-  | {
-      kind: "api_key";
-      provider: AuthProvider;
-      token: string;
-      accountIndex?: number;
-    }
+  | { kind: "oauth"; provider: AuthProvider; token: string; projectId?: string }
+  | { kind: "api_key"; provider: AuthProvider; token: string }
   | { kind: "none"; provider: AuthProvider };
 
 export interface AuthSnapshotAccount {
@@ -710,7 +697,7 @@ async function removeOAuthSlotNoLock(provider: AuthProvider, identityKey: string
  */
 export async function refreshOAuthSlot(
   provider: AuthProvider,
-  opts?: { identityKey?: string; accountIndex?: number; force?: boolean },
+  opts?: { identityKey?: string; accountIndex?: number; token?: string; force?: boolean },
 ): Promise<RefreshResult> {
   if (!isOAuthProvider(provider)) {
     return { refreshed: false, reason: "no_oauth_token", credential: await resolveCredential(provider) };
@@ -724,7 +711,10 @@ export async function refreshOAuthSlot(
     }
 
     let targetIdx = -1;
-    if (opts?.identityKey) {
+    if (opts?.token) {
+      targetIdx = pool.findIndex(item => oauthEntryAccess(item) === opts.token);
+    }
+    if (targetIdx === -1 && opts?.identityKey) {
       const bare = opts.identityKey.startsWith(`${provider}:`)
         ? opts.identityKey.slice(provider.length + 1)
         : opts.identityKey;
@@ -757,10 +747,7 @@ export async function refreshOAuthSlot(
           kind: "oauth",
           provider,
           token: entry.access,
-          projectId: entry.projectId,
-          accountIndex: targetIdx,
-          accountEmail: entry.email,
-          accountId: entry.accountId,
+          ...(entry.projectId ? { projectId: entry.projectId } : {}),
         },
       };
     }
@@ -773,10 +760,7 @@ export async function refreshOAuthSlot(
           kind: "oauth",
           provider,
           token: entry.access,
-          projectId: entry.projectId,
-          accountIndex: targetIdx,
-          accountEmail: entry.email,
-          accountId: entry.accountId,
+          ...(entry.projectId ? { projectId: entry.projectId } : {}),
         },
       };
     }
@@ -794,10 +778,7 @@ export async function refreshOAuthSlot(
           kind: "oauth",
           provider,
           token: next.access,
-          projectId: next.projectId,
-          accountIndex: targetIdx,
-          accountEmail: next.email,
-          accountId: next.accountId,
+          ...(next.projectId ? { projectId: next.projectId } : {}),
         },
       };
     } catch (err) {
@@ -815,10 +796,7 @@ export async function refreshOAuthSlot(
               kind: "oauth",
               provider,
               token: oauthEntryAccess(nextEntry) ?? "",
-              projectId: nextObj?.projectId,
-              accountIndex: 0,
-              accountEmail: nextObj?.email,
-              accountId: nextObj?.accountId,
+              ...(nextObj?.projectId ? { projectId: nextObj.projectId } : {}),
             },
           };
         }
@@ -827,7 +805,7 @@ export async function refreshOAuthSlot(
           refreshed: false,
           reason: "refresh_token_invalid",
           credential: keys[0]
-            ? { kind: "api_key", provider, token: keys[0], accountIndex: 0 }
+            ? { kind: "api_key", provider, token: keys[0] }
             : { kind: "none", provider },
         };
       }
@@ -838,10 +816,7 @@ export async function refreshOAuthSlot(
           kind: "oauth",
           provider,
           token: entry.access,
-          projectId: entry.projectId,
-          accountIndex: targetIdx,
-          accountEmail: entry.email,
-          accountId: entry.accountId,
+          ...(entry.projectId ? { projectId: entry.projectId } : {}),
         },
       };
     }
@@ -856,10 +831,7 @@ function buildOAuthCredentialFromSlot(slot: PoolCandidateSlot): Credential {
     kind: "oauth",
     provider: slot.ownerProvider,
     token,
-    projectId: slot.projectId,
-    accountIndex: slot.ownerIndex,
-    accountEmail: slot.email,
-    accountId: slot.accountId,
+    ...(slot.projectId ? { projectId: slot.projectId } : {}),
   };
 }
 
@@ -958,7 +930,7 @@ export async function resolveCredential(
     runtimeKeys.cursor = chosen.index;
     setSessionPin(runtimeKeys, opts?.sessionKey, chosen.identityKey);
     await persistDirPools();
-    return { kind: "api_key", provider, token: chosen.apiKey!, accountIndex: chosen.index };
+    return { kind: "api_key", provider, token: chosen.apiKey! };
   }
 
   return { kind: "none", provider };
@@ -1075,9 +1047,6 @@ export async function rotateCredential(
     const token = slot.kind === "oauth" ? oauthEntryAccess(slot.entry) : slot.apiKey;
     return token === failedCredential.token;
   });
-  if (failedIdx === -1 && failedCredential.accountIndex !== undefined) {
-    failedIdx = slots.findIndex(slot => slot.ownerIndex === failedCredential.accountIndex);
-  }
   if (failedIdx === -1) failedIdx = 0;
 
   const failedSlot = slots[failedIdx]!;
@@ -1123,7 +1092,6 @@ export async function rotateCredential(
         kind: "api_key",
         provider,
         token: candidate.apiKey!,
-        accountIndex: candidate.index,
       };
     }
 

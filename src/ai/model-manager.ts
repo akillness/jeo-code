@@ -409,7 +409,7 @@ export function effectiveCredentialForProvider(
   if (credential.kind === "oauth") {
     if (oauthServesModel(provider, model)) return credential;
     const keys = apiKeyPoolFor(provider, config);
-    if (keys[0]) return { kind: "api_key", provider, token: keys[0], accountIndex: 0 };
+    if (keys[0]) return { kind: "api_key", provider, token: keys[0] };
     if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) {
       const hint = provider === "gemini"
         ? " Or use an antigravity/* model instead — the SAME Gemini models served OAuth-only via Cloud Code Assist (run 'jeo auth login antigravity')."
@@ -992,7 +992,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
           if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
             refreshedCurrent = true;
             const refreshed = await refreshOAuthToken(activeCredential.provider, {
-              accountIndex: activeCredential.accountIndex,
+              token: activeCredential.token,
               force: true,
             }).catch(() => undefined);
             if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {
@@ -1082,7 +1082,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
               refreshedCurrent = true;
               const refreshed = await refreshOAuthToken(activeCredential.provider, {
-                accountIndex: activeCredential.accountIndex,
+                token: activeCredential.token,
                 force: true,
               }).catch(() => undefined);
               if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {
@@ -1145,7 +1145,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             if (isAuthRejectionError(err) && activeCredential.kind === "oauth" && !refreshedCurrent && isOAuthProvider(activeCredential.provider)) {
               refreshedCurrent = true;
               const refreshed = await refreshOAuthToken(activeCredential.provider, {
-                accountIndex: activeCredential.accountIndex,
+                token: activeCredential.token,
                 force: true,
               }).catch(() => undefined);
               if (refreshed?.refreshed && refreshed.credential.kind === "oauth" && refreshed.credential.token !== activeCredential.token) {

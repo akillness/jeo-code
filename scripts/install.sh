@@ -27,6 +27,7 @@ DEFAULT_REPO="https://github.com/akillness/jeo-code.git"
 REPO="${JEO_REPO:-${JEO_REPO:-${JEO_REPO_URL:-${JEO_REPO_URL:-$DEFAULT_REPO}}}}"
 PKG="${JEO_PKG:-${JEO_PKG:-jeo-code}}"
 INSTALL_DIR="${JEO_INSTALL_DIR:-${JEO_INSTALL_DIR:-$HOME/.local/bin}}"
+JEO_GLOBAL_DIR="${JEO_GLOBAL_DIR:-${JEO_CONFIG_DIR:-$HOME/.jeo}/global}"
 MIN_BUN_VERSION="1.3.14"
 
 MODE="global"
@@ -222,37 +223,53 @@ normalize_repo_spec() {
 
 run_bun_global_add() {
   spec="$1"
+  BUN_BIN="$(bun_bin_dir)"
+  STAGING_BIN="$JEO_GLOBAL_DIR/bin"
   if [ -n "$REGISTRY" ]; then
     validate_registry_url
     if [ -n "$SCOPE" ] && [ "$PERSIST_REGISTRY" != "1" ] && [ "$PROJECT_NPMRC" != "1" ]; then
       echo "Note: scoped registries need --persist-registry or --project-npmrc for npm-compatible scope config; using $REGISTRY as this install's one-shot registry."
     fi
     if [ "$DRY_RUN" = "1" ]; then
-      echo "+ NPM_CONFIG_REGISTRY=$REGISTRY npm_config_registry=$REGISTRY bun add -g $spec"
+      echo "+ BUN_INSTALL_GLOBAL_DIR=$JEO_GLOBAL_DIR BUN_INSTALL_BIN=$STAGING_BIN NPM_CONFIG_REGISTRY=$REGISTRY npm_config_registry=$REGISTRY bun add -g $spec"
+      echo "+ ln -sf $JEO_GLOBAL_DIR/node_modules/$PKG/src/cli.ts $BUN_BIN/jeo"
     else
-      NPM_CONFIG_REGISTRY="$REGISTRY" npm_config_registry="$REGISTRY" bun add -g "$spec"
+      mkdir -p "$JEO_GLOBAL_DIR" "$STAGING_BIN" "$BUN_BIN"
+      BUN_INSTALL_GLOBAL_DIR="$JEO_GLOBAL_DIR" BUN_INSTALL_BIN="$STAGING_BIN" NPM_CONFIG_REGISTRY="$REGISTRY" npm_config_registry="$REGISTRY" bun add -g "$spec"
+      CLI_TARGET="$JEO_GLOBAL_DIR/node_modules/$PKG/src/cli.ts"
+      [ -e "$CLI_TARGET" ] || CLI_TARGET="$STAGING_BIN/jeo"
+      ln -sf "$CLI_TARGET" "$BUN_BIN/jeo.tmp.$$"
+      mv -f "$BUN_BIN/jeo.tmp.$$" "$BUN_BIN/jeo"
+      chmod +x "$CLI_TARGET" 2>/dev/null || true
     fi
   else
     if [ "$DRY_RUN" = "1" ]; then
-      echo "+ bun add -g $spec"
+      echo "+ BUN_INSTALL_GLOBAL_DIR=$JEO_GLOBAL_DIR BUN_INSTALL_BIN=$STAGING_BIN bun add -g $spec"
+      echo "+ ln -sf $JEO_GLOBAL_DIR/node_modules/$PKG/src/cli.ts $BUN_BIN/jeo"
     else
-      bun add -g "$spec"
+      mkdir -p "$JEO_GLOBAL_DIR" "$STAGING_BIN" "$BUN_BIN"
+      BUN_INSTALL_GLOBAL_DIR="$JEO_GLOBAL_DIR" BUN_INSTALL_BIN="$STAGING_BIN" bun add -g "$spec"
+      CLI_TARGET="$JEO_GLOBAL_DIR/node_modules/$PKG/src/cli.ts"
+      [ -e "$CLI_TARGET" ] || CLI_TARGET="$STAGING_BIN/jeo"
+      ln -sf "$CLI_TARGET" "$BUN_BIN/jeo.tmp.$$"
+      mv -f "$BUN_BIN/jeo.tmp.$$" "$BUN_BIN/jeo"
+      chmod +x "$CLI_TARGET" 2>/dev/null || true
     fi
   fi
 }
 
-# Bun global install. Exposes the package's `jeo` bin
-# in Bun's global bin dir (~/.bun/bin/jeo).
+# Isolated Bun global install (~/.jeo/global). Exposes `jeo` in ~/.bun/bin/jeo
+# without touching ~/.bun/install/global (jeopi or other global tools stay isolated).
 install_global() {
   spec=$(normalize_repo_spec "$REPO")
-  echo "Installing $PKG globally via Bun ($spec)..."
+  echo "Installing $PKG into isolated Bun global ($JEO_GLOBAL_DIR) from $spec..."
   run_bun_global_add "$spec"
 }
 
 install_npm() {
   spec="$PKG"
   [ -n "$REF" ] && spec="$PKG@$REF"
-  echo "Installing $PKG globally via Bun ($spec)..."
+  echo "Installing $PKG into isolated Bun global ($JEO_GLOBAL_DIR) from npm ($spec)..."
   run_bun_global_add "$spec"
 }
 

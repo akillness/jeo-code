@@ -1,6 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import * as path from "node:path";
 import pkg from "../../package.json";
 import { messengerProfilesPath } from "../messenger/runtime";
+import {
+  buildNpmCommand,
+  jeoCommandAttempts,
+  NPM_REGISTRY_URL,
+  resolveBunBinDir,
+  resolveHomeDir,
+  runIsolatedBunUpdate,
+} from "../util/isolated-install";
 import {
   checkLockCoverage,
   detectInstallOrigin,
@@ -8,7 +17,6 @@ import {
   formatChangeLine,
   formatRestoreCommands,
   formatUnchangedSummary,
-  locateSharedGlobal,
   readManifestDeps,
   snapshotInstalled,
   type ExternalChange,
@@ -173,73 +181,122 @@ export function jeoVersionAttempts(platform: NodeJS.Platform): string[][] {
   return [direct, ["jeo.exe", "--version"], ["cmd", "/d", "/s", "/c", "jeo --version"]];
 }
 
-/** Version of the `jeo` binary PATH actually resolves, or null when unreadable. */
 function readActiveVersion(): string | null {
-  for (const argv of jeoVersionAttempts(process.platform)) {
+  const home = resolveHomeDir(process.env, process.platform);
+  const binDir = resolveBunBinDir(process.env, home, process.platform);
+  const attempts = jeoCommandAttempts(process.platform, ["--version"], binDir);
+  for (const argv of attempts) {
     try {
       const proc = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
       if (!proc.success) continue;
       const out = new TextDecoder().decode(proc.stdout);
       const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
-      if (m) return m[1];
+      if (m) return m[1]!;
     } catch {
       // Try the next spelling; unreadable is reported only when every one fails.
     }
   }
   return null;
 }
+
+function spawnActiveJeo(args: readonly string[], stdio: "inherit" | "ignore"): boolean {
+  const home = resolveHomeDir(process.env, process.platform);
+  const binDir = resolveBunBinDir(process.env, home, process.platform);
+  for (const argv of jeoCommandAttempts(process.platform, args, binDir)) {
+    try {
+      const proc = Bun.spawnSync(argv, { stdout: stdio, stderr: stdio });
+      return proc.success;
+    } catch {
+      // Try next Windows/POSIX spelling.
+    }
+  }
+  return false;
+}
+
+function refreshLegacyLocalBinSymlink(binDir: string): void {
+  if (process.platform === "win32") return;
+  const home = resolveHomeDir(process.env, process.platform);
+  const localJeo = path.join(home, ".local", "bin", "jeo");
+  const targetJeo = path.join(binDir, "jeo");
+  try {
+    const st = lstatSync(localJeo);
+    if (!st.isSymbolicLink()) return;
+    const currentTarget = readlinkSync(localJeo);
+    // Only migrate symlinks that previously pointed into the shared ~/.bun/install/global tree.
+    if (!currentTarget.includes(`${path.sep}.bun${path.sep}install${path.sep}global${path.sep}`)) return;
+    if (!existsSync(targetJeo)) return;
+    const tmp = `${localJeo}.tmp.${process.pid}`;
+    symlinkSync(targetJeo, tmp);
+    renameSync(tmp, localJeo);
+  } catch {
+    try { unlinkSync(`${localJeo}.tmp.${process.pid}`); } catch {}
+  }
+}
+
+class HttpStatusError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 export const defaultDeps: UpdateDeps = {
   fetchJson: async (url: string, options?: { signal?: AbortSignal }) => {
     const res = await fetch(url, options);
     if (res.status === 404) {
-      const err = new Error("Package not found on registry");
-      (err as any).status = 404;
-      throw err;
+      throw new HttpStatusError("Package not found on registry", 404);
     }
     if (!res.ok) {
-      const err = new Error(`HTTP status ${res.status}`);
-      (err as any).status = res.status;
-      throw err;
+      throw new HttpStatusError(`HTTP status ${res.status}`, res.status);
     }
     return res.json();
   },
-  localVersion: () => {
-    return pkg.version;
-  },
-  sharedGlobal: { locate: locateSharedGlobal },
-  install: async (version?: string) =>
-    runInstall(version, {
-      spawn: cmd => Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" }),
-      activeVersion: readActiveVersion,
-      origin: () => detectInstallOrigin().origin,
-    }),
-  // Version of the `jeo` actually on PATH — may differ from this process's bundled
-  // version after a self-update (e.g. npm installed into a prefix PATH does not
-  // resolve). Detects the silent "installed but PATH unchanged" no-op.
-  activeVersion: readActiveVersion
-  ,
-  showWhatsNew: () => {
-    try {
-      // Spawn the freshly-installed binary so it reads the NEW bundled CHANGELOG.
-      Bun.spawnSync(["jeo", "whats-new"], { stdout: "inherit", stderr: "inherit" });
-    } catch {
-      // Notes are a courtesy; a spawn failure must never fail the update.
+  localVersion: () => pkg.version,
+  // By default `jeo update` installs into jeo-code's isolated global (`~/.jeo/global`),
+  // never touching `~/.bun/install/global` (where `jeopi` and other tools live).
+  install: async (version?: string) => {
+    const origin = detectInstallOrigin().origin;
+    if (origin === "npm-global") {
+      const target = `jeo-code@${version ?? "latest"}`;
+      return runInstall(version, {
+        spawn: cmd => {
+          const actualCmd = cmd[0] === "npm" ? buildNpmCommand(process.platform, cmd.slice(1)) : cmd;
+          return Bun.spawnSync(actualCmd, { stdout: "inherit", stderr: "inherit" });
+        },
+        activeVersion: readActiveVersion,
+        origin: () => origin,
+      });
     }
+    const result = runIsolatedBunUpdate(version, {
+      activeVersion: readActiveVersion,
+    });
+    if (result.success) {
+      refreshLegacyLocalBinSymlink(result.binDir);
+      return { success: true };
+    }
+    return {
+      success: false,
+      stderr: result.stderr,
+      manual: result.manual ?? [
+        `bun install -g jeo-code@${version ?? "latest"} --no-cache --registry=${NPM_REGISTRY_URL}`,
+      ],
+    };
+  },
+  activeVersion: readActiveVersion,
+  showWhatsNew: () => {
+    spawnActiveJeo(["whats-new"], "inherit");
   },
   refreshMessengers: quiet => {
-    // Only profiles registered by `jeo messenger setup` have runtimes to move; everyone else sees nothing.
     if (!existsSync(messengerProfilesPath())) return null;
     try {
       if (!quiet) console.log("Refreshing messenger runtimes...");
-      // The NEW binary knows its own launcher format and version, so it performs the refresh.
-      const proc = Bun.spawnSync(["jeo", "messenger", "update"], quiet ? { stdout: "ignore", stderr: "ignore" } : { stdout: "inherit", stderr: "inherit" });
-      if (!proc.success && !quiet) console.error("Messenger runtimes were not all refreshed; run 'jeo messenger update' to retry.");
-      return proc.success;
+      const ok = spawnActiveJeo(["messenger", "update"], quiet ? "ignore" : "inherit");
+      if (!ok && !quiet) console.error("Messenger runtimes were not all refreshed; run 'jeo messenger update' to retry.");
+      return ok;
     } catch {
-      if (!quiet) console.error("Messenger runtimes were not refreshed; run 'jeo messenger update' to retry.");
+      if (!quiet) console.error("Messenger runtimes were not all refreshed; run 'jeo messenger update' to retry.");
       return false;
     }
-  }
+  },
 };
 
 export async function runUpdateCommand(args: string[] = []): Promise<void> {

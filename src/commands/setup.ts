@@ -4,6 +4,8 @@ import { createInterface } from "node:readline/promises";
 import { saveGlobalConfig, readGlobalConfig, readRawGlobalConfig, type Config } from "../agent/state";
 import {
   interactiveLogin,
+  loginOAuth,
+  addApiKeyToPool,
   hasOAuthConfigured,
   OAUTH_FLOW_REGISTRY,
   openInBrowser,
@@ -119,10 +121,27 @@ export async function runSetupCommand(): Promise<void> {
     ).trim().toLowerCase();
     if (authMode === "t") {
       const tok = await rl.question(`${choice} OAuth bearer token: `);
-      if (tok.trim()) next.oauth[choice] = tok.trim();
+      if (tok.trim()) {
+        const res = await loginOAuth(choice, tok.trim());
+        const updatedRaw = await readRawGlobalConfig();
+        if (updatedRaw.oauth?.[choice]) next.oauth[choice] = updatedRaw.oauth[choice];
+        if (res.poolSize > 1) {
+          console.log(`  Added to ${choice} OAuth pool (${res.poolSize} accounts, circular failover active).`);
+        }
+      }
     } else if (authMode === "k") {
       const key = await rl.question(`${choice} API key [${current.providers[choice] ? "********" : "None"}]: `);
-      if (key.trim()) next.providers[choice] = key.trim();
+      if (key.trim()) {
+        const res = await addApiKeyToPool(choice, key.trim());
+        const updatedRaw = await readRawGlobalConfig();
+        if (updatedRaw.providers?.[choice]) next.providers[choice] = updatedRaw.providers[choice];
+        if (updatedRaw.providerPools?.[choice]) {
+          next.providerPools = { ...(next.providerPools ?? {}), [choice]: updatedRaw.providerPools[choice] };
+        }
+        if (res.poolSize > 1) {
+          console.log(`  Added to ${choice} API key pool (${res.poolSize} keys, circular failover active).`);
+        }
+      }
     } else {
       const flow = OAUTH_FLOW_REGISTRY[choice as OAuthProvider];
       if (!flow.verifiedEndToEnd && flow.note) console.log(`Note: ${flow.note}`);
@@ -157,7 +176,17 @@ export async function runSetupCommand(): Promise<void> {
         console.log(`[FAILED] OAuth login: ${(err as Error).message}`);
         console.log("Falling back — you can paste an API key instead.");
         const key = await rl.question(`${choice} API key [skip]: `);
-        if (key.trim()) next.providers[choice] = key.trim();
+        if (key.trim()) {
+          const res = await addApiKeyToPool(choice, key.trim());
+          const updatedRaw = await readRawGlobalConfig();
+          if (updatedRaw.providers?.[choice]) next.providers[choice] = updatedRaw.providers[choice];
+          if (updatedRaw.providerPools?.[choice]) {
+            next.providerPools = { ...(next.providerPools ?? {}), [choice]: updatedRaw.providerPools[choice] };
+          }
+          if (res.poolSize > 1) {
+            console.log(`  Added to ${choice} API key pool (${res.poolSize} keys, circular failover active).`);
+          }
+        }
       }
     }
     const openAiCodexOnly = choice === "openai" && hasOAuthConfigured(next.oauth.openai) && !next.providers.openai;

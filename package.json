@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.12.40",
+  "version": "0.12.42",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",
@@ -10,7 +10,9 @@
   "files": [
     "src",
     "scripts/install.sh",
+    "scripts/install.ps1",
     "scripts/uninstall.sh",
+    "scripts/uninstall.ps1",
     "tsconfig.json",
     "CHANGELOG.md",
     "README.md",

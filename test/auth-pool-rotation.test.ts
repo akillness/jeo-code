@@ -16,11 +16,13 @@ import {
   clearAuthCooldown,
   resetAuthPoolState,
   snapshotProvider,
+  loginOAuth,
 } from "../src/auth";
 import { clearConfigReadCache, readRawGlobalConfig } from "../src/agent/state";
 import type { StoredOAuth } from "../src/agent/state";
 import { createModelManager } from "../src/ai/model-manager";
 import { runAuthCommand } from "../src/commands/auth";
+import { complete, staticCompletionContext, type CompletionContext } from "../src/tui/components/autocomplete";
 
 const ENV_KEYS = [
   "ANTHROPIC_OAUTH_TOKEN",
@@ -672,4 +674,129 @@ test("API-key pool circular failover on HTTP 429 and CLI commands (pool, use, ro
     remaining: 1,
     removedLabel: "beta@example.com",
   });
+});
+
+test("loginOAuth appends multi-account OAuth tokens and ModelManager rotates circularly between tok-1 and tok-2 on HTTP 429", async () => {
+  const r1 = await loginOAuth("anthropic", "tok-1");
+  const r2 = await loginOAuth("anthropic", "tok-2");
+  expect(r1).toEqual({ poolSize: 1, added: true });
+  expect(r2).toEqual({ poolSize: 2, added: true });
+  expect(await getStoredOAuthPool("anthropic")).toEqual(["tok-1", "tok-2"]);
+
+  const seenAuthHeaders: string[] = [];
+  let failToken = "Bearer tok-1";
+  globalThis.fetch = (async (_input, init) => {
+    const auth = getHeader(init, "authorization") ?? "";
+    seenAuthHeaders.push(auth);
+    if (auth === failToken) {
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "rate_limit_error", message: "Rate limit exceeded" },
+        }),
+        { status: 429, headers: { "content-type": "application/json", "retry-after": "60" } },
+      );
+    }
+    const label = auth.replace(/^Bearer\s+/, "");
+    return new Response(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: `ok-from-${label}` }],
+        usage: { input_tokens: 4, output_tokens: 2 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const manager = createModelManager();
+  const firstReply = await manager.call([{ role: "user", content: "ping-1" }], {
+    model: "claude-sonnet-4-6",
+  });
+  expect(firstReply).toBe("ok-from-tok-2");
+  expect(seenAuthHeaders).toEqual(["Bearer tok-1", "Bearer tok-2"]);
+
+  // Clear cooldown and rate-limit tok-2 to verify circular wrap 2 -> 1.
+  await clearAuthCooldown("anthropic");
+  seenAuthHeaders.length = 0;
+  failToken = "Bearer tok-2";
+
+  const secondReply = await manager.call([{ role: "user", content: "ping-2" }], {
+    model: "claude-sonnet-4-6",
+  });
+  expect(secondReply).toBe("ok-from-tok-1");
+  expect(seenAuthHeaders).toEqual(["Bearer tok-2", "Bearer tok-1"]);
+});
+
+test("addApiKeyToPool appends openai API keys and ModelManager rotates circularly between sk-1 and sk-2 on HTTP 429", async () => {
+  const k1 = await addApiKeyToPool("openai", "sk-1");
+  const k2 = await addApiKeyToPool("openai", "sk-2");
+  expect(k1).toEqual({ added: true, poolSize: 1 });
+  expect(k2).toEqual({ added: true, poolSize: 2 });
+
+  const raw = await readRawGlobalConfig();
+  expect(raw.providers?.openai).toBe("sk-1");
+  expect(raw.providerPools?.openai).toEqual(["sk-2"]);
+
+  const seenAuthHeaders: string[] = [];
+  let failToken = "Bearer sk-1";
+  globalThis.fetch = (async (_input, init) => {
+    const auth = getHeader(init, "authorization") ?? "";
+    seenAuthHeaders.push(auth);
+    if (auth === failToken) {
+      return new Response(
+        JSON.stringify({
+          error: { message: "Rate limit exceeded", type: "rate_limit_error" },
+        }),
+        { status: 429, headers: { "content-type": "application/json", "retry-after": "60" } },
+      );
+    }
+    const label = auth.replace(/^Bearer\s+/, "");
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: `ok-from-${label}` }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 2 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const manager = createModelManager();
+  const firstReply = await manager.call([{ role: "user", content: "ping-1" }], {
+    model: "gpt-4o",
+  });
+  expect(firstReply).toBe("ok-from-sk-2");
+  expect(seenAuthHeaders).toEqual(["Bearer sk-1", "Bearer sk-2"]);
+
+  // Clear cooldown and rate-limit sk-2 to verify circular wrap 2 -> 1.
+  await clearAuthCooldown("openai");
+  seenAuthHeaders.length = 0;
+  failToken = "Bearer sk-2";
+
+  const secondReply = await manager.call([{ role: "user", content: "ping-2" }], {
+    model: "gpt-4o",
+  });
+  expect(secondReply).toBe("ok-from-sk-1");
+  expect(seenAuthHeaders).toEqual(["Bearer sk-2", "Bearer sk-1"]);
+});
+
+test("autocomplete exposes pool under /provider and kimi under /login and /logout", () => {
+  const ctx: CompletionContext = {
+    ...staticCompletionContext(),
+    liveModels: [],
+    aliases: [],
+    modelsForProvider: () => [],
+  };
+
+  const providerRes = complete("/provider ", ctx);
+  expect(providerRes.kind).toBe("subcommand");
+  expect(providerRes.completions).toContain("pool");
+
+  const loginRes = complete("/login ", ctx);
+  expect(loginRes.kind).toBe("provider");
+  expect(loginRes.completions).toContain("kimi");
+
+  const logoutRes = complete("/logout ", ctx);
+  expect(logoutRes.kind).toBe("provider");
+  expect(logoutRes.completions).toContain("kimi");
 });

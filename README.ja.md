@@ -86,11 +86,21 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 
 Bun `1.3.14+` が必要です。
 
+**macOS / Linux:**
 ```bash
 bun install -g jeo-code
 jeo --version
 ```
 
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/akillness/jeo-code/main/scripts/install.ps1 | iex
+# または Bun で直接インストール:
+bun install -g jeo-code
+jeo --version
+```
+
+> `jeo update` は `jeo-code` 専用の分離されたグローバルディレクトリ（`~/.jeo/global`、Windows は `%USERPROFILE%\.jeo\global`）のみを更新するため、`jeopi` など他の Bun グローバルパッケージには一切影響しません。
 
 ## クイックスタート
 
@@ -573,11 +583,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.42]** (2026-11-14) — Complete multi-account login pool support across /provider login, /provider key, and jeo setup.
+- **[0.12.41]** (2026-11-14) — Isolated jeo-code Bun self-update and Windows Bun install/update support.
 - **[0.12.40]** (2026-11-14) — Multi-account login pool with circular rate-limit and usage-limit failover.
 - **[0.12.39]** (2026-11-13) — Discord setup, gateway session recovery, and host action authorization fixes.
 - **[0.12.38]** (2026-11-13) — Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification.
-- **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
-- **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

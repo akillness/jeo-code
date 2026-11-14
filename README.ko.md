@@ -122,11 +122,21 @@ jeo-code는 단순한 코드 완성을 넘어 실제 엔지니어링 사이클(�
 
 Bun `1.3.14+` 필요.
 
+**macOS / Linux:**
 ```bash
 bun install -g jeo-code
 jeo --version
 ```
 
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/akillness/jeo-code/main/scripts/install.ps1 | iex
+# 또는 Bun으로 직접 설치:
+bun install -g jeo-code
+jeo --version
+```
+
+> `jeo update`는 `jeo-code` 전용 격리 디렉터리(`~/.jeo/global`, Windows는 `%USERPROFILE%\.jeo\global`)에만 설치·갱신하므로 `jeopi` 등 다른 Bun 전역 패키지를 건드리지 않습니다.
 
 ## 빠른 시작
 
@@ -628,11 +638,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.42]** (2026-11-14) — Complete multi-account login pool support across /provider login, /provider key, and jeo setup.
+- **[0.12.41]** (2026-11-14) — Isolated jeo-code Bun self-update and Windows Bun install/update support.
 - **[0.12.40]** (2026-11-14) — Multi-account login pool with circular rate-limit and usage-limit failover.
 - **[0.12.39]** (2026-11-13) — Discord setup, gateway session recovery, and host action authorization fixes.
 - **[0.12.38]** (2026-11-13) — Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification.
-- **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
-- **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

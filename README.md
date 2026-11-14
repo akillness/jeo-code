@@ -41,11 +41,21 @@
 
 Requires Bun `1.3.14+`.
 
+**macOS / Linux:**
 ```bash
 bun install -g jeo-code
 jeo --version
 ```
 
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/akillness/jeo-code/main/scripts/install.ps1 | iex
+# or via Bun directly:
+bun install -g jeo-code
+jeo --version
+```
+
+> `jeo update` updates `jeo-code` in its own isolated global directory (`~/.jeo/global`, `%USERPROFILE%\.jeo\global` on Windows) without touching other globally installed Bun packages (such as `jeopi`).
 Run `jeo` inside a repository and it reads files, edits them, runs commands, and drives the task to completion — streaming every step live in an inline, scrollback-friendly TUI.
 
 ## Documentation
@@ -617,11 +627,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.42]** (2026-11-14) — Complete multi-account login pool support across /provider login, /provider key, and jeo setup.
+- **[0.12.41]** (2026-11-14) — Isolated jeo-code Bun self-update and Windows Bun install/update support.
 - **[0.12.40]** (2026-11-14) — Multi-account login pool with circular rate-limit and usage-limit failover.
 - **[0.12.39]** (2026-11-13) — Discord setup, gateway session recovery, and host action authorization fixes.
 - **[0.12.38]** (2026-11-13) — Local cancellation, subagent reliability, bounded async observation, and manual installed-artifact verification.
-- **[0.12.37]** (2026-11-13) — Opt-in Discord host workers with retained per-thread Git worktrees and exact-action approvals.
-- **[0.12.36]** (2026-11-13) — Compact pasted input and reliable subagents with lower paste-capture overhead.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

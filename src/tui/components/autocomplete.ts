@@ -283,8 +283,8 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/provider": {
       // /provider is onboarding-only: login, key, and the custom-provider
       // registry (add/list/remove/presets). Model switching completes under /model.
-      const cloud = ["anthropic", "openai", "gemini", "antigravity"];
-      if (argIndex === 0) return finish(["login", "key", "add", "list", "remove", "presets", "help"], "subcommand");
+      const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
+      if (argIndex === 0) return finish(["login", "key", "pool", "add", "list", "remove", "presets", "help"], "subcommand");
       const sub = tokens[1]?.toLowerCase();
       if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
       if (sub === "pool") {
@@ -308,7 +308,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return { completions: [], token, kind: "none" };
     }
     case "/logout":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity", "kimi"], "provider") : { completions: [], token, kind: "none" };
     case "/auth": {
       const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
       if (argIndex === 0) return finish(["status", "pool", "next", "rotate", "use", "reset", "login"], "subcommand");
@@ -339,7 +339,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/theme":
       return argIndex === 0 ? finish(listThemes().map(t => t.name), "subcommand") : { completions: [], token, kind: "none" };
     case "/login":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity", "kimi"], "provider") : { completions: [], token, kind: "none" };
     case "/export":
       return argIndex <= 1 ? finish(["json", "markdown"], "subcommand") : { completions: [], token, kind: "none" };
     default:

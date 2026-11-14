@@ -38,7 +38,7 @@ import { snapshotSandboxSkillAssets, prepareSandboxSkillCatalog, updateSandboxSk
 import { routeSkillsForTask, skillAdvisoryRoutingNote } from "../agent/skill-router";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin, runAuthCommand } from "./auth";
-import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
+import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey, addApiKeyToPool, removeApiKeyFromPool } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
@@ -5917,11 +5917,13 @@ navMatches = [];
         // `/provider key [name] [key]` → store an API key for an API-key-only provider
         // (groq/deepseek/mistral/…). Interactive: pick the provider, then paste the key.
         if (name === "key") {
+          const replaceAll = tokens.includes("--replace");
+          const nonFlag = tokens.slice(1).filter(t => t !== "--replace");
           // kimi is dual-credential (moonshot API key OR Kimi Code OAuth) — keep it key-settable.
           const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi"]);
-          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => keyed.has(t)) as AuthProvider | undefined;
+          let target = nonFlag.map(t => t.toLowerCase()).find(t => keyed.has(t)) as AuthProvider | undefined;
           // A trailing token after the provider name is treated as the key itself.
-          const inlineKey = target ? tokens.slice(1).filter(t => t.toLowerCase() !== target).pop() : undefined;
+          const inlineKey = target ? nonFlag.filter(t => t.toLowerCase() !== target).pop() : undefined;
           if (!target) {
             const statuses = await describeAllProviders();
             if (process.stdin.isTTY && process.stdout.isTTY) {
@@ -5930,7 +5932,7 @@ navMatches = [];
               console.log("Set an API key for which provider?");
               console.log(`  ${API_KEY_ONLY_PROVIDERS.filter(p => !(SUBSCRIPTION_PROVIDER_NAMES as readonly string[]).includes(p)).join(", ")}`);
               console.log("  Subscription / plan products use /provider login (token).");
-              console.log("  Usage: /provider key <provider> <api-key>   (or set <PROVIDER>_API_KEY)");
+              console.log("  Usage: /provider key <provider> <api-key> [--replace]   (or set <PROVIDER>_API_KEY)");
             }
             if (!target) {
               console.log("(cancelled)");
@@ -5946,8 +5948,17 @@ navMatches = [];
             console.log("(cancelled — no key entered)");
             continue;
           }
-          await setApiKey(target, apiKey);
-          console.log(`[SUCCESS] Stored ${target} API key in ~/.jeo/config.json (also reads ${envVar}).`);
+          if (replaceAll) {
+            await removeApiKeyFromPool(target);
+            await setApiKey(target, apiKey);
+            console.log(`[SUCCESS] Replaced ${target} API key in ~/.jeo/config.json (also reads ${envVar}).`);
+          } else {
+            const keyRes = await addApiKeyToPool(target, apiKey);
+            const poolNote = keyRes.poolSize > 1
+              ? ` (pool: ${keyRes.poolSize} keys, circular failover active)`
+              : "";
+            console.log(`[SUCCESS] ${keyRes.added ? "Stored" : "Kept"} ${target} API key in ~/.jeo/config.json${poolNote} (also reads ${envVar}).`);
+          }
           const live = await refreshLiveModelsCache();
           const after = (await describeAllProviders()).find(s => s.name === target);
           if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
@@ -5965,9 +5976,11 @@ navMatches = [];
         }
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
-          const cloud = ["anthropic", "openai", "gemini", "antigravity"] as const;
+          const replaceAll = tokens.includes("--replace");
+          const nonFlag = tokens.slice(1).filter(t => t !== "--replace");
+          const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"] as const;
           const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // token-keyed subscription/plan products
-          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t) || subs.has(t));
+          let target = nonFlag.map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t) || subs.has(t));
           if (!target) {
             const statuses = await describeAllProviders();
             if (process.stdin.isTTY && process.stdout.isTTY) {
@@ -6002,7 +6015,7 @@ navMatches = [];
           if (subs.has(target)) {
             const sub = target as AuthProvider;
             const envVar = `${sub.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-            let token = tokens.slice(1).filter(t => t.toLowerCase() !== sub).pop();
+            let token = nonFlag.filter(t => t.toLowerCase() !== sub).pop();
             if (!token) {
               if (process.stdin.isTTY && process.stdout.isTTY) {
                 token = (await promptInput(`Paste ${sub} subscription token (blank to cancel): `)).trim();
@@ -6014,8 +6027,17 @@ navMatches = [];
               console.log("(cancelled — no token entered)");
               continue;
             }
-            await setApiKey(sub, token);
-            console.log(`[SUCCESS] Stored ${sub} subscription token in ~/.jeo/config.json (also reads ${envVar}).`);
+            if (replaceAll) {
+              await removeApiKeyFromPool(sub);
+              await setApiKey(sub, token);
+              console.log(`[SUCCESS] Replaced ${sub} subscription token in ~/.jeo/config.json (also reads ${envVar}).`);
+            } else {
+              const subRes = await addApiKeyToPool(sub, token);
+              const poolNote = subRes.poolSize > 1
+                ? ` (pool: ${subRes.poolSize} tokens, circular failover active)`
+                : "";
+              console.log(`[SUCCESS] ${subRes.added ? "Stored" : "Kept"} ${sub} subscription token in ~/.jeo/config.json${poolNote} (also reads ${envVar}).`);
+            }
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === sub);
             if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
@@ -6033,7 +6055,7 @@ navMatches = [];
           }
           console.log(`Starting OAuth login for ${target}…`);
           try {
-            const { email, poolSize } = await interactiveOAuthLogin(target as AuthProvider, rl);
+            const { email, poolSize } = await interactiveOAuthLogin(target as AuthProvider, rl, console.log, { replaceAll });
             const poolSuffix = poolSize > 1 ? ` (pool: ${poolSize} accounts, circular failover active)` : "";
             console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}${poolSuffix}. Tokens saved to ~/.jeo/config.json.`);
             const live = await refreshLiveModelsCache();

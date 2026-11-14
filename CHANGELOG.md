@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.42] - 2026-11-14
+_Complete multi-account login pool support across /provider login, /provider key, and jeo setup._
+
+### Fixed
+- **Pool-preserving onboarding (`src/commands/launch.ts`, `src/commands/setup.ts`, `src/tui/components/autocomplete.ts`):** `/provider key`, `/provider login` (for subscription/plan tokens and OAuth), and `jeo setup` (token paste and API key modes) now append new accounts/keys into the provider's rotation pool by default (`--replace` opts into replacing) instead of overwriting the existing credential, and autocomplete for `/provider`, `/login`, and `/logout` now includes `kimi` and `pool`.
+
+
+## [0.12.41] - 2026-11-14
+_Isolated jeo-code Bun self-update and Windows Bun install/update support._
+
+### Changed
+- **Isolated `jeo update` & `install.sh` (`src/util/isolated-install.ts`, `src/commands/update.ts`, `scripts/install.sh`, `scripts/uninstall.sh`):** `jeo-code` now stages and updates inside its own dedicated global directory (`~/.jeo/global`, `%USERPROFILE%\.jeo\global` on Windows) and atomically updates `~/.bun/bin/jeo` (`jeo.exe` on Windows) without touching Bun's shared `~/.bun/install/global` directory or sibling tools such as `jeopi`.
+
+### Added
+- **Windows Bun installer & updater (`scripts/install.ps1`, `scripts/uninstall.ps1`, `src/util/isolated-install.ts`):** added PowerShell install/uninstall scripts with automatic Bun setup and safe `.exe` shim rotation (`.jeo-bak.<pid>` rename/rollback/sweep) so `jeo update` works natively on Windows via Bun.
+
+
 ## [0.12.40] - 2026-11-14
 _Multi-account login pool with circular rate-limit and usage-limit failover._
 

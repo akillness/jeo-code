@@ -25,6 +25,8 @@ for BIN_NAME in jeo joc; do
 done
 GLOBAL_PKG="${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/jeo-code"
 [ -e "$GLOBAL_PKG" ] && rm -rf "$GLOBAL_PKG" && echo "Unregistered jeo-code from bun global"
+ISOLATED_GLOBAL="${JEO_GLOBAL_DIR:-${JEO_CONFIG_DIR:-$HOME/.jeo}/global}"
+[ -e "$ISOLATED_GLOBAL" ] && rm -rf "$ISOLATED_GLOBAL" && echo "Removed isolated jeo global: $ISOLATED_GLOBAL"
 
 if [ "$PURGE" = "1" ]; then
   rm -rf "$HOME/.jeo"

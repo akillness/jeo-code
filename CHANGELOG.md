@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.44] - 2026-11-15
+_Jeopi-aligned one-shot draft restore, Antigravity quota pattern matching, and subagent card rendering._
+
+### Fixed
+- **One-shot session draft consumption (`src/agent/session.ts`, `src/commands/launch.ts`):** `consumeSessionDraft` atomically reads and clears the unsent input draft in the session JSONL header during `/resume`, matching Jeopi's single-use semantics so restored drafts never linger across subsequent launches.
+- **Antigravity quota limit detection (`src/util/retry.ts`):** `USAGE_LIMIT_PATTERN` now recognizes Google Antigravity/Cloud Code Assist quota exhaustion strings (`quota reached`, `quota will reset`, `exhausted your capacity`), preventing useless retry loops on `RESOURCE_EXHAUSTED` (HTTP 429) errors and failing fast to account rotation.
+- **Subagent card multi-line formatting (`src/tui/app.ts`):** `appendSubagentCard` now splits multi-line subagent details into structured lines for `formatForgeBox`, keeping card borders intact.
+
+
 ## [0.12.43] - 2026-11-14
 _Fix Antigravity/Gemini HTTP 400 INVALID_ARGUMENT on JSON Schema keywords like exclusiveMinimum._
 

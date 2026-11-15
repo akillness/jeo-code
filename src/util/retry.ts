@@ -308,7 +308,7 @@ function errorMessageOf(err: unknown): string {
  * per-minute 429. Bare "resource exhausted" (gRPC capacity wording) stays transient;
  * only the qualified "Resource has been exhausted (… quota/limit)" form is persistent.
  */
-const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?exceeded|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
+const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?(?:exceeded|reached)|quota will reset|exhausted your capacity|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
 export function isUsageLimitError(err: unknown): boolean {
   return USAGE_LIMIT_PATTERN.test(errorMessageOf(err));
 }

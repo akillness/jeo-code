@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createSession, loadSession, updateSessionDraft } from "../src/agent/session";
+import { createSession, loadSession, updateSessionDraft, consumeSessionDraft } from "../src/agent/session";
 import { runSessionSlash } from "../src/commands/launch/session-slash";
 
 // Proves the "unsent prompt survives /resume" feature:
@@ -16,6 +16,25 @@ test("updateSessionDraft persists a non-empty draft into the session header", as
     await updateSessionDraft(id, "half-typed prom", tempDir);
     const { header } = await loadSession(id, tempDir);
     expect(header.draft).toBe("half-typed prom");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("consumeSessionDraft retrieves and atomically clears the draft for one-shot consumption", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-draft-"));
+  try {
+    const { id } = await createSession(tempDir);
+    await updateSessionDraft(id, "one-shot draft", tempDir);
+    expect((await loadSession(id, tempDir)).header.draft).toBe("one-shot draft");
+
+    const consumed = await consumeSessionDraft(id, tempDir);
+    expect(consumed).toBe("one-shot draft");
+
+    // Second consume or load must see no draft remaining
+    expect((await loadSession(id, tempDir)).header.draft).toBeUndefined();
+    const second = await consumeSessionDraft(id, tempDir);
+    expect(second).toBeUndefined();
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

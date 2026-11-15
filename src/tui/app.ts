@@ -1171,7 +1171,8 @@ export class LaunchTui {
 
   private appendSubagentCard(title: string, detail: string, success: boolean): void {
     const paint = this.theme.color ? (success ? chalk.dim : chalk.red) : (s: string) => s;
-    const lines = formatForgeBox({ title, lines: detail ? [detail] : [] }, {
+    const bodyLines = detail ? detail.split("\n").map(l => l.trimEnd()).filter((l, i, arr) => l || (i > 0 && i < arr.length - 1)) : [];
+    const lines = formatForgeBox({ title, lines: bodyLines }, {
       width: scaleForgeWidth(size().cols - 1), maxLines: 6, unicode: this.unicode,
       color: this.theme.color, paint, paintShadow: paint, dim: success && this.theme.color,
     });

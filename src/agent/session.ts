@@ -718,6 +718,23 @@ export async function updateSessionDraft(id: string, draft: string, cwd = proces
   }, cwd);
 }
 
+/**
+ * Read and consume the unsent input-box draft from a session's JSONL header.
+ * Clears the draft in the session file immediately so that subsequent resumes
+ * do not re-restore the consumed draft (one-shot semantics matching Jeopi).
+ * Returns undefined if no draft was stored.
+ */
+export async function consumeSessionDraft(id: string, cwd = process.cwd()): Promise<string | undefined> {
+  let consumed: string | undefined;
+  await rewriteSessionHeader(id, header => {
+    if (!header.draft) return false;
+    consumed = header.draft;
+    delete header.draft;
+    return true;
+  }, cwd);
+  return consumed;
+}
+
 
 
 /**

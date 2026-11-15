@@ -156,6 +156,7 @@ import {
   exportSession,
   updateSessionModel,
   updateSessionDraft,
+  consumeSessionDraft,
   appendCompaction,
   resolveSessionRef,
 } from "../agent/session";
@@ -1119,7 +1120,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             sessionId = id;
             restoredSession = true;
             sessionModel = initialSessionModel ?? header.model;
-            startupDraft = header.draft;
+            startupDraft = (await consumeSessionDraft(id, cwd)) ?? header.draft;
             lastUserInput = sessionPromptHistory(messages)[0] ?? "";
             lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
             const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
@@ -1185,7 +1186,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           // Restore the unsent input-box draft — see
           // startupDraft's own doc comment for why this path can't feed
           // queuedPromptInput.partial directly yet.
-          if (header.draft) startupDraft = header.draft;
+          if (header.draft) startupDraft = (await consumeSessionDraft(id, cwd)) ?? header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
           if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
           if (!flags.literalPrompt && timeline.length > 0) {

@@ -85,3 +85,284 @@ test("sanitizeGeminiToolParameters: adds properties to bare object types and str
   expect(props.env).toEqual({ type: "object", properties: {} });
   expect(props.items).toEqual({ type: "array", items: { type: "object", properties: {} } });
 });
+
+function collectKeysDeep(node: unknown, keys = new Set<string>()): Set<string> {
+  if (Array.isArray(node)) {
+    for (const item of node) collectKeysDeep(item, keys);
+  } else if (typeof node === "object" && node !== null) {
+    for (const [k, v] of Object.entries(node)) {
+      keys.add(k);
+      collectKeysDeep(v, keys);
+    }
+  }
+  return keys;
+}
+
+test("sanitizeGeminiToolParameters: strips unsupported JSON Schema keywords recursively across properties, items, anyOf, and oneOf", () => {
+  const raw = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $defs: { Helper: { type: "string" } },
+    title: "ToolInput",
+    description: "Root tool parameters",
+    type: "object",
+    additionalProperties: false,
+    default: {},
+    examples: [{ score: 50 }],
+    required: ["score", "mode", "tags", "choice", "variant"],
+    properties: {
+      score: {
+        type: "number",
+        description: "Bounded score",
+        exclusiveMinimum: 0,
+        exclusiveMaximum: 100,
+        default: 10,
+        examples: [25, 75],
+        title: "Score",
+      },
+      mode: {
+        const: "strict",
+        description: "Constant mode",
+        title: "Mode",
+      },
+      tags: {
+        type: "array",
+        description: "Tag objects",
+        minItems: 1,
+        maxItems: 5,
+        default: [],
+        items: {
+          type: "object",
+          additionalProperties: false,
+          title: "TagItem",
+          required: ["name", "weight"],
+          properties: {
+            name: {
+              type: "string",
+              minLength: 1,
+              maxLength: 32,
+              pattern: "^[a-z]+$",
+              examples: ["alpha"],
+            },
+            weight: {
+              type: "integer",
+              exclusiveMinimum: 0,
+              exclusiveMaximum: 100,
+              default: 1,
+            },
+            kind: {
+              const: "label",
+              default: "label",
+            },
+          },
+        },
+      },
+      choice: {
+        description: "Union via anyOf",
+        anyOf: [
+          {
+            type: "string",
+            enum: ["fast", "accurate"],
+            default: "fast",
+            title: "PresetChoice",
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              threshold: {
+                type: "number",
+                exclusiveMinimum: 0,
+                exclusiveMaximum: 100,
+                examples: [0.5],
+              },
+              fixed: {
+                const: 42,
+              },
+            },
+            required: ["threshold"],
+          },
+        ],
+      },
+      variant: {
+        description: "Union via oneOf",
+        oneOf: [
+          {
+            const: "v1",
+            title: "V1",
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            $defs: { Nested: { type: "string" } },
+            properties: {
+              limit: {
+                type: "integer",
+                exclusiveMinimum: 0,
+                exclusiveMaximum: 100,
+              },
+            },
+            required: ["limit"],
+          },
+        ],
+      },
+    },
+  };
+
+  const sanitized = sanitizeGeminiToolParameters(raw);
+
+  const allKeys = collectKeysDeep(sanitized);
+  for (const forbidden of [
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "additionalProperties",
+    "$schema",
+    "$defs",
+    "default",
+    "examples",
+    "title",
+    "const",
+    "oneOf",
+  ]) {
+    expect(allKeys.has(forbidden)).toBe(false);
+  }
+
+  expect(sanitized).toEqual({
+    type: "object",
+    description: "Root tool parameters",
+    required: ["score", "mode", "tags", "choice", "variant"],
+    properties: {
+      score: {
+        type: "number",
+        description: "Bounded score",
+        minimum: 0,
+        maximum: 100,
+      },
+      mode: {
+        type: "string",
+        description: "Constant mode",
+        enum: ["strict"],
+      },
+      tags: {
+        type: "array",
+        description: "Tag objects",
+        minItems: 1,
+        maxItems: 5,
+        items: {
+          type: "object",
+          required: ["name", "weight"],
+          properties: {
+            name: {
+              type: "string",
+              minLength: 1,
+              maxLength: 32,
+              pattern: "^[a-z]+$",
+            },
+            weight: {
+              type: "integer",
+              minimum: 0,
+              maximum: 100,
+            },
+            kind: {
+              type: "string",
+              enum: ["label"],
+            },
+          },
+        },
+      },
+      choice: {
+        description: "Union via anyOf",
+        anyOf: [
+          {
+            type: "string",
+            enum: ["fast", "accurate"],
+          },
+          {
+            type: "object",
+            required: ["threshold"],
+            properties: {
+              threshold: {
+                type: "number",
+                minimum: 0,
+                maximum: 100,
+              },
+              fixed: {
+                type: "string",
+                enum: ["42"],
+              },
+            },
+          },
+        ],
+      },
+      variant: {
+        description: "Union via oneOf",
+        anyOf: [
+          {
+            type: "string",
+            enum: ["v1"],
+          },
+          {
+            type: "object",
+            required: ["limit"],
+            properties: {
+              limit: {
+                type: "integer",
+                minimum: 0,
+                maximum: 100,
+              },
+            },
+          },
+        ],
+      },
+    },
+  });
+});
+
+test("sanitizeGeminiToolParameters: normalizes nullable type arrays and collapses nullable anyOf unions", () => {
+  const sanitized = sanitizeGeminiToolParameters({
+    type: "object",
+    properties: {
+      label: {
+        type: ["string", "null"],
+        description: "Optional label",
+      },
+      count: {
+        anyOf: [
+          { type: "integer", exclusiveMinimum: 1 },
+          { type: "null" },
+        ],
+      },
+    },
+    required: ["label"],
+  });
+
+  expect(sanitized).toEqual({
+    type: "object",
+    required: ["label"],
+    properties: {
+      label: {
+        type: "string",
+        nullable: true,
+        description: "Optional label",
+      },
+      count: {
+        type: "integer",
+        minimum: 1,
+        nullable: true,
+      },
+    },
+  });
+
+  expect(sanitizeGeminiToolParameters({ type: ["string", "null"] })).toEqual({
+    type: "string",
+    nullable: true,
+  });
+  expect(
+    sanitizeGeminiToolParameters({
+      anyOf: [{ type: "integer", exclusiveMinimum: 1 }, { type: "null" }],
+    }),
+  ).toEqual({
+    type: "integer",
+    minimum: 1,
+    nullable: true,
+  });
+});

@@ -249,30 +249,156 @@ export function serializeAccumulatedToolCalls(acc: Map<number, { name: string; a
 }
 
 /**
+ * Fields permitted by Google's Gemini / Cloud Code Assist `Schema` proto.
+ * Anything outside this allowlist (e.g. `exclusiveMinimum`, `exclusiveMaximum`,
+ * `additionalProperties`, `$schema`, `$defs`, `default`, `examples`, `title`, `const`)
+ * triggers HTTP 400 INVALID_ARGUMENT ("Unknown name ... Cannot find field").
+ */
+const GEMINI_SCHEMA_ALLOWED_FIELDS = new Set<string>([
+  "type",
+  "format",
+  "description",
+  "nullable",
+  "enum",
+  "maxItems",
+  "minItems",
+  "properties",
+  "required",
+  "propertyOrdering",
+  "items",
+  "minimum",
+  "maximum",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "minProperties",
+  "maxProperties",
+  "anyOf",
+]);
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
  * Sanitize a JSON-schema parameters object for Google Gemini / Antigravity function declarations:
- * - Every `type: "object"` MUST specify a `properties` map (empty `{}` if absent)
- * - Empty `required: []` arrays are removed (Google schema validator rejects or misbehaves on them)
- * - Recursively walks nested objects, array items, and properties.
+ * - Strips every JSON Schema keyword not in Google's `Schema` proto (`exclusiveMinimum`,
+ *   `exclusiveMaximum`, `additionalProperties`, `$schema`, `$defs`, `default`, `const`, etc.)
+ * - Normalizes `type: ["string", "null"]`, `const`, `oneOf` → `anyOf`, and nullable unions
+ * - Ensures every `type: "object"` has a `properties` map (empty `{}` if absent)
+ * - Removes empty `required: []` arrays
+ * - Recursively sanitizes `properties`, `items`, and `anyOf` branches.
  */
 export function sanitizeGeminiToolParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
-  if (!schema || typeof schema !== "object") return { type: "object", properties: {} };
-  const copy: Record<string, unknown> = { ...schema };
-  if (copy.type === "object") {
-    if (!copy.properties || typeof copy.properties !== "object" || Array.isArray(copy.properties)) {
-      copy.properties = {};
-    } else {
-      const props: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(copy.properties as Record<string, unknown>)) {
-        props[k] = sanitizeGeminiToolParameters(v as Record<string, unknown>);
-      }
-      copy.properties = props;
+  if (!isPlainObject(schema)) return { type: "object", properties: {} };
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (GEMINI_SCHEMA_ALLOWED_FIELDS.has(k) && v !== undefined) {
+      out[k] = v;
     }
   }
-  if (copy.type === "array" && copy.items && typeof copy.items === "object" && !Array.isArray(copy.items)) {
-    copy.items = sanitizeGeminiToolParameters(copy.items as Record<string, unknown>);
+
+  // Preserve numeric exclusiveMinimum/exclusiveMaximum bounds as inclusive minimum/maximum when absent.
+  if (typeof schema.exclusiveMinimum === "number" && out.minimum === undefined) {
+    out.minimum = schema.exclusiveMinimum;
   }
-  if (Array.isArray(copy.required) && copy.required.length === 0) {
-    delete copy.required;
+  if (typeof schema.exclusiveMaximum === "number" && out.maximum === undefined) {
+    out.maximum = schema.exclusiveMaximum;
   }
-  return copy;
+
+  // Convert JSON Schema `const` to a 1-element string enum if no enum is present.
+  if (schema.const !== undefined && out.enum === undefined) {
+    out.enum = [String(schema.const)];
+    if (out.type === undefined) out.type = "string";
+  }
+
+  // Normalize type arrays such as ["string", "null"].
+  if (Array.isArray(out.type)) {
+    const rawTypes = out.type.filter((t): t is string => typeof t === "string");
+    const nonNull = rawTypes.filter(t => t !== "null");
+    if (rawTypes.includes("null")) out.nullable = true;
+    if (nonNull.length === 1) {
+      out.type = nonNull[0];
+    } else if (nonNull.length > 1) {
+      delete out.type;
+      if (!Array.isArray(out.anyOf)) {
+        out.anyOf = nonNull.map(t => ({ type: t }));
+      }
+    } else {
+      out.type = "string";
+    }
+  }
+
+  // Google Schema.enum only accepts string values.
+  if (Array.isArray(out.enum)) {
+    out.enum = out.enum.map(v => String(v));
+  }
+
+  // Convert `oneOf` to `anyOf` (Google Schema supports `anyOf`, not `oneOf`).
+  if (!Array.isArray(out.anyOf) && Array.isArray(schema.oneOf)) {
+    out.anyOf = schema.oneOf;
+  }
+
+  // Recursively sanitize `anyOf` branches and collapse `[T, { type: "null" }]` into nullable T.
+  if (Array.isArray(out.anyOf)) {
+    const nonNullBranches: Record<string, unknown>[] = [];
+    let sawNull = false;
+    for (const branch of out.anyOf) {
+      if (isPlainObject(branch) && branch.type === "null") {
+        sawNull = true;
+        continue;
+      }
+      nonNullBranches.push(sanitizeGeminiToolParameters(isPlainObject(branch) ? branch : undefined));
+    }
+    if (nonNullBranches.length === 1 && sawNull) {
+      delete out.anyOf;
+      for (const [bk, bv] of Object.entries(nonNullBranches[0])) {
+        if (out[bk] === undefined) out[bk] = bv;
+      }
+      out.nullable = true;
+    } else if (nonNullBranches.length > 0) {
+      out.anyOf = nonNullBranches;
+    } else {
+      delete out.anyOf;
+    }
+  }
+
+  // Recursively sanitize object properties.
+  if (out.type === "object" || isPlainObject(out.properties)) {
+    if (!isPlainObject(out.properties)) {
+      out.properties = {};
+    } else {
+      const props: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(out.properties)) {
+        props[k] = sanitizeGeminiToolParameters(isPlainObject(v) ? v : undefined);
+      }
+      out.properties = props;
+    }
+  }
+
+  // Recursively sanitize array items (whether `type: "array"` or `items` is present).
+  if (isPlainObject(out.items)) {
+    out.items = sanitizeGeminiToolParameters(out.items);
+  } else if (Array.isArray(out.items)) {
+    // Tuple-style items array is unsupported by Google Schema; collapse to first item schema.
+    out.items = out.items.length > 0 && isPlainObject(out.items[0])
+      ? sanitizeGeminiToolParameters(out.items[0])
+      : { type: "string" };
+  }
+
+  // Remove empty required arrays (and filter to declared properties when present).
+  if (Array.isArray(out.required)) {
+    const declared = isPlainObject(out.properties) ? out.properties : undefined;
+    const filtered = out.required.filter(
+      (r): r is string => typeof r === "string" && (!declared || Object.keys(declared).length === 0 || r in declared),
+    );
+    if (filtered.length === 0) {
+      delete out.required;
+    } else {
+      out.required = filtered;
+    }
+  }
+
+  return out;
 }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.43] - 2026-11-14
+_Fix Antigravity/Gemini HTTP 400 INVALID_ARGUMENT on JSON Schema keywords like exclusiveMinimum._
+
+### Fixed
+- **Antigravity/Gemini tool schema sanitization (`src/agent/tool-schemas.ts`):** `sanitizeGeminiToolParameters` now enforces Google's `Schema` proto allowlist across nested `properties`, `items`, and `anyOf`/`oneOf` branches—stripping unsupported JSON Schema keywords (`exclusiveMinimum`, `exclusiveMaximum`, `additionalProperties`, `$schema`, `$defs`, `default`, `examples`, `title`, `const`, etc.), mapping numeric `exclusiveMinimum`/`exclusiveMaximum` to `minimum`/`maximum`, normalizing `type: [T, "null"]` and `[T, { type: "null" }]` unions to `nullable: true`, and converting `const`/`oneOf` cleanly.
+
+
 ## [0.12.42] - 2026-11-14
 _Complete multi-account login pool support across /provider login, /provider key, and jeo setup._
 

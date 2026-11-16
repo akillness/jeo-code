@@ -152,6 +152,17 @@ export const MAX_SUBAGENT_REROUTES = 2;
  *  long time. Split larger efforts into sequential task calls. */
 const MAX_SERIAL_EXECUTOR = 6;
 
+/** Minimum interval between forwarded `"thinking"` live-preview events per subagent run.
+ *  `engine.ts` already gates raw reasoning deltas at 80ms; a wider 200ms subagent cap
+ *  prevents high-frequency thinking bursts from flooding the parent UI/monitor while
+ *  preserving initial and final previews via synchronous boundary flushes. */
+const SUBAGENT_THINKING_EMIT_MS = 200;
+
+/** Bounded head+tail cap for a subagent's per-run `Steps:` trace (`<= 100` entries stay
+ *  unclipped; longer runs keep the first 20 + last 80 entries in a circular tail). */
+const TRACE_HEAD_CAP = 20;
+const TRACE_TAIL_CAP = 80;
+
 /** Minimum distinct, non-filler words a spawn-gate justification must contain.
  *  A bare length check (`.length >= 20`) previously accepted any 20-char string
  *  ("xxxxxxxxxxxxxxxxxxxx", "asdf asdf asdf asdf"), which defeated the intent of
@@ -350,7 +361,10 @@ export async function runSubagentOnce(
   const runId = crypto.randomUUID();
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
-  const emit = (ev: TaskSubEvent) => {
+  let lastThinkingPreview: string | undefined;
+  let lastThinkingAt = -Infinity;
+  let pendingThinking: { detail: string; step: number; model: string } | undefined;
+  const emitRaw = (ev: TaskSubEvent) => {
     if (detachedId && opts.registry) {
       if (ev.kind === "tool") {
         opts.registry.setActivity(detachedId, ev.detail ? `tool: ${ev.detail}` : "running tool");
@@ -370,6 +384,25 @@ export async function runSubagentOnce(
         : { ...ev, runId }
     );
   };
+  const flushThinking = () => {
+    const pending = pendingThinking;
+    pendingThinking = undefined;
+    if (!pending || pending.detail === lastThinkingPreview) return;
+    lastThinkingPreview = pending.detail;
+    lastThinkingAt = Date.now();
+    emitRaw({
+      role: role.id,
+      kind: "thinking",
+      detail: pending.detail,
+      step: pending.step,
+      maxSteps,
+      model: pending.model,
+    });
+  };
+  const emit = (ev: TaskSubEvent) => {
+    if (ev.kind !== "thinking") flushThinking();
+    emitRaw(ev);
+  };
 
   const initialModel = opts.modelOverride || resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
@@ -384,7 +417,33 @@ export async function runSubagentOnce(
     { role: "user", content: `${taskText}${context}` },
   ];
 
-  const trace: string[] = [];
+  const traceHead: string[] = [];
+  const traceTail: string[] = [];
+  let traceTailPos = 0;
+  let traceOmitted = 0;
+  const pushTrace = (line: string) => {
+    if (traceHead.length < TRACE_HEAD_CAP) {
+      traceHead.push(line);
+      return;
+    }
+    if (traceTail.length < TRACE_TAIL_CAP) {
+      traceTail.push(line);
+      return;
+    }
+    traceTail[traceTailPos] = line;
+    traceTailPos = (traceTailPos + 1) % TRACE_TAIL_CAP;
+    traceOmitted++;
+  };
+  const formatTrace = (): string => {
+    if (traceHead.length === 0) return "";
+    const orderedTail = traceTailPos === 0
+      ? traceTail
+      : [...traceTail.slice(traceTailPos), ...traceTail.slice(0, traceTailPos)];
+    const lines = traceOmitted > 0
+      ? [...traceHead, `  … (${traceOmitted} step/tool ${traceOmitted === 1 ? "entry" : "entries"} omitted)`, ...orderedTail]
+      : [...traceHead, ...orderedTail];
+    return `\nSteps:\n${lines.join("\n")}`;
+  };
   let lastTarget = "";
   let currentStep = 0;
   // Round-8 (architect ref 7-Round7Workflow): count the subagent's SUCCESSFUL
@@ -540,13 +599,26 @@ export async function runSubagentOnce(
         onReasoningStream: textSoFar => {
           const tail = textSoFar.length > 200 ? textSoFar.slice(textSoFar.length - 200) : textSoFar;
           const preview = tail.replace(/\s+/g, " ").trim();
-          if (preview) emit({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model: activeModel });
+          if (!preview) return;
+          if (preview === lastThinkingPreview) {
+            pendingThinking = undefined;
+            return;
+          }
+          const now = Date.now();
+          if (now - lastThinkingAt >= SUBAGENT_THINKING_EMIT_MS) {
+            pendingThinking = undefined;
+            lastThinkingPreview = preview;
+            lastThinkingAt = now;
+            emitRaw({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model: activeModel });
+          } else {
+            pendingThinking = { detail: preview, step: currentStep, model: activeModel };
+          }
         },
         onAssistant: (raw, invocation) => {
           pendingAssistant = raw;
           if (invocation && invocation.tool && invocation.tool !== "done") {
             lastTarget = toolTarget(invocation.tool, invocation.arguments);
-            trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
+            pushTrace(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
             emit({ role: role.id, kind: "step", detail: lastTarget, step: currentStep, maxSteps, model: activeModel });
           }
         },
@@ -559,7 +631,7 @@ export async function runSubagentOnce(
           const label = lastTarget || tool;
           const summary = firstUsefulLine(output);
           const suffix = summary ? ` — ${summary}` : "";
-          trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
+          pushTrace(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
           emit({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model: activeModel });
           lastTarget = "";
         },
@@ -653,7 +725,7 @@ export async function runSubagentOnce(
   emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model: activeModel, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
   const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
   const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${activeModel}${tokNote}.`;
-  const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
+  const body = formatTrace();
   // Parent-side audit: a mutating role that "completed" without a successful file
   // mutation (write/edit/mkdir/delete) likely changed nothing — flag the claim.
   // bash is tracked separately: it CAN mutate, so an only-bash run downgrades to

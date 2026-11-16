@@ -4,7 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "../src/agent/loop";
 import { appendSubagentMessage, createSession, loadSession } from "../src/agent/session";
-import { createTaskTool, taskToolProtocolLine } from "../src/agent/task-tool";
+import { createTaskTool, runSubagentOnce, taskToolProtocolLine, type TaskSubEvent } from "../src/agent/task-tool";
+import { DEFAULT_TOOLS } from "../src/agent/engine";
+import { defaultSubagentRole } from "../src/agent/subagents";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
@@ -1052,4 +1054,131 @@ test("createTaskTool: routing OFF fixes the subagent's model — a 429 is neithe
   expect(onRetryReturns).toEqual([undefined]);
   expect(modelsCalled).toEqual(["claude-sonnet-4-6"]);
   expect(res.success).toBe(false);
+});
+
+test("runSubagentOnce: bounds trace output when >110 tool/step events occur while leaving <=100 step runs unclipped", async () => {
+  const originalRead = DEFAULT_TOOLS.read;
+  DEFAULT_TOOLS.read = async () => ({ success: true, output: "line1" });
+  const cwd = await tmpDir();
+  try {
+    const runSteps = async (stepCount: number, maxSteps: number) => {
+      let turn = 0;
+      await mock.module("../src/agent/loop", () => ({
+        callLlm: async () => {
+          turn++;
+          if (turn <= stepCount) {
+            const n = String(turn).padStart(3, "0");
+            return JSON.stringify({ tool: "read", arguments: { filePath: `file-${n}.txt` } });
+          }
+          return JSON.stringify({
+            tool: "done",
+            arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: read files" },
+          });
+        },
+      }));
+      return runSubagentOnce(defaultSubagentRole(), `read ${stepCount} files`, "", cwd, {
+        config: { defaultModel: "ollama/fast", subagents: { executor: { maxSteps } } },
+        projectContext: [],
+      });
+    };
+
+    // Unclipped boundary: 45 steps (90 tool/step trace entries <= 100) stays intact.
+    const unclipped = await runSteps(45, 60);
+    expect(unclipped.success).toBe(true);
+    expect(unclipped.output).toContain("read file-001.txt");
+    expect(unclipped.output).toContain("read file-023.txt");
+    expect(unclipped.output).toContain("read file-045.txt");
+    expect(unclipped.output).not.toMatch(/omitted|elided|truncated/i);
+
+    // Clipped boundary: 120 steps (240 tool/step trace entries > 110) keeps head + tail with omitted-steps marker.
+    const clipped = await runSteps(120, 130);
+    expect(clipped.success).toBe(true);
+    const stepsStart = clipped.output.indexOf("\nSteps:\n");
+    const resultStart = clipped.output.indexOf("\n\nResult:\n");
+    expect(stepsStart).toBeGreaterThan(-1);
+    expect(resultStart).toBeGreaterThan(stepsStart);
+    const stepsBlock = clipped.output.slice(stepsStart, resultStart);
+    expect(stepsBlock).toContain("read file-001.txt");
+    expect(stepsBlock).toContain("read file-120.txt");
+    expect(stepsBlock).not.toContain("read file-060.txt");
+    expect(stepsBlock).toMatch(/omitted|elided|truncated/i);
+    expect(stepsBlock.split("\n").length).toBeLessThan(220);
+  } finally {
+    DEFAULT_TOOLS.read = originalRead;
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runSubagentOnce: throttles and deduplicates high-frequency identical and burst onReasoningStream thinking events while preserving initial and latest previews", async () => {
+  const realDateNow = Date.now;
+  let fakeNow = 1_000_000;
+  Date.now = () => fakeNow;
+  const cwd = await tmpDir();
+  try {
+    // 1) Identical-preview burst (whitespace-only deltas + flushStreams): must deduplicate to a single emission.
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async (_history: unknown, options: { onReasoning?: (delta: string) => void }) => {
+        options.onReasoning?.("initial reasoning preview");
+        for (let i = 0; i < 8; i++) {
+          fakeNow += 90;
+          options.onReasoning?.("   \n  ");
+        }
+        return JSON.stringify({
+          tool: "done",
+          arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran" },
+        });
+      },
+    }));
+
+    const identicalEvents: TaskSubEvent[] = [];
+    const resIdentical = await runSubagentOnce(defaultSubagentRole(), "dedup thinking", "", cwd, {
+      config: { defaultModel: "ollama/fast", subagents: {} },
+      projectContext: [],
+      onEvent: e => identicalEvents.push(e),
+    });
+    expect(resIdentical.success).toBe(true);
+    const identicalThinking = identicalEvents.filter(e => e.kind === "thinking");
+    expect(identicalThinking.length).toBe(1);
+    expect(identicalThinking[0]?.detail).toBe("initial reasoning preview");
+
+    // 2) High-frequency distinct burst: throttles intermediate emissions while keeping initial + latest preview before done.
+    fakeNow = 2_000_000;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async (_history: unknown, options: { onReasoning?: (delta: string) => void }) => {
+        options.onReasoning?.("initial thought preview");
+        for (let i = 1; i <= 9; i++) {
+          fakeNow += 85;
+          options.onReasoning?.(` step ${i}`);
+        }
+        fakeNow += 85;
+        options.onReasoning?.(" latest updated preview");
+        return JSON.stringify({
+          tool: "done",
+          arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran" },
+        });
+      },
+    }));
+
+    const burstEvents: TaskSubEvent[] = [];
+    const resBurst = await runSubagentOnce(defaultSubagentRole(), "throttle thinking", "", cwd, {
+      config: { defaultModel: "ollama/fast", subagents: {} },
+      projectContext: [],
+      onEvent: e => burstEvents.push(e),
+    });
+    expect(resBurst.success).toBe(true);
+    const burstThinking = burstEvents.filter(e => e.kind === "thinking");
+    expect(burstThinking.length).toBeGreaterThanOrEqual(2);
+    expect(burstThinking.length).toBeLessThan(10);
+    expect(burstThinking[0]?.detail).toContain("initial thought preview");
+    expect(burstThinking.at(-1)?.detail).toContain("latest updated preview");
+    for (let i = 1; i < burstThinking.length; i++) {
+      expect(burstThinking[i]!.detail).not.toBe(burstThinking[i - 1]!.detail);
+    }
+    const doneIdx = burstEvents.findIndex(e => e.kind === "done");
+    const lastThinkingIdx = burstEvents.map(e => e.kind).lastIndexOf("thinking");
+    expect(doneIdx).toBeGreaterThan(lastThinkingIdx);
+  } finally {
+    Date.now = realDateNow;
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });

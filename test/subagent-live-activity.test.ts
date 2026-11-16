@@ -1,5 +1,7 @@
-import { test, expect } from "bun:test";
+import { test, expect, vi, setSystemTime } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
+import { visibleWidth } from "../src/tui/components/width";
+import { Renderer } from "../src/tui/renderer";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -267,4 +269,276 @@ test("readTool no longer crashes on a numeric lineRange", async () => {
   const res = await readTool(join(repoRoot, "package.json"), 2 as unknown as string, repoRoot);
   expect(res.success).toBe(true);
   expect(res.output).toMatch(/^2[a-z0-9]{2}\|/); // line-2 slice, anchor-prefixed
+});
+
+function callRenderSubagentPanel(tui: LaunchTui, cols: number): string[] {
+  const fn = Reflect.get(tui, "renderSubagentPanel");
+  if (typeof fn !== "function") throw new Error("renderSubagentPanel missing");
+  const res = fn.call(tui, cols);
+  if (!Array.isArray(res) || !res.every((x): x is string => typeof x === "string")) {
+    throw new Error("renderSubagentPanel did not return string[]");
+  }
+  return res;
+}
+
+test("Readability: renderSubagentPanel keeps assignment alongside └─ active sub-row and step/tool/elapsed/model stats", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  try {
+    tui.start();
+    tui.onSubagentEvent({
+      kind: "start",
+      role: "executor",
+      runId: "r-panel-1",
+      detail: "Refactor auth middleware",
+      model: "anthropic/claude-sonnet-4-6",
+    });
+    tui.onSubagentEvent({
+      kind: "step",
+      role: "executor",
+      runId: "r-panel-1",
+      step: 2,
+      maxSteps: 8,
+      detail: "trace session checks",
+    });
+    tui.onSubagentEvent({
+      kind: "tool",
+      role: "executor",
+      runId: "r-panel-1",
+      detail: "read src/auth.ts",
+      success: true,
+    });
+    tui.onSubagentEvent({
+      kind: "tool",
+      role: "executor",
+      runId: "r-panel-1",
+      detail: "edit src/auth.ts",
+      success: true,
+    });
+
+    const panel = callRenderSubagentPanel(tui, 100).map(strip);
+    const joined = panel.join("\n");
+    // Assignment remains visible even after step and tool updates.
+    expect(joined).toContain("Refactor auth middleware");
+    // Active tool/step sub-row with tree glyph.
+    expect(joined).toMatch(/(└─|`-)\s*[^\n]*edit src\/auth\.ts/);
+    // Rich jeopi-style worker metadata: step N/M, tool count, elapsed time, short model.
+    expect(joined).toMatch(/2\/8/);
+    expect(joined).toMatch(/\b2\s*tools?\b/i);
+    expect(joined).toMatch(/\b\d+(?:\.\d+)?(?:ms|s)\b/);
+    expect(joined).toContain("sonnet-4-6");
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+  }
+});
+
+test("Readability: renderSubagentPanel compacts cleanly for >3 workers and narrow cols=48", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  try {
+    tui.start();
+    for (let i = 1; i <= 6; i++) {
+      tui.onSubagentEvent({
+        kind: "start",
+        role: "executor",
+        runId: `compact-${i}`,
+        index: i,
+        total: 6,
+        detail: `Very long worker assignment number ${i} inspecting subsystem`,
+        model: "anthropic/claude-sonnet-4-6",
+      });
+      tui.onSubagentEvent({
+        kind: "tool",
+        role: "executor",
+        runId: `compact-${i}`,
+        index: i,
+        total: 6,
+        detail: `read src/module-${i}.ts`,
+        success: true,
+      });
+    }
+
+    const manyPanel = callRenderSubagentPanel(tui, 100).map(strip);
+    expect(manyPanel[0]).toContain("subagents · 6 running");
+    // Compacted: does not expand into 6 * 2 + 2 = 14 rows.
+    expect(manyPanel.length).toBeLessThanOrEqual(10);
+
+    const narrowPanel = callRenderSubagentPanel(tui, 48).map(strip);
+    expect(narrowPanel.length).toBeLessThanOrEqual(10);
+    for (const row of narrowPanel) {
+      expect(visibleWidth(row)).toBeLessThanOrEqual(48);
+    }
+    // Borders stay uniform width in narrow mode.
+    const widths = new Set(narrowPanel.map(row => visibleWidth(row)));
+    expect(widths.size).toBe(1);
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+  }
+});
+
+test("Speed: 50 rapid thinking events throttle Renderer.render while non-thinking events draw immediately", () => {
+  const realRender = Renderer.prototype.render;
+  let renderCalls = 0;
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  try {
+    vi.useFakeTimers();
+    Renderer.prototype.render = function () { renderCalls++; };
+    tui.start();
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "throttle-1", detail: "analyze" });
+    renderCalls = 0;
+
+    for (let i = 0; i < 50; i++) {
+      tui.onSubagentEvent({ kind: "thinking", role: "executor", runId: "throttle-1", detail: `thought ${i}` });
+      if (i % 10 === 9) vi.advanceTimersByTime(1);
+    }
+
+    expect(renderCalls).toBeLessThan(15);
+    const slots = Reflect.get(tui, "subagentLiveSlots");
+    expect(slots instanceof Map).toBe(true);
+    if (slots instanceof Map) {
+      expect(String(slots.get("throttle-1") ?? "")).toContain("thought 49");
+    }
+
+    const beforeStep = renderCalls;
+    tui.onSubagentEvent({ kind: "step", role: "executor", runId: "throttle-1", step: 1, maxSteps: 5, detail: "step 1" });
+    expect(renderCalls).toBe(beforeStep + 1);
+
+    const beforeTool = renderCalls;
+    tui.onSubagentEvent({ kind: "tool", role: "executor", runId: "throttle-1", detail: "read a.ts", success: true });
+    expect(renderCalls).toBe(beforeTool + 1);
+
+    const beforeStart2 = renderCalls;
+    tui.onSubagentEvent({ kind: "start", role: "reviewer", runId: "throttle-2", detail: "review" });
+    expect(renderCalls).toBe(beforeStart2 + 1);
+
+    const beforeError = renderCalls;
+    tui.onSubagentEvent({ kind: "error", role: "reviewer", runId: "throttle-2", detail: "failed" });
+    expect(renderCalls).toBe(beforeError + 1);
+
+    const beforeDone = renderCalls;
+    tui.onSubagentEvent({ kind: "done", role: "executor", runId: "throttle-1", detail: "finished", success: true });
+    expect(renderCalls).toBe(beforeDone + 1);
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+    Renderer.prototype.render = realRender;
+    vi.useRealTimers();
+  }
+});
+
+test("Speed: repeated renderSubagentPanel calls at same tick/cols/rev reuse cached panel rows", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  try {
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "cache-1", detail: "cache test" });
+
+    const first = callRenderSubagentPanel(tui, 100);
+    const second = callRenderSubagentPanel(tui, 100);
+    expect(second).toBe(first);
+
+    // Different cols invalidates cache
+    const differentCols = callRenderSubagentPanel(tui, 80);
+    expect(differentCols).not.toBe(first);
+
+    // New subagent revision invalidates cache
+    const at80 = callRenderSubagentPanel(tui, 80);
+    tui.onSubagentEvent({ kind: "tool", role: "executor", runId: "cache-1", detail: "read x.ts", success: true });
+    const afterEvent = callRenderSubagentPanel(tui, 80);
+    expect(afterEvent).not.toBe(at80);
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+  }
+});
+
+test("Readability: ASCII mode (unicode=false) at cols=72 does not clip trailing model/stats suffix", () => {
+  const origTerm = process.env.TERM;
+  let tui: LaunchTui | undefined;
+  try {
+    process.env.TERM = "dumb";
+    tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.onSubagentEvent({
+      kind: "start",
+      role: "executor",
+      runId: "ascii-clip-1",
+      detail: "Analyze and refactor the entire authentication subsystem across all modules",
+      model: "anthropic/claude-sonnet-4-6",
+      step: 2,
+      maxSteps: 8,
+    });
+    const panel = callRenderSubagentPanel(tui, 72).map(strip);
+    const joined = panel.join("\n");
+    expect(joined).toContain("sonnet-4-6");
+    expect(joined).toContain("2/8");
+    for (const row of panel) {
+      expect(visibleWidth(row)).toBeLessThanOrEqual(72);
+    }
+  } finally {
+    if (tui) {
+      const timer = Reflect.get(tui, "timer");
+      if (timer) clearInterval(timer as NodeJS.Timeout);
+      tui.finish("done");
+    }
+    if (origTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = origTerm;
+  }
+});
+
+test("Speed/Readability: staggered worker elapsed cache invalidates when second worker crosses 1s boundary", () => {
+  let tui: LaunchTui | undefined;
+  try {
+    setSystemTime(new Date(10_000));
+    tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "stagger-1", detail: "worker-one" });
+    setSystemTime(new Date(10_500));
+    tui.onSubagentEvent({ kind: "start", role: "reviewer", runId: "stagger-2", detail: "worker-two" });
+
+    setSystemTime(new Date(11_200));
+    const at11200 = callRenderSubagentPanel(tui, 100).map(strip);
+    const w2Before = at11200.find(l => l.includes("worker-two")) ?? "";
+    expect(w2Before).toContain("0s");
+
+    setSystemTime(new Date(11_600));
+    const at11600 = callRenderSubagentPanel(tui, 100).map(strip);
+    const w2After = at11600.find(l => l.includes("worker-two")) ?? "";
+    expect(w2After).toContain("1s");
+  } finally {
+    if (tui) {
+      const timer = Reflect.get(tui, "timer");
+      if (timer) clearInterval(timer as NodeJS.Timeout);
+      tui.finish("done");
+    }
+    setSystemTime();
+  }
+});
+
+test("Readability: failed tool sub-row stays visible even when tool detail matches start assignment", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  try {
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.onSubagentEvent({ kind: "start", role: "tester", runId: "same-fail-1", detail: "run bun test" });
+    tui.onSubagentEvent({ kind: "tool", role: "tester", runId: "same-fail-1", detail: "run bun test", success: false });
+
+    const panel = callRenderSubagentPanel(tui, 100).map(strip).join("\n");
+    expect(panel).toMatch(/(?:└─|`-)\s*[✗x]\s*run bun test/);
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+  }
 });

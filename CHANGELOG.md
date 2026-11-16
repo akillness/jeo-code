@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.49] - 2026-11-17
+_Jeopi-inspired hierarchical subagent TUI panel, linear-time terminal/secret sanitization, thinking-stream throttling, and bounded memory retention._
+
+### Changed
+- **Hierarchical subagent TUI & history readability (`src/tui/app.ts`, `src/commands/launch/stream.ts`):** Render live subagent assignments with `└─` active tool/step/thinking sub-rows, step/tool/elapsed/short-model metrics, compact narrow/`>3`-worker fallback, and `├─`/`└─` tree branches with run stats in `renderSubagentHistory` and `formatTaskSubEvent`.
+- **Speed & memory bounds (`src/agent/task-tool.ts`, `src/tui/app.ts`, `src/tui/components/code-view.ts`, `src/tui/components/width.ts`, `src/tui/components/forge.ts`):** Throttle and deduplicate subagent `onReasoningStream` previews at 200ms with boundary flushes, cap per-run `Steps:` traces to head 20 + circular tail 80 (`<= 100` unclipped), cap live subagent slots (`SUBAGENT_SLOT_CAP = 64`) with per-second panel render caching, skip duplicate `this.stream` retention in inline TTY mode, and add clean-ASCII/UTF-16 fast paths in `sanitizeForTerminal` and `sanitizeForFrame`.
+
+### Fixed
+- **Terminal escape & secret-redaction hardening (`src/tui/components/code-view.ts`, `src/tui/components/width.ts`, `src/tui/components/forge.ts`, `src/commands/launch/stream.ts`, `src/tui/app.ts`):** Strip 7-bit/8-bit C1 CSI/OSC sequences (including mixed `\x07`/`\x1b\\`/`\x9c` terminators), non-SGR private CSI sequences, OSC 2 pane-title breakouts, and lone UTF-16 surrogates in `O(n)` time, and replace backtracking secret regexes with linear-time key/value/JSON/Bearer scanners that redact unclosed and escape-split secrets while preserving LLM token usage metrics (`input_tokens`, `output_tokens`, `max_tokens`, `token_count`, etc.).
+
 ## [0.12.48] - 2026-11-16
 _Expand Discord session read exploration across sibling/parent/global roots while preserving private-path and write boundaries._
 

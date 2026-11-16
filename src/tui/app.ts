@@ -27,7 +27,7 @@ import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./comp
 import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint, themeFlowPalette } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
-import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, scaleForgeWidth, type ForgeSummary } from "./components/forge";
+import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, scaleForgeWidth, redactSecrets, type ForgeSummary } from "./components/forge";
 import { renderStatusBar, renderStatusBox, type StatusBoxData } from "./components/status";
 import { costForUsage } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
@@ -37,7 +37,7 @@ import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame, last
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, formatDuration as formatToolMs, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
-import { formatDuration, formatUsage } from "./components/duration";
+import { formatDuration, formatUsage, formatTokenCount } from "./components/duration";
 import { renderHud, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
 import { renderInputBox, type HighlightRange } from "./components/input-box";
@@ -46,35 +46,118 @@ import type { ImageAttachment } from "../ai/types";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
+const SUBAGENT_RAW_DETAIL_CAP = 8192;
+
+function safeSlice(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  if (maxUnits <= 0) return "";
+  let end = maxUnits;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end);
+}
+
+function sanitizeSubagentText(raw: string | undefined, maxRawChars = SUBAGENT_RAW_DETAIL_CAP, singleLine = false): string {
+  if (!raw) return "";
+  const bounded = safeSlice(raw, maxRawChars);
+  const cleaned = redactSecrets(sanitizeForTerminal(bounded));
+  return singleLine ? cleaned.replace(/\s+/g, " ").trim() : cleaned;
+}
+
+function shortModelName(raw?: string): string {
+  if (!raw) return "";
+  const clean = sanitizeSubagentText(raw, 256, true);
+  if (!clean) return "";
+  const slash = clean.lastIndexOf("/");
+  const base = slash >= 0 ? clean.slice(slash + 1) : clean;
+  return base.replace(/^claude-/i, "");
+}
+
+interface SubagentSlotMeta {
+  slot: number | string;
+  role: string;
+  roleLabel: string;
+  assignment: string;
+  activeKind: "start" | "step" | "tool" | "thinking";
+  activeText: string;
+  activeOk?: boolean;
+  step?: number;
+  maxSteps?: number;
+  toolCount: number;
+  startedAt: number;
+  model?: string;
+  detached: boolean;
+  cachedSubKey?: string;
+  cachedSubRow?: string;
+  cachedBaseKey?: string;
+  cachedRoleBold?: string;
+  cachedStatsBase?: string[];
+}
+
 /** Render persisted activity as history, never as a live worker. */
 export function renderSubagentHistory(events: readonly TaskSubEvent[], opts: { cols?: number; unicode?: boolean; color?: boolean } = {}): string[] {
   const runs = new Map<string, TaskSubEvent[]>();
   for (const event of events) {
     if (event.kind === "thinking") continue;
     const key = event.runId ?? event.detachedId ?? `${event.role}:${event.index ?? 0}`;
-    const run = runs.get(key) ?? [];
+    let run = runs.get(key);
+    if (!run) {
+      run = [];
+      runs.set(key, run);
+    }
     run.push(event);
-    runs.set(key, run);
   }
   const out: string[] = [];
   const allRuns = [...runs.values()];
   const shownRuns = allRuns.slice(-6);
-  if (allRuns.length > shownRuns.length) out.push(`… ${allRuns.length - shownRuns.length} earlier subagent runs`);
   const width = scaleForgeWidth((opts.cols ?? 80) - 1);
+  const unicode = opts.unicode !== false;
+  const ell = unicode ? "…" : "...";
+  const tee = unicode ? "├─" : "|-";
+  const end = unicode ? "└─" : "`-";
+  const lineWidth = Math.max(1, width - 3);
+  if (allRuns.length > shownRuns.length) out.push(`${ell} ${allRuns.length - shownRuns.length} earlier subagent runs`);
   for (const run of shownRuns) {
     const first = run[0]!;
     const last = run[run.length - 1]!;
     const state = last.kind === "done" ? (last.success === false ? "incomplete" : "done") : last.kind === "error" ? "failed" : "no completion observed";
-    const shown = run.length > 8 ? [first, ...run.slice(-7)] : run;
-    const lines = shown.map(event => {
-      const detail = sanitizeForFrame((event.detail ?? "").split("\n")[0] ?? "").trim();
-      const summary = sanitizeForFrame(event.summary ?? "").replace(/\s+/g, " ").trim();
-      return truncateToWidth(`${event.kind}${event.success === false ? " (failed)" : ""}${detail ? `: ${detail}` : ""}${summary ? ` — ${summary}` : ""}`, Math.max(1, width - 3));
+    let step: number | undefined;
+    let maxSteps: number | undefined;
+    let toolCount = 0;
+    let model = "";
+    let tokens: { input: number; output: number } | undefined;
+    for (const ev of run) {
+      if (ev.step !== undefined) step = ev.step;
+      if (ev.maxSteps !== undefined) maxSteps = ev.maxSteps;
+      if (ev.kind === "tool") toolCount++;
+      if (ev.model) model = shortModelName(ev.model);
+      if (ev.tokens) tokens = ev.tokens;
+    }
+    const role = sanitizeSubagentText(first.role || "subagent", 256, true) || "subagent";
+    const detachedId = first.detachedId ? sanitizeSubagentText(first.detachedId, 256, true) : "";
+    const roleLabel = detachedId
+      ? `${role}[${detachedId}]`
+      : first.index && first.total
+        ? `${role}[${first.index}/${first.total}]`
+        : role;
+    const stepStr = step !== undefined ? (maxSteps !== undefined ? `${step}/${maxSteps}` : `${step} steps`) : "";
+    const toolStr = toolCount > 0 ? `${toolCount} ${toolCount === 1 ? "tool" : "tools"}` : "";
+    const tokStr = tokens ? `${formatTokenCount(tokens.input + tokens.output)} tok` : "";
+    const statsParts = [stepStr, toolStr, tokStr, model].filter(Boolean);
+
+    const shown = run.length > 7 ? [first, ...run.slice(-6)] : run;
+    const lines = shown.map((event, idx) => {
+      const cleanDetail = sanitizeSubagentText(event.detail, 4096);
+      const detail = (cleanDetail.split("\n").find(l => l.trim().length > 0) ?? "").trim();
+      const summary = event.summary ? sanitizeSubagentText(event.summary, 4096, true) : "";
+      const branch = idx === shown.length - 1 ? end : tee;
+      return truncateToWidth(`${branch} ${event.kind}${event.success === false ? " (failed)" : ""}${detail ? `: ${detail}` : ""}${summary ? ` — ${summary}` : ""}`, lineWidth);
     });
-    if (run.length > shown.length) lines.splice(1, 0, `… ${run.length - shown.length} earlier events`);
+    if (run.length > shown.length) lines.splice(1, 0, truncateToWidth(`${tee} ${ell} ${run.length - shown.length} earlier events`, lineWidth));
+    if (statsParts.length > 0) lines.unshift(truncateToWidth(statsParts.join(" · "), lineWidth));
     if (out.length) out.push("");
-    out.push(...formatForgeBox({ title: `subagent ${sanitizeForFrame(first.role)} · ${state}`, lines }, {
-      width, maxLines: 9,
+    out.push(...formatForgeBox({ title: `subagent ${roleLabel} · ${state}`, lines }, {
+      width, maxLines: 10,
       unicode: opts.unicode, color: opts.color ?? false, dim: opts.color === true && state === "done",
     }));
   }
@@ -322,11 +405,15 @@ export class LaunchTui {
   // Keyed by stable `detachedId` when present, else fan-out `index` (1-based),
   // else fixed key 0 for single foreground runs. `subagentLiveOrder` tracks touch order
   // so the status row can show the MOST RECENTLY active slot plus a "+N more" count.
+  private static readonly SUBAGENT_SLOT_CAP = 64;
   private readonly subagentLiveSlots = new Map<number | string, string>();
   // Last persistable preview, separate from transient thinking text.
   private readonly subagentRecordedSlots = new Map<number | string, string>();
   private readonly detachedSubagentSlots = new Set<number | string>();
+  private readonly subagentSlotMeta = new Map<number | string, SubagentSlotMeta>();
   private readonly subagentLiveOrder: (number | string)[] = [];
+  private subagentSlotRev = 0;
+  private subagentPanelCache: { cols: number; spin: string; slotRev: number; validUntilMs: number; lines: string[] } | null = null;
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
   // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
   // view ALWAYS answers "what has been happening", even before the first reply.
@@ -508,8 +595,9 @@ export class LaunchTui {
    *  Called once per turn from the REPL with the user's input; refined to the first
    *  tool's verb+target on the first tool call. */
   setTurnTitle(raw: string): void {
-    const first = (raw ?? "").split("\n").map(s => s.trim()).find(s => s.length > 0) ?? "";
-    const title = first.length > 50 ? first.slice(0, 49) + "…" : first;
+    const clean = sanitizeForTerminal(safeSlice(raw ?? "", 1024));
+    const first = clean.split("\n").map(s => s.trim()).find(s => s.length > 0) ?? "";
+    const title = first.length > 50 ? `${safeSlice(first, 49)}…` : first;
     this.turnTitle = title || null;
     this.turnTitleRefined = false;
     this.emitPaneTitle();
@@ -520,7 +608,9 @@ export class LaunchTui {
    *  pane title, so multiple --tmux sessions are distinguishable at a glance. TTY only. */
   private emitPaneTitle(): void {
     if (!this.tty || !this.turnTitle) return;
-    try { this.write(`\x1b]2;jeo: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
+    const safeTitle = sanitizeForTerminal(this.turnTitle).replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+    if (!safeTitle) return;
+    try { this.write(`\x1b]2;jeo: ${safeTitle}\x07`); } catch { /* terminal gone */ }
   }
 
   /** Render the task plan as a status-colored checklist; empty when no plan. When
@@ -645,7 +735,8 @@ export class LaunchTui {
           // Refine the turn title once to the first tool's verb+target (e.g. "read
           // package.json"), then lock — more specific than the raw user message.
           if (!this.turnTitleRefined) {
-            this.turnTitle = summary.title.length > 50 ? summary.title.slice(0, 49) + "…" : summary.title;
+            const cleanTitle = sanitizeForTerminal(safeSlice(summary.title ?? "", 1024)).replace(/\s+/g, " ").trim();
+            this.turnTitle = cleanTitle.length > 50 ? `${safeSlice(cleanTitle, 49)}…` : cleanTitle;
             this.turnTitleRefined = true;
             this.emitPaneTitle();
           }
@@ -933,7 +1024,7 @@ export class LaunchTui {
     const needsGap = this.lastLedgerKind !== null && (kind !== this.lastLedgerKind || kind === "card");
     this.lastLedgerKind = kind;
     const body0 = needsGap ? `\n${text}` : text;
-    this.stream.append(body0);
+    if (!this.inline) this.stream.append(body0);
     if (this.inline && !this.finished) {
       const cols = Math.max(20, size().cols);
       const body = body0.endsWith("\n") ? body0.slice(0, -1) : body0;
@@ -953,7 +1044,8 @@ export class LaunchTui {
       .map(l => l.trim())
       .find(l => l.length > 0);
     if (!first) return;
-    this.activityLog.push({ at: Date.now(), line: first.slice(0, 160) });
+    const well = first.isWellFormed() ? first : first.toWellFormed().replace(/\uFFFD/g, "");
+    this.activityLog.push({ at: Date.now(), line: safeSlice(well, 160) });
     if (this.activityLog.length > LaunchTui.ACTIVITY_LOG_CAP) this.activityLog.shift();
   }
 
@@ -1104,19 +1196,24 @@ export class LaunchTui {
   onSubagentEvent(e: TaskSubEvent): void {
     if (this.finished) return;
     const color = this.theme.color;
-    const role = e.role || "subagent";
-    const roleLabel = e.detachedId
-      ? `${role.toUpperCase()}[${e.detachedId}]`
+    const role = sanitizeSubagentText(e.role || "subagent", 256, true) || "subagent";
+    const detachedId = e.detachedId ? sanitizeSubagentText(e.detachedId, 256, true) : "";
+    const roleLabel = detachedId
+      ? `${role.toUpperCase()}[${detachedId}]`
       : e.index && e.total
       ? `${role.toUpperCase()}[${e.index}/${e.total}]`
       : role.toUpperCase();
+    const modelShort = shortModelName(e.model);
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
     const branch = this.unicode ? "├─" : "|-";
     const last = this.unicode ? "└─" : "`-";
-    const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
-    const summary = e.summary ? ` — ${e.summary}` : "";
+    const cleanDetail = sanitizeSubagentText(e.detail, SUBAGENT_RAW_DETAIL_CAP);
+    const firstDetailLine = (cleanDetail.split("\n").find(l => l.trim().length > 0) ?? "").trim();
+    const detail = safeSlice(firstDetailLine, 140);
+    const cleanSummary = e.summary ? sanitizeSubagentText(e.summary, 4096, true) : "";
+    const summary = cleanSummary ? ` — ${cleanSummary}` : "";
     // runId distinguishes simultaneous foreground, fan-out and detached runs.
     // Older emitters may still provide only their existing slot identifiers.
     const slot: number | string = e.runId ?? e.detachedId ?? e.index ?? 0;
@@ -1127,56 +1224,138 @@ export class LaunchTui {
       const at = this.subagentLiveOrder.indexOf(slot);
       if (at !== -1) this.subagentLiveOrder.splice(at, 1);
       this.subagentLiveOrder.push(slot);
+      while (this.subagentLiveOrder.length > LaunchTui.SUBAGENT_SLOT_CAP) {
+        let evictIdx = this.subagentLiveOrder.findIndex(s => !this.detachedSubagentSlots.has(s));
+        if (evictIdx === -1) evictIdx = 0;
+        const [evicted] = this.subagentLiveOrder.splice(evictIdx, 1);
+        if (evicted !== undefined) {
+          this.subagentLiveSlots.delete(evicted);
+          this.subagentRecordedSlots.delete(evicted);
+          this.detachedSubagentSlots.delete(evicted);
+          this.subagentSlotMeta.delete(evicted);
+        }
+      }
       this.subagentActive = true;
     };
-    // No `step N/M` marker on nested lines — step counters carry no meaning
-    // under the dynamic budget (user feedback). A tree branch keeps subagent
-    // activity readable in scrollback and visually separate from parent tools.
+    const upsertMeta = (kind: "start" | "step" | "tool" | "thinking") => {
+      let meta = this.subagentSlotMeta.get(slot);
+      if (!meta || kind === "start") {
+        meta = {
+          slot,
+          role,
+          roleLabel,
+          assignment: detail || (kind === "start" ? "starting" : ""),
+          activeKind: kind,
+          activeText: kind === "start" ? "" : (detail || ""),
+          activeOk: kind === "tool" ? e.success !== false : undefined,
+          step: e.step,
+          maxSteps: e.maxSteps,
+          toolCount: kind === "tool" ? 1 : 0,
+          startedAt: Date.now(),
+          model: modelShort || undefined,
+          detached: !!e.detachedId,
+        };
+        this.subagentSlotMeta.set(slot, meta);
+      } else {
+        meta.role = role;
+        meta.roleLabel = roleLabel;
+        if (e.detachedId) meta.detached = true;
+        if (e.step !== undefined) meta.step = e.step;
+        if (e.maxSteps !== undefined) meta.maxSteps = e.maxSteps;
+        if (modelShort) meta.model = modelShort;
+        if (kind === "tool") meta.toolCount++;
+        meta.activeKind = kind;
+        meta.activeText = detail || (kind === "step" ? "working" : kind === "tool" ? "tool" : "thinking");
+        meta.activeOk = kind === "tool" ? e.success !== false : undefined;
+        meta.cachedSubKey = undefined;
+        meta.cachedSubRow = undefined;
+        meta.cachedBaseKey = undefined;
+      }
+    };
+
     switch (e.kind) {
       case "start":
+        upsertMeta("start");
         touchSlot(`${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`);
-        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}${modelShort ? ` (${modelShort})` : ""}\n`, "subagent");
         break;
-      case "step":
+      case "step": {
+        upsertMeta("step");
         touchSlot(`${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
+        const stepTag = e.step !== undefined ? ` (${e.step}${e.maxSteps !== undefined ? `/${e.maxSteps}` : ""})` : "";
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}${stepTag}\n`, "subagent");
         break;
+      }
       case "tool":
+        upsertMeta("tool");
         touchSlot(`${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "thinking":
         // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
         // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
+        upsertMeta("thinking");
         touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`, true);
         break;
       case "error":
-      case "done":
-        // Clear ONLY this slot — a fan-out batch where one worker finishes early
-        // must keep showing its still-running siblings, not drop the `(sub)`
-        // marker for the whole batch (the bug this per-slot map fixes).
+      case "done": {
+        const meta = this.subagentSlotMeta.get(slot);
         this.subagentLiveSlots.delete(slot);
         this.subagentRecordedSlots.delete(slot);
         this.detachedSubagentSlots.delete(slot);
+        this.subagentSlotMeta.delete(slot);
         {
           const at = this.subagentLiveOrder.indexOf(slot);
           if (at !== -1) this.subagentLiveOrder.splice(at, 1);
         }
         this.subagentActive = this.subagentLiveSlots.size > 0;
-        this.appendSubagentCard(e.kind === "error" ? `${badge} ${last} ${roleLabel} failed` : `${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}`, detail, e.kind !== "error" && e.success !== false);
+        const finalStep = e.step ?? meta?.step;
+        const finalMaxSteps = e.maxSteps ?? meta?.maxSteps;
+        const finalTools = meta?.toolCount ?? 0;
+        const finalModel = modelShort || meta?.model || "";
+        const tokStr = e.tokens ? `${formatTokenCount(e.tokens.input + e.tokens.output)} tok` : "";
+        const stepStat = finalStep !== undefined ? (finalMaxSteps !== undefined ? `${finalStep}/${finalMaxSteps}` : `${finalStep} steps`) : "";
+        const toolStat = finalTools > 0 ? `${finalTools} ${finalTools === 1 ? "tool" : "tools"}` : "";
+        const durStat = meta?.startedAt ? formatDuration(Math.max(0, Date.now() - meta.startedAt)) : "";
+        const statsLine = [stepStat, toolStat, tokStr, durStat, finalModel].filter(Boolean).join(" · ");
+        const title = e.kind === "error"
+          ? `${badge} ${last} ${roleLabel} failed`
+          : `${badge} ${last} ${roleLabel} done${tokStr ? ` (${tokStr})` : ""}${e.success === false ? " (incomplete)" : ""}`;
+        this.appendSubagentCard(title, detail, e.kind !== "error" && e.success !== false, statsLine || undefined);
         break;
+      }
     }
-    this.draw();
+    this.subagentSlotRev++;
+    if (e.kind === "thinking") {
+      const now = Date.now();
+      if (now - this.lastStreamDraw >= 100) {
+        this.lastStreamDraw = now;
+        this.draw();
+      }
+    } else {
+      this.lastStreamDraw = Date.now();
+      this.draw();
+    }
   }
 
-  private appendSubagentCard(title: string, detail: string, success: boolean): void {
+  private appendSubagentCard(title: string, detail: string, success: boolean, statsLine?: string): void {
     const paint = this.theme.color ? (success ? chalk.dim : chalk.red) : (s: string) => s;
-    const bodyLines = detail ? detail.split("\n").map(l => l.trimEnd()).filter((l, i, arr) => l || (i > 0 && i < arr.length - 1)) : [];
-    const lines = formatForgeBox({ title, lines: bodyLines }, {
+    const safeTitle = redactSecrets(sanitizeForTerminal(safeSlice(title, 512))).replace(/\r?\n/g, " ");
+    const safeDetail = sanitizeSubagentText(detail, SUBAGENT_RAW_DETAIL_CAP);
+    const bodyLines = safeDetail
+      ? safeDetail.split("\n").map(l => l.trimEnd()).filter((l, i, arr) => l || (i > 0 && i < arr.length - 1))
+      : [];
+    const safeStats = statsLine ? sanitizeSubagentText(statsLine, 512, true) : "";
+    if (safeStats) {
+      if (bodyLines.length > 4) bodyLines.length = 4;
+      bodyLines.push(this.theme.color ? chalk.dim(safeStats) : safeStats);
+    }
+    const lines = formatForgeBox({ title: safeTitle, lines: bodyLines }, {
       width: scaleForgeWidth(size().cols - 1), maxLines: 6, unicode: this.unicode,
       color: this.theme.color, paint, paintShadow: paint, dim: success && this.theme.color,
     });
-    this.appendLedger(lines.join("\n") + "\n", "subagent", `${title}: ${detail}`);
+    const activityText = safeDetail ? `${safeTitle}: ${safeDetail}` : safeTitle;
+    this.appendLedger(lines.join("\n") + "\n", "subagent", activityText);
   }
 
   start(): void {
@@ -1189,6 +1368,10 @@ export class LaunchTui {
     this.subagentLiveSlots.clear(); this.subagentLiveOrder.length = 0; this.subagentActive = false; // fresh turn: no nested subagent in flight
     this.subagentRecordedSlots.clear();
     this.detachedSubagentSlots.clear();
+    this.subagentSlotMeta.clear();
+    this.subagentSlotRev = 0;
+    this.subagentPanelCache = null;
+    this.lastStreamDraw = 0;
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
     // completed ledger lines are flushed into normal scrollback as they happen, so a
@@ -1342,6 +1525,9 @@ export class LaunchTui {
     this.subagentLiveSlots.clear();
     this.subagentRecordedSlots.clear();
     this.detachedSubagentSlots.clear();
+    this.subagentSlotMeta.clear();
+    this.subagentSlotRev++;
+    this.subagentPanelCache = null;
     this.subagentLiveOrder.length = 0;
     this.subagentActive = false;
     this.finished = true;
@@ -1472,6 +1658,25 @@ export class LaunchTui {
     } else {
       console.log(finalLines.join("\n"));
     }
+    this.stream.clear();
+    this.liveBlockWrapCaches.clear();
+    this.subagentSlotMeta.clear();
+    this.subagentPanelCache = null;
+    this.historyLines = null;
+    this.cachedWrappedHistory = null;
+    this.cachedHistoryLines = null;
+    this.cachedHistoryWidth = null;
+    this.cachedArt = [];
+    this.cachedTrack = "";
+    this.cachedStageIndex = -1;
+    this.cachedCols = -1;
+    this.cachedFrame = -1;
+    this.forgeSummaries.length = 0;
+    this.liveToolOutput = "";
+    this.streamingThought = "";
+    this.streamingReasoning = "";
+    this.flushedThought = "";
+    this.flushedReasoning = "";
   }
 
   private rememberForge(summary: ForgeSummary): void {
@@ -1547,18 +1752,132 @@ export class LaunchTui {
   private static readonly SUBAGENT_PANEL_MAX_ROWS = 6;
   private renderSubagentPanel(cols: number): string[] {
     if (this.subagentLiveSlots.size === 0) return [];
+    const now = Date.now();
     const spin = this.spinner.current();
+    if (
+      this.subagentPanelCache &&
+      this.subagentPanelCache.cols === cols &&
+      this.subagentPanelCache.spin === spin &&
+      this.subagentPanelCache.slotRev === this.subagentSlotRev &&
+      now < this.subagentPanelCache.validUntilMs
+    ) {
+      return this.subagentPanelCache.lines;
+    }
+    const boxWidth = scaleForgeWidth(cols);
+    const lineWidth = Math.max(1, boxWidth - 3);
     const order = [...this.subagentLiveOrder].reverse();
-    const shown = order.slice(0, LaunchTui.SUBAGENT_PANEL_MAX_ROWS);
+    const hierarchical = order.length <= 3 && boxWidth >= 52;
+    const maxWorkers = hierarchical ? order.length : LaunchTui.SUBAGENT_PANEL_MAX_ROWS;
+    const shown = order.slice(0, maxWorkers);
     const extra = order.length - shown.length;
-    const lineWidth = Math.max(1, scaleForgeWidth(cols) - 3);
-    const lines = shown.map(slot => truncateToWidth(`${spin} ${this.subagentLiveSlots.get(slot) ?? ""}`, lineWidth));
-    if (extra > 0) lines.push(`${this.unicode ? "…" : "..."} +${extra} more running`);
-    return formatForgeBox({ title: `subagents · ${this.subagentLiveSlots.size} running`, lines }, {
-      width: scaleForgeWidth(cols), maxLines: LaunchTui.SUBAGENT_PANEL_MAX_ROWS + 1,
+    const ell = this.unicode ? "…" : "...";
+    const ellW = visibleWidth(ell);
+    const treeGlyph = this.unicode ? "└─" : "`-";
+
+    const fitWithStats = (prefixPlain: string, prefixStyled: string, body: string, statsParts: string[]): string => {
+      const cleanBody = body || "working";
+      const prefixW = visibleWidth(prefixPlain);
+      for (let drop = 0; drop <= statsParts.length; drop++) {
+        const kept = statsParts.slice(0, statsParts.length - drop);
+        const statsPlain = kept.join(" · ");
+        const statsSuffixW = statsPlain ? 3 + visibleWidth(statsPlain) : 0;
+        const availBody = lineWidth - prefixW - statsSuffixW;
+        if (availBody >= 12 || drop === statsParts.length) {
+          const bodyW = Math.max(1, availBody);
+          const bodyFit = visibleWidth(cleanBody) <= bodyW
+            ? cleanBody
+            : bodyW > ellW
+              ? `${truncateToWidth(cleanBody, bodyW - ellW)}${ell}`
+              : truncateToWidth(cleanBody, bodyW);
+          const statsStyled = statsPlain
+            ? (this.theme.color ? chalk.dim(` · ${statsPlain}`) : ` · ${statsPlain}`)
+            : "";
+          return truncateToWidth(`${prefixStyled}${bodyFit}${statsStyled}`, lineWidth);
+        }
+      }
+      return truncateToWidth(`${prefixStyled}${cleanBody}`, lineWidth);
+    };
+
+    let validUntilMs = Number.POSITIVE_INFINITY;
+    const lines: string[] = [];
+    for (const slot of shown) {
+      const meta = this.subagentSlotMeta.get(slot);
+      if (!meta) {
+        lines.push(truncateToWidth(`${spin} ${this.subagentLiveSlots.get(slot) ?? ""}`, lineWidth));
+        continue;
+      }
+      const baseKey = `${this.theme.color ? 1 : 0}`;
+      if (meta.cachedBaseKey !== baseKey || !meta.cachedRoleBold || !meta.cachedStatsBase) {
+        meta.cachedBaseKey = baseKey;
+        meta.cachedRoleBold = this.theme.color ? chalk.bold(meta.roleLabel) : meta.roleLabel;
+        const stepStr = meta.step !== undefined ? (meta.maxSteps !== undefined ? `${meta.step}/${meta.maxSteps}` : `step ${meta.step}`) : "";
+        const toolStr = meta.toolCount > 0 ? `${meta.toolCount} ${meta.toolCount === 1 ? "tool" : "tools"}` : "";
+        meta.cachedStatsBase = [stepStr, toolStr];
+      }
+      const roleBold = meta.cachedRoleBold;
+      const elapsedMs = Math.max(0, now - meta.startedAt);
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const nextBoundaryMs = meta.startedAt + (elapsedSec + 1) * 1000;
+      if (nextBoundaryMs < validUntilMs) validUntilMs = nextBoundaryMs;
+      const elapsedStr = formatDuration(elapsedSec * 1000);
+      const modelStr = meta.model ?? "";
+      const statsParts = [meta.cachedStatsBase[0]!, meta.cachedStatsBase[1]!, elapsedStr, modelStr].filter(Boolean);
+
+      if (hierarchical) {
+        const prefixPlain = `${spin} ${meta.roleLabel} · `;
+        const prefixStyled = `${spin} ${roleBold} · `;
+        lines.push(fitWithStats(prefixPlain, prefixStyled, meta.assignment || "starting", statsParts));
+        if (meta.activeKind !== "start" && meta.activeText && (meta.activeText !== meta.assignment || meta.activeOk === false)) {
+          const subKey = `${lineWidth}:${this.theme.color ? 1 : 0}:${this.unicode ? 1 : 0}`;
+          if (meta.cachedSubKey !== subKey || meta.cachedSubRow === undefined) {
+            meta.cachedSubKey = subKey;
+            let beat: string;
+            if (meta.activeKind === "tool") {
+              const g = meta.activeOk === false ? (this.unicode ? "✗" : "x") : (this.unicode ? "✓" : "v");
+              beat = this.theme.color ? (meta.activeOk === false ? chalk.red(g) : chalk.green(g)) : g;
+            } else if (meta.activeKind === "step") {
+              beat = this.unicode ? "·" : "-";
+            } else {
+              beat = ell;
+            }
+            const styledText = this.theme.color ? chalk.dim(meta.activeText) : meta.activeText;
+            const styledTree = this.theme.color ? chalk.dim(`  ${treeGlyph} `) : `  ${treeGlyph} `;
+            meta.cachedSubRow = truncateToWidth(`${styledTree}${beat} ${styledText}`, lineWidth);
+          }
+          lines.push(meta.cachedSubRow);
+        }
+      } else {
+        const hasActive = meta.activeKind !== "start" && meta.activeText;
+        let beatPlain: string;
+        let beatStyled: string;
+        if (meta.activeKind === "tool") {
+          beatPlain = meta.activeOk === false ? (this.unicode ? "✗" : "x") : (this.unicode ? "✓" : "v");
+          beatStyled = this.theme.color ? (meta.activeOk === false ? chalk.red(beatPlain) : chalk.green(beatPlain)) : beatPlain;
+        } else if (meta.activeKind === "step") {
+          beatPlain = this.unicode ? "·" : "-";
+          beatStyled = beatPlain;
+        } else if (meta.activeKind === "thinking") {
+          beatPlain = ell;
+          beatStyled = beatPlain;
+        } else {
+          beatPlain = this.unicode ? "▸" : ">";
+          beatStyled = beatPlain;
+        }
+        const prefixPlain = `${spin} ${meta.roleLabel} ${beatPlain} `;
+        const prefixStyled = `${spin} ${roleBold} ${beatStyled} `;
+        const compactStats = [meta.cachedStatsBase[0]!, elapsedStr].filter(Boolean);
+        lines.push(fitWithStats(prefixPlain, prefixStyled, hasActive ? meta.activeText : (meta.assignment || "starting"), compactStats));
+      }
+    }
+    if (extra > 0) lines.push(`${ell} +${extra} more running`);
+    if (!Number.isFinite(validUntilMs)) validUntilMs = now + 1000;
+    const rendered = formatForgeBox({ title: `subagents · ${this.subagentLiveSlots.size} running`, lines }, {
+      width: boxWidth, maxLines: LaunchTui.SUBAGENT_PANEL_MAX_ROWS + 1,
       unicode: this.unicode, color: this.theme.color,
       paint: this.theme.color ? accentPaint(this.theme) : (s: string) => s,
     });
+    this.subagentPanelCache = { cols, spin, slotRev: this.subagentSlotRev, validUntilMs, lines: rendered };
+    return rendered;
   }
 
   /** Render a bounded, dimmed tail for live reasoning or tool output. */

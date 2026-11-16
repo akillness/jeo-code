@@ -88,21 +88,70 @@ export function lightHighlightLine(line: string, lang: string): string {
  * corrupt the gutter. Strip CR, expand tabs, and remove ANSI/C0 control sequences.
  * jeo's own coloring is applied AFTER this, so no intended color is lost.
  */
+const CR_RE = /\r/g;
+const TAB_RE = /\t/g;
+const OSC_RE = /\x1b\][^\x07\x1b\x9c\x9d]*(?:\x07|\x1b\\|\x9c)/g;
+const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const ESC2_RE = /\x1b[@-Z\\-_]/g;
+const C1_CSI_RE = /\x9b[0-?]*[ -/]*[@-~]/g;
+const C1_OSC_RE = /\x9d[^\x07\x1b\x9c\x9d]*(?:\x07|\x1b\\|\x9c)/g;
+const CTRL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+
+function stripLoneSurrogates(s: string): string {
+  let out = "";
+  let last = 0;
+  const n = s.length;
+  for (let i = 0; i < n; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdfff) {
+      if (code <= 0xdbff && i + 1 < n) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          i++;
+          continue;
+        }
+      }
+      if (i > last) out += s.slice(last, i);
+      last = i + 1;
+    }
+  }
+  if (last === 0) return s;
+  if (last < n) out += s.slice(last);
+  return out;
+}
+
 export function sanitizeForTerminal(line: string): string {
-  return line
-    .replace(/\r/g, "")
-    .replace(/\t/g, "  ")
-    // OSC: ESC ] ... (BEL | ST)
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    // CSI: ESC [ ... final-byte  (SGR, cursor moves, screen/line clears, etc.)
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    // other ESC-led two-byte sequences
-    .replace(/\x1b[@-Z\\-_]/g, "")
-    // 8-bit C1 CSI/OSC (U+009B / U+009D …) — neutralize the payload like the ESC forms
-    .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x9d[^\x07\x9c]*(?:\x07|\x9c)/g, "")
-    // any remaining C0 controls + DEL + C1 (U+0080–U+009F)
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+  const n = line.length;
+  let dirty = false;
+  for (let i = 0; i < n; i++) {
+    const code = line.charCodeAt(i);
+    if ((code < 0x20 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f)) {
+      dirty = true;
+      break;
+    }
+    if (code >= 0xd800 && code <= 0xdfff) {
+      if (code <= 0xdbff && i + 1 < n) {
+        const next = line.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          i++;
+          continue;
+        }
+      }
+      dirty = true;
+      break;
+    }
+  }
+  if (!dirty) return line;
+  const wellFormed = line.isWellFormed() ? line : stripLoneSurrogates(line);
+  return wellFormed
+    .replace(CR_RE, "")
+    .replace(TAB_RE, "  ")
+    .replace(OSC_RE, "")
+    .replace(C1_OSC_RE, "")
+    .replace(CSI_RE, "")
+    .replace(C1_CSI_RE, "")
+    .replace(ESC2_RE, "")
+    .replace(CTRL_RE, "");
 }
 
 export interface CodeViewOptions {

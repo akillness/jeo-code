@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import chalk from "chalk";
 import {
+  editBlockDiffLines,
   formatForgeBox,
   progressPercent,
   redactSecrets,
@@ -486,4 +487,371 @@ test("formatForgeBox: fill painter tints every row (panel) without changing visi
   // No fill painter → rows are returned untinted (back-compat).
   const bare = formatForgeBox(summary, { width, unicode: false, color: false, paint: s => s });
   expect(bare.some(l => l.includes("«bg»"))).toBe(false);
+});
+
+test("redactSecrets redacts Authorization Bearer and standalone Bearer tokens completely", () => {
+  const auth = redactSecrets("Authorization: Bearer sk-secret-123");
+  expect(auth).not.toContain("sk-secret-123");
+  expect(auth).toContain("<redacted>");
+
+  const standalone = redactSecrets("Bearer sk-secret-123");
+  expect(standalone).not.toContain("sk-secret-123");
+  expect(standalone).toContain("<redacted>");
+
+  const embedded = redactSecrets("curl -H 'Authorization: Bearer sk-secret-123' https://api.example.com");
+  expect(embedded).not.toContain("sk-secret-123");
+  expect(embedded).toContain("https://api.example.com");
+});
+
+test("summarizeForgeInvocation('task'): sanitizes escapes and redacts secrets in role, task, context, and tasks[]", () => {
+  const single = summarizeForgeInvocation("task", {
+    role: "exec\x1b[2Jutor Bearer sk-secret-123",
+    task: "fetch \u009b2J with Authorization: Bearer sk-secret-123",
+    context: "header \x1b]0;evil\x07 api_key=topsecret99",
+  });
+  const singleText = [single.title, ...single.lines].join("\n");
+  expect(singleText).not.toContain("\x1b");
+  expect(singleText).not.toContain("\u009b");
+  expect(singleText).not.toContain("\x07");
+  expect(singleText).not.toContain("sk-secret-123");
+  expect(singleText).not.toContain("topsecret99");
+  expect(singleText).toContain("<redacted>");
+
+  const batch = summarizeForgeInvocation("task", {
+    role: "rev\x1b[2Jiewer token=secret-role-tok",
+    tasks: [
+      "scan \x1b[2Jfile with Bearer sk-secret-123",
+      { task: "check \u009d0;evil\u0007 Authorization: Bearer sk-secret-123" },
+    ],
+  });
+  const batchText = [batch.title, ...batch.lines].join("\n");
+  expect(batchText).not.toContain("\x1b");
+  expect(batchText).not.toContain("\u009d");
+  expect(batchText).not.toContain("\x07");
+  expect(batchText).not.toContain("sk-secret-123");
+  expect(batchText).not.toContain("secret-role-tok");
+  expect(batchText).toContain("<redacted>");
+});
+
+test("summarizeForgeInvocation('task'): caps tasks[] batches >6 items with an omission marker while keeping 1-6 contracts", () => {
+  const tasks = Array.from({ length: 9 }, (_, i) => `task item ${i + 1}`);
+  const batch = summarizeForgeInvocation("task", { role: "executor", tasks });
+  expect(batch.title).toBe("Task: executor ×9");
+  expect(batch.lines.slice(0, 6)).toEqual([
+    "1. task item 1",
+    "2. task item 2",
+    "3. task item 3",
+    "4. task item 4",
+    "5. task item 5",
+    "6. task item 6",
+  ]);
+  expect(batch.lines.length).toBe(7);
+  expect(batch.lines[6]).toContain("…");
+  expect(batch.lines[6]).toContain("3");
+  expect(batch.lines.join("\n")).not.toContain("task item 7");
+  expect(batch.lines.join("\n")).not.toContain("task item 9");
+
+  const exactSix = summarizeForgeInvocation("task", {
+    role: "executor",
+    tasks: Array.from({ length: 6 }, (_, i) => `item ${i + 1}`),
+  });
+  expect(exactSix.lines.length).toBe(6);
+  expect(exactSix.lines[5]).toBe("6. item 6");
+});
+
+test("redactSecrets handles prefixed JSON keys, quoted secrets with spaces, escaped JSON quotes, and skips hyphenated prose", () => {
+  const jsonPrefixed = redactSecrets('{"access_token":"tok-111","openai_api_key":"sk-222","db_password":"pw-333"}');
+  expect(jsonPrefixed).not.toContain("tok-111");
+  expect(jsonPrefixed).not.toContain("sk-222");
+  expect(jsonPrefixed).not.toContain("pw-333");
+  expect(jsonPrefixed).toContain('"access_token"');
+  expect(jsonPrefixed).toContain('"openai_api_key"');
+  expect(jsonPrefixed).toContain('"db_password"');
+
+  const quotedSpaces = redactSecrets('password="my secret pass" token=\'other secret val\'');
+  expect(quotedSpaces).not.toContain("my secret pass");
+  expect(quotedSpaces).not.toContain("secret pass");
+  expect(quotedSpaces).not.toContain("other secret val");
+  expect(quotedSpaces).not.toContain("secret val");
+  expect(quotedSpaces).toContain("<redacted>");
+
+  const escapedQuote = redactSecrets('{"token":"abc\\"def"}');
+  expect(escapedQuote).not.toContain("abc");
+  expect(escapedQuote).not.toContain("def");
+  expect(escapedQuote).toContain('"<redacted>"');
+
+  expect(redactSecrets("the bearer non-refundable")).toBe("the bearer non-refundable");
+  expect(redactSecrets("bearer non-transferable ticket")).toBe("bearer non-transferable ticket");
+});
+
+test("summarizeForgeInvocation('task'): resists escape-glued Bearer, handles huge inputs quickly, and never splits surrogates", () => {
+  const gluedSingle = summarizeForgeInvocation("task", {
+    role: "det\x1b[31mBearer sk-secret-role",
+    task: "run det\x1b[31mBearer sk-secret-task",
+    context: "ctx\u009b2JBearer sk-secret-ctx",
+  });
+  const gluedSingleText = [gluedSingle.title, ...gluedSingle.lines].join("\n").toLowerCase();
+  expect(gluedSingleText).not.toContain("sk-secret");
+  expect(gluedSingleText).not.toContain("\x1b");
+  expect(gluedSingleText).not.toContain("\u009b");
+
+  const gluedBatch = summarizeForgeInvocation("task", {
+    role: "det\x1b[31mBearer sk-secret-role",
+    tasks: ["item det\x1b[31mBearer sk-secret-item"],
+  });
+  const gluedBatchText = [gluedBatch.title, ...gluedBatch.lines].join("\n").toLowerCase();
+  expect(gluedBatchText).not.toContain("sk-secret");
+  expect(gluedBatchText).not.toContain("\x1b");
+  expect(gluedBatchText).not.toContain("\u009b");
+
+  const t0 = performance.now();
+  const hugeTasks = Array.from({ length: 20000 }, (_, i) => `item ${i} ${"x".repeat(200)}`);
+  const hugeBatch = summarizeForgeInvocation("task", { role: "executor", tasks: hugeTasks });
+  const hugeSingle = summarizeForgeInvocation("task", {
+    role: "executor",
+    task: "a".repeat(200000),
+    context: "b".repeat(200000),
+  });
+  const elapsedMs = performance.now() - t0;
+  expect(hugeBatch.lines.length).toBe(7);
+  expect(hugeSingle.lines.length).toBeGreaterThan(0);
+  expect(elapsedMs).toBeLessThan(100);
+
+  const splitSingle = summarizeForgeInvocation("task", {
+    role: "executor",
+    task: `${"a".repeat(498)}🚀tail`,
+    context: `${"b".repeat(298)}🚀tail`,
+  });
+  for (const line of splitSingle.lines) {
+    expect(line.isWellFormed()).toBe(true);
+  }
+
+  const splitBatch = summarizeForgeInvocation("task", {
+    role: "executor",
+    tasks: [`${"a".repeat(119)}🚀tail`],
+  });
+  expect(splitBatch.lines[0]!.isWellFormed()).toBe(true);
+});
+
+test("redactSecrets finishes in linear time (<50ms) on repeated token-/api_key ReDoS-shaped inputs", () => {
+  const tokInput = "token-".repeat(8000);
+  const t0 = performance.now();
+  const tokOut = redactSecrets(tokInput);
+  const tokMs = performance.now() - t0;
+  expect(tokOut).toBe(tokInput);
+  expect(tokMs).toBeLessThan(50);
+
+  const apiInput = '"' + "api_key".repeat(4000);
+  const t1 = performance.now();
+  const apiOut = redactSecrets(apiInput);
+  const apiMs = performance.now() - t1;
+  expect(apiOut).toBe(apiInput);
+  expect(apiMs).toBeLessThan(50);
+});
+
+test("redactSecrets redacts key names with suffixes (api_key_v2, token_id, secret_key)", () => {
+  const out = redactSecrets("api_key_v2=sk-secret-123 token_id=tok-secret-456 secret_key=sec-789");
+  expect(out).not.toContain("sk-secret-123");
+  expect(out).not.toContain("tok-secret-456");
+  expect(out).not.toContain("sec-789");
+  expect(out).toContain("api_key_v2=<redacted>");
+  expect(out).toContain("token_id=<redacted>");
+  expect(out).toContain("secret_key=<redacted>");
+});
+
+test("summarizeForgeInvocation('task'): redacts Bearer secrets split by embedded ANSI/CSI escapes", () => {
+  const batch = summarizeForgeInvocation("task", {
+    role: "Be\x1b[31marer sk-secret-role",
+    tasks: ["Be\x1b[31marer sk-secret-item"],
+  });
+  const text = [batch.title, ...batch.lines].join("\n");
+  expect(text.toLowerCase()).not.toContain("sk-secret-role");
+  expect(text.toLowerCase()).not.toContain("sk-secret-item");
+  expect(text).not.toContain("\x1b");
+  expect(batch.title).toContain("<redacted>");
+  expect(batch.lines[0]).toContain("<redacted>");
+});
+
+test("redactSecrets redacts Bearer tokens preceded by long (>64 byte) CSI sequences", () => {
+  const out = redactSecrets("det\x1b[" + "0;".repeat(40) + "31mBearer sk-secret-123");
+  expect(out).not.toContain("sk-secret-123");
+  expect(out).toContain("<redacted>");
+});
+
+test("redactSecrets redacts unclosed and clipped quoted secrets completely", () => {
+  const dq = redactSecrets('token="sk-live-secret-999999');
+  expect(dq).not.toContain("sk-live-secret-999999");
+  expect(dq).not.toContain("999999");
+  expect(dq).toContain("token=");
+  expect(dq).toContain("<redacted>");
+
+  const sq = redactSecrets("token='sk-live-secret-999999");
+  expect(sq).not.toContain("sk-live-secret-999999");
+  expect(sq).not.toContain("999999");
+  expect(sq).toContain("token=");
+  expect(sq).toContain("<redacted>");
+
+  const jsonClipped = redactSecrets('{"api_key":"sk-live-secret-999999');
+  expect(jsonClipped).not.toContain("sk-live-secret-999999");
+  expect(jsonClipped).not.toContain("999999");
+  expect(jsonClipped).toContain('"api_key"');
+  expect(jsonClipped).toContain("<redacted>");
+});
+
+test("redactSecrets and summarizeForgeResult preserve LLM token metrics while still redacting real secret keys", () => {
+  const usageSummary = summarizeForgeResult(
+    "bash",
+    true,
+    "usage: input_tokens=1200 output_tokens=340 max_tokens=4096",
+  );
+  const usageText = usageSummary.lines.join("\n");
+  expect(usageText).toContain("1200");
+  expect(usageText).toContain("340");
+  expect(usageText).toContain("4096");
+  expect(usageText).not.toContain("<redacted>");
+
+  expect(redactSecrets('{"max_tokens": "4096"}')).toBe('{"max_tokens": "4096"}');
+  expect(redactSecrets("token_count: 55 tokenizer=cl100k_base")).toBe(
+    "token_count: 55 tokenizer=cl100k_base",
+  );
+
+  const secrets = redactSecrets(
+    [
+      "access_token=tok-access-111",
+      "accessToken=tok-camel-222",
+      "apiKey=sk-camel-333",
+      "api_key_v2=sk-v2-444",
+      "token_id=tok-id-555",
+      "secret_key=sec-key-666",
+      "db_password=pw-db-777",
+      "x-api-key: sk-hdr-888",
+    ].join(" "),
+  );
+  for (const leaked of [
+    "tok-access-111",
+    "tok-camel-222",
+    "sk-camel-333",
+    "sk-v2-444",
+    "tok-id-555",
+    "sec-key-666",
+    "pw-db-777",
+    "sk-hdr-888",
+  ]) {
+    expect(secrets).not.toContain(leaked);
+  }
+  expect(secrets).toContain("access_token=<redacted>");
+  expect(secrets).toContain("accessToken=<redacted>");
+  expect(secrets).toContain("apiKey=<redacted>");
+  expect(secrets).toContain("api_key_v2=<redacted>");
+  expect(secrets).toContain("token_id=<redacted>");
+  expect(secrets).toContain("secret_key=<redacted>");
+  expect(secrets).toContain("db_password=<redacted>");
+  expect(secrets).toContain("x-api-key: <redacted>");
+});
+
+test("editBlockDiffLines sanitizes terminal escapes and redacts split-escape Bearer secrets inside diff hunks", () => {
+  const searchBlock = [
+    "<<<<<<< SEARCH",
+    "const a = 'Be\x1b[31marer sk-secret-remove'; \x1b[2J\x1b]0;evil\x07",
+    "=======",
+    "const b = 'Be\x1b[31marer sk-secret-add'; \u009b2J",
+    ">>>>>>>",
+  ].join("\n");
+  const rows = editBlockDiffLines(searchBlock);
+  expect(rows).not.toBeNull();
+  const clean = rows!.map(stripAnsi).join("\n");
+  expect(clean).not.toContain("\x1b");
+  expect(clean).not.toContain("\u009b");
+  expect(clean).not.toContain("\x07");
+  expect(clean).not.toContain("sk-secret-remove");
+  expect(clean).not.toContain("sk-secret-add");
+  expect(clean).toContain("<redacted>");
+
+  const directiveBlock = "≔1..2\nauth='Be\x1b[31marer sk-secret-dir' \x1b[2J\x1b]0;evil\x07";
+  const dirRows = editBlockDiffLines(directiveBlock);
+  expect(dirRows).not.toBeNull();
+  const dirClean = dirRows!.map(stripAnsi).join("\n");
+  expect(dirClean).not.toContain("\x1b");
+  expect(dirClean).not.toContain("\x07");
+  expect(dirClean).not.toContain("sk-secret-dir");
+  expect(dirClean).toContain("<redacted>");
+});
+
+test("editBlockDiffLines, summarizeForgeInvocation, and summarizeForgeResult completely redact split-escape Authorization and OSC-split token=val while preserving glued-escape Bearer redaction", () => {
+  const diffRows = editBlockDiffLines(
+    "<<<<<<< SEARCH\nAuthorization: Be\x1b[31marer sk-live-999\n=======\nAuthorization: Ba\x1b[31msic dXNlcjpwYXNz\n>>>>>>>",
+  );
+  expect(diffRows).not.toBeNull();
+  const diffClean = diffRows!.map(stripAnsi).join("\n");
+  expect(diffClean).not.toContain("sk-live-999");
+  expect(diffClean).not.toContain("dXNlcjpwYXNz");
+  expect(diffClean).not.toContain("\x1b");
+  expect(diffClean).toContain("<redacted>");
+
+  const bashInv = summarizeForgeInvocation("bash", {
+    command: "curl -H Authorization: Be\x1b[31marer sk-live-999",
+  });
+  const bashInvText = bashInv.lines.join("\n");
+  expect(bashInvText).not.toContain("sk-live-999");
+  expect(bashInvText).not.toContain("\x1b");
+  expect(bashInvText).toContain("<redacted>");
+
+  const bashResBearer = summarizeForgeResult("bash", false, "Authorization: Be\x1b[31marer sk-live-999");
+  const bashResBearerText = bashResBearer.lines.join("\n");
+  expect(bashResBearerText).not.toContain("sk-live-999");
+  expect(bashResBearerText).not.toContain("\x1b");
+  expect(bashResBearerText).toContain("<redacted>");
+
+  const bashResBasic = summarizeForgeResult("bash", false, "Authorization: Ba\x1b[31msic dXNlcjpwYXNz");
+  const bashResBasicText = bashResBasic.lines.join("\n");
+  expect(bashResBasicText).not.toContain("dXNlcjpwYXNz");
+  expect(bashResBasicText).not.toContain("\x1b");
+  expect(bashResBasicText).toContain("<redacted>");
+
+  const bashResOsc = summarizeForgeResult("bash", false, "token=sec\x1b]0;a b\x07ret");
+  const bashResOscText = bashResOsc.lines.join("\n");
+  expect(bashResOscText).not.toContain("bret");
+  expect(bashResOscText).not.toContain("sec");
+  expect(bashResOscText).not.toContain("ret");
+  expect(bashResOscText).not.toContain("\x1b");
+  expect(bashResOscText).not.toContain("\x07");
+  expect(bashResOscText).toContain("<redacted>");
+
+  const gluedBearer = summarizeForgeResult("bash", false, "det\x1b[31mBearer sk-secret-123");
+  const gluedBearerText = gluedBearer.lines.join("\n");
+  expect(gluedBearerText).not.toContain("sk-secret-123");
+  expect(gluedBearerText).not.toContain("\x1b");
+  expect(gluedBearerText).toContain("<redacted>");
+});
+
+test("summarizeForgeInvocation and summarizeForgeResult sanitize ESC/OSC sequences from timeout and tool names", () => {
+  const bashTimeout = summarizeForgeInvocation("bash", {
+    command: "echo ok",
+    timeout: "10\x1b]2;evil\x07",
+  });
+  expect(bashTimeout.title).toBe("Bash");
+  const bashTimeoutText = bashTimeout.lines.join("\n");
+  expect(bashTimeoutText).not.toContain("\x1b");
+  expect(bashTimeoutText).not.toContain("\x07");
+  expect(bashTimeoutText).not.toContain("evil");
+  expect(bashTimeoutText).toContain("Timeout:");
+
+  const customInv = summarizeForgeInvocation("custom\x1b]2;pwned\x07", { a: 1 });
+  expect(customInv.title).not.toContain("\x1b");
+  expect(customInv.title).not.toContain("\x07");
+  expect(customInv.title).not.toContain("pwned");
+  expect(customInv.title).toContain("custom");
+  const customInvText = customInv.lines.join("\n");
+  expect(customInvText).not.toContain("\x1b");
+  expect(customInvText).not.toContain("\x07");
+
+  const customRes = summarizeForgeResult("custom\x1b]2;pwned\x07", true, "ok\x1b]2;evil\x07");
+  expect(customRes.title).not.toContain("\x1b");
+  expect(customRes.title).not.toContain("\x07");
+  expect(customRes.title).not.toContain("pwned");
+  expect(customRes.title).toContain("custom");
+  const customResText = customRes.lines.join("\n");
+  expect(customResText).not.toContain("\x1b");
+  expect(customResText).not.toContain("\x07");
+  expect(customResText).not.toContain("evil");
 });

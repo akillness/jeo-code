@@ -2,7 +2,8 @@ import chalk from "chalk";
 import { type AgentLoopEvents } from "../../agent/engine";
 import { type TaskSubEvent } from "../../agent/task-tool";
 import { categoryBadge } from "../../tui/components/category-index";
-import { summarizeForgeInvocation } from "../../tui/components/forge";
+import { redactSecrets, summarizeForgeInvocation } from "../../tui/components/forge";
+import { sanitizeForTerminal } from "../../tui/components/code-view";
 import { formatDuration, formatUsage } from "../../tui/components/duration";
 import { LaunchTui } from "../../tui/app";
 
@@ -26,41 +27,81 @@ export function gatedStdout(real: NodeJS.WriteStream, gated: () => boolean): Nod
   }) as unknown as NodeJS.WriteStream;
 }
 
+function sliceSurrogateSafe(s: string, maxLen: number): string {
+  if (maxLen <= 0) return "";
+  if (s.length <= maxLen) return s;
+  let end = maxLen;
+  const prev = s.charCodeAt(end - 1);
+  if (prev >= 0xd800 && prev <= 0xdbff) {
+    const next = s.charCodeAt(end);
+    if (next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  return s.slice(0, end);
+}
+
 function firstOutputLine(output: string | undefined): string {
   if (!output) return "";
   const line = String(output)
     .split("\n")
     .map(l => l.trim())
     .find(l => l.length > 0);
-  return line ? line.replace(/\s+/g, " ").slice(0, 140) : "";
+  return line ? sliceSurrogateSafe(line.replace(/\s+/g, " "), 140) : "";
 }
 
 function streamResultSuffix(tool: string, ok: boolean, output: string | undefined): string {
-  const summary = firstOutputLine(output);
-  if (!summary) return "";
-  if (!ok || tool === "task") return ` — ${summary}`;
+  if (!ok || tool === "task") {
+    const summary = firstOutputLine(cleanTaskField(output));
+    return summary ? ` — ${summary}` : "";
+  }
   return "";
 }
 
+function cleanTaskField(raw: string | undefined, maxRaw = 4096): string {
+  if (!raw) return "";
+  const clipped = sliceSurrogateSafe(raw, maxRaw);
+  return redactSecrets(sanitizeForTerminal(clipped));
+}
+
+function shortenTaskModel(model: string | undefined): string {
+  const clean = cleanTaskField(model, 512).replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const slash = clean.lastIndexOf("/");
+  const leaf = slash >= 0 && slash + 1 < clean.length ? clean.slice(slash + 1) : clean;
+  return sliceSurrogateSafe(leaf, 64);
+}
+
 export function formatTaskSubEvent(e: TaskSubEvent): string {
-  const role = e.role || "subagent";
-  const roleLabel = e.detachedId ? `${role.toUpperCase()}[${e.detachedId}]`
-    : e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
-  const tokTag = e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : "";
-  const detail = firstOutputLine(e.detail);
-  const summary = e.summary ? ` — ${e.summary}` : "";
-  const badge = categoryBadge("subagent");
-  if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ ${roleLabel}`)} · ${detail}`.slice(0, 240);
-  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`├─ ${roleLabel}`)} · ${detail || "working"}`;
-  if (e.kind === "tool") return `  ${badge} ${e.success === false ? chalk.red("├─") : chalk.green("├─")} ${roleLabel} ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
-  if (e.kind === "error") return `  ${badge} ${chalk.red("├─")} ${roleLabel} ${chalk.red("✗")} ${detail || "error"}`;
   // "thinking" is a live-only TUI preview (never persisted to the ledger — see
   // TaskSubEvent.kind's doc comment) and has no place in an append-only, non-TTY
   // log stream: a reasoning delta stream would otherwise fall through to the
   // "done" branch below and print a bogus "ROLE done: <reasoning text>" line for
   // every emitted preview. Empty string signals the caller to skip the line.
   if (e.kind === "thinking") return "";
-  return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${tokTag}${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
+  const role = sliceSurrogateSafe(cleanTaskField(e.role, 512).replace(/\s+/g, " ").trim(), 48) || "subagent";
+  const roleUpper = role.toUpperCase();
+  const detachedId = sliceSurrogateSafe(cleanTaskField(e.detachedId, 512).replace(/\s+/g, " ").trim(), 48);
+  const roleLabel = detachedId ? `${roleUpper}[${detachedId}]`
+    : e.index && e.total ? `${roleUpper}[${e.index}/${e.total}]` : roleUpper;
+  const tokTag = e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : "";
+  const detail = firstOutputLine(cleanTaskField(e.detail, 4096));
+  const cleanSummary = sliceSurrogateSafe(cleanTaskField(e.summary, 4096).replace(/\s+/g, " ").trim(), 140);
+  const summary = cleanSummary ? ` — ${cleanSummary}` : "";
+  const stepTag = e.step !== undefined && e.maxSteps !== undefined
+    ? `${e.step}/${e.maxSteps}`
+    : e.step !== undefined
+      ? `step ${e.step}`
+      : e.kind === "start" && e.maxSteps !== undefined
+        ? `≤${e.maxSteps}`
+        : "";
+  const modelTag = shortenTaskModel(e.model);
+  const metaParts = [stepTag, modelTag].filter(Boolean);
+  const metaSuffix = metaParts.length > 0 ? ` ${chalk.dim(`(${metaParts.join(" · ")})`)}` : "";
+  const badge = categoryBadge("subagent");
+  if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ ${roleLabel}`)} · ${detail}${metaSuffix}`;
+  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`├─ ${roleLabel}`)} · ${detail || "working"}${metaSuffix}`;
+  if (e.kind === "tool") return `  ${badge} ${e.success === false ? chalk.red("├─") : chalk.green("├─")} ${roleLabel} ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}${metaSuffix}`;
+  if (e.kind === "error") return `  ${badge} ${chalk.red("├─")} ${roleLabel} ${chalk.red("✗")} ${detail || "error"}${metaSuffix}`;
+  return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${tokTag}${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}${metaSuffix}`;
 }
 
 export function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
@@ -107,14 +148,14 @@ export function createStreamEvents(
       log(`${categoryBadge("progress")} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
-      const label = pending || tool;
+      const label = pending || cleanTaskField(tool, 512);
       const mark = ok ? chalk.green("✓") : chalk.red("✗");
       log(`  ${categoryBadge(ok ? "done" : "error")} ${mark} ${label}${streamResultSuffix(tool, ok, output)}`);
       pending = "";
     },
-    onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(msg)}`),
+    onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(cleanTaskField(msg))}`),
     onBudget: (_limit: number, reason: string) => {
-      log(`  ${categoryBadge("progress")} ${chalk.yellow(reason)}`);
+      log(`  ${categoryBadge("progress")} ${chalk.yellow(cleanTaskField(reason))}`);
     },
     onUsage: (usage: { inputTokens: number; outputTokens: number }) => {
       latestUsage = usage;

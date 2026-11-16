@@ -181,6 +181,26 @@ test("sanitizeForFrame: an INCOMPLETE trailing escape is dropped (cannot eat the
   expect(sanitizeForFrame("z\x1b]0;partial")).toBe("z");
 });
 
+test("sanitizeForFrame strips 8-bit C1 controls and lone surrogates while keeping SGR, tab, and newline", () => {
+  expect(sanitizeForFrame("clear\u009b2Jhere")).toBe("clearhere");
+  expect(sanitizeForFrame("\u009d0;evil\u0007ok")).toBe("ok");
+  expect(sanitizeForFrame("a\u0090b\u009fc")).toBe("abc");
+
+  expect(sanitizeForFrame("abc\uD800def")).toBe("abcdef");
+  expect(sanitizeForFrame("x\uDC00y")).toBe("xy");
+  expect(sanitizeForFrame("a\uD800🚀\uDC00b")).toBe("a🚀b");
+  expect(sanitizeForFrame("\uD800").isWellFormed()).toBe(true);
+  expect(sanitizeForFrame("bad\uD800")).not.toContain("\uFFFD");
+
+  expect(sanitizeForFrame("\x1b[31mred\u009b2J\uD800\x1b[0m\t\nnext")).toBe("\x1b[31mred\x1b[0m\t\nnext");
+});
+
+test("sanitizeForFrame strips private/DEC CSI sequences ending in 'm' while keeping standard SGR", () => {
+  expect(sanitizeForFrame("a\x1b[>4;2mb\x1b[?4mc")).toBe("abc");
+  expect(sanitizeForFrame("\x1b[31mred\x1b[38;2;1;2;3mrgb\x1b[0m")).toBe("\x1b[31mred\x1b[38;2;1;2;3mrgb\x1b[0m");
+  expect(sanitizeForFrame("\x1b[>4;2m\x1b[31mok\x1b[0m\x1b[?4m")).toBe("\x1b[31mok\x1b[0m");
+});
+
 test("lastValueCache: recomputes only when the key changes (live-frame wrap memo)", () => {
   const cache = lastValueCache<string[]>();
   let calls = 0;
@@ -196,4 +216,10 @@ test("lastValueCache: recomputes only when the key changes (live-frame wrap memo
 
   cache("k1", compute); // single-slot: returning to an old key misses again
   expect(calls).toBe(3);
+});
+
+test("sanitizeForFrame strips bare ESC before an astral emoji without splitting its surrogate pair", () => {
+  const out = sanitizeForFrame("\x1b🚀hello");
+  expect(out.isWellFormed()).toBe(true);
+  expect(out).toBe("🚀hello");
 });

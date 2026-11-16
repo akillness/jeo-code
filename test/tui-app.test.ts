@@ -1444,3 +1444,38 @@ test("monitor carry: lifecycle output survives finish as sanitized monitor activ
     log.mockRestore();
   }
 });
+
+test("Memory: inline TTY mode does not retain appended ledger lines in tui.stream", () => {
+  const out: string[] = [];
+  const origAlt = process.env.JEO_TUI_ALT_SCREEN;
+  delete process.env.JEO_TUI_ALT_SCREEN;
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  try {
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    const ev = tui.events();
+    ev.onStep!(1);
+    for (let i = 0; i < 20; i++) {
+      ev.onAssistant!("", { tool: "read", arguments: { filePath: `src/file-${i}.ts` } });
+      ev.onToolResult!("read", true, `content-${i}`);
+    }
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "mem-1", detail: "check stream" });
+    tui.onSubagentEvent({ kind: "done", role: "executor", runId: "mem-1", detail: "done", success: true });
+
+    const stream = Reflect.get(tui, "stream");
+    expect(stream).toBeDefined();
+    if (stream && typeof stream === "object" && "render" in stream && typeof stream.render === "function") {
+      expect(stream.render(80)).toEqual([]);
+    } else {
+      throw new Error("stream.render missing");
+    }
+    expect(out.join("")).toContain("src/file-19.ts");
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+    if (origAlt === undefined) delete process.env.JEO_TUI_ALT_SCREEN;
+    else process.env.JEO_TUI_ALT_SCREEN = origAlt;
+  }
+});

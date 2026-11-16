@@ -265,45 +265,151 @@ export function truncateToWidth(s: string, cols: number): string {
  * with `\r\x1b[2K` progress lines) before it enters the frame — the torn-escape /
  * cursor-hijack class of screen corruption.
  */
-export function sanitizeForFrame(s: string): string {
-  if (!s.includes("\x1b") && !/[\x00-\x08\x0b-\x1f\x7f]/.test(s)) return s; // fast path
+function stripLoneSurrogatesFrame(s: string): string {
   let out = "";
-  let i = 0;
+  let last = 0;
   const n = s.length;
-  while (i < n) {
-    const ch = s[i]!;
-    if (ch === "\x1b") {
-      if (s[i + 1] === "[") {
-        // CSI: ESC [ params (0-9;:?<>= space) final (@-~)
-        let j = i + 2;
-        while (j < n && /[0-9;:?<>= ]/.test(s[j]!)) j++;
-        if (j < n && /[@-~]/.test(s[j]!)) {
-          const seq = s.slice(i, j + 1);
-          if (seq.endsWith("m")) out += seq; // keep SGR color, drop all other CSI
-          i = j + 1;
+  for (let i = 0; i < n; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdfff) {
+      if (code <= 0xdbff && i + 1 < n) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          i++;
           continue;
         }
+      }
+      if (i > last) out += s.slice(last, i);
+      last = i + 1;
+    }
+  }
+  if (last === 0) return s;
+  if (last < n) out += s.slice(last);
+  return out;
+}
+
+export function sanitizeForFrame(s: string): string {
+  const len = s.length;
+  let dirty = false;
+  for (let i = 0; i < len; i++) {
+    const code = s.charCodeAt(i);
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f)) {
+      dirty = true;
+      break;
+    }
+    if (code >= 0xd800 && code <= 0xdfff) {
+      if (code <= 0xdbff && i + 1 < len) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          i++;
+          continue;
+        }
+      }
+      dirty = true;
+      break;
+    }
+  }
+  if (!dirty) return s; // fast path
+  const clean = s.isWellFormed() ? s : stripLoneSurrogatesFrame(s);
+  let out = "";
+  let last = 0;
+  let i = 0;
+  const n = clean.length;
+  while (i < n) {
+    const code = clean.charCodeAt(i);
+    if (code === 0x1b) {
+      if (i > last) out += clean.slice(last, i);
+      const next = clean.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        // CSI: ESC [ params/intermediate (0x20-0x3f) final (0x40-0x7e)
+        // Only standard SGR parameters ([0-9:;], 0x30-0x3b) ending in 'm' are kept;
+        // private/DEC prefixes (>/?/<=/intermediates) are stripped.
+        let j = i + 2;
+        let sgrParamsOnly = true;
+        while (j < n) {
+          const c = clean.charCodeAt(j);
+          if (c < 0x20 || c > 0x3f) break;
+          if (c < 0x30 || c > 0x3b) sgrParamsOnly = false;
+          j++;
+        }
+        if (j < n) {
+          const final = clean.charCodeAt(j);
+          if (final >= 0x40 && final <= 0x7e) {
+            if (final === 0x6d && sgrParamsOnly) out += clean.slice(i, j + 1);
+            i = j + 1;
+            last = i;
+            continue;
+          }
+        }
+        last = n;
         break; // incomplete CSI at the chunk tail → drop the rest
       }
-      if (s[i + 1] === "]") {
-        // OSC: ESC ] … (BEL | ST = ESC \)
+      if (next === 0x5d) {
+        // OSC: ESC ] … (BEL | ST = ESC \ | 0x9c)
         let j = i + 2;
-        while (j < n && s[j] !== "\x07" && !(s[j] === "\x1b" && s[j + 1] === "\\")) j++;
-        if (j >= n) break; // incomplete OSC → drop
-        i = s[j] === "\x07" ? j + 1 : j + 2;
+        while (j < n) {
+          const c = clean.charCodeAt(j);
+          if (c === 0x07 || c === 0x9c || (c === 0x1b && clean.charCodeAt(j + 1) === 0x5c)) break;
+          j++;
+        }
+        if (j >= n) {
+          last = n;
+          break; // incomplete OSC → drop
+        }
+        i = clean.charCodeAt(j) === 0x1b ? j + 2 : j + 1;
+        last = i;
         continue;
       }
-      i += i + 1 < n ? 2 : 1; // other ESC x → drop ESC (+ its single byte)
+      i += i + 1 < n && next >= 0x20 && next <= 0x7e ? 2 : 1; // other ESC x → drop ESC (+ ASCII byte only)
+      last = i;
       continue;
     }
-    const code = ch.charCodeAt(0);
-    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f) {
-      i++; // strip bare control bytes (CR/BS/…), keep tab + newline
+    if (code === 0x9b) {
+      // 8-bit C1 CSI: strip sequence + payload
+      if (i > last) out += clean.slice(last, i);
+      let j = i + 1;
+      while (j < n) {
+        const c = clean.charCodeAt(j);
+        if (c < 0x20 || c > 0x3f) break;
+        j++;
+      }
+      if (j < n) {
+        const final = clean.charCodeAt(j);
+        if (final >= 0x40 && final <= 0x7e) {
+          i = j + 1;
+          last = i;
+          continue;
+        }
+      }
+      last = n;
+      break; // incomplete C1 CSI at tail → drop
+    }
+    if (code === 0x9d) {
+      // 8-bit C1 OSC: strip sequence + payload
+      if (i > last) out += clean.slice(last, i);
+      let j = i + 1;
+      while (j < n) {
+        const c = clean.charCodeAt(j);
+        if (c === 0x07 || c === 0x9c || (c === 0x1b && clean.charCodeAt(j + 1) === 0x5c)) break;
+        j++;
+      }
+      if (j >= n) {
+        last = n;
+        break;
+      }
+      i = clean.charCodeAt(j) === 0x1b ? j + 2 : j + 1;
+      last = i;
       continue;
     }
-    out += ch;
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f)) {
+      if (i > last) out += clean.slice(last, i);
+      i++; // strip bare C0/DEL/C1 control bytes, keep tab + newline
+      last = i;
+      continue;
+    }
     i++;
   }
+  if (last < n) out += clean.slice(last);
   return out;
 }
 

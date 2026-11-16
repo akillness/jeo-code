@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
 import { visibleWidth, animatedGradientText } from "./color";
 import { truncateToWidth, wrapTextWithAnsi } from "./width";
-import { lightHighlightLine } from "./code-view";
+import { lightHighlightLine, sanitizeForTerminal } from "./code-view";
 import { type UiCategory } from "./category-index";
 
 export interface ForgeSummary {
@@ -45,8 +45,19 @@ export interface ForgeBoxOptions {
   dim?: boolean;
 }
 
-const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
-const SECRET_JSON_RE = /("(?:api[_-]?key|authorization|password|secret|token)"\s*:\s*")[^"]+(")/gi;
+const SECRET_WORD_HINT_RE = /(?:api|auth|bearer|pass|secret|token)/i;
+const KEY_SEGMENT_RE = /[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g;
+const SECRET_KEY_RE = /^(?:apikey|authorization|bearer|password|passwd|secret|token)$/;
+const SECRET_METRIC_SUFFIX_RE = /^(?:count|size|limit|budget|usage|window|rate|len|length)$/;
+const SECRET_JSON_KEY_RE = /"([A-Za-z0-9_.-]{1,128})"(\s*:\s*)"/g;
+const SECRET_JSON_VAL_RE = /(?:[^"\r\n\\]|\\[^\r\n])+"/y;
+const SECRET_UNCLOSED_VAL_RE = /[^\r\n]+/y;
+const SECRET_KEY_SEP_RE = /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{1,128})(\s*[:=]\s*)/g;
+const AUTH_SCHEME_RE = /((?:bearer|basic|token|digest)\s+)/iy;
+const SECRET_DQ_VAL_RE = /"(?:\\[^\r\n]|[^"\\\r\n])*"/y;
+const SECRET_SQ_VAL_RE = /'[^'\r\n]*'/y;
+const SECRET_UNQUOTED_VAL_RE = /[^"'\s,}]+/y;
+const BEARER_SPACE_RE = /((?:(?<![A-Za-z0-9_])[Bb][Ee][Aa][Rr][Ee][Rr]|(?<=[a-z0-9])Bearer)\s+)(["']?)([^\s"',})]+)/g;
 const EXT_TO_LANG: Record<string, string> = {
   ts: "typescript",
   js: "javascript",
@@ -66,10 +77,150 @@ const EXT_TO_LANG: Record<string, string> = {
 };
 
 
+function sliceSurrogateSafe(s: string, maxLen: number): string {
+  if (maxLen <= 0) return "";
+  if (s.length <= maxLen) return s;
+  let end = maxLen;
+  const prev = s.charCodeAt(end - 1);
+  if (prev >= 0xd800 && prev <= 0xdbff) {
+    const next = s.charCodeAt(end);
+    if (next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  return s.slice(0, end);
+}
+
+function looksLikeBearerToken(raw: string): boolean {
+  if (!raw || raw === "<redacted>") return false;
+  const core = raw.replace(/[.,;!?]+$/, "");
+  if (core.length < 4) return false;
+  if (/[0-9_+=]/.test(core)) return true;
+  if (/[a-z][A-Z]/.test(core)) return true;
+  if (/^(?:sk|pk|rk|ak|tk|ghp|gho|ghu|ghs|ghr|glpat|xox[a-z]|ya29|eyJ|AIza|AKIA)[-_]/i.test(core)) return true;
+  if (/^[A-Za-z0-9]{16,}$/.test(core)) return true;
+  if (/^[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.-]{4,}$/.test(core)) return true;
+  if (/^[A-Za-z0-9_-]{4,}\/[A-Za-z0-9_/-]{4,}$/.test(core)) return true;
+  return false;
+}
+
+function isSecretKey(key: string): boolean {
+  if (!SECRET_WORD_HINT_RE.test(key)) return false;
+  const rawSegs = key.match(KEY_SEGMENT_RE);
+  if (!rawSegs || rawSegs.length === 0) return false;
+  const segs = rawSegs.map(s => s.toLowerCase());
+  const lastSeg = segs[segs.length - 1]!;
+  if (SECRET_METRIC_SUFFIX_RE.test(lastSeg)) return false;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!;
+    if (SECRET_KEY_RE.test(seg)) {
+      const next = segs[i + 1];
+      if (next && SECRET_METRIC_SUFFIX_RE.test(next)) continue;
+      return true;
+    }
+    if (seg === "api" && segs[i + 1] === "key") {
+      const next = segs[i + 2];
+      if (next && SECRET_METRIC_SUFFIX_RE.test(next)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function redactSecretJson(input: string): string {
+  SECRET_JSON_KEY_RE.lastIndex = 0;
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SECRET_JSON_KEY_RE.exec(input)) !== null) {
+    if (!isSecretKey(m[1]!)) continue;
+    const valStart = SECRET_JSON_KEY_RE.lastIndex;
+    if (valStart >= input.length) break;
+    if (input.charCodeAt(valStart) === 0x22) continue;
+    SECRET_JSON_VAL_RE.lastIndex = valStart;
+    const vm = SECRET_JSON_VAL_RE.exec(input);
+    if (vm) {
+      out += input.slice(last, valStart) + '<redacted>"';
+      last = SECRET_JSON_VAL_RE.lastIndex;
+      SECRET_JSON_KEY_RE.lastIndex = last;
+      continue;
+    }
+    SECRET_UNCLOSED_VAL_RE.lastIndex = valStart;
+    const um = SECRET_UNCLOSED_VAL_RE.exec(input);
+    if (!um) continue;
+    out += input.slice(last, valStart) + "<redacted>";
+    last = SECRET_UNCLOSED_VAL_RE.lastIndex;
+    SECRET_JSON_KEY_RE.lastIndex = last;
+  }
+  return last === 0 ? input : out + input.slice(last);
+}
+
+function redactSecretValues(input: string): string {
+  SECRET_KEY_SEP_RE.lastIndex = 0;
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SECRET_KEY_SEP_RE.exec(input)) !== null) {
+    const key = m[1]!;
+    if (!isSecretKey(key)) continue;
+    let valStart = SECRET_KEY_SEP_RE.lastIndex;
+    let schemePrefix = "";
+    if (/authorization/i.test(key)) {
+      AUTH_SCHEME_RE.lastIndex = valStart;
+      const sm = AUTH_SCHEME_RE.exec(input);
+      if (sm) {
+        schemePrefix = sm[1]!;
+        valStart = AUTH_SCHEME_RE.lastIndex;
+      }
+    }
+    if (valStart >= input.length) break;
+    const ch = input.charCodeAt(valStart);
+    let replacement: string;
+    let valEnd: number;
+    if (ch === 0x22) {
+      SECRET_DQ_VAL_RE.lastIndex = valStart;
+      const qm = SECRET_DQ_VAL_RE.exec(input);
+      if (qm) {
+        replacement = '"<redacted>"';
+        valEnd = SECRET_DQ_VAL_RE.lastIndex;
+      } else {
+        SECRET_UNCLOSED_VAL_RE.lastIndex = valStart + 1;
+        const um = SECRET_UNCLOSED_VAL_RE.exec(input);
+        if (!um) continue;
+        replacement = '"<redacted>';
+        valEnd = SECRET_UNCLOSED_VAL_RE.lastIndex;
+      }
+    } else if (ch === 0x27) {
+      SECRET_SQ_VAL_RE.lastIndex = valStart;
+      const qm = SECRET_SQ_VAL_RE.exec(input);
+      if (qm) {
+        replacement = "'<redacted>'";
+        valEnd = SECRET_SQ_VAL_RE.lastIndex;
+      } else {
+        SECRET_UNCLOSED_VAL_RE.lastIndex = valStart + 1;
+        const um = SECRET_UNCLOSED_VAL_RE.exec(input);
+        if (!um) continue;
+        replacement = "'<redacted>";
+        valEnd = SECRET_UNCLOSED_VAL_RE.lastIndex;
+      }
+    } else {
+      SECRET_UNQUOTED_VAL_RE.lastIndex = valStart;
+      const vm = SECRET_UNQUOTED_VAL_RE.exec(input);
+      if (!vm) continue;
+      replacement = "<redacted>";
+      valEnd = SECRET_UNQUOTED_VAL_RE.lastIndex;
+    }
+    out += input.slice(last, m.index) + m[0] + schemePrefix + replacement;
+    last = valEnd;
+    SECRET_KEY_SEP_RE.lastIndex = last;
+  }
+  return last === 0 ? input : out + input.slice(last);
+}
+
 export function redactSecrets(input: string): string {
-  return input
-    .replace(SECRET_VALUE_RE, (_m, key: string, sep: string, quote: string) => `${key}${sep}${quote}<redacted>`)
-    .replace(SECRET_JSON_RE, "$1<redacted>$2");
+  return redactSecretValues(redactSecretJson(input)).replace(
+    BEARER_SPACE_RE,
+    (m, prefix: string, quote: string, token: string) =>
+      looksLikeBearerToken(token) ? `${prefix}${quote}<redacted>` : m,
+  );
 }
 
 /**
@@ -98,19 +249,48 @@ function stringArg(args: Record<string, unknown>, ...keys: string[]): string | u
   return undefined;
 }
 
+function countTextLines(s: string): number {
+  let lines = 1;
+  let idx = s.indexOf("\n");
+  while (idx !== -1) {
+    lines++;
+    idx = s.indexOf("\n", idx + 1);
+  }
+  return lines;
+}
+
+function preparePreview(text: string, maxChars: number): {
+  lines: string[];
+  totalLines: number;
+  clippedRaw: boolean;
+  cleanLen: number;
+} {
+  if (text.length === 0) {
+    return { lines: [""], totalLines: 1, clippedRaw: false, cleanLen: 0 };
+  }
+  const rawBound = Math.max(8192, maxChars * 8);
+  const clippedRaw = text.length > rawBound;
+  const bounded = clippedRaw ? sliceSurrogateSafe(text, rawBound) : text;
+  const clean = redactSecrets(sanitizeForTerminal(bounded.replace(/\r\n/g, "\n")));
+  const lines = clean.split("\n");
+  const totalLines = clippedRaw ? Math.max(lines.length, countTextLines(text)) : lines.length;
+  return { lines, totalLines, clippedRaw, cleanLen: clean.length };
+}
+
 function previewLines(text: string, maxLines: number, maxChars: number): string[] {
-  const clean = redactSecrets(text.replace(/\r\n/g, "\n"));
-  const raw = clean.split("\n");
+  const { lines: raw, totalLines, clippedRaw, cleanLen } = preparePreview(text, maxChars);
   const out: string[] = [];
   let used = 0;
   for (const line of raw) {
     if (out.length >= maxLines || used >= maxChars) break;
     const remaining = Math.max(0, maxChars - used);
-    const next = line.length > remaining ? `${line.slice(0, Math.max(0, remaining - 1))}…` : line;
+    const next = line.length > remaining ? `${sliceSurrogateSafe(line, Math.max(0, remaining - 1))}…` : line;
     out.push(next);
     used += next.length + 1;
   }
-  if (raw.length > out.length || clean.length > used) out.push(`… ${Math.max(0, raw.length - out.length)} more line(s)`);
+  if (totalLines > out.length || clippedRaw || cleanLen > used) {
+    out.push(`… ${Math.max(0, totalLines - out.length)} more line(s)`);
+  }
   return out.length > 0 ? out : [""];
 }
 
@@ -118,21 +298,20 @@ function previewLines(text: string, maxLines: number, maxChars: number): string[
  *  previewed row, closed by `… N more lines` when clipped. ANSI-free so cards
  *  stay byte-stable across color modes; `│` degrades to `|` without unicode. */
 function numberedPreviewLines(text: string, maxLines: number, maxChars: number, unicode = true): string[] {
-  const clean = redactSecrets(text.replace(/\r\n/g, "\n"));
-  const raw = clean.split("\n");
+  const { lines: raw, totalLines } = preparePreview(text, maxChars);
   const gutter = unicode ? "│" : "|";
-  const width = String(Math.min(raw.length, maxLines)).length;
+  const width = String(Math.min(totalLines, maxLines)).length;
   const out: string[] = [];
   let used = 0;
   for (let i = 0; i < raw.length; i++) {
     if (out.length >= maxLines || used >= maxChars) break;
     const remaining = Math.max(0, maxChars - used);
     const line = raw[i]!;
-    const next = line.length > remaining ? `${line.slice(0, Math.max(0, remaining - 1))}…` : line;
+    const next = line.length > remaining ? `${sliceSurrogateSafe(line, Math.max(0, remaining - 1))}…` : line;
     out.push(`${String(i + 1).padStart(width)}${gutter} ${next}`);
     used += next.length + 1;
   }
-  const hidden = raw.length - out.length;
+  const hidden = totalLines - out.length;
   if (hidden > 0) out.push(`… ${hidden} more line${hidden === 1 ? "" : "s"}`);
   return out.length > 0 ? out : [""];
 }
@@ -161,7 +340,7 @@ export function editBlockDiffLines(editBlock: string, maxRows = 10): string[] | 
     if (prefix === "+") added++;
     else removed++;
     if (rows.length < maxRows) {
-      const redacted = redactSecrets(text);
+      const redacted = redactSecrets(sanitizeForTerminal(text));
       const colored = prefix === "+" ? chalk.green(`+ ${redacted}`) : chalk.red(`- ${redacted}`);
       rows.push(colored);
     }
@@ -191,13 +370,14 @@ export function editBlockDiffLines(editBlock: string, maxRows = 10): string[] | 
 
   if (block.startsWith("≔")) {
     const directive = block.split("\n", 1)[0] ?? "≔";
+    const cleanDirective = redactSecrets(sanitizeForTerminal(directive));
     const payload = block.includes("\n") ? block.slice(block.indexOf("\n") + 1) : "";
-    rows.push(redactSecrets(directive));
+    rows.push(cleanDirective);
     if (payload) for (const l of payload.split("\n")) push("+", l);
     const hidden = added - Math.max(0, rows.length - 1);
     if (hidden > 0) rows.push(`… ${hidden} more line(s)`);
     rows.push(FORGE_DIVIDER_PREFIX + "Summary");
-    rows.push(`${directive.slice(0, 24)} · +${added} line(s)`);
+    rows.push(`${sliceSurrogateSafe(cleanDirective, 24)} · +${added} line(s)`);
     return rows;
   }
 
@@ -212,9 +392,13 @@ function jsonPreview(args: Record<string, unknown>): string[] {
   }
 }
 
+function cleanForgeField(raw: string, maxLen = 1024): string {
+  return redactSecrets(sanitizeForTerminal(sliceSurrogateSafe(raw, maxLen))).replace(/\r?\n/g, " ");
+}
+
 export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: { unicode?: boolean } = {}): ForgeSummary {
   const args = asRecord(rawArgs);
-  const safeTool = tool || "(no tool)";
+  const safeTool = (tool ? cleanForgeField(String(tool), 256) : "") || "(no tool)";
   const normalized = safeTool.toLowerCase();
   if (normalized === "bash") {
     const command = stringArg(args, "command", "cmd") ?? "";
@@ -226,22 +410,28 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     if (cwdKey !== undefined) {
       const cwdVal = args[cwdKey];
       if (cwdVal !== undefined && cwdVal !== null && cwdVal !== "") {
-        lines.push(`# cwd-relative: ${cwdVal}`);
+        const cleanCwd = cleanForgeField(String(cwdVal), 512);
+        if (cleanCwd) lines.push(`# cwd-relative: ${cleanCwd}`);
       }
     }
     if (timeout) {
-      const ms = Number(timeout);
-      const secs = Number.isFinite(ms) ? (ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)) : timeout;
-      const open = opts.unicode === false ? "[" : "⟦";
-      const close = opts.unicode === false ? "]" : "⟧";
-      lines.push(`${open}Timeout: ${secs}s${close}`);
+      const cleanTimeout = cleanForgeField(timeout, 128);
+      if (cleanTimeout) {
+        const ms = Number(cleanTimeout);
+        const secs = Number.isFinite(ms) ? (ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)) : cleanTimeout;
+        const open = opts.unicode === false ? "[" : "⟦";
+        const close = opts.unicode === false ? "]" : "⟧";
+        lines.push(`${open}Timeout: ${secs}s${close}`);
+      }
     }
     return { title: "Bash", language: "bash", lines };
   }
 
   if (normalized === "read") {
-    const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
-    const range = stringArg(args, "lineRange", "range");
+    const rawFilePath = stringArg(args, "filePath", "path");
+    const filePath = (rawFilePath ? cleanForgeField(rawFilePath, 1024) : "") || "<missing path>";
+    const rawRange = stringArg(args, "lineRange", "range");
+    const range = rawRange ? cleanForgeField(rawRange, 256) : undefined;
     return {
       title: `Read ${filePath}${range ? `:${range}` : ""}`,
       language: "path",
@@ -250,7 +440,8 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   }
 
   if (normalized === "write") {
-    const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
+    const rawFilePath = stringArg(args, "filePath", "path");
+    const filePath = (rawFilePath ? cleanForgeField(rawFilePath, 1024) : "") || "<missing path>";
     const content = typeof args.content === "string" ? args.content : "";
     const lineCount = content.length === 0 ? 0 : content.split("\n").length;
     const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
@@ -267,7 +458,8 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     };
   }
   if (normalized === "edit") {
-    const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
+    const rawFilePath = stringArg(args, "filePath", "path");
+    const filePath = (rawFilePath ? cleanForgeField(rawFilePath, 1024) : "") || "<missing path>";
     const editBlock = stringArg(args, "editBlock", "edit") ?? "";
     // Diff view: SEARCH/REPLACE hunks render as -old/+new lines with a
     // hunk/line summary; ≔ directives render their payload as +added lines. Raw
@@ -281,18 +473,22 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     };
   }
   if (normalized === "find") {
-    const pattern = stringArg(args, "globPattern", "pattern") ?? "<missing glob>";
+    const rawPattern = stringArg(args, "globPattern", "pattern");
+    const pattern = (rawPattern ? cleanForgeField(rawPattern, 1024) : "") || "<missing glob>";
     return { title: `Find: ${pattern}`, language: "glob", lines: [`glob: ${pattern}`] };
   }
 
   if (normalized === "search") {
-    const pattern = stringArg(args, "pattern") ?? "<missing pattern>";
-    const glob = stringArg(args, "globPattern", "path") ?? "*";
+    const rawPattern = stringArg(args, "pattern");
+    const pattern = (rawPattern ? cleanForgeField(rawPattern, 1024) : "") || "<missing pattern>";
+    const rawGlob = stringArg(args, "globPattern", "path");
+    const glob = (rawGlob ? cleanForgeField(rawGlob, 1024) : "") || "*";
     return { title: `Search: ${pattern}`, language: "regex", lines: [`glob: ${glob}`] };
   }
 
   if (normalized === "task") {
-    const role = stringArg(args, "role") ?? "executor";
+    const rawRole = stringArg(args, "role") ?? "executor";
+    const role = redactSecrets(sanitizeForTerminal(sliceSurrogateSafe(rawRole, 512))).replace(/\s+/g, " ").trim() || "executor";
     // Fan-out/batch form (`tasks: [...]`, task-tool.ts's concurrent MAX_FANOUT path) previously
     // fell through to the single-task branch below, which only reads `task`/`prompt`/`assignment`
     // — every batch call rendered as a bare "<missing task>" placeholder with zero visibility into
@@ -305,27 +501,41 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
       ? (() => { try { const p = JSON.parse(args.tasks as string); return Array.isArray(p) ? p : args.tasks; } catch { return args.tasks; } })()
       : args.tasks;
     if (Array.isArray(tasksValue)) {
-      const items = (tasksValue as unknown[])
-        .map(entry => {
-          if (typeof entry === "string") return entry.trim();
-          if (entry && typeof entry === "object") {
-            const e = entry as Record<string, unknown>;
-            return String(e.task ?? e.assignment ?? e.prompt ?? "").trim();
-          }
-          return "";
-        })
-        .filter(Boolean);
-      const lines = items.length > 0
-        ? items.map((t, i) => {
-            const firstLine = t.split("\n")[0]!;
-            const truncated = firstLine.length > 120 || t.includes("\n");
-            return `${i + 1}. ${firstLine.slice(0, 120)}${truncated ? "…" : ""}`;
-          })
-        : ["<missing tasks>"];
-      return { title: `Task: ${role} ×${items.length}`, language: "text", lines };
+      const MAX_PREVIEW_TASKS = 6;
+      const items: string[] = [];
+      let totalCount = 0;
+      for (const entry of tasksValue as unknown[]) {
+        const raw = typeof entry === "string"
+          ? entry
+          : entry && typeof entry === "object"
+            ? String((entry as Record<string, unknown>).task ?? (entry as Record<string, unknown>).assignment ?? (entry as Record<string, unknown>).prompt ?? "")
+            : "";
+        if (raw.trim().length === 0) continue;
+        if (items.length < MAX_PREVIEW_TASKS) {
+          const clean = redactSecrets(sanitizeForTerminal(sliceSurrogateSafe(raw, 4096))).trim();
+          if (clean.length === 0) continue;
+          items.push(clean);
+        }
+        totalCount++;
+      }
+      let lines: string[];
+      if (items.length === 0) {
+        lines = ["<missing tasks>"];
+      } else {
+        lines = items.map((t, i) => {
+          const firstLine = t.split("\n")[0]!;
+          const truncated = firstLine.length > 120 || t.includes("\n");
+          return `${i + 1}. ${sliceSurrogateSafe(firstLine, 120)}${truncated ? "…" : ""}`;
+        });
+        const hidden = totalCount - items.length;
+        if (hidden > 0) lines.push(`… ${hidden} more task${hidden === 1 ? "" : "s"}`);
+      }
+      return { title: `Task: ${role} ×${totalCount}`, language: "text", lines };
     }
-    const task = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
-    const context = stringArg(args, "context");
+    const rawTask = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
+    const task = redactSecrets(sanitizeForTerminal(sliceSurrogateSafe(rawTask, 4096)));
+    const rawContext = stringArg(args, "context");
+    const context = rawContext ? redactSecrets(sanitizeForTerminal(sliceSurrogateSafe(rawContext, 4096))) : undefined;
     return {
       title: `Task: ${role}`,
       language: "text",
@@ -334,12 +544,14 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   }
 
   if (normalized === "web_search") {
-    const query = stringArg(args, "query") ?? "<missing query>";
-    const recency = stringArg(args, "recency");
+    const rawQuery = stringArg(args, "query");
+    const query = (rawQuery ? cleanForgeField(rawQuery, 1024) : "") || "<missing query>";
+    const rawRecency = stringArg(args, "recency");
+    const recency = rawRecency ? cleanForgeField(rawRecency, 128) : undefined;
     const lines = [`query: ${query}`];
     if (recency) lines.push(`recency: ${recency}`);
     return {
-      title: `Web Search: ${query.length > 60 ? `${query.slice(0, 59)}…` : query}`,
+      title: `Web Search: ${query.length > 60 ? `${sliceSurrogateSafe(query, 59)}…` : query}`,
       language: "text",
       lines,
     };
@@ -434,7 +646,7 @@ export function webSearchCardLines(output: string, opts: { unicode?: boolean } =
 
 export function summarizeForgeResult(tool: string, success: boolean, output: string): ForgeSummary {
   const status = success ? "ok" : "failed";
-  const safeTool = tool || "(no tool)";
+  const safeTool = (tool ? cleanForgeField(String(tool), 256) : "") || "(no tool)";
   const normalized = safeTool.toLowerCase();
   let body = output || "<no output>";
   let exitNote: string | null = null;

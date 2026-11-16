@@ -583,11 +583,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.49]** (2026-11-17) — Jeopi-inspired hierarchical subagent TUI panel, linear-time terminal/secret sanitization, thinking-stream throttling, and bounded memory retention.
 - **[0.12.48]** (2026-11-16) — Expand Discord session read exploration across sibling/parent/global roots while preserving private-path and write boundaries.
 - **[0.12.47]** (2026-11-16) — Fix incremental import cleanup, Unicode/Korean FTS5 search, and legacy .jeo/db auto-indexing in jeo-mem.
 - **[0.12.46]** (2026-11-16) — Package jeo-mem code graph engine directly in npm tarball without workspace protocol dependency.
 - **[0.12.45]** (2026-11-16) — Add local code graph and FTS5 BM25 search database (`jeo-mem`) with first-class `jeox` agent tool.
-- **[0.12.44]** (2026-11-15) — Jeopi-aligned one-shot draft restore, Antigravity quota pattern matching, and subagent card rendering.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

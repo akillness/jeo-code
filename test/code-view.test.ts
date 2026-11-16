@@ -127,6 +127,34 @@ test("sanitizeForTerminal strips ANSI/C0 controls, CR, and expands tabs", () => 
   expect(sanitizeForTerminal("a\u0090b\u009fc")).toBe("abc"); // stray C1 introducers
 });
 
+test("sanitizeForTerminal normalizes unpaired UTF-16 surrogates cleanly and fast-paths clean text", () => {
+  for (const bad of ["abc\uD800def", "x\uDC00y", "\uD800", "\uDC00", "\uDC00\uD800"]) {
+    const out = sanitizeForTerminal(bad);
+    expect(out.isWellFormed()).toBe(true);
+    expect(out).not.toContain("\uFFFD");
+  }
+  expect(sanitizeForTerminal("abc\uD800def")).toBe("abcdef");
+  expect(sanitizeForTerminal("x\uDC00y")).toBe("xy");
+  expect(sanitizeForTerminal("a\uD800🚀\uDC00b")).toBe("a🚀b");
+
+  const clean = "hello 한글 🚀 world";
+  expect(sanitizeForTerminal(clean)).toBe(clean);
+  expect(sanitizeForTerminal("")).toBe("");
+});
+
+test("sanitizeForTerminal handles large unterminated C1 OSC linearly and preserves valid U+FFFD", () => {
+  const t0 = performance.now();
+  const stripped = sanitizeForTerminal("\x9d".repeat(40000));
+  const elapsedMs = performance.now() - t0;
+  expect(stripped).toBe("");
+  expect(elapsedMs).toBeLessThan(50);
+
+  // Pre-existing valid U+FFFD must survive both with and without lone surrogates.
+  expect(sanitizeForTerminal("ok\uFFFDkeep")).toBe("ok\uFFFDkeep");
+  expect(sanitizeForTerminal("ok\uFFFD\uD800keep")).toBe("ok\uFFFDkeep");
+  expect(sanitizeForTerminal("\t\uFFFD\uDC00\x1b[2J!")).toBe("  \uFFFD!");
+});
+
 test("formatCodeBlock neutralizes file-origin escape sequences (no raw ESC leaks)", () => {
   const malicious = "safe line\nevil\x1b[2J\x1b[H line\nx\ty";
   const out = formatCodeBlock(malicious, { color: false });
@@ -138,4 +166,24 @@ test("formatCodeBlock neutralizes file-origin escape sequences (no raw ESC leaks
 test("formatDiff neutralizes file-origin escape sequences", () => {
   const out = formatDiff("+added\x1b[2J\n-\x1b]0;t\x07removed", { color: false });
   for (const l of out) expect(l).not.toContain("\x1b");
+});
+
+test("sanitizeForTerminal strips mixed 7-bit/8-bit OSC terminators and handles 40k unterminated mixed runs in O(n)", () => {
+  expect(sanitizeForTerminal("token\x1b]0;hello world\x9c=mysecret12345")).toBe("token=mysecret12345");
+  expect(sanitizeForTerminal("token\x9d0;hello world\x1b\\=mysecret12345")).toBe("token=mysecret12345");
+
+  const mixedRuns = [
+    "\x1b]\x9d".repeat(20000),
+    "\x1b]x\x9dy".repeat(10000),
+    "\x9d0;\x1b]1;".repeat(6700),
+  ];
+  for (const input of mixedRuns) {
+    const t0 = performance.now();
+    const stripped = sanitizeForTerminal(input);
+    const elapsedMs = performance.now() - t0;
+    expect(stripped).not.toContain("\x1b");
+    expect(stripped).not.toContain("\x9d");
+    expect(stripped).not.toContain("\x9c");
+    expect(elapsedMs).toBeLessThan(50);
+  }
 });

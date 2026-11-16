@@ -150,6 +150,43 @@ function removeIfExists(filePath: string): void {
   }
 }
 
+/**
+ * Remove stale non-existent local tarball/directory paths (e.g., vanished temp-dir
+ * `.tgz` installs) from `<globalDir>/package.json` and `bun.lock` so `bun install -g`
+ * never fails with ENOENT trying to re-resolve a deleted local path.
+ */
+function sanitizeIsolatedManifest(globalDir: string): void {
+  const pkgPath = path.join(globalDir, "package.json");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  } catch {
+    return;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const manifest = raw as Record<string, unknown>;
+  const deps = manifest.dependencies;
+  if (!deps || typeof deps !== "object" || Array.isArray(deps)) return;
+  const depMap = deps as Record<string, unknown>;
+  const spec = depMap[JEO_PACKAGE];
+  if (
+    typeof spec === "string" &&
+    spec !== "latest" &&
+    spec !== "workspace:*" &&
+    !TARBALL_SEMVER_RE.test(spec) &&
+    !/^https?:\/\//.test(spec) &&
+    !fs.existsSync(spec)
+  ) {
+    delete depMap[JEO_PACKAGE];
+    if (Object.keys(depMap).length === 0) {
+      removeIfExists(pkgPath);
+    } else {
+      fs.writeFileSync(pkgPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    removeIfExists(path.join(globalDir, "bun.lock"));
+  }
+}
+
 function moveAsideForBackup(filePath: string, backupPath: string): boolean {
   try {
     fs.lstatSync(filePath);
@@ -263,6 +300,7 @@ export function runIsolatedBunUpdate(
   fs.mkdirSync(stagingBinDir, { recursive: true });
   fs.mkdirSync(binDir, { recursive: true });
   sweepStaleBinBackups(binDir);
+  sanitizeIsolatedManifest(globalDir);
 
   // Step 1: Stage-install into the isolated global dir with a private staging bin dir.
   // If the registry fetch or install fails, the user's live bin in `binDir` is untouched.
@@ -323,7 +361,8 @@ export function runIsolatedBunUpdate(
       const sleepFn = io.sleepSync ?? (ms => Bun.sleepSync(ms));
       for (const attempt of [1, 2] as const) {
         if (attempt === 2) sleepFn(1500);
-        const spec = `${tarballBase}?cb=${nowFn()}-${attempt}`;
+        removeIfExists(path.join(globalDir, "bun.lock"));
+        const spec = `${JEO_PACKAGE}@${tarballBase}?cb=${nowFn()}-${attempt}`;
         const cmd = [bunExe, "install", "-g", spec, "--force", "--no-cache", `--registry=${NPM_REGISTRY_URL}`];
         if (runStageAttempt(cmd)) {
           staged = true;

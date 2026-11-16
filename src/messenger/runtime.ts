@@ -66,30 +66,31 @@ async function installedRuntimeVersion(root: string): Promise<string | undefined
 	}
 }
 
-/** `bun install` the pinned package; `--force --no-cache` and a cache-busted tarball fallback recover stale/404 CDN edges right after publish. */
+/** `bun install` the pinned package; `--force --no-cache` and a manifest-pinned tarball URL fallback recover stale/404 CDN edges right after publish. */
 async function installWithBun(root: string, execPath: string, version: string): Promise<void> {
 	let failure = "";
-	const registryBase = NPM_REGISTRY_URL.replace(/\/+$/, "");
-	const attempts: string[][] = [
-		["install", "--no-progress", "--no-summary"],
-		["install", "--no-progress", "--no-summary", "--force", "--no-cache", `--registry=${NPM_REGISTRY_URL}`],
-	];
-	if (VERSION.test(version)) {
-		attempts.push([
-			"add",
-			"--no-progress",
-			"--no-summary",
-			"--force",
-			"--no-cache",
-			`--registry=${NPM_REGISTRY_URL}`,
-			`${registryBase}/${MESSENGER_PACKAGE}/-/${MESSENGER_PACKAGE}-${version}.tgz?cb=${Date.now()}`,
-		]);
-	}
-	for (const args of attempts) {
+	const runInstallArgs = async (args: string[]): Promise<boolean> => {
 		const proc = Bun.spawn([execPath, ...args], { cwd: root, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
 		const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-		if (code === 0) return;
+		if (code === 0) return true;
 		failure = stderr.trim().split("\n").slice(-3).join(" ").trim() || `bun ${args[0]} exited with code ${code}`;
+		return false;
+	};
+	for (const args of [
+		["install", "--no-progress", "--no-summary"],
+		["install", "--no-progress", "--no-summary", "--force", "--no-cache", `--registry=${NPM_REGISTRY_URL}`],
+	]) {
+		if (await runInstallArgs(args)) return;
+	}
+	if (VERSION.test(version)) {
+		const registryBase = NPM_REGISTRY_URL.replace(/\/+$/, "");
+		for (const attempt of [1, 2] as const) {
+			if (attempt === 2) await Bun.sleep(1500);
+			const tarballUrl = `${registryBase}/${MESSENGER_PACKAGE}/-/${MESSENGER_PACKAGE}-${version}.tgz?cb=${Date.now()}-${attempt}`;
+			await Bun.write(path.join(root, "package.json"), `${JSON.stringify({ name: "jeo-messenger-runtime", private: true, dependencies: { [MESSENGER_PACKAGE]: tarballUrl } }, null, 2)}\n`);
+			await fs.rm(path.join(root, "bun.lock"), { force: true }).catch(() => undefined);
+			if (await runInstallArgs(["install", "--no-progress", "--no-summary", "--no-cache", `--registry=${NPM_REGISTRY_URL}`])) return;
+		}
 	}
 	throw new Error(failure);
 }

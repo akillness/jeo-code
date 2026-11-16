@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.51] - 2026-11-17
+_Sanitize stale local-tarball lockfiles in isolated global updates and rewrite messenger runtime manifests on CDN tarball fallback._
+
+### Fixed
+- **Stale local-tarball lockfile & tarball spec fix (`src/util/isolated-install.ts`):** Strip vanished local `.tgz`/path entries from `~/.jeo/global/package.json` and `bun.lock` before staging, drop stale `bun.lock` before fallback retries, and pass `jeo-code@<url>?cb=...` so Bun extracts without `ENOENT`.
+- **Messenger runtime manifest tarball fallback (`src/messenger/runtime.ts`):** When `bun install` fails on a fresh release, rewrite `<profile>/runtime/<version>/package.json` to the cache-busted `.tgz?cb=` URL and remove `bun.lock` before running `bun install`, preventing Bun from re-fetching the negative-cached bare tarball URL.
+
 ## [0.12.50] - 2026-11-17
 _Add cache-busted registry metadata lookup and canonical tarball fallback so `jeo update` and `jeo messenger update` recover from post-publish npm CDN 404s._
 

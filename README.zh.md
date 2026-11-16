@@ -581,11 +581,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.51]** (2026-11-17) — Sanitize stale local-tarball lockfiles in isolated global updates and rewrite messenger runtime manifests on CDN tarball fallback.
 - **[0.12.50]** (2026-11-17) — Add cache-busted registry metadata lookup and canonical tarball fallback so `jeo update` and `jeo messenger update` recover from post-publish npm CDN 404s.
 - **[0.12.49]** (2026-11-17) — Jeopi-inspired hierarchical subagent TUI panel, linear-time terminal/secret sanitization, thinking-stream throttling, and bounded memory retention.
 - **[0.12.48]** (2026-11-16) — Expand Discord session read exploration across sibling/parent/global roots while preserving private-path and write boundaries.
 - **[0.12.47]** (2026-11-16) — Fix incremental import cleanup, Unicode/Korean FTS5 search, and legacy .jeo/db auto-indexing in jeo-mem.
-- **[0.12.46]** (2026-11-16) — Package jeo-mem code graph engine directly in npm tarball without workspace protocol dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

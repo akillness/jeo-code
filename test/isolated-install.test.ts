@@ -687,7 +687,7 @@ describe("runIsolatedBunUpdate", () => {
       "/usr/local/bin/bun",
       "install",
       "-g",
-      "https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.3.tgz?cb=1700000000000-1",
+      "jeo-code@https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.3.tgz?cb=1700000000000-1",
       "--force",
       "--no-cache",
       `--registry=${NPM_REGISTRY_URL}`,
@@ -724,14 +724,50 @@ describe("runIsolatedBunUpdate", () => {
     expect(winRes.success).toBe(true);
     expect(winSleeps).toEqual([1500]);
     expect(winCalls).toHaveLength(5);
-    expect(winCalls[3]![3]).toBe("https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2");
+    expect(winCalls[3]![3]).toBe("jeo-code@https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2");
     expect(winCalls[4]).toEqual([
       "C:\\bun\\bun.exe",
       "install",
       "-g",
-      "https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2",
+      "jeo-code@https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2",
       `--registry=${NPM_REGISTRY_URL}`,
     ]);
+  });
+
+  test("runIsolatedBunUpdate removes stale non-existent local tarball paths from globalDir package.json and bun.lock before staging", () => {
+    const home = mkDir("home-stale-local-tarball");
+    const globalDir = path.join(home, ".jeo", "global");
+    const stalePkg = writeJson(path.join(globalDir, "package.json"), {
+      dependencies: {
+        [JEO_PACKAGE]: "/var/folders/missing/jeo-code-0.12.48.tgz",
+      },
+    });
+    const staleLock = writeText(path.join(globalDir, "bun.lock"), "{\n  \"lockfileVersion\": 2\n}\n");
+
+    let lockExistedAtSpawn = true;
+    let pkgExistedAtSpawn = true;
+    const res = runIsolatedBunUpdate("1.2.5", {
+      env: { HOME: home },
+      platform: "darwin",
+      execPath: "/usr/local/bin/bun",
+      which: () => "/usr/local/bin/bun",
+      activeVersion: () => "1.2.5",
+      spawn: (_cmd, childEnv) => {
+        lockExistedAtSpawn = fs.existsSync(staleLock);
+        pkgExistedAtSpawn = fs.existsSync(stalePkg);
+        const g = childEnv.BUN_INSTALL_GLOBAL_DIR!;
+        writeJson(path.join(g, "node_modules", JEO_PACKAGE, "package.json"), {
+          name: JEO_PACKAGE,
+          version: "1.2.5",
+        });
+        writeText(path.join(g, "node_modules", JEO_PACKAGE, "src", "cli.ts"), "#!/usr/bin/env bun\n", 0o755);
+        return { success: true, exitCode: 0 };
+      },
+    });
+
+    expect(res.success).toBe(true);
+    expect(lockExistedAtSpawn).toBe(false);
+    expect(pkgExistedAtSpawn).toBe(false);
   });
 
   test("real Bun.spawnSync bun add -g installs and upgrades v1.0.0 -> v2.0.0 in isolatedGlobal while sibling shared-global with jeopi-cli + bun.lock stays byte-identical", () => {

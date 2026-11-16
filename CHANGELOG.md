@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.46] - 2026-11-16
+_Package jeo-mem code graph engine directly in npm tarball without workspace protocol dependency._
+
+### Fixed
+- **npm packaging (`package.json`, `src/agent/jeox-tool.ts`):** Included `packages/jeo-mem/src` in `files` and switched tool import to relative path, removing `workspace:*` dependency so the published npm package installs standalone on any package manager without unresolved workspace protocols.
+
+
 ## [0.12.45] - 2026-11-16
 _Add local code graph and FTS5 BM25 search database (`jeo-mem`) with first-class `jeox` agent tool._
 

@@ -5,7 +5,7 @@
  */
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats } from "jeo-mem";
+import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats } from "../../packages/jeo-mem/src/index";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 

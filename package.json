@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.12.45",
+  "version": "0.12.46",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",
@@ -9,6 +9,8 @@
   },
   "files": [
     "src",
+    "packages/jeo-mem/src",
+    "packages/jeo-mem/SCHEMA.md",
     "scripts/install.sh",
     "scripts/install.ps1",
     "scripts/uninstall.sh",
@@ -68,8 +70,7 @@
     "chalk": "^5.3.0",
     "js-tiktoken": "^1.0.21",
     "typescript": "^5.6.3",
-    "playwright": "^1.61.0",
-    "jeo-mem": "workspace:*"
+    "playwright": "^1.61.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",

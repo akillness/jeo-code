@@ -63,7 +63,7 @@ import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks, runPrePromptHooks, runTurnEndHooks, setHookSessionId } from "../agent/hooks";
 import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
 import { reapOrphanedNativeProcesses } from "../agent/sandbox/native";
-import { createSandboxPolicy } from "../agent/sandbox/policy";
+import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "../agent/sandbox/policy";
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
 import { handleSandboxControl } from "../agent/sandbox/control";
 import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
@@ -138,7 +138,7 @@ import { bashTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/compaction";
 import * as path from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
 import {
@@ -531,7 +531,43 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     if (closing) throw new Error("Messenger worker stopping");
     const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
     const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir(), ...profilePaths];
-    const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
+    const extraReadRoots: string[] = [];
+    const tryAddExtraReadRoot = async (candidate: string): Promise<void> => {
+      try {
+        const canonical = await canonicalSandboxPath(candidate);
+        const stat = await fs.promises.stat(canonical);
+        if (!stat.isDirectory()) return;
+        if (canonical === path.parse(canonical).root) return;
+        const homeCanonical = await canonicalSandboxPath(homedir());
+        if (sandboxPathContains(canonical, homeCanonical)) return;
+        if (privateRoots.some(priv => {
+          try { return sandboxPathContains(canonical, path.resolve(priv)); } catch { return false; }
+        })) return;
+        if (!extraReadRoots.includes(canonical)) extraReadRoots.push(canonical);
+      } catch {
+        // Skip missing or non-canonical candidate roots.
+      }
+    };
+    if (process.env.JEO_MESSENGER_READ_ROOTS) {
+      try {
+        const parsed: unknown = JSON.parse(process.env.JEO_MESSENGER_READ_ROOTS);
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) if (typeof item === "string" && item.trim()) await tryAddExtraReadRoot(item);
+        }
+      } catch { /* ignore malformed env */ }
+    }
+    if (process.env.JEO_MESSENGER_READ_ACCESS === "global") {
+      await tryAddExtraReadRoot(path.dirname(cwd));
+      for (const globalCandidate of ["/opt/homebrew", "/usr/local", path.join(homedir(), ".bun", "install", "global")]) {
+        await tryAddExtraReadRoot(globalCandidate);
+      }
+    }
+    const dockerGrants = sandboxConfig.backend === "native"
+      ? undefined
+      : extraReadRoots
+          .filter(root => !sandboxPathContains(root, path.resolve(cwd)) && !sandboxPathContains(path.resolve(cwd), root))
+          .map(host => ({ host, mode: "ro" as const }));
+    const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, ...(dockerGrants?.length ? { grants: dockerGrants } : {}), privatePaths: privateRoots });
     if (closing) throw new Error("Messenger worker stopping");
     // A host that was killed left its sandbox processes running: end them before starting this session.
     if (policy.config.backend === "native") await reapOrphanedNativeProcesses().catch(() => undefined);
@@ -539,7 +575,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
       throw new Error("SANDBOX_SKILLS: the selected backend cannot transport authorized skill assets");
     }
     const snapshot = policy.config.backend === "native" ? await snapshotSandboxSkillAssets(cwd, path.join(stateDirectory, "skill-assets"), policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), config.sandboxSkillAssets ?? []) : undefined;
-    const readOnlyRoots = snapshot ? [snapshot.root] : [];
+    const readOnlyRoots = policy.config.backend === "native" ? [...(snapshot ? [snapshot.root] : []), ...extraReadRoots] : [];
     const sessionSupervisor = createSandboxSupervisor({ policy, readOnlyRoots });
     supervisor = sessionSupervisor;
     process.env.JEO_SESSION_DIR = sessionDirectory;

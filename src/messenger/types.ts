@@ -49,6 +49,8 @@ export interface MessengerPlatformConfig {
 	usageFallbackModel?: string;
 	/** Explicit Discord-only CLI trust mode; other platforms reject this setting. */
 	workerMode?: DiscordWorkerMode;
+	/** Read exploration scope for Discord sessions ("workspace" default, or "global" for non-private host reads). */
+	readAccess?: DiscordReadAccess;
 }
 
 export interface MessengerConfig {
@@ -59,6 +61,8 @@ export interface MessengerConfig {
 	cwd: string;
 	sessionDir: string;
 	toolNames: string[];
+	/** Extra host directories readable in Discord sessions (sibling repos like ../jeopi, parent/global roots). */
+	readRoots?: string[];
 	sandbox?: SandboxConfig;
 	platforms: Partial<Record<MessengerPlatform, MessengerPlatformConfig>>;
 }
@@ -99,6 +103,7 @@ export function isEnoent(error: unknown): boolean {
 }
 
 export type DiscordWorkerMode = "sandbox" | "host";
+export type DiscordReadAccess = "workspace" | "global";
 
 export interface DiscordRunRef {
 	conversationKey: string;

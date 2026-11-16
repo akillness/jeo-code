@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import type { MessengerConfig, MessengerPlatform, MessengerPlatformConfig } from "./types";
+import type { DiscordReadAccess, MessengerConfig, MessengerPlatform, MessengerPlatformConfig } from "./types";
 import { canonicalSandboxPath, sandboxPathContains, validateSandboxConfig } from "../agent/sandbox/policy";
 import type { SandboxConfig } from "../agent/sandbox/types";
 import { notifyDir } from "../agent/notify/paths";
@@ -93,7 +94,7 @@ export function parseMessengerSandbox(value: unknown): SandboxConfig {
 export function parseMessengerConfig(value: unknown, baseDir: string): MessengerConfig {
 	const input = object(value, "Messenger config");
 	if (Object.hasOwn(input, "independentSessions")) throw new Error("independentSessions is obsolete; run messenger setup to migrate to persistent conversation sessions");
-	keys(input, ["cwd", "sessionDir", "sandbox", "toolNames", "platforms"], "Messenger config");
+	keys(input, ["cwd", "sessionDir", "sandbox", "toolNames", "readRoots", "platforms"], "Messenger config");
 	const platformsInput = object(input.platforms, "platforms");
 	keys(platformsInput, PLATFORMS, "platforms");
 	if (Object.keys(platformsInput).length === 0) throw new Error("At least one messenger platform is required");
@@ -106,7 +107,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			platform === "slack"
 				? ["tokenEnv", "appTokenEnv", "allowedUserIds", "allowedChannelIds"]
 				: platform === "discord"
-					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir", "model", "usageFallbackModel", "workerMode"]
+					? ["tokenEnv", "allowedUserIds", "allowedChannelIds", "artifactDir", "model", "usageFallbackModel", "workerMode", "readAccess"]
 					: ["tokenEnv", "allowedUserIds", "allowedChannelIds"],
 			`${platform} config`,
 		);
@@ -122,6 +123,11 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 			if (item.workerMode !== "sandbox" && item.workerMode !== "host")
 				throw new Error('discord.workerMode must be "sandbox" or "host"');
 			config.workerMode = item.workerMode;
+		}
+		if (platform === "discord" && item.readAccess !== undefined) {
+			if (item.readAccess !== "workspace" && item.readAccess !== "global")
+				throw new Error('discord.readAccess must be "workspace" or "global"');
+			config.readAccess = item.readAccess as DiscordReadAccess;
 		}
 		if (platform === "discord" && item.artifactDir !== undefined)
 			config.artifactDir = path.resolve(baseDir, string(item.artifactDir, "discord.artifactDir"));
@@ -141,6 +147,19 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 	) {
 		throw new Error("toolNames must be a unique list drawn from read, grep, glob, find, search, bash, edit, write, computer");
 	}
+	let readRoots: string[] | undefined;
+	if (input.readRoots !== undefined) {
+		if (!Array.isArray(input.readRoots)) throw new Error("readRoots must be an array of directory paths");
+		const home = os.homedir();
+		const resolved: string[] = [];
+		for (const item of input.readRoots) {
+			const raw = string(item, "readRoots[]");
+			const expanded = raw === "~" ? home : raw.startsWith("~/") || raw.startsWith("~\\") ? path.join(home, raw.slice(2)) : raw;
+			const abs = path.resolve(baseDir, expanded);
+			if (!resolved.includes(abs)) resolved.push(abs);
+		}
+		readRoots = resolved;
+	}
 	// Discord's default is selected per request, without imposing it on other platforms.
 	const sandbox: SandboxConfig | undefined = input.sandbox !== undefined ? parseMessengerSandbox(input.sandbox) : undefined;
 	const cwd = path.resolve(baseDir, input.cwd === undefined ? "." : string(input.cwd, "cwd"));
@@ -152,6 +171,7 @@ export function parseMessengerConfig(value: unknown, baseDir: string): Messenger
 		cwd,
 		sessionDir,
 		toolNames: [...toolNames] as string[],
+		...(readRoots !== undefined ? { readRoots } : {}),
 		...(sandbox ? { sandbox } : {}),
 		platforms,
 	};

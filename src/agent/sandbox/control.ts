@@ -5,7 +5,7 @@ export interface SandboxControlResult {
   output: string;
 }
 
-const USAGE = "Usage: /sandbox approve <requestId> | /sandbox deny <requestId> | /sandbox revoke | /sandbox status";
+const USAGE = "Usage: /sandbox approve <requestId> | /sandbox deny <requestId> | /sandbox grant <path> [ro|rw] | /sandbox revoke | /sandbox status";
 
 /** Only standalone, directly submitted parent controls can make human decisions. */
 export async function handleSandboxControl(
@@ -25,6 +25,18 @@ export async function handleSandboxControl(
         ? await authority.approve(parts[2]!, actor)
         : await authority.reject(parts[2]!, actor);
       return { handled: true, output: `Sandbox request ${request.id}: ${request.status} (${request.mode} ${request.host}).` };
+    }
+    if (command === "grant" && (parts.length === 3 || parts.length === 4)) {
+      // Verify actor authority before creating any pending grant request.
+      authority.snapshot(actor);
+      const rawMode = parts[3];
+      if (rawMode !== undefined && rawMode !== "ro" && rawMode !== "rw") {
+        return { handled: true, output: `Invalid sandbox control. ${USAGE}` };
+      }
+      const mode: "ro" | "rw" = rawMode ?? "ro";
+      const req = await authority.requestAccess(parts[2]!, mode);
+      const approved = await authority.approve(req.id, actor);
+      return { handled: true, output: `Sandbox grant approved (${approved.mode} ${approved.host}).` };
     }
     if (command === "revoke" && parts.length === 2) {
       await authority.revoke(actor);

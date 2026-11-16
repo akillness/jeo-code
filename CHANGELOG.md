@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.48] - 2026-11-16
+_Expand Discord session read exploration across sibling/parent/global roots while preserving private-path and write boundaries._
+
+### Added
+- **Configurable Discord read roots & global read access (`src/messenger/types.ts`, `src/messenger/config.ts`, `src/messenger/discord-setup.ts`, `src/commands/messenger.ts`):** Added `readRoots` (`--read-root`) and `platforms.discord.readAccess` (`"workspace" | "global"`, `--read-access`) so Discord sessions can explore sibling repositories such as `../jeopi`, parent directories, and global toolchain roots.
+- **Thread-level `/grant` & `/sandbox grant` controls (`src/messenger/host-actions.ts`, `src/messenger/gateway.ts`, `src/agent/sandbox/control.ts`):** Added `/grant <path|global|list|revoke>` for Discord host sessions and `/sandbox grant <path> [ro|rw]` (plus `/grant` forwarding) for sandbox sessions.
+
+### Fixed
+- **Sandbox & host-read boundary hardening (`src/commands/launch.ts`, `src/agent/sandbox/native.ts`, `src/messenger/host-actions.ts`):** Wired `readRoots` / `readAccess` into native `readOnlyRoots` and non-overlapping Docker `ro` grants, moved Seatbelt/bwrap `privatePaths` denial after `readOnlyRoots` allows, and enabled approval-free read-only tools and `git -C` / `READ_COMMANDS` in granted roots while keeping `privateRoots` denied and external writes approval-gated.
+
+
 ## [0.12.47] - 2026-11-16
 _Fix incremental import cleanup, Unicode/Korean FTS5 search, and legacy .jeo/db auto-indexing in jeo-mem._
 

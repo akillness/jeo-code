@@ -4,14 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { isMessengerMessageAllowed, messengerConversationKey } from "./gateway";
 import { discordHostActionDigest, isDiscordHostAction } from "./host-protocol";
-import type { DiscordHostAction, DiscordRunRef, MessengerConfig, MessengerMessage } from "./types";
+import type { DiscordHostAction, DiscordReadAccess, DiscordRunRef, MessengerConfig, MessengerMessage } from "./types";
 import { messengerProfilePrivatePaths } from "./config";
 import { jeoHomeDir, notifySessionsDir } from "../agent/notify/paths";
+
+export interface DiscordReadGrantStatus {
+  readAccess: DiscordReadAccess;
+  readRoots: string[];
+}
 
 export interface DiscordHostAuthority {
   bind(run: DiscordRunRef, message: MessengerMessage, workspaceRoot: string): void;
   authorize(run: DiscordRunRef, action: DiscordHostAction, signal: AbortSignal): Promise<void>;
   decide(message: MessengerMessage, requestId: string, decision: "approve" | "deny"): string;
+  grantReadRoot(conversationKey: string, requestedPath: string, baseCwd?: string): DiscordReadGrantStatus;
+  revokeReadRoots(conversationKey: string): DiscordReadGrantStatus;
+  readStatus(conversationKey?: string): DiscordReadGrantStatus;
   invalidate(conversationKey: string): void;
   release(run: DiscordRunRef): void;
   close(): void;
@@ -63,7 +71,8 @@ function canonicalPath(target: string): string {
   }
 }
 
-const AUTO_TOOLS: Record<string, true> = { read: true, write: true, edit: true, find: true, search: true, ls: true, mkdir: true, calc: true, web_search: true };
+const READ_ONLY_TOOLS: Record<string, true> = { read: true, find: true, search: true, ls: true };
+const AUTO_TOOLS: Record<string, true> = { ...READ_ONLY_TOOLS, write: true, edit: true, mkdir: true, calc: true, web_search: true };
 const READ_COMMANDS: Record<string, true> = { pwd: true, ls: true, cat: true, head: true, tail: true, wc: true, grep: true, rg: true, find: true, stat: true, file: true, sort: true, uniq: true, diff: true, cmp: true, printf: true, echo: true, true: true, false: true, test: true, "[": true };
 const SAFE_GIT: Record<string, true> = { status: true, diff: true, log: true, show: true, "rev-parse": true, "ls-files": true, "ls-tree": true, "check-ignore": true, describe: true };
 const SAFE_ENV: Record<string, true> = { CI: true, NODE_ENV: true, FORCE_COLOR: true, NO_COLOR: true, TERM: true, COLUMNS: true, LINES: true, TZ: true };
@@ -84,7 +93,20 @@ const SAFE_READ_FLAGS: Record<string, RegExp> = {
 const SAFE_GIT_FLAG = /^-(?:[0-9]+|[pquswbMCr]+|n[0-9]*|U[0-9]*)$|^--(?:short|branch|porcelain|stat|shortstat|numstat|name-only|name-status|cached|staged|no-ext-diff|no-textconv|color|word-diff|check|relative|unified|ignore-space-at-eol|ignore-space-change|ignore-all-space|oneline|decorate|graph|all|max-count|format|pretty|abbrev-ref|show-toplevel|show-prefix|show-cdup|git-common-dir|is-inside-work-tree)(?:=|$)/;
 
 /** Shell syntax we do not classify is approval-only, never guessed safe. Script internals remain CLI-trusted. */
-function shellNeedsApproval(command: string, env: unknown, cwd: string, workspaceRoot: string, privateRoots: readonly string[]): boolean {
+interface ReadScope {
+  global: boolean;
+  roots: readonly string[];
+}
+
+function globBasePrefix(pattern: string): string | undefined {
+  const match = /[*?\[{]/.exec(pattern);
+  const raw = match ? pattern.slice(0, match.index) : pattern;
+  const trimmed = raw.replace(/[\\/]+$/, "");
+  return trimmed || undefined;
+}
+
+/** Shell syntax we do not classify is approval-only, never guessed safe. Script internals remain CLI-trusted. */
+function shellNeedsApproval(command: string, env: unknown, cwd: string, workspaceRoot: string, privateRoots: readonly string[], readScope: ReadScope): boolean {
   if (!command.trim() || /[\x00-\x08]/.test(command)) throw new Error("Invalid host shell command");
   const plain = command.replace(/["'\\]/g, "");
   if (/:\(\)\s*\{\s*:\s*\|\s*:&?\s*;?\s*\}\s*;\s*:/.test(plain) || /\b(?:mkfs(?:\.\w+)?|diskutil\s+erase\w*)\b/i.test(plain) || /\bdd\b[^\n]*\bof=\/dev\//i.test(plain)) throw new Error("Catastrophic host shell actions are not permitted");
@@ -132,54 +154,85 @@ function shellNeedsApproval(command: string, env: unknown, cwd: string, workspac
     // Even innocuous-looking wrappers can change executable/environment resolution.
     const executable = tokens[0];
     if (executable.includes("/") || executable.includes("=") || /[*?\[\]]/.test(executable)) return true;
-    let unsafeOperand = false;
+    let outsideWorkspace = false;
+    let outsideReadScope = false;
     if (READ_COMMANDS[executable] || PACKAGE_COMMANDS[executable] || BUILD_COMMANDS[executable] || TEST_COMMANDS[executable] || executable === "git" || executable === "cd") {
       let endOptions = false;
       for (const token of tokens.slice(1)) {
         if (!endOptions && token === "--") { endOptions = true; continue; }
-        if (/[*?\[\]~]/.test(token)) { unsafeOperand = true; continue; }
+        if (/[*?\[\]~]/.test(token)) { outsideWorkspace = true; outsideReadScope = true; continue; }
         const operand = !endOptions && token.startsWith("-") ? token.includes("=") ? token.slice(token.indexOf("=") + 1) : undefined : token;
-        if (operand === undefined) { if (/[\/\\]/.test(token)) unsafeOperand = true; continue; }
+        if (operand === undefined) { if (/[\/\\]/.test(token)) { outsideWorkspace = true; outsideReadScope = true; } continue; }
         const target = canonicalPath(path.resolve(cwd, operand));
         if (privateRoots.some(root => within(canonicalPath(root), target))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
-        if (!within(workspaceRoot, target)) unsafeOperand = true;
+        const inWorkspace = within(workspaceRoot, target);
+        if (!inWorkspace) {
+          outsideWorkspace = true;
+          const inReadScope = readScope.global || readScope.roots.some(root => within(root, target));
+          if (!inReadScope) outsideReadScope = true;
+        }
         // diff follows file symlinks discovered inside directory operands even without -r.
-        if (executable === "diff" && fs.existsSync(target) && fs.statSync(target).isDirectory()) unsafeOperand = true;
+        if (executable === "diff" && fs.existsSync(target) && fs.statSync(target).isDirectory()) { outsideWorkspace = true; outsideReadScope = true; }
       }
     }
     if (READ_COMMANDS[executable]) {
       if (tokens.slice(1).some(token => token.startsWith("-") && token !== "--" && !SAFE_READ_FLAGS[executable]?.test(token))) return true;
-      return unsafeOperand;
+      return outsideReadScope;
     }
-    if (executable === "cd") return tokens.length !== 2 || unsafeOperand;
-    if (executable === "git") return unsafeOperand || !SAFE_GIT[tokens[1]] || tokens.slice(2).some(token => token.startsWith("-") && token !== "--" && !SAFE_GIT_FLAG.test(token));
+    if (executable === "cd") return tokens.length !== 2 || outsideReadScope;
+    if (executable === "git") {
+      // Allow read-only `git -C <readable-dir> <safe-subcmd> ...` across workspace and read roots.
+      if (tokens[1] === "-C" && tokens.length >= 4 && SAFE_GIT[tokens[3]]) {
+        const dirTarget = canonicalPath(path.resolve(cwd, tokens[2]!));
+        if (privateRoots.some(root => within(canonicalPath(root), dirTarget))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
+        const dirReadable = within(workspaceRoot, dirTarget) || readScope.global || readScope.roots.some(root => within(root, dirTarget));
+        if (!dirReadable) return true;
+        return outsideReadScope || tokens.slice(4).some(token => token.startsWith("-") && token !== "--" && !SAFE_GIT_FLAG.test(token));
+      }
+      return outsideReadScope || !SAFE_GIT[tokens[1]] || tokens.slice(2).some(token => token.startsWith("-") && token !== "--" && !SAFE_GIT_FLAG.test(token));
+    }
     // Attached short-option values are not a generic grammar (e.g. Maven -f.., pytest -cfile).
     if ((PACKAGE_COMMANDS[executable] || BUILD_COMMANDS[executable] || TEST_COMMANDS[executable]) && tokens.slice(1).some(token => /^-[^-].+/.test(token))) return true;
     if (PACKAGE_COMMANDS[executable]) {
       const script = tokens[1] === "run" ? tokens[2] : tokens[1];
-      return unsafeOperand || !/^(?:test|build|lint|typecheck|check|format)(?::[\w-]+)?$/.test(script ?? "");
+      return outsideWorkspace || !/^(?:test|build|lint|typecheck|check|format)(?::[\w-]+)?$/.test(script ?? "");
     }
-    if (BUILD_COMMANDS[executable]) return unsafeOperand || !/^(?:test|build|check|clippy|vet|fmt|compile|test-compile)$/.test(tokens[1] ?? "");
-    if (TEST_COMMANDS[executable]) return unsafeOperand;
+    if (BUILD_COMMANDS[executable]) return outsideWorkspace || !/^(?:test|build|check|clippy|vet|fmt|compile|test-compile)$/.test(tokens[1] ?? "");
+    if (TEST_COMMANDS[executable]) return outsideWorkspace;
     return true;
   }).some(Boolean);
 }
 
-function risk(action: DiscordHostAction, binding: Binding, privateRoots: readonly string[]): boolean {
+function risk(action: DiscordHostAction, binding: Binding, privateRoots: readonly string[], readScope: ReadScope): boolean {
   if (action.kind === "artifact_upload") {
     if (action.channelId !== (binding.message.threadId ?? binding.message.channelId)) throw new Error("Host artifact destination does not match its authenticated thread");
     return true;
   }
+  const isReadTool = Boolean(READ_ONLY_TOOLS[action.tool]);
+  const pathAllowedWithoutApproval = (target: string, allowReadScope: boolean): boolean => {
+    if (within(binding.workspaceRoot, target)) return true;
+    if (!allowReadScope) return false;
+    return readScope.global || readScope.roots.some(root => within(root, target));
+  };
   const cwd = path.resolve(action.cwd);
   const canonicalCwd = canonicalPath(cwd);
   if (privateRoots.some(root => within(root, canonicalCwd))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
-  let approval = !within(binding.workspaceRoot, canonicalCwd);
+  let approval = !pathAllowedWithoutApproval(canonicalCwd, isReadTool || action.tool === "bash");
   for (const key of ["filePath", "path", "dirPath", "targetPath", "dir"]) {
     const value = action.args[key];
     if (typeof value !== "string") continue;
     const target = canonicalPath(path.resolve(cwd, value));
     if (privateRoots.some(root => within(canonicalPath(root), target))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
-    if (!within(binding.workspaceRoot, target)) approval = true;
+    if (!pathAllowedWithoutApproval(target, isReadTool)) approval = true;
+  }
+  if (typeof action.args.globPattern === "string") {
+    const prefix = globBasePrefix(action.args.globPattern);
+    if (prefix) {
+      const expanded = prefix === "~" ? os.homedir() : prefix.startsWith("~/") ? path.join(os.homedir(), prefix.slice(2)) : prefix;
+      const target = canonicalPath(path.resolve(cwd, expanded));
+      if (privateRoots.some(root => within(canonicalPath(root), target))) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
+      if (!pathAllowedWithoutApproval(target, isReadTool)) approval = true;
+    }
   }
   if (action.tool === "ast_grep" || action.tool === "ast_edit") {
     // The worker resolves and opens targets after authorization, so symlink swaps
@@ -201,7 +254,10 @@ function risk(action: DiscordHostAction, binding: Binding, privateRoots: readonl
     const command = String(action.args.command ?? action.args.cmd ?? "");
     const plain = command.replace(/["'\\]/g, "");
     if (privateRoots.some(root => plain.includes(root)) || /(?:~|\$HOME|\$\{HOME\})\/\.(?:ssh|aws|gnupg|jeo)(?:\/|\b)/.test(plain)) throw new Error("Private host configuration and credentials are not accessible through Discord tools");
-    return shellNeedsApproval(command, action.args.env, cwd, binding.workspaceRoot, privateRoots) || approval;
+    const bashNeedsApproval = shellNeedsApproval(command, action.args.env, cwd, binding.workspaceRoot, privateRoots, readScope);
+    if (bashNeedsApproval) return true;
+    // Read-only commands allowed by shellNeedsApproval may also run with cwd in an approved read root.
+    return approval;
   }
   if (action.tool === "delete") return true;
   if (!AUTO_TOOLS[action.tool]) return true;
@@ -223,7 +279,27 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
   const consumedMessages = new Set<string>();
   const retiredRuns = new Set<string>();
   const generations = new Map<string, number>();
+  const threadReadRoots = new Map<string, Set<string>>();
+  const threadGlobalRead = new Map<string, boolean>();
   let closed = false;
+  const resolvePrivateRoots = async (): Promise<string[]> => {
+    const profilePaths = config.profileDir ? await messengerProfilePrivatePaths(config.profileDir, config.cwd) : [];
+    return [config.sessionDir, ...profilePaths, jeoHomeDir(), notifySessionsDir(), path.join(os.homedir(), ".ssh"), path.join(os.homedir(), ".aws"), path.join(os.homedir(), ".gnupg")].map(canonicalPath);
+  };
+  const syncPrivateRoots = (): string[] => {
+    const profilePaths = config.profileDir ? [config.profileDir, path.join(config.profileDir, "messenger.json")] : [];
+    return [config.sessionDir, ...profilePaths, jeoHomeDir(), notifySessionsDir(), path.join(os.homedir(), ".ssh"), path.join(os.homedir(), ".aws"), path.join(os.homedir(), ".gnupg")].map(canonicalPath);
+  };
+  const scopeFor = (conversationKey?: string): ReadScope => {
+    const baseGlobal = config.platforms.discord?.readAccess === "global";
+    const grantedGlobal = conversationKey ? threadGlobalRead.get(conversationKey) === true : false;
+    const configured = (config.readRoots ?? []).map(root => canonicalPath(root));
+    const granted = conversationKey ? [...(threadReadRoots.get(conversationKey) ?? [])] : [];
+    return {
+      global: baseGlobal || grantedGlobal,
+      roots: [...new Set([...configured, ...granted])],
+    };
+  };
   const invalidate = (key: string) => {
     const binding = bindings.get(key);
     if (binding) retiredRuns.add(JSON.stringify([binding.run.conversationKey, binding.run.sessionId, binding.run.generation, binding.run.runId]));
@@ -254,12 +330,11 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
       if (!isDiscordHostAction(action)) throw new Error("Invalid Discord host action");
       const snapshot = structuredClone(action);
       const digest = discordHostActionDigest(snapshot);
-      const profilePaths = config.profileDir ? await messengerProfilePrivatePaths(config.profileDir, config.cwd) : [];
-      const privateRoots = [config.sessionDir, ...profilePaths, jeoHomeDir(), notifySessionsDir(), path.join(os.homedir(), ".ssh"), path.join(os.homedir(), ".aws"), path.join(os.homedir(), ".gnupg")].map(canonicalPath);
+      const privateRoots = await resolvePrivateRoots();
+      const readScope = scopeFor(run.conversationKey);
       signal.throwIfAborted();
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before authorization");
-      const requiresApproval = risk(snapshot, binding, privateRoots);
-      signal.throwIfAborted();
+      const requiresApproval = risk(snapshot, binding, privateRoots, readScope);
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before authorization");
       if (!requiresApproval) {
         signal.throwIfAborted();
@@ -292,7 +367,7 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
       if (!delivered) throw new Error("Discord host approval could not be delivered");
       signal.throwIfAborted();
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before execution");
-      risk(snapshot, binding, privateRoots);
+      risk(snapshot, binding, privateRoots, readScope);
       signal.throwIfAborted();
       if (current(run) !== binding || discordHostActionDigest(action) !== digest) throw new Error("Discord host action changed or became stale before execution");
     },
@@ -305,6 +380,39 @@ export function createDiscordHostAuthority(config: MessengerConfig, notify: (run
       consumedMessages.add(messageKey);
       request.settle(decision === "approve" ? undefined : new Error("Discord host action denied"));
       return decision === "approve" ? "Exact action approved once; execution has not been confirmed." : "Exact action denied.";
+    },
+    grantReadRoot(conversationKey, requestedPath, baseCwd) {
+      const trimmed = requestedPath.trim();
+      if (!trimmed || /[\u0000-\u001f\u007f]/u.test(trimmed)) throw new Error("Invalid read root path");
+      if (trimmed.toLowerCase() === "global") {
+        threadGlobalRead.set(conversationKey, true);
+      } else {
+        const expanded = trimmed === "~" ? os.homedir() : trimmed.startsWith("~/") || trimmed.startsWith("~\\") ? path.join(os.homedir(), trimmed.slice(2)) : trimmed;
+        const anchor = baseCwd || bindings.get(conversationKey)?.workspaceRoot || config.cwd;
+        const target = canonicalPath(path.resolve(anchor, expanded));
+        const privateRoots = syncPrivateRoots();
+        if (privateRoots.some(root => within(root, target) || within(target, root))) {
+          throw new Error("Private host configuration and credentials cannot be granted as a read root");
+        }
+        let existing = threadReadRoots.get(conversationKey);
+        if (!existing) {
+          existing = new Set<string>();
+          threadReadRoots.set(conversationKey, existing);
+        }
+        existing.add(target);
+      }
+      const scope = scopeFor(conversationKey);
+      return { readAccess: scope.global ? "global" : "workspace", readRoots: [...scope.roots] };
+    },
+    revokeReadRoots(conversationKey) {
+      threadReadRoots.delete(conversationKey);
+      threadGlobalRead.delete(conversationKey);
+      const scope = scopeFor(conversationKey);
+      return { readAccess: scope.global ? "global" : "workspace", readRoots: [...scope.roots] };
+    },
+    readStatus(conversationKey) {
+      const scope = scopeFor(conversationKey);
+      return { readAccess: scope.global ? "global" : "workspace", readRoots: [...scope.roots] };
     },
     invalidate,
     release(run) { const binding = bindings.get(run.conversationKey); if (binding && sameRun(binding.run, run)) invalidate(run.conversationKey); },

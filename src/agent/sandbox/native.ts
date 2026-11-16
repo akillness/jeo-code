@@ -119,9 +119,9 @@ export function seatbeltProfile(layout: NativeSandboxLayout): string {
     `(allow mach-lookup (global-name ${sbplString(sessionService(layout.session))}))`,
     `(allow file-read* ${subpaths(systemRoots)})`,
     '(allow file-read* (literal "/"))',
-    `(deny file-read* ${subpaths(layout.privatePaths)})`,
     `(allow file-read-metadata ${literals(traversable)})`,
     `(allow file-read* ${subpaths(readable)} (literal ${sbplString(layout.runtime)}))`,
+    `(deny file-read* ${subpaths(layout.privatePaths)})`,
     `(allow file-write* ${subpaths(writable)})`,
     '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (literal "/dev/stdout") (literal "/dev/stderr") (subpath "/dev/fd"))',
     '(allow file-ioctl (literal "/dev/null"))',
@@ -149,10 +149,10 @@ export function bubblewrapArgs(layout: NativeSandboxLayout, existing: ReadonlyMa
     masked.push(target);
   };
   for (const root of ["/tmp", "/var/tmp", "/run", "/mnt", "/media", "/home", "/root", layout.home]) mask(root);
-  for (const privatePath of layout.privatePaths) mask(privatePath);
   for (const root of layout.readOnlyRoots) args.push("--ro-bind", root, root);
   args.push("--ro-bind", layout.runtime, layout.runtime);
   for (const mount of layout.mounts) args.push(mount.mode === "rw" ? "--bind" : "--ro-bind", mount.host, mount.host);
+  for (const privatePath of layout.privatePaths) mask(privatePath);
   args.push("--bind", layout.session, layout.session, "--ro-bind", path.join(layout.session, "runtime"), path.join(layout.session, "runtime"));
   args.push("--clearenv");
   for (const [key, value] of Object.entries(env)) args.push("--setenv", key, value);

@@ -8,7 +8,7 @@ import { installMessengerService, messengerServicePlan, restartMessengerService 
 import { MESSENGER_RUN_SCRIPT_POSIX, MESSENGER_RUN_SCRIPT_WINDOWS, MESSENGER_TOKEN_FILE, messengerExecutablePath, messengerLauncherContent, writePrivateFile } from "./launcher";
 import { MESSENGER_PACKAGE, messengerRuntimeCommand, messengerRuntimePlan, messengerRuntimeRoot, provisionMessengerRuntime, pruneMessengerRuntimes, readMessengerProfiles, registerMessengerProfile, type MessengerRuntime, type MessengerRuntimeDeps } from "./runtime";
 import { isEnoent, isRecord } from "./types";
-import type { DiscordWorkerMode } from "./types";
+import type { DiscordReadAccess, DiscordWorkerMode } from "./types";
 import { jeoHomeDir, notifyDir, notifySessionsDir } from "../agent/notify/paths";
 import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "../agent/sandbox/policy";
 import type { SandboxConfig } from "../agent/sandbox/types";
@@ -74,6 +74,8 @@ export interface DiscordSetupOptions {
 	/** messenger.json to create or update; its directory becomes the private profile directory. */
 	configPath: string;
 	workerMode?: DiscordWorkerMode;
+	readAccess?: DiscordReadAccess;
+	readRoots?: string[];
 	/** Existing project to use; relative paths resolve from the setup invocation directory. */
 	projectPath?: string;
 	channelIds?: string[];
@@ -732,6 +734,8 @@ export async function setupDiscordMessenger(
 
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
 	if (workerMode !== undefined) discord.workerMode = workerMode;
+	const readAccess = options.readAccess ?? (previous.readAccess === "workspace" || previous.readAccess === "global" ? previous.readAccess : undefined);
+	if (readAccess !== undefined) discord.readAccess = readAccess;
 	if (options.artifacts) discord.artifactDir = "./artifacts";
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
 	throwIfAborted(deps.signal);
@@ -748,10 +752,13 @@ export async function setupDiscordMessenger(
 		if (existing) io.say(`The existing config had no "cwd"; its sandbox workspace is now ${cwd}. No existing files were moved or deleted.`);
 	}
 	throwIfAborted(deps.signal);
+	const existingReadRoots = Array.isArray(existing?.readRoots) ? existing.readRoots.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0) : undefined;
+	const readRoots = options.readRoots !== undefined ? options.readRoots.map(r => path.resolve(r === "~" ? os.homedir() : r.startsWith("~/") ? path.join(os.homedir(), r.slice(2)) : r)) : existingReadRoots;
 	const config = {
 		...existing,
 		cwd,
 		sessionDir,
+		...(readRoots?.length ? { readRoots } : {}),
 		...(sandbox ? { sandbox } : {}),
 		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : [...DEFAULT_MESSENGER_TOOLS]),
 		platforms: { ...platforms, discord },

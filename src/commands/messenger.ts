@@ -16,7 +16,7 @@ import type { DiscordThreadAdmission } from "../messenger/thread-registry";
 import { createDiscordHostAuthority } from "../messenger/host-actions";
 import { createSlackAdapter } from "../messenger/slack";
 import { createTelegramAdapter } from "../messenger/telegram";
-import { isEnoent, MessengerUnverifiedReplyError, type DiscordRunRef, type DiscordWorkerMode, type MessengerAdapter, type MessengerConfig, type MessengerMessage, type MessengerReply, type MessengerRequestOutcome } from "../messenger/types";
+import { isEnoent, MessengerUnverifiedReplyError, type DiscordReadAccess, type DiscordRunRef, type DiscordWorkerMode, type MessengerAdapter, type MessengerConfig, type MessengerMessage, type MessengerReply, type MessengerRequestOutcome } from "../messenger/types";
 import { reapOrphanedNativeProcesses } from "../agent/sandbox/native";
 import { createSession } from "../agent/session";
 import { selectDiscordModel } from "../messenger/model-selection";
@@ -69,18 +69,18 @@ async function sendSandboxControl(config: MessengerConfig, id: string, userId: s
 }
 
 type MessengerAction = "setup" | "check" | "run" | "update";
-type Flags = { config?: string; channel: string[]; user: string[]; tools?: string; artifacts: boolean; service: boolean; noDm: boolean; workerMode?: DiscordWorkerMode; projectPath?: string };
+type Flags = { config?: string; channel: string[]; user: string[]; tools?: string; artifacts: boolean; service: boolean; noDm: boolean; workerMode?: DiscordWorkerMode; projectPath?: string; readAccess?: DiscordReadAccess; readRoots: string[] };
 
 function parse(args: string[]): { action: MessengerAction; flags: Flags } {
 	const action = args.shift();
 	if (action !== "setup" && action !== "check" && action !== "run" && action !== "update") throw new Error("Usage: jeo messenger setup|check|run --config <file> | jeo messenger update [--config <file>]");
-	const flags: Flags = { channel: [], user: [], artifacts: false, service: false, noDm: false };
+	const flags: Flags = { channel: [], user: [], artifacts: false, service: false, noDm: false, readRoots: [] };
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
 		if (arg === "--artifacts") flags.artifacts = true;
 		else if (arg === "--service") flags.service = true;
 		else if (arg === "--no-dm") flags.noDm = true;
-		else if (["--config", "--channel", "--user", "--tools", "--worker-mode", "--project"].includes(arg)) {
+		else if (["--config", "--channel", "--user", "--tools", "--worker-mode", "--project", "--read-access", "--read-root"].includes(arg)) {
 			const value = args[++index];
 			if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
 			if (arg === "--config") flags.config = value;
@@ -89,10 +89,17 @@ function parse(args: string[]): { action: MessengerAction; flags: Flags } {
 				if (value !== "host" && value !== "sandbox") throw new Error("--worker-mode must be host or sandbox");
 				flags.workerMode = value;
 			} else if (arg === "--project") flags.projectPath = value;
-			else flags[arg === "--channel" ? "channel" : "user"].push(...value.split(",").filter(Boolean));
+			else if (arg === "--read-access") {
+				if (value !== "workspace" && value !== "global") throw new Error("--read-access must be workspace or global");
+				flags.readAccess = value;
+			} else if (arg === "--read-root") {
+				flags.readRoots.push(...value.split(",").filter(Boolean));
+			} else flags[arg === "--channel" ? "channel" : "user"].push(...value.split(",").filter(Boolean));
 		} else throw new Error(`Unknown messenger option: ${arg}`);
 	}
-	if (action !== "setup" && (flags.workerMode !== undefined || flags.projectPath !== undefined)) throw new Error("--worker-mode and --project are only supported by messenger setup");
+	if (action !== "setup" && (flags.workerMode !== undefined || flags.projectPath !== undefined || flags.readAccess !== undefined || flags.readRoots.length > 0)) {
+		throw new Error("--worker-mode, --project, --read-access, and --read-root are only supported by messenger setup");
+	}
 	if (!flags.config && action !== "update") throw new Error("Messenger requires --config <file>");
 	return { action, flags };
 }
@@ -268,8 +275,10 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 			for (const [name, value] of Object.entries(process.env)) if (value !== undefined && !secretNames.has(name)) env[name] = value;
 			for (const name of secretNames) env[name] = "";
 			env.JEO_SESSION_DIR = sessionDir;
-			for (const name of ["JEO_MESSENGER_SANDBOX", "JEO_MESSENGER_ALLOWED_USER_IDS", "JEO_MESSENGER_SESSION_KEY", "JEO_MESSENGER_PROFILE_DIR", "JEO_MESSENGER_HOST_BOOTSTRAP", "JEO_MESSENGER_SHUTDOWN_NONCE"]) delete env[name];
+			for (const name of ["JEO_MESSENGER_SANDBOX", "JEO_MESSENGER_ALLOWED_USER_IDS", "JEO_MESSENGER_SESSION_KEY", "JEO_MESSENGER_PROFILE_DIR", "JEO_MESSENGER_HOST_BOOTSTRAP", "JEO_MESSENGER_SHUTDOWN_NONCE", "JEO_MESSENGER_READ_ROOTS", "JEO_MESSENGER_READ_ACCESS"]) delete env[name];
 			if (config.profileDir !== undefined) env.JEO_MESSENGER_PROFILE_DIR = config.profileDir;
+			if (config.readRoots?.length) env.JEO_MESSENGER_READ_ROOTS = JSON.stringify(config.readRoots);
+			if (platformConfig?.readAccess) env.JEO_MESSENGER_READ_ACCESS = platformConfig.readAccess;
 			if (host) {
 				env.JEO_MESSENGER_HOST_BOOTSTRAP = JSON.stringify({ version: 1, mode: "host", cwd, workspaceRoot, sourceRoot, sessionDir });
 			} else {
@@ -326,13 +335,17 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 		const text = message.text.trim();
 		if (message.attachments?.length || /[\r\n]/.test(message.text)) return { handled: false, output: "" };
 		const sandbox = /^\/sandbox(?:[ \t]+[^\r\n]*)?$/.test(text);
-		const control = /^(?:\/session[ \t]+status|\/cwd(?:[ \t]+[^\r\n]+)?|\/cancel|\/(?:approve|deny)[ \t]+\S+)$/.test(text);
-		if (!sandbox && !(hostMessage(message) && control)) return { handled: false, output: "" };
+		const grantCmd = /^\/grant(?:[ \t]+[^\r\n]+)?$/.test(text);
+		const control = /^(?:\/session[ \t]+status|\/cwd(?:[ \t]+[^\r\n]+)?|\/cancel|\/(?:approve|deny)[ \t]+\S+|\/grant(?:[ \t]+[^\r\n]+)?)$/.test(text);
+		if (!sandbox && !grantCmd && !(hostMessage(message) && control)) return { handled: false, output: "" };
 		if (message.platform !== "discord" || !isMessengerMessageAllowed(message, config)) return { handled: true, output: "UNAUTHORIZED: Discord control requires an allowed user and channel" };
 		try {
 			signal.throwIfAborted();
-			if (!hostMessage(message)) return { handled: true, output: await sendSandboxControl(config, routeUuid(config, message), message.senderId, message.text, signal) };
-			if (sandbox) return { handled: true, output: "Discord host mode uses the bot's OS user and CLI trust, not OS isolation. Use /session status, /cwd, /cancel, /approve or /deny." };
+			if (!hostMessage(message)) {
+				const forwarded = grantCmd ? text.replace(/^\/grant(?=\s|$)/, "/sandbox grant") : message.text;
+				return { handled: true, output: await sendSandboxControl(config, routeUuid(config, message), message.senderId, forwarded, signal) };
+			}
+			if (sandbox) return { handled: true, output: "Discord host mode uses the bot's OS user and CLI trust, not OS isolation. Use /session status, /cwd, /grant, /cancel, /approve or /deny." };
 			if (!message.threadId) return { handled: true, output: "Discord host controls require their originating thread." };
 			const decision = /^\/(approve|deny)[ \t]+(\S+)$/.exec(text);
 			if (decision) return { handled: true, output: authority.decide(message, decision[2]!, decision[1] === "approve" ? "approve" : "deny") };
@@ -344,11 +357,27 @@ export function createMessengerCliReply(config: MessengerConfig, spawn: typeof B
 				await registry.cancel(key);
 				return { handled: true, output: "Thread work cancelled; transcript, branch and worktree retained." };
 			}
+			if (grantCmd) {
+				const arg = text.slice("/grant".length).trim();
+				if (!arg || arg === "list" || arg === "status") {
+					const st = authority.readStatus(key);
+					return { handled: true, output: `Read access: ${st.readAccess}\nRead roots: ${st.readRoots.length ? st.readRoots.join(", ") : "(none)"}` };
+				}
+				if (arg === "revoke") {
+					const st = authority.revokeReadRoots(key);
+					return { handled: true, output: `Thread read grants cleared.\nRead access: ${st.readAccess}\nRead roots: ${st.readRoots.length ? st.readRoots.join(", ") : "(none)"}` };
+				}
+				const thread = await registry.get(key);
+				const baseCwd = thread?.workspaces.find(entry => entry.id === thread.activeWorkspace)?.worktreePath ?? thread?.cwd ?? config.cwd;
+				const st = authority.grantReadRoot(key, arg, baseCwd);
+				return { handled: true, output: `Granted read access.\nRead access: ${st.readAccess}\nRead roots: ${st.readRoots.length ? st.readRoots.join(", ") : "(none)"}` };
+			}
 			const requested = /^\/cwd[ \t]+(.+)$/.exec(text);
 			const thread = requested ? await registry.changeCwd(key, requested[1]!, signal) : await registry.get(key);
 			if (!thread) return { handled: true, output: "No thread session exists yet. Send a task to start the configured Git project." };
 			const workspace = thread.workspaces.find(entry => entry.id === thread.activeWorkspace);
-			return { handled: true, output: `Discord host session ${thread.sessionId}\nState: ${thread.state}; generation: ${thread.generation}\nCwd: ${thread.cwd}\nBranch: ${workspace?.branch ?? "not provisioned"}\nRuns: ${thread.runs.filter(run => run.state === "running").length} active\nTrust: bot OS user, CLI-trusted scripts; not OS isolation.` };
+			const readInfo = authority.readStatus(key);
+			return { handled: true, output: `Discord host session ${thread.sessionId}\nState: ${thread.state}; generation: ${thread.generation}\nCwd: ${thread.cwd}\nBranch: ${workspace?.branch ?? "not provisioned"}\nRead access: ${readInfo.readAccess}${readInfo.readRoots.length ? ` (${readInfo.readRoots.join(", ")})` : ""}\nRuns: ${thread.runs.filter(run => run.state === "running").length} active\nTrust: bot OS user, CLI-trusted scripts; not OS isolation.` };
 		} catch (error) { return { handled: true, output: error instanceof Error ? error.message : "Discord control failed" }; }
 	};
 	const onRequestSettled: MessengerCliReply["onRequestSettled"] = async (message, outcome) => {
@@ -389,7 +418,7 @@ export async function runMessengerCommand(args: string[]): Promise<void> {
 		process.once("SIGINT", stop);
 		process.once("SIGTERM", stop);
 		try {
-			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm, workerMode: flags.workerMode, projectPath: flags.projectPath }, io, { signal: AbortSignal.any([controller.signal, io.signal]) });
+			const result = await setupDiscordMessenger({ configPath: path.resolve(flags.config!), channelIds: flags.channel.length ? flags.channel : undefined, userIds: flags.user.length ? flags.user : undefined, toolNames: flags.tools?.split(",").filter(Boolean), artifacts: flags.artifacts, service: flags.service, dmTest: !flags.noDm, workerMode: flags.workerMode, projectPath: flags.projectPath, readAccess: flags.readAccess, readRoots: flags.readRoots.length ? flags.readRoots : undefined }, io, { signal: AbortSignal.any([controller.signal, io.signal]) });
 			process.stdout.write(`Discord messenger ready: ${result.configPath}\nStart: ${result.runScript}\n`);
 		} finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); io.close(); }
 		return;

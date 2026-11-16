@@ -495,7 +495,7 @@ export function createMessengerGateway(
 		// Only standalone authenticated commands reach parent controls, without waiting for preparation or a turn.
 		const controlText = message.text.trim();
 		if (options.sandboxControl && !message.attachments?.length && !/[\r\n]/.test(message.text) &&
-			/^\/(?:sandbox(?:[ \t]+[^\r\n]*)?|(?:approve|deny)[ \t]+\S+|cancel|cwd(?:[ \t]+[^\r\n]+)?|session[ \t]+status)$/.test(controlText)) {
+			/^\/(?:sandbox(?:[ \t]+[^\r\n]*)?|grant(?:[ \t]+[^\r\n]+)?|(?:approve|deny)[ \t]+\S+|cancel|cwd(?:[ \t]+[^\r\n]+)?|session[ \t]+status)$/.test(controlText)) {
 			const control = await options.sandboxControl(message, effectiveSignal);
 			if (control.handled) {
 				if (!effectiveSignal.aborted && control.output.trim()) await adapter.send(message, control.output, effectiveSignal);

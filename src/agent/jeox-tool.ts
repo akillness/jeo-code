@@ -4,7 +4,6 @@
  * and token-optimized search/scope.
  */
 import * as path from "node:path";
-import * as fs from "node:fs";
 import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats } from "../../packages/jeo-mem/src/index";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
@@ -23,9 +22,8 @@ function getDb(cwd: string): ReturnType<typeof openDb> {
   if (db) return db;
   const dbDir = path.join(key, ".jeo", "db");
   const dbPath = path.join(dbDir, "jeo.db");
-  const isNew = !fs.existsSync(dbPath);
   db = openDb(dbPath);
-  if (isNew) indexDir(db, key);
+  if (stats(db).files === 0) indexDir(db, key);
   dbCache.set(key, db);
   return db;
 }
@@ -94,8 +92,7 @@ export function createJeoxTool(): ToolHandler {
         case "build":
         case "index":
         case "reindex": {
-          if (rebuild) { dbCache.delete(path.resolve(cwd)); }
-          const res = indexDir(db, cwd, { rebuild });
+          const res = indexDir(db, path.resolve(cwd), { rebuild });
           return { success: true, output: `Indexed in ${res.ms}ms: ${JSON.stringify(res)}` };
         }
         case "status":

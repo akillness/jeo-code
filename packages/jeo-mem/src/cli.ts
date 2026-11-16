@@ -45,46 +45,59 @@ export async function runCli(argv: string[], out: (s: string) => void = console.
 
   const db = openDb(dbPath);
   const j = (o: unknown) => out(JSON.stringify(o));
-  switch (cmd) {
-    case "build":
-    case "index":
-    case "reindex": {
-      const rebuild = cmd === "reindex" || flags.full === "1";
-      const s = indexDir(db, root, { rebuild });
-      const eventsFile = join(root, ".jeo", "events.jsonl");
-      appendEvent(eventsFile, "index_done", root, { ...s, db: dbPath });
-      j(s);
-      return 0;
+  const ensureIndexed = () => {
+    if (stats(db).files === 0) indexDir(db, root);
+  };
+  try {
+    switch (cmd) {
+      case "build":
+      case "index":
+      case "reindex": {
+        const rebuild = cmd === "reindex" || flags.full === "1";
+        const s = indexDir(db, root, { rebuild });
+        const eventsFile = join(root, ".jeo", "events.jsonl");
+        appendEvent(eventsFile, "index_done", root, { ...s, db: dbPath });
+        j(s);
+        return 0;
+      }
+      case "who-calls":
+        ensureIndexed();
+        whoCalls(db, arg, { limit, strict }).forEach(j);
+        return 0;
+      case "what-calls":
+        ensureIndexed();
+        whatCalls(db, arg, { limit, strict }).forEach(j);
+        return 0;
+      case "where-defined":
+        ensureIndexed();
+        whereDefined(db, arg, limit).forEach(j);
+        return 0;
+      case "impact":
+        ensureIndexed();
+        j(impact(db, arg, Number(flags.depth ?? 3), limit * 4, strict));
+        return 0;
+      case "query":
+      case "search":
+        ensureIndexed();
+        search(db, arg, limit).forEach(j);
+        return 0;
+      case "scope": {
+        ensureIndexed();
+        const hits = search(db, arg, limit);
+        j({ meta: { task: arg, hits: hits.length, preview: "none" } });
+        hits.forEach(j);
+        return 0;
+      }
+      case "status":
+      case "stats":
+        j(stats(db));
+        return 0;
+      default:
+        out(HELP);
+        return 1;
     }
-    case "who-calls":
-      whoCalls(db, arg, { limit, strict }).forEach(j);
-      return 0;
-    case "what-calls":
-      whatCalls(db, arg, { limit, strict }).forEach(j);
-      return 0;
-    case "where-defined":
-      whereDefined(db, arg, limit).forEach(j);
-      return 0;
-    case "impact":
-      j(impact(db, arg, Number(flags.depth ?? 3), limit * 4, strict));
-      return 0;
-    case "query":
-    case "search":
-      search(db, arg, limit).forEach(j);
-      return 0;
-    case "scope": {
-      const hits = search(db, arg, limit);
-      j({ meta: { task: arg, hits: hits.length, preview: "none" } });
-      hits.forEach(j);
-      return 0;
-    }
-    case "status":
-    case "stats":
-      j(stats(db));
-      return 0;
-    default:
-      out(HELP);
-      return 1;
+  } finally {
+    db.close();
   }
 }
 

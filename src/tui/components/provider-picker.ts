@@ -65,6 +65,7 @@ export function loginExpiryLabel(expires: number | undefined, now: number = Date
 export function loginHint(s: ProviderStatus, unicode = true): string {
   if (!s.loggedIn) return unicode ? "\u00b7 not logged in" : "not logged in";
   const parts: string[] = [unicode ? "\u2713 logged in" : "logged in"];
+  if ((s.poolSize ?? 0) > 1) parts.push(`pool:${s.poolSize}`);
   if (s.oauthEmail) parts.push(s.oauthEmail);
   const expiry = loginExpiryLabel(s.oauthExpires);
   if (expiry) parts.push(expiry);
@@ -92,7 +93,8 @@ export function loginPicker(statuses: ProviderStatus[], unicode = true): SelectL
  *  plus the env var that seeds it. Subscriptions authenticate by token, not OAuth. */
 export function subscriptionHint(s: ProviderStatus, unicode = true): string {
   const set = s.kind === "api_key";
-  const badge = set ? (unicode ? "\u2713 active" : "active") : (unicode ? "\u00b7 no token" : "no token");
+  const poolTag = set && (s.apiKeyPoolSize ?? 0) > 1 ? ` (pool:${s.apiKeyPoolSize})` : "";
+  const badge = set ? `${unicode ? "\u2713 active" : "active"}${poolTag}` : (unicode ? "\u00b7 no token" : "no token");
   return s.envVar ? `${badge} \u00b7 ${s.envVar}` : badge;
 }
 
@@ -180,7 +182,8 @@ export function renderOnboardingPicker(list: SelectList<OnboardingAction>, opts:
  *  env var that seeds it. Mirrors `loginHint` but for keyed (no-OAuth) providers. */
 export function apiKeyHint(s: ProviderStatus, unicode = true): string {
   const set = s.kind === "api_key";
-  const badge = set ? (unicode ? "\u2713 key set" : "key set") : (unicode ? "\u00b7 no key" : "no key");
+  const poolTag = set && (s.apiKeyPoolSize ?? 0) > 1 ? ` (pool:${s.apiKeyPoolSize})` : "";
+  const badge = set ? `${unicode ? "\u2713 key set" : "key set"}${poolTag}` : (unicode ? "\u00b7 no key" : "no key");
   return s.envVar ? `${badge} \u00b7 ${s.envVar}` : badge;
 }
 

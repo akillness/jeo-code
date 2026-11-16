@@ -282,12 +282,17 @@ function retryAfterOf(err: unknown): number | undefined {
 // True when an error is an HTTP 429 / rate-limit (structured `.status` or message text).
 export function isRateLimitError(err: unknown): boolean {
   if (typeof err === "object" && err !== null) {
-    const status = (err as { status?: unknown }).status;
-    const n = typeof status === "number" ? status : typeof status === "string" ? Number(status) : NaN;
-    if (n === 429) return true;
+    if ("status" in err) {
+      const status = err.status;
+      const n = typeof status === "number" ? status : typeof status === "string" ? Number(status) : NaN;
+      if (n === 429) return true;
+    }
+    if ("code" in err && typeof err.code === "string") {
+      if (/^(?:rate_limit_exceeded|rate_limit_error|resource_exhausted)$/i.test(err.code)) return true;
+    }
   }
-  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return /\b429\b/.test(message) || /rate[ _]?limit/i.test(message);
+  const message = errorMessageOf(err);
+  return /\b429\b/.test(message) || /rate[ _]?limit|too many requests|resource_exhausted/i.test(message);
 }
 
 /** Message text of an unknown error (Error / string / object with message). */
@@ -308,7 +313,7 @@ function errorMessageOf(err: unknown): string {
  * per-minute 429. Bare "resource exhausted" (gRPC capacity wording) stays transient;
  * only the qualified "Resource has been exhausted (… quota/limit)" form is persistent.
  */
-const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?(?:exceeded|reached)|quota will reset|exhausted your capacity|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
+const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?(?:exceeded|reached)|quota_exceeded|insufficient_quota|insufficient_balance|credit balance (?:is )?too low|billing_hard_limit|quota will reset|exhausted your capacity|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
 export function isUsageLimitError(err: unknown): boolean {
   return USAGE_LIMIT_PATTERN.test(errorMessageOf(err));
 }

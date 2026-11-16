@@ -5,7 +5,7 @@ import { chunkMarkdown } from "./chunk-md.ts";
 import { rebuildEdges } from "./edges.ts";
 import { extractScript, isScript } from "./extract.ts";
 
-const IGNORE_DIRS = new Set(["node_modules", "dist", ".git", ".jeo", ".mex", "coverage", "build", "graphify-out", "llm-wiki", "Library", "gen"]);
+const IGNORE_DIRS = new Set(["node_modules", "dist", ".git", ".jeo", ".jeopi", ".mex", "coverage", "build", "graphify-out", "llm-wiki", "Library", "gen", "target"]);
 const MAX_FILE_BYTES = 1_000_000;
 
 export interface IndexStats { scanned: number; added: number; changed: number; removed: number; unchanged: number; ms: number }
@@ -30,6 +30,9 @@ export function indexDir(db: Database, root: string, opts: { rebuild?: boolean }
 
   const delFts = db.prepare("DELETE FROM code_nodes_fts WHERE rowid IN (SELECT id FROM code_nodes WHERE file_id = ?)");
   const delChunkFts = db.prepare("DELETE FROM code_chunks_fts WHERE rowid IN (SELECT id FROM code_chunks WHERE file_id = ?)");
+  const delNodes = db.prepare("DELETE FROM code_nodes WHERE file_id = ?");
+  const delChunks = db.prepare("DELETE FROM code_chunks WHERE file_id = ?");
+  const delImps = db.prepare("DELETE FROM code_imports WHERE file_id = ?");
   const delFile = db.prepare("DELETE FROM code_files WHERE id = ?");
   const insFile = db.prepare("INSERT INTO code_files(path, lang, digest, mtime, indexed_at) VALUES (?,?,?,?,?) RETURNING id");
   const updFile = db.prepare("UPDATE code_files SET digest=?, mtime=?, indexed_at=? WHERE id=?");
@@ -58,8 +61,9 @@ export function indexDir(db: Database, root: string, opts: { rebuild?: boolean }
       let fileId: number;
       if (prev) {
         clearFile(prev.id);
-        db.query("DELETE FROM code_nodes WHERE file_id = ?").run(prev.id);
-        db.query("DELETE FROM code_chunks WHERE file_id = ?").run(prev.id);
+        delNodes.run(prev.id);
+        delChunks.run(prev.id);
+        delImps.run(prev.id);
         updFile.run(digest, mtime, new Date().toISOString(), prev.id);
         fileId = prev.id; st.changed++;
       } else {

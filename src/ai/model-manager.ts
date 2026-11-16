@@ -897,9 +897,9 @@ function errorStatusOf(err: unknown): number | undefined {
 function isPoolRotatableError(err: unknown): boolean {
   if (isUsageLimitError(err) || isRateLimitError(err)) return true;
   const status = errorStatusOf(err);
-  if (status === 401 || status === 402 || status === 403 || status === 429) return true;
+  if (status === 401 || status === 402 || status === 403 || status === 429 || status === 529) return true;
   const msg = err instanceof Error ? err.message : String(err);
-  return /insufficient credit|billing (?:is )?not enabled|free trial quota|rejected the credential/i.test(msg);
+  return /insufficient credit|credit balance|insufficient_balance|billing (?:is )?not enabled|billing_hard_limit|free trial quota|rejected the credential|overloaded_error|too many requests|resource_exhausted/i.test(msg);
 }
 
 function isAuthRejectionError(err: unknown): boolean {
@@ -1162,6 +1162,9 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             triedTokens.add(rotation.credential.token);
             refreshedCurrent = false;
             activeCredential = normalizeRotatedCredential(provider, rotation.credential);
+            if (provider === "kimi") {
+              setKimiAccountScope(await kimiOauthAccountScope(activeCredential));
+            }
             options.onNotice?.(formatRotationNotice(provider, rotation));
           }
         }

@@ -43,3 +43,22 @@ test("jeox tool: auto-builds on first call, answers who-calls, where-defined, se
   // Clean up
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("jeox tool: auto-indexes pre-existing legacy DB with empty code_files table", async () => {
+  const { Database } = await import("bun:sqlite");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jeox-legacy-test-"));
+  fs.mkdirSync(path.join(tmp, ".jeo", "db"), { recursive: true });
+  const legacyDbPath = path.join(tmp, ".jeo", "db", "jeo.db");
+  const legacyDb = new Database(legacyDbPath);
+  legacyDb.exec("CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT);");
+  legacyDb.close();
+  fs.mkdirSync(path.join(tmp, "src"));
+  fs.writeFileSync(path.join(tmp, "src", "legacy.ts"), `export function legacyMigrateFn() { return 7; }\n`);
+
+  const tool = createJeoxTool();
+  const res = await tool({ action: "where-defined", name: "legacyMigrateFn" }, tmp);
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("src/legacy.ts");
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

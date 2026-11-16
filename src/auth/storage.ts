@@ -176,6 +176,11 @@ const JwtIdentitySchema = z.object({
       chatgpt_account_id: z.string().optional(),
     })
     .optional(),
+  "https://api.openai.com/profile": z
+    .object({
+      email: z.string().optional(),
+    })
+    .optional(),
 });
 
 const PersistedPoolEntrySchema = z.object({
@@ -430,7 +435,7 @@ function extractJwtIdentity(token: string): { email?: string; accountId?: string
     const rawJson = Buffer.from(parts[1]!, "base64url").toString("utf-8");
     const parsed = JwtIdentitySchema.safeParse(JSON.parse(rawJson));
     if (!parsed.success) return {};
-    const email = parsed.data.email?.trim() || undefined;
+    const email = parsed.data.email?.trim() || parsed.data["https://api.openai.com/profile"]?.email?.trim() || undefined;
     const accountId = parsed.data["https://api.openai.com/auth"]?.chatgpt_account_id?.trim() || undefined;
     return { email, accountId };
   } catch {
@@ -450,8 +455,8 @@ export function oauthIdentityKey(entry: OAuthEntry): string {
   if (email) return `email:${email.toLowerCase()}`;
   const accountId = entry.accountId?.trim() || jwt.accountId;
   if (accountId) return `account:${accountId.toLowerCase()}`;
-  if (entry.projectId?.trim()) return `project:${entry.projectId.trim().toLowerCase()}`;
   if (entry.refresh?.trim()) return `refresh:${createHash("sha256").update(entry.refresh.trim()).digest("hex").slice(0, 16)}`;
+  if (entry.projectId?.trim()) return `project:${entry.projectId.trim().toLowerCase()}`;
   return `access:${createHash("sha256").update(entry.access).digest("hex").slice(0, 16)}`;
 }
 
@@ -954,13 +959,13 @@ function classifyRotationCooldown(error: unknown): { cooldownMs: number; reason:
       reason: "usage_limit",
     };
   }
-  if (status === 402 || /\b402\b|insufficient credit|billing (?:is )?not enabled|free trial quota/i.test(String(error))) {
+  if (status === 402 || /\b402\b|insufficient credit|credit balance (?:is )?too low|insufficient_balance|billing (?:is )?not enabled|billing_hard_limit|free trial quota/i.test(String(error))) {
     return {
       cooldownMs: retryAfterMs && retryAfterMs > 0 ? retryAfterMs : DEFAULT_USAGE_LIMIT_COOLDOWN_MS,
       reason: "billing_limit",
     };
   }
-  if (isRateLimitError(error) || status === 429) {
+  if (isRateLimitError(error) || status === 429 || status === 529 || /too many requests|resource_exhausted|rate_limit_error|overloaded_error/i.test(String(error))) {
     return {
       cooldownMs: retryAfterMs && retryAfterMs > 0 ? retryAfterMs : DEFAULT_RATE_LIMIT_COOLDOWN_MS,
       reason: "rate_limit",

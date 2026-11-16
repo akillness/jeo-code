@@ -60,3 +60,26 @@ test("local variables are not symbols; their calls attribute to the enclosing fu
   expect(whereDefined(db, "tmp").length).toBe(0);
   expect(whoCalls(db, "helper").map((l) => l.name)).toEqual(["outer"]);
 });
+
+test("incremental edit replaces imports without leaving duplicates or phantom edges", () => {
+  const root = fixture();
+  const db = openDb(":memory:");
+  indexDir(db, root);
+  expect(whoCalls(db, "readLedger", { strict: true }).some((l) => l.path === "src/b.ts")).toBe(true);
+  writeFileSync(join(root, "src/b.ts"), `export const run = () => 1;\n`);
+  utimesSync(join(root, "src/b.ts"), new Date(), new Date(Date.now() + 5000));
+  indexDir(db, root);
+  const imps = db.query("SELECT COUNT(*) c FROM code_imports").get() as { c: number };
+  expect(imps.c).toBe(0);
+  expect(whoCalls(db, "readLedger").length).toBe(0);
+});
+
+test("FTS5 search supports camelCase queries and Korean/Unicode text", () => {
+  const root = mkdtempSync(join(tmpdir(), "jm-ko-"));
+  writeFileSync(join(root, "README.ko.md"), `# 아키텍처 개요\n로컬 코드 그래프 메모리 엔진입니다.\n`);
+  writeFileSync(join(root, "mod.ts"), `export function parseLedgerEntry() { return 1; }\n`);
+  const db = openDb(":memory:");
+  indexDir(db, root);
+  expect(search(db, "parseLedgerEntry").some((h) => h.type === "symbol" && h.label.includes("parseLedgerEntry"))).toBe(true);
+  expect(search(db, "메모리 엔진").some((h) => h.type === "doc" && h.path === "README.ko.md")).toBe(true);
+});

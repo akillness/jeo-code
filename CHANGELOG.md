@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.47] - 2026-11-16
+_Fix incremental import cleanup, Unicode/Korean FTS5 search, and legacy .jeo/db auto-indexing in jeo-mem._
+
+### Fixed
+- **Incremental import edge cleanup (`packages/jeo-mem/src/indexer.ts`):** Delete prior `code_imports` rows when re-indexing modified files and ignore `.jeopi`/`target` directories, eliminating duplicate and phantom import edges.
+- **Unicode/Korean & camelCase FTS5 search (`packages/jeo-mem/src/query.ts`):** Order grouped caller/callee edges by `MIN(e.conf)` and expand `ftsQuery` with Unicode `\p{L}\p{N}` tokenization and camelCase splitting.
+- **Legacy `.jeo/db/jeo.db` auto-indexing & handle safety (`src/agent/jeox-tool.ts`, `packages/jeo-mem/src/cli.ts`):** Trigger auto-indexing whenever `code_files` is empty (`stats(db).files === 0`), preserve cached DB handles across rebuilds, and close CLI SQLite connections cleanly.
+
+
 ## [0.12.46] - 2026-11-16
 _Package jeo-mem code graph engine directly in npm tarball without workspace protocol dependency._
 

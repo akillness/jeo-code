@@ -107,7 +107,12 @@ export function extractScript(path: string, text: string): Extracted {
   visit(sf);
   for (const n of nodes) {
     const seen = new Set<string>();
-    n.refs = n.refs.filter((r) => (seen.has(`${r.kind}|${r.recv}|${r.name}`) ? false : (seen.add(`${r.kind}|${r.recv}|${r.name}`), true)));
+    n.refs = n.refs.filter((r) => {
+      const k = `${r.kind}|${r.recv}|${r.name}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   }
   return { nodes, imports };
 }

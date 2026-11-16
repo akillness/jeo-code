@@ -29,7 +29,9 @@ export function impact(db: Database, target: string, depth = 3, limit = 20, stri
   for (let d = 0; d < depth && frontier.length; d++) {
     const rows = db.query(`SELECT DISTINCT src_id id FROM code_edges WHERE ${strict ? "conf <> 'name' AND " : ""}dst_id IN (${frontier.map(() => "?").join(",")})`).all(...frontier) as { id: number }[];
     frontier = rows.map((r) => r.id).filter((id) => !seen.has(id));
-    frontier.forEach((id) => seen.add(id));
+    frontier.forEach((id) => {
+      seen.add(id);
+    });
   }
   const ids = [...seen].slice(0, 500);
   if (!ids.length) return { files: [], tests: [], symbols: [] };

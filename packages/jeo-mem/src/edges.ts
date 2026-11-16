@@ -34,7 +34,7 @@ export function rebuildEdges(db: Database): void {
     if (!spec.startsWith(".")) return null; // external package / alias: unresolved on purpose
     const base = normalize(join(dirname(idToPath.get(fromFileId)!), spec));
     const stripped = base.replace(/\.(m|c)?jsx?$/, "");
-    const tries = [base, ...EXTS.map((e) => stripped + e), ...EXTS.map((e) => join(base, "index" + e))];
+    const tries = [base, ...EXTS.map((e) => stripped + e), ...EXTS.map((e) => join(base, `index${e}`))];
     for (const t of tries) { const id = pathToId.get(t); if (id !== undefined) return id; }
     return null;
   };

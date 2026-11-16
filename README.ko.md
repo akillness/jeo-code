@@ -638,11 +638,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.45]** (2026-11-16) — Add local code graph and FTS5 BM25 search database (`jeo-mem`) with first-class `jeox` agent tool.
 - **[0.12.44]** (2026-11-15) — Jeopi-aligned one-shot draft restore, Antigravity quota pattern matching, and subagent card rendering.
 - **[0.12.43]** (2026-11-14) — Fix Antigravity/Gemini HTTP 400 INVALID_ARGUMENT on JSON Schema keywords like exclusiveMinimum.
 - **[0.12.42]** (2026-11-14) — Complete multi-account login pool support across /provider login, /provider key, and jeo setup.
 - **[0.12.41]** (2026-11-14) — Isolated jeo-code Bun self-update and Windows Bun install/update support.
-- **[0.12.40]** (2026-11-14) — Multi-account login pool with circular rate-limit and usage-limit failover.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.45] - 2026-11-16
+_Add local code graph and FTS5 BM25 search database (`jeo-mem`) with first-class `jeox` agent tool._
+
+### Added
+- **Local code graph & search engine (`packages/jeo-mem/`):** Full TypeScript AST-based symbol extractor, import-aware multi-hop edge resolution, FTS5 BM25 search across code symbols and markdown documents, reverse dependency closure (`impact`), and MCP server implementing the shared SCHEMA.md v1 contract.
+- **First-class `jeox` agent tool (`src/agent/jeox-tool.ts`, `src/agent/engine.ts`, `src/agent/tool-schemas.ts`):** Registered `jeox` tool in `DEFAULT_TOOLS` and `READONLY_TOOL_NAMES` with per-cwd DB connection caching and auto-indexing on first use.
+
+
 ## [0.12.44] - 2026-11-15
 _Jeopi-aligned one-shot draft restore, Antigravity quota pattern matching, and subagent card rendering._
 

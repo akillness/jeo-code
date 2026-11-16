@@ -1,0 +1,15 @@
+{
+  "name": "jeo-mem",
+  "version": "0.0.1",
+  "description": "Local-only code graph + FTS5 memory index for jeo agents (derived from file/JSONL SSOT)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": { "jeo-mem": "./src/cli.ts" },
+  "engines": { "bun": ">=1.3.14" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bench": "bun bench/baseline.ts"
+  },
+  "license": "MIT"
+}

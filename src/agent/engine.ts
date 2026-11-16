@@ -23,6 +23,7 @@ import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
+import { createJeoxTool, JEOX_TOOL_PROTOCOL_LINE } from "./jeox-tool";
 import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
@@ -123,6 +124,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   browser: createBrowserTool(),
   bisect: (a, cwd) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd),
   calc: a => calcTool(Array.isArray(a.calculations) ? a.calculations : []),
+  jeox: createJeoxTool(),
 };
 
 /** Trusted wrappers that preserve role checks before forwarding to hands. */
@@ -146,6 +148,7 @@ const READONLY_TOOL_NAMES: Record<string, true> = {
   ls: true,
   web_search: true,
   calc: true,
+  jeox: true,
 };
 /** Invoked tools that can change the workspace and therefore invalidate old verification. */
 const MUTATING_TOOL_NAMES: Record<string, true> = {
@@ -203,7 +206,8 @@ export const TOOL_PROTOCOL = [
   "17. browser {action:\"open\"|\"close\"|\"run\"|\"act\", name?, url?, actions?} — headless Chromium automation (Playwright); 'act' runs structured steps (navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot/verify) addressing elements by numeric id from 'observe' or a CSS selector; 'verify' {goal, selector?, fullPage?, design_tokens?, prior_screenshot?} screenshots and asks an INDEPENDENT vision model to judge it against 'goal' -> {verdict:\"PASS\"|\"MISMATCH\", detail} — prefer this over eyeballing a screenshot yourself for UI/visual work; 'run' executes JS with page/browser/tab/display/assert/wait in scope",
   "18. bisect {good, bad?, run, invert?, maxSteps?, stepTimeoutMs?} — binary-search git history to find the commit that introduced a regression; 'good' is a known-good commit, 'bad' defaults to HEAD, 'run' is a test command (exit 0=good, non-zero=bad, 125=skip), 'invert' finds a FIX instead of a regression",
   "19. calc  {calculations:[{expression, prefix?, suffix?}]} — evaluate arithmetic expressions (+ - * / % **, parens, hex 0x/binary 0b/octal 0o literals, scientific notation); each result is prefix+value+suffix, one per line — use this instead of doing arithmetic in your head for anything beyond trivial",
-  "20. done   {reason?}                  — call when the task is fully implemented AND verified",
+  `20. ${JEOX_TOOL_PROTOCOL_LINE}`,
+  "21. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
@@ -230,7 +234,8 @@ export const READONLY_TOOL_PROTOCOL = [
   "6. ls     {dirPath}                   — list a directory's entries",
   "7. web_search {query, recency?, limit?} — search the web (answer + sources + citations)",
   "8. calc   {calculations:[{expression, prefix?, suffix?}]} — evaluate arithmetic expressions (+ - * / % **, parens, hex/binary/octal literals)",
-  "9. done   {reason?}                   — call when your review/analysis is complete",
+  `9. ${JEOX_TOOL_PROTOCOL_LINE}`,
+  "10. done   {reason?}                   — call when your review/analysis is complete",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',

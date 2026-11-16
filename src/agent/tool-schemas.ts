@@ -182,6 +182,27 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       },
     },
   },
+  jeox: {
+    name: "jeox",
+    description: "Code graph and BM25 search database. Actions: who-calls, what-calls, where-defined, impact, search, scope, build, status.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["who-calls", "what-calls", "where-defined", "impact", "search", "scope", "build", "status"],
+        },
+        name: STRING,
+        target: STRING,
+        query: STRING,
+        limit: { type: "number" },
+        strict: { type: "boolean" },
+        depth: { type: "number" },
+        rebuild: { type: "boolean" },
+      },
+      required: ["action"],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

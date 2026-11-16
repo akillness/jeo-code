@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import pkg from "../../package.json";
 import { notifyDir } from "../agent/notify/paths";
+import { NPM_REGISTRY_URL } from "../util/isolated-install";
 import { loadMessengerConfig } from "./config";
 import { currentJeoCommand, messengerExecutablePath, messengerLauncherContent, MESSENGER_RUN_SCRIPT_POSIX, MESSENGER_RUN_SCRIPT_WINDOWS, writePrivateFile } from "./launcher";
 import { messengerServicePlan, restartMessengerService } from "./service";
@@ -65,14 +66,30 @@ async function installedRuntimeVersion(root: string): Promise<string | undefined
 	}
 }
 
-/** `bun install` the pinned package; `--force` recovers a registry manifest bun cached before a fresh publish. */
-async function installWithBun(root: string, execPath: string): Promise<void> {
+/** `bun install` the pinned package; `--force --no-cache` and a cache-busted tarball fallback recover stale/404 CDN edges right after publish. */
+async function installWithBun(root: string, execPath: string, version: string): Promise<void> {
 	let failure = "";
-	for (const extra of [[], ["--force"]]) {
-		const proc = Bun.spawn([execPath, "install", "--no-progress", "--no-summary", ...extra], { cwd: root, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+	const registryBase = NPM_REGISTRY_URL.replace(/\/+$/, "");
+	const attempts: string[][] = [
+		["install", "--no-progress", "--no-summary"],
+		["install", "--no-progress", "--no-summary", "--force", "--no-cache", `--registry=${NPM_REGISTRY_URL}`],
+	];
+	if (VERSION.test(version)) {
+		attempts.push([
+			"add",
+			"--no-progress",
+			"--no-summary",
+			"--force",
+			"--no-cache",
+			`--registry=${NPM_REGISTRY_URL}`,
+			`${registryBase}/${MESSENGER_PACKAGE}/-/${MESSENGER_PACKAGE}-${version}.tgz?cb=${Date.now()}`,
+		]);
+	}
+	for (const args of attempts) {
+		const proc = Bun.spawn([execPath, ...args], { cwd: root, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
 		const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
 		if (code === 0) return;
-		failure = stderr.trim().split("\n").slice(-3).join(" ").trim() || `bun install exited with code ${code}`;
+		failure = stderr.trim().split("\n").slice(-3).join(" ").trim() || `bun ${args[0]} exited with code ${code}`;
 	}
 	throw new Error(failure);
 }
@@ -93,7 +110,7 @@ export async function provisionMessengerRuntime(profileDir: string, version: str
 	await fs.mkdir(root, { recursive: true, mode: 0o700 });
 	await Bun.write(path.join(root, "package.json"), `${JSON.stringify({ name: "jeo-messenger-runtime", private: true, dependencies: { [MESSENGER_PACKAGE]: version } }, null, 2)}\n`);
 	try {
-		await (deps.install ?? (dir => installWithBun(dir, execPath)))(root, version);
+		await (deps.install ?? ((dir, ver) => installWithBun(dir, execPath, ver)))(root, version);
 		const installed = await installedRuntimeVersion(root);
 		if (installed !== version) throw new Error(`the runtime contains ${MESSENGER_PACKAGE}@${installed ?? "nothing"}`);
 	} catch (error) {

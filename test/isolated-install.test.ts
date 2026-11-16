@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { defaultDeps } from "../src/commands/update";
 import {
   buildNpmCommand,
+  canonicalTarballUrl,
   isolatedGlobalDir,
   JEO_PACKAGE,
   jeoCommandAttempts,
@@ -638,6 +639,99 @@ describe("runIsolatedBunUpdate", () => {
       activeVersion: () => null,
     });
     expect(nullActiveRes.success).toBe(true);
+  });
+
+  test("canonicalTarballUrl validates strict semver and rejects malformed/traversal inputs", () => {
+    expect(canonicalTarballUrl("0.12.49")).toBe(
+      "https://registry.npmjs.org/jeo-code/-/jeo-code-0.12.49.tgz",
+    );
+    expect(canonicalTarballUrl("1.2.3-rc.1+build.4", "https://npm.example.com/")).toBe(
+      "https://npm.example.com/jeo-code/-/jeo-code-1.2.3-rc.1+build.4.tgz",
+    );
+    for (const bad of [undefined, "", "latest", "../evil", "1.2", "0.12.49?x=1", "0.12.49#hash"]) {
+      expect(canonicalTarballUrl(bad)).toBeNull();
+    }
+  });
+
+  test("tarballFallback recovers via cache-busted .tgz?cb= URL when bare registry metadata 404s (POSIX and win32 linkCmd)", () => {
+    // POSIX recovery on Attempt 3 (first cache-busted tarball attempt, 0ms sleep)
+    const home = mkDir("home-tarball-posix");
+    const binDir = path.join(home, ".bun", "bin");
+    const posixCalls: string[][] = [];
+    const sleeps: number[] = [];
+    const posixRes = runIsolatedBunUpdate("1.2.3", {
+      env: { HOME: home },
+      platform: "darwin",
+      execPath: "/usr/local/bin/bun",
+      which: () => "/usr/local/bin/bun",
+      tarballFallback: true,
+      now: () => 1700000000000,
+      sleepSync: ms => sleeps.push(ms),
+      activeVersion: () => "1.2.3",
+      spawn: (cmd, childEnv) => {
+        posixCalls.push(cmd);
+        if (posixCalls.length <= 2) return { success: false, exitCode: 1 };
+        const g = childEnv.BUN_INSTALL_GLOBAL_DIR!;
+        writeJson(path.join(g, "node_modules", JEO_PACKAGE, "package.json"), {
+          name: JEO_PACKAGE,
+          version: "1.2.3",
+        });
+        writeText(path.join(g, "node_modules", JEO_PACKAGE, "src", "cli.ts"), "#!/usr/bin/env bun\n", 0o755);
+        return { success: true, exitCode: 0 };
+      },
+    });
+    expect(posixRes.success).toBe(true);
+    expect(sleeps).toEqual([]);
+    expect(posixCalls).toHaveLength(3);
+    expect(posixCalls[2]).toEqual([
+      "/usr/local/bin/bun",
+      "install",
+      "-g",
+      "https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.3.tgz?cb=1700000000000-1",
+      "--force",
+      "--no-cache",
+      `--registry=${NPM_REGISTRY_URL}`,
+    ]);
+    expect(fs.readlinkSync(path.join(binDir, "jeo"))).toBe(
+      path.join(home, ".jeo", "global", "node_modules", JEO_PACKAGE, "src", "cli.ts"),
+    );
+
+    // Attempt 4 recovery after Attempt 3 fails once + win32 bin link uses stagedSpec
+    bridgeWin32PathsOnPosix();
+    const winHome = mkDir("home-tarball-win32");
+    const winCalls: string[][] = [];
+    const winSleeps: number[] = [];
+    const winRes = runIsolatedBunUpdate("1.2.4", {
+      env: { USERPROFILE: winHome },
+      platform: "win32",
+      execPath: "C:\\jeo\\jeo.exe",
+      which: () => "C:\\bun\\bun.exe",
+      tarballFallback: true,
+      now: () => 1700000005000,
+      sleepSync: ms => winSleeps.push(ms),
+      activeVersion: () => "1.2.4",
+      spawn: (cmd, childEnv) => {
+        winCalls.push(cmd);
+        if (winCalls.length <= 3) return { success: false, exitCode: 1 };
+        const g = childEnv.BUN_INSTALL_GLOBAL_DIR!;
+        writeJson(path.join(g, "node_modules", JEO_PACKAGE, "package.json"), {
+          name: JEO_PACKAGE,
+          version: "1.2.4",
+        });
+        return { success: true, exitCode: 0 };
+      },
+    });
+    expect(winRes.success).toBe(true);
+    expect(winSleeps).toEqual([1500]);
+    expect(winCalls).toHaveLength(5);
+    expect(winCalls[3]![3]).toBe("https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2");
+    expect(winCalls[4]).toEqual([
+      "C:\\bun\\bun.exe",
+      "install",
+      "-g",
+      "https://registry.npmjs.org/jeo-code/-/jeo-code-1.2.4.tgz?cb=1700000005000-2",
+      `--registry=${NPM_REGISTRY_URL}`,
+    ]);
   });
 
   test("real Bun.spawnSync bun add -g installs and upgrades v1.0.0 -> v2.0.0 in isolatedGlobal while sibling shared-global with jeopi-cli + bun.lock stays byte-identical", () => {

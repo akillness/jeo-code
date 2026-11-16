@@ -4,6 +4,7 @@ import pkg from "../../package.json";
 import { messengerProfilesPath } from "../messenger/runtime";
 import {
   buildNpmCommand,
+  canonicalTarballUrl,
   jeoCommandAttempts,
   NPM_REGISTRY_URL,
   resolveBunBinDir,
@@ -241,7 +242,19 @@ class HttpStatusError extends Error {
 
 export const defaultDeps: UpdateDeps = {
   fetchJson: async (url: string, options?: { signal?: AbortSignal }) => {
-    const res = await fetch(url, options);
+    const isNpm = url.startsWith(NPM_REGISTRY_URL);
+    const requestUrl = isNpm ? `${url}${url.includes("?") ? "&" : "?"}cb=${Date.now()}` : url;
+    const fetchOpts: RequestInit = isNpm
+      ? {
+          signal: options?.signal,
+          headers: {
+            Accept: "application/json",
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
+          },
+        }
+      : { signal: options?.signal };
+    const res = await fetch(requestUrl, fetchOpts);
     if (res.status === 404) {
       throw new HttpStatusError("Package not found on registry", 404);
     }
@@ -256,8 +269,7 @@ export const defaultDeps: UpdateDeps = {
   install: async (version?: string) => {
     const origin = detectInstallOrigin().origin;
     if (origin === "npm-global") {
-      const target = `jeo-code@${version ?? "latest"}`;
-      return runInstall(version, {
+      const res = runInstall(version, {
         spawn: cmd => {
           const actualCmd = cmd[0] === "npm" ? buildNpmCommand(process.platform, cmd.slice(1)) : cmd;
           return Bun.spawnSync(actualCmd, { stdout: "inherit", stderr: "inherit" });
@@ -265,9 +277,26 @@ export const defaultDeps: UpdateDeps = {
         activeVersion: readActiveVersion,
         origin: () => origin,
       });
+      if (res.success) return res;
+      const tarballBase = canonicalTarballUrl(version);
+      if (tarballBase) {
+        const tarballSpec = `${tarballBase}?cb=${Date.now()}`;
+        const cmd = buildNpmCommand(process.platform, ["install", "-g", tarballSpec]);
+        try {
+          const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });
+          if (proc.success) {
+            const active = readActiveVersion();
+            if (!version || active === null || active === version) return { success: true };
+          }
+        } catch {
+          // Fall through to original failure result.
+        }
+      }
+      return res;
     }
     const result = runIsolatedBunUpdate(version, {
       activeVersion: readActiveVersion,
+      tarballFallback: true,
     });
     if (result.success) {
       refreshLegacyLocalBinSymlink(result.binDir);

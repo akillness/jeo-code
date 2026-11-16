@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.50] - 2026-11-17
+_Add cache-busted registry metadata lookup and canonical tarball fallback so `jeo update` and `jeo messenger update` recover from post-publish npm CDN 404s._
+
+### Fixed
+- **Post-publish CDN 404 recovery in `jeo update` (`src/commands/update.ts`, `src/util/isolated-install.ts`):** Append cache-busting query and `Cache-Control: no-cache` headers in `defaultDeps.fetchJson` for npm registry lookups, add `canonicalTarballUrl` with strict semver validation, and retry `runIsolatedBunUpdate` (and `npm-global` installs) via cache-busted `.tgz?cb=` URLs when abbreviated packument or bare tarball endpoints transiently 404 right after publishing.
+- **Messenger runtime provisioning fallback (`src/messenger/runtime.ts`):** Pass the pinned `version` into `installWithBun` and retry with `--force --no-cache` and a cache-busted `.tgz?cb=` `bun add` when provisioning `<profile>/runtime/<version>` immediately after a release.
+
 ## [0.12.49] - 2026-11-17
 _Jeopi-inspired hierarchical subagent TUI panel, linear-time terminal/secret sanitization, thinking-stream throttling, and bounded memory retention._
 

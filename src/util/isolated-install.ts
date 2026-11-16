@@ -8,6 +8,14 @@ export const JEO_PACKAGE = "jeo-code";
 export const NPM_REGISTRY_URL = "https://registry.npmjs.org/";
 
 const BACKUP_TAG = ".jeo-bak.";
+const TARBALL_SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** Build the canonical npm registry tarball URL for an exact validated semver. */
+export function canonicalTarballUrl(version: string | undefined, registryUrl: string = NPM_REGISTRY_URL): string | null {
+  if (!version || !TARBALL_SEMVER_RE.test(version)) return null;
+  const base = registryUrl.replace(/\/+$/, "");
+  return `${base}/${JEO_PACKAGE}/-/${JEO_PACKAGE}-${version}.tgz`;
+}
 
 function isNonEmpty(v: string | undefined): v is string {
   return typeof v === "string" && v.trim().length > 0;
@@ -201,6 +209,10 @@ export interface IsolatedUpdateIo {
   which?: (cmd: string) => string | null;
   spawn?: (cmd: string[], env: Record<string, string>) => SpawnOutcome;
   activeVersion?: () => string | null;
+  /** Retry via cache-busted canonical `.tgz?cb=` URLs if abbreviated registry metadata 404s right after publish. */
+  tarballFallback?: boolean;
+  now?: () => number;
+  sleepSync?: (ms: number) => void;
 }
 
 export interface IsolatedUpdateResult {
@@ -260,9 +272,11 @@ export function runIsolatedBunUpdate(
   ];
 
   let staged = false;
+  let stagedSpec = target;
   let lastErr = "";
   const stageEnv = buildChildEnv(env, globalDir, stagingBinDir);
-  for (const cmd of stageAttempts) {
+
+  const runStageAttempt = (cmd: string[]): boolean => {
     try {
       const res = spawn(cmd, stageEnv);
       if (res.success) {
@@ -272,28 +286,51 @@ export function runIsolatedBunUpdate(
           try {
             const raw: unknown = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8"));
             if (raw && typeof raw === "object" && "version" in raw && raw.version === version) {
-              staged = true;
-              break;
+              return true;
             }
             lastErr = `bun installed unexpected version in ${globalDir}`;
-            continue;
+            return false;
           } catch {
             // If a test stubbed spawn without creating files, trust zero exit when no manifest check applies.
             if (io.spawn) {
-              staged = true;
-              break;
+              return true;
             }
             lastErr = `bun install exited 0 but ${pkgJsonPath} is missing`;
-            continue;
+            return false;
           }
         }
-        staged = true;
-        break;
+        return true;
       }
       lastErr = `${cmd[0]} exited with code ${res.exitCode}`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastErr = `${cmd[0]} unavailable: ${msg}`;
+    }
+    return false;
+  };
+
+  for (const cmd of stageAttempts) {
+    if (runStageAttempt(cmd)) {
+      staged = true;
+      break;
+    }
+  }
+
+  if (!staged && io.tarballFallback) {
+    const tarballBase = canonicalTarballUrl(version, NPM_REGISTRY_URL);
+    if (tarballBase) {
+      const nowFn = io.now ?? (() => Date.now());
+      const sleepFn = io.sleepSync ?? (ms => Bun.sleepSync(ms));
+      for (const attempt of [1, 2] as const) {
+        if (attempt === 2) sleepFn(1500);
+        const spec = `${tarballBase}?cb=${nowFn()}-${attempt}`;
+        const cmd = [bunExe, "install", "-g", spec, "--force", "--no-cache", `--registry=${NPM_REGISTRY_URL}`];
+        if (runStageAttempt(cmd)) {
+          staged = true;
+          stagedSpec = spec;
+          break;
+        }
+      }
     }
   }
 
@@ -340,7 +377,7 @@ export function runIsolatedBunUpdate(
     const linkEnv = buildChildEnv(env, globalDir, binDir);
     let linked = false;
     try {
-      const linkCmd = [bunExe, "install", "-g", target, `--registry=${NPM_REGISTRY_URL}`];
+      const linkCmd = [bunExe, "install", "-g", stagedSpec, `--registry=${NPM_REGISTRY_URL}`];
       const linkRes = spawn(linkCmd, linkEnv);
       linked = linkRes.success;
       if (!linked) {

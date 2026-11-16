@@ -1,5 +1,5 @@
-import { test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { runUpdateCommandWith, compareVersions, installCandidates, type UpdateDeps } from "../src/commands/update";
+import { test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
+import { runUpdateCommandWith, compareVersions, installCandidates, defaultDeps, type UpdateDeps } from "../src/commands/update";
 
 let logged: string[] = [];
 let errored: string[] = [];
@@ -577,4 +577,38 @@ test("update - unknown flag after --version's value is still caught", async () =
 
   expect(logged.some(line => line.includes("Unknown flag: --bogus"))).toBe(true);
   expect(process.exitCode).toBe(1);
+});
+
+test("defaultDeps.fetchJson adds cache-busting query and no-cache headers for npm registry URLs and preserves 404 status", async () => {
+  const seen: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    seen.push({ url, init });
+    if (url.includes("/9.9.9")) {
+      return new Response("not found", { status: 404 });
+    }
+    return new Response(JSON.stringify({ version: "0.12.49" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch);
+
+  try {
+    const data = await defaultDeps.fetchJson("https://registry.npmjs.org/jeo-code/latest");
+    expect(data).toEqual({ version: "0.12.49" });
+    expect(seen[0]!.url).toMatch(/^https:\/\/registry\.npmjs\.org\/jeo-code\/latest\?cb=\d+$/);
+    const headers = seen[0]!.init?.headers as Record<string, string>;
+    expect(headers["Cache-Control"]).toBe("no-cache");
+    expect(headers.Pragma).toBe("no-cache");
+
+    let caught: any;
+    try {
+      await defaultDeps.fetchJson("https://registry.npmjs.org/jeo-code/9.9.9");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught?.status).toBe(404);
+  } finally {
+    fetchSpy.mockRestore();
+  }
 });

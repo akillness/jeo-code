@@ -23,6 +23,8 @@ import type { StoredOAuth } from "../src/agent/state";
 import { createModelManager } from "../src/ai/model-manager";
 import { runAuthCommand } from "../src/commands/auth";
 import { complete, staticCompletionContext, type CompletionContext } from "../src/tui/components/autocomplete";
+import { loginHint, subscriptionHint, apiKeyHint } from "../src/tui/components/provider-picker";
+import type { ProviderStatus } from "../src/ai/provider-status";
 
 const ENV_KEYS = [
   "ANTHROPIC_OAUTH_TOKEN",
@@ -799,4 +801,263 @@ test("autocomplete exposes pool under /provider and kimi under /login and /logou
   const logoutRes = complete("/logout ", ctx);
   expect(logoutRes.kind).toBe("provider");
   expect(logoutRes.completions).toContain("kimi");
+});
+
+test("oauthIdentityKey prioritizes refresh over projectId so two antigravity accounts sharing projectId do not collide", async () => {
+  const future = Date.now() + 3_600_000;
+
+  const r1 = await setOauthCredential("antigravity", {
+    access: "tok-ag-1",
+    refresh: "ref-shared-1",
+    expires: future,
+    projectId: "shared-proj",
+  });
+  expect(r1).toEqual({ poolSize: 1, index: 0, added: true });
+
+  const r2 = await setOauthCredential("antigravity", {
+    access: "tok-ag-2",
+    refresh: "ref-shared-2",
+    expires: future,
+    projectId: "shared-proj",
+  });
+  expect(r2).toEqual({ poolSize: 2, index: 1, added: true });
+
+  const pool = await getStoredOAuthPool("antigravity");
+  expect(pool).toHaveLength(2);
+  const snap = await snapshotProvider("antigravity");
+  expect(snap.poolSize).toBe(2);
+
+  // Re-upserting with the first refresh token updates slot 0 in place rather than adding a 3rd slot.
+  const r1Update = await setOauthCredential("antigravity", {
+    access: "tok-ag-1-refreshed",
+    refresh: "ref-shared-1",
+    expires: future + 60_000,
+    projectId: "shared-proj",
+  });
+  expect(r1Update).toEqual({ poolSize: 2, index: 0, added: false });
+});
+
+test("setOauthToken extracts OpenAI profile email from JWT payload into snapshotProvider", async () => {
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ "https://api.openai.com/profile": { email: "u@example.com" } }),
+  ).toString("base64url");
+  const jwt = `${header}.${payload}.sig`;
+
+  const res = await setOauthToken("openai", jwt);
+  expect(res).toEqual({ poolSize: 1, index: 0, added: true });
+
+  const snap = await snapshotProvider("openai");
+  expect(snap.poolSize).toBe(1);
+  expect(snap.oauthEmail).toBe("u@example.com");
+  expect(snap.accounts?.[0]?.email).toBe("u@example.com");
+  expect(snap.accounts?.[0]?.identityKey).toBe("openai:email:u@example.com");
+});
+
+test("ModelManager.stream and call rotate on Antigravity RESOURCE_EXHAUSTED, HTTP 400 credit balance, and HTTP 529 overloaded_error", async () => {
+  const future = Date.now() + 3_600_000;
+  const manager = createModelManager();
+
+  // 1) Antigravity SSE in-band error: ProviderStreamError("Antigravity", "Resource exhausted", "RESOURCE_EXHAUSTED", 429)
+  await setOauthCredential("antigravity", {
+    access: "ag-tok-1",
+    refresh: "ag-ref-1",
+    expires: future,
+    projectId: "proj-ag-1",
+    email: "ag1@example.com",
+  });
+  await setOauthCredential("antigravity", {
+    access: "ag-tok-2",
+    refresh: "ag-ref-2",
+    expires: future,
+    projectId: "proj-ag-2",
+    email: "ag2@example.com",
+  });
+
+  const seenAgAuth: string[] = [];
+  let failAgAuth = "Bearer ag-tok-1";
+  globalThis.fetch = (async (_input, init) => {
+    const auth = getHeader(init, "authorization") ?? "";
+    seenAgAuth.push(auth);
+    if (auth === failAgAuth) {
+      return sseResponse([
+        'data: {"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}\n\n',
+      ]);
+    }
+    const label = auth.replace(/^Bearer\s+/, "");
+    return sseResponse([
+      `data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: `ok-from-${label}` }] }, finishReason: "STOP" }] } })}\n\n`,
+    ]);
+  }) as typeof fetch;
+
+  const agNotices: string[] = [];
+  const agChunks: string[] = [];
+  for await (const chunk of manager.stream([{ role: "user", content: "hi" }], {
+    model: "antigravity/gemini-3-flash-agent",
+    onNotice: msg => agNotices.push(msg),
+  })) {
+    agChunks.push(chunk);
+  }
+  expect(agChunks).toEqual(["ok-from-ag-tok-2"]);
+  expect(seenAgAuth).toEqual(["Bearer ag-tok-1", "Bearer ag-tok-2"]);
+  expect(agNotices).toEqual([
+    "[auth-pool] antigravity account #1 (ag1@example.com) hit rate limit — rotating to account #2/2 (ag2@example.com)",
+  ]);
+
+  await clearAuthCooldown("antigravity");
+  seenAgAuth.length = 0;
+  failAgAuth = "Bearer ag-tok-2";
+  const agCallReply = await manager.call([{ role: "user", content: "hi" }], {
+    model: "antigravity/gemini-3-flash-agent",
+  });
+  expect(agCallReply).toBe("ok-from-ag-tok-1");
+  expect(seenAgAuth).toEqual(["Bearer ag-tok-2", "Bearer ag-tok-1"]);
+
+  // 2) HTTP 400 "Your credit balance is too low"
+  await addApiKeyToPool("anthropic", "sk-ant-credit-1");
+  await addApiKeyToPool("anthropic", "sk-ant-credit-2");
+  const seenAnthropicKeys: string[] = [];
+  let failAnthropicKey = "sk-ant-credit-1";
+  globalThis.fetch = (async (_input, init) => {
+    const key = getHeader(init, "x-api-key") ?? "";
+    seenAnthropicKeys.push(key);
+    if (key === failAnthropicKey) {
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (String(init?.body ?? "").includes('"stream":true')) {
+      return sseResponse([
+        'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}\n\n',
+        `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream-ok-${key}"}}\n\n`,
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]);
+    }
+    return new Response(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: `call-ok-${key}` }],
+        usage: { input_tokens: 4, output_tokens: 2 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const creditCallReply = await manager.call([{ role: "user", content: "credit-call" }], {
+    model: "claude-sonnet-4-6",
+  });
+  expect(creditCallReply).toBe("call-ok-sk-ant-credit-2");
+  expect(seenAnthropicKeys).toEqual(["sk-ant-credit-1", "sk-ant-credit-2"]);
+
+  await clearAuthCooldown("anthropic");
+  seenAnthropicKeys.length = 0;
+  failAnthropicKey = "sk-ant-credit-2";
+  const creditStreamChunks: string[] = [];
+  for await (const chunk of manager.stream([{ role: "user", content: "credit-stream" }], {
+    model: "claude-sonnet-4-6",
+  })) {
+    creditStreamChunks.push(chunk);
+  }
+  expect(creditStreamChunks).toEqual(["stream-ok-sk-ant-credit-1"]);
+  expect(seenAnthropicKeys).toEqual(["sk-ant-credit-2", "sk-ant-credit-1"]);
+
+  // 3) HTTP 529 "overloaded_error"
+  await removeApiKeyFromPool("anthropic");
+  await addApiKeyToPool("anthropic", "sk-ant-overload-1");
+  await addApiKeyToPool("anthropic", "sk-ant-overload-2");
+  seenAnthropicKeys.length = 0;
+  failAnthropicKey = "sk-ant-overload-1";
+  globalThis.fetch = (async (_input, init) => {
+    const key = getHeader(init, "x-api-key") ?? "";
+    seenAnthropicKeys.push(key);
+    if (key === failAnthropicKey) {
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "overloaded_error", message: "Overloaded" },
+        }),
+        { status: 529, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (String(init?.body ?? "").includes('"stream":true')) {
+      return sseResponse([
+        'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}\n\n',
+        `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream-ok-${key}"}}\n\n`,
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]);
+    }
+    return new Response(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: `call-ok-${key}` }],
+        usage: { input_tokens: 4, output_tokens: 2 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const overloadCallReply = await manager.call([{ role: "user", content: "overload-call" }], {
+    model: "claude-sonnet-4-6",
+  });
+  expect(overloadCallReply).toBe("call-ok-sk-ant-overload-2");
+  expect(seenAnthropicKeys).toEqual(["sk-ant-overload-1", "sk-ant-overload-2"]);
+
+  await clearAuthCooldown("anthropic");
+  seenAnthropicKeys.length = 0;
+  failAnthropicKey = "sk-ant-overload-2";
+  const overloadStreamChunks: string[] = [];
+  for await (const chunk of manager.stream([{ role: "user", content: "overload-stream" }], {
+    model: "claude-sonnet-4-6",
+  })) {
+    overloadStreamChunks.push(chunk);
+  }
+  expect(overloadStreamChunks).toEqual(["stream-ok-sk-ant-overload-1"]);
+  expect(seenAnthropicKeys).toEqual(["sk-ant-overload-2", "sk-ant-overload-1"]);
+});
+
+test("loginHint, subscriptionHint, and apiKeyHint include pool:2 when poolSize or apiKeyPoolSize is 2", () => {
+  const oauthStatus: ProviderStatus = {
+    name: "anthropic",
+    kind: "oauth",
+    label: "OAuth",
+    ready: true,
+    loggedIn: true,
+    oauthEmail: "a@example.com",
+    poolSize: 2,
+  };
+  expect(loginHint(oauthStatus, true)).toContain("pool:2");
+  expect(loginHint(oauthStatus, false)).toContain("pool:2");
+  expect(loginHint({ ...oauthStatus, poolSize: 1 }, true)).not.toContain("pool:");
+
+  const subStatus: ProviderStatus = {
+    name: "qwen-portal",
+    kind: "api_key",
+    label: "API key",
+    envVar: "QWEN_PORTAL_API_KEY",
+    ready: true,
+    apiKeyPoolSize: 2,
+  };
+  expect(subscriptionHint(subStatus, true)).toContain("pool:2");
+  expect(subscriptionHint(subStatus, false)).toContain("pool:2");
+  expect(subscriptionHint({ ...subStatus, apiKeyPoolSize: 1 }, true)).not.toContain("pool:");
+
+  const keyStatus: ProviderStatus = {
+    name: "openai",
+    kind: "api_key",
+    label: "API key",
+    envVar: "OPENAI_API_KEY",
+    ready: true,
+    apiKeyPoolSize: 2,
+  };
+  expect(apiKeyHint(keyStatus, true)).toContain("pool:2");
+  expect(apiKeyHint(keyStatus, false)).toContain("pool:2");
+  expect(apiKeyHint({ ...keyStatus, apiKeyPoolSize: 1 }, true)).not.toContain("pool:");
 });

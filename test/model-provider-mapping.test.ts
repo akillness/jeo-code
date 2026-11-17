@@ -39,10 +39,10 @@ test("providerModelFor maps correctly", () => {
 });
 
 test("Antigravity models stay provider-qualified and route to the Antigravity adapter", () => {
-  expect(resolveProvider("antigravity/gemini-3.1-pro-low")).toBe("antigravity");
+  expect(resolveProvider("antigravity/gemini-4-hydrogen-low")).toBe("antigravity");
   expect(resolveProvider("antigravity/claude-sonnet-4-5")).toBe("antigravity");
-  expect(providerModelFor("antigravity/gemini-3.1-pro-low")).toBe("antigravity/gemini-3.1-pro-low");
-  expect(findCatalogModel("antigravity/gemini-3.1-pro-low")?.provider).toBe("antigravity");
+  expect(providerModelFor("antigravity/gemini-4-hydrogen-low")).toBe("antigravity/gemini-4-hydrogen-low");
+  expect(findCatalogModel("antigravity/gemini-4-hydrogen-low")?.provider).toBe("antigravity");
 });
 
 // --- resolveProvider must consult the live-discovered-model index (v0.9.x fix):

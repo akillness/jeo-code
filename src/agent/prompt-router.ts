@@ -650,6 +650,48 @@ function buildClassifierPrompt(prompt: string): string {
   );
 }
 
+async function escalateToQev(prompt: string, signal: AbortSignal | undefined): Promise<PromptTier | undefined> {
+  if (process.env.JEO_QEV_ROUTER === "0") return undefined;
+  const qevUrl = process.env.JEO_QEV_URL?.trim();
+  if (process.env.NODE_ENV === "test" && !qevUrl) return undefined;
+  const endpoint = qevUrl || "http://127.0.0.1:8017/v1/systemone";
+  try {
+    const timeoutSig = AbortSignal.timeout(450);
+    const reqSignal = signal ? AbortSignal.any([signal, timeoutSig]) : timeoutSig;
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state: { prompt: prompt.slice(0, 1200) },
+        model: "qev-0.8b-text-Q8_0",
+        questions: {
+          tier: {
+            type: "choice",
+            instructions: "Classify task complexity tier for LLM routing.",
+            options: ["trivial", "standard", "complex", "architectural"],
+          },
+        },
+      }),
+      signal: reqSignal,
+    });
+    if (!resp.ok) return undefined;
+    const payload = (await resp.json()) as {
+      answers?: { tier?: { choice?: unknown; probabilities?: Record<string, number> } };
+    };
+    const tierAns = payload?.answers?.tier;
+    if (!tierAns || !isPromptTier(tierAns.choice)) return undefined;
+    if (tierAns.probabilities && typeof tierAns.probabilities === "object") {
+      const sorted = Object.values(tierAns.probabilities)
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .sort((a, b) => b - a);
+      if (sorted.length >= 2 && sorted[0]! - sorted[1]! < 0.12) return undefined;
+    }
+    return tierAns.choice;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Attempt LLM-based re-classification for an ambiguous heuristic result. Fail-open:
  *  ANY failure (throw, abort/timeout, malformed JSON, invalid tier value) resolves to
  *  `undefined` so the caller falls back to the heuristic tier silently. */
@@ -697,34 +739,40 @@ export async function routePrompt(
     let warning: string | undefined;
 
     if (heuristic.confidence < threshold) {
-      const smolModel = resolveRoleModel("smol", config);
-      let classifierModel: string | undefined;
-      if (smolModel !== config.defaultModel) {
-        classifierModel = smolModel;
+      const qevTier = await escalateToQev(prompt, opts.signal);
+      if (qevTier) {
+        tier = qevTier;
+        source = "llm";
       } else {
-        // roles.smol not configured -> "escalate to a cheap model" would otherwise call
-        // defaultModel (expensive) — the exact paradox the design doc identifies. Rather
-        // than giving up outright, fall back to the cheapest CREDENTIALED catalog model
-        // (same live `MODEL_CATALOG` lookup `resolveTierModel`'s trivial-tier auto-select
-        // already uses) so an ambiguous per-turn prompt still gets a real LLM classification
-        // pass whenever a genuinely cheaper option exists. Only skip escalation entirely
-        // (heuristic-only, one-time warning) when even that fallback resolves to
-        // `defaultModel` itself (nothing cheaper is credentialed) or nothing qualifies at all.
-        const fallback = cheapestCredentialed(config);
-        if (fallback && fallback !== config.defaultModel) {
-          classifierModel = fallback;
+        const smolModel = resolveRoleModel("smol", config);
+        let classifierModel: string | undefined;
+        if (smolModel !== config.defaultModel) {
+          classifierModel = smolModel;
         } else {
-          warning = warnOnce(
-            SMOL_UNCONFIGURED_WARNING_KEY,
-            "[route] confidence below threshold but roles.smol is not configured and no cheaper credentialed model was found — skipping LLM escalation, using heuristic tier (set roles.smol to enable escalation)",
-          );
+          // roles.smol not configured -> "escalate to a cheap model" would otherwise call
+          // defaultModel (expensive) — the exact paradox the design doc identifies. Rather
+          // than giving up outright, fall back to the cheapest CREDENTIALED catalog model
+          // (same live `MODEL_CATALOG` lookup `resolveTierModel`'s trivial-tier auto-select
+          // already uses) so an ambiguous per-turn prompt still gets a real LLM classification
+          // pass whenever a genuinely cheaper option exists. Only skip escalation entirely
+          // (heuristic-only, one-time warning) when even that fallback resolves to
+          // `defaultModel` itself (nothing cheaper is credentialed) or nothing qualifies at all.
+          const fallback = cheapestCredentialed(config);
+          if (fallback && fallback !== config.defaultModel) {
+            classifierModel = fallback;
+          } else {
+            warning = warnOnce(
+              SMOL_UNCONFIGURED_WARNING_KEY,
+              "[route] confidence below threshold but roles.smol is not configured and no cheaper credentialed model was found — skipping LLM escalation, using heuristic tier (set roles.smol to enable escalation)",
+            );
+          }
         }
-      }
-      if (classifierModel) {
-        const escalated = await escalateToLlm(prompt, classifierModel, opts.signal);
-        if (escalated) {
-          tier = escalated;
-          source = "llm";
+        if (classifierModel) {
+          const escalated = await escalateToLlm(prompt, classifierModel, opts.signal);
+          if (escalated) {
+            tier = escalated;
+            source = "llm";
+          }
         }
       }
     }

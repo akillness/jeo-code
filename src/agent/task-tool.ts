@@ -9,6 +9,7 @@
  * `task` itself, so delegation cannot recurse infinitely.
  */
 import { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopResult, type ToolHandler } from "./engine";
+import { evaluateSubagentWithQev } from "./jev-tools";
 import { currentUsageScope, withChildUsageScope } from "./usage-ledger";
 import { toolTarget } from "./step-budget";
 
@@ -757,7 +758,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   const sandbox = opts.sandbox ?? currentSandboxExecution();
   /** Run ONE subagent via the shared execution core, binding this tool instance's
    *  config/signal/onEvent (the original single-task path). */
-  const runOne = (
+  const runOne = async (
     role: SubagentRole,
     taskText: string,
     context: string,
@@ -779,8 +780,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       /** SubagentRegistry to report live activity into. */
       registry?: SubagentRegistry;
     } = {},
-  ): Promise<SubagentRunResult> =>
-    runSubagentOnce(role, taskText, context, cwd, {
+  ): Promise<SubagentRunResult> => {
+    const runOpts = {
       config: opts.config,
       sandbox,
       signal: extra.signal ?? opts.signal,
@@ -793,7 +794,17 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       modelOverride: extra.modelOverride,
       detachedId: extra.detachedId,
       registry: extra.registry,
-    });
+    };
+    const first = await runSubagentOnce(role, taskText, context, cwd, runOpts);
+    if (first.success && !(extra.signal ?? opts.signal)?.aborted && process.env.JEO_SUBAGENT_EVAL === "1") {
+      const qevEval = await evaluateSubagentWithQev(taskText, first.doneReason ?? first.output);
+      if (qevEval && !qevEval.pass) {
+        const retryFeedback = `\n\n[Jev Subagent Quality Gate] Previous attempt scored ${qevEval.score.toFixed(2)} (<0.35). Verify unmet requirements and cite concrete evidence before calling done.`;
+        return runSubagentOnce(role, taskText, `${context}${retryFeedback}`, cwd, runOpts);
+      }
+    }
+    return first;
+  };
 
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {

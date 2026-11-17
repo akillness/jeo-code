@@ -6,6 +6,7 @@ import { readGlobalConfig, type StoredOAuth } from "../agent/state";
 import { jeoEnv } from "../util/env";
 import { listProviderModels } from "../ai/model-discovery";
 import { writeModelCache } from "../ai/model-cache";
+import { syncOAuthFromJeopi } from "../auth/shared-pool-bridge";
 import {
   OAUTH_FLOWS,
   OAUTH_FLOW_REGISTRY,
@@ -40,10 +41,24 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   if (sub === "use") return runAuthUse(args.slice(1));
   if (sub === "rotate") return runAuthRotate(args.slice(1));
   if (sub === "reset-cooldown") return runAuthResetCooldown(args[1] as AuthProvider | undefined);
+  if (sub === "sync") return runAuthSync(args.slice(1));
   console.log(
-    `Unknown auth subcommand: ${sub}\nUsage: jeo auth [status|login|logout|refresh|import|pool|use|rotate|reset-cooldown] [provider] ...`,
+    `Unknown auth subcommand: ${sub}\nUsage: jeo auth [status|login|logout|refresh|import|pool|use|rotate|reset-cooldown|sync] [provider] ...`,
   );
   process.exitCode = 1;
+}
+
+async function runAuthSync(args: string[]): Promise<void> {
+  const dryRun = args.includes("--dry-run");
+  const res = await syncOAuthFromJeopi({ dryRun });
+  if (res.imported === 0) {
+    console.log("Auth pools already synchronized with ~/.jeopi/agent/agent.db (0 new accounts).");
+    return;
+  }
+  const summary = Object.entries(res.byProvider)
+    .map(([p, n]) => `${p}:${n}`)
+    .join(", ");
+  console.log(`${dryRun ? "[DRY-RUN] " : ""}Synced ${res.imported} active OAuth account(s) from jeopi (${summary}); skipped ${res.skipped}.`);
 }
 
 // Every loginable provider: OAuth-capable ∪ API-key-only (keyless ollama/lmstudio excluded).

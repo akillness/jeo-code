@@ -16,6 +16,7 @@ import { jeoEnv } from "../util/env";
 import { isRateLimitError, isUsageLimitError } from "../util/retry";
 import { OAUTH_FLOW_REGISTRY } from "./flows";
 import { classifyRefreshFailure, mergeRefreshedOAuth, OAUTH_REFRESH_SKEW_MS } from "./token-refresh";
+import { clearSharedCooldown, lookupSharedCooldown, recordSharedCooldown, shouldUseSharedPool } from "./shared-pool-bridge";
 
 /** Providers with an interactive OAuth login + refresh flow. */
 export type OAuthProvider = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi";
@@ -334,12 +335,14 @@ export async function resetAuthPoolState(provider?: AuthProvider): Promise<void>
     if (canPersistPoolState()) {
       await fs.unlink(poolStatePath(dir)).catch(() => {});
     }
+    if (shouldUseSharedPool(dir)) clearSharedCooldown();
     return;
   }
   const dirMap = await getDirPools();
   for (const kind of ["oauth", "api_key"] as const) {
     dirMap.delete(`${provider}:${kind}`);
   }
+  if (shouldUseSharedPool(dir)) clearSharedCooldown(provider);
   await persistDirPools();
 }
 
@@ -569,6 +572,25 @@ function buildApiKeySlots(
   }));
 }
 
+function getEffectiveBlockedUntil(runtime: PoolRuntimeEntry, slot: PoolCandidateSlot): number | undefined {
+  const localUntil = runtime.blockedUntil.get(slot.identityKey);
+  const shared =
+    slot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())
+      ? lookupSharedCooldown(slot.ownerProvider, slot)
+      : undefined;
+  if (localUntil !== undefined && shared !== undefined) return Math.max(localUntil, shared.blockedUntil);
+  return localUntil ?? shared?.blockedUntil;
+}
+
+function getEffectiveBlockedReason(runtime: PoolRuntimeEntry, slot: PoolCandidateSlot): string | undefined {
+  const localReason = runtime.blockedReason.get(slot.identityKey);
+  if (localReason) return localReason;
+  if (slot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())) {
+    return lookupSharedCooldown(slot.ownerProvider, slot)?.reason;
+  }
+  return undefined;
+}
+
 function selectSlotIndex(
   slots: readonly PoolCandidateSlot[],
   runtime: PoolRuntimeEntry,
@@ -586,7 +608,7 @@ function selectSlotIndex(
       const pinnedIdx = slots.findIndex(s => s.identityKey === pinnedId);
       if (pinnedIdx !== -1) {
         const pinnedSlot = slots[pinnedIdx]!;
-        const blockedUntil = runtime.blockedUntil.get(pinnedSlot.identityKey);
+        const blockedUntil = getEffectiveBlockedUntil(runtime, pinnedSlot);
         if (!pinnedSlot.dead && (!blockedUntil || blockedUntil <= now)) {
           return pinnedIdx;
         }
@@ -599,7 +621,7 @@ function selectSlotIndex(
   for (let offset = 0; offset < slots.length; offset++) {
     const idx = (start + offset) % slots.length;
     const slot = slots[idx]!;
-    const blockedUntil = runtime.blockedUntil.get(slot.identityKey);
+    const blockedUntil = getEffectiveBlockedUntil(runtime, slot);
     if (!slot.dead && (!blockedUntil || blockedUntil <= now)) {
       return idx;
     }
@@ -612,7 +634,7 @@ function selectSlotIndex(
     const idx = (start + offset) % slots.length;
     const slot = slots[idx]!;
     if (slot.dead) continue;
-    const until = runtime.blockedUntil.get(slot.identityKey) ?? Number.POSITIVE_INFINITY;
+    const until = getEffectiveBlockedUntil(runtime, slot) ?? Number.POSITIVE_INFINITY;
     if (until < earliestUntil) {
       earliestUntil = until;
       bestIdx = idx;
@@ -1000,7 +1022,7 @@ export async function hasUnblockedPoolSibling(
     const token = slot.kind === "oauth" ? oauthEntryAccess(slot.entry) : slot.apiKey;
     if (token === currentCredential.token) return false;
     if (slot.dead) return false;
-    const until = runtime.blockedUntil.get(slot.identityKey);
+    const until = getEffectiveBlockedUntil(runtime, slot);
     return !until || until <= now;
   });
 }
@@ -1057,8 +1079,12 @@ export async function rotateCredential(
   const failedSlot = slots[failedIdx]!;
   const { cooldownMs, reason } = classifyRotationCooldown(error);
   const now = Date.now();
-  runtime.blockedUntil.set(failedSlot.identityKey, now + cooldownMs);
+  const blockedUntilTarget = now + cooldownMs;
+  runtime.blockedUntil.set(failedSlot.identityKey, blockedUntilTarget);
   runtime.blockedReason.set(failedSlot.identityKey, reason);
+  if (failedSlot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())) {
+    recordSharedCooldown(failedSlot.ownerProvider, failedSlot, blockedUntilTarget, reason);
+  }
 
   if (opts?.sessionKey && runtime.sessionPinned.get(opts.sessionKey) === failedSlot.identityKey) {
     runtime.sessionPinned.delete(opts.sessionKey);
@@ -1070,7 +1096,7 @@ export async function rotateCredential(
     const candidateIdx = (failedIdx + offset) % slots.length;
     const candidate = slots[candidateIdx]!;
     if (candidate.dead) continue;
-    const blockedUntil = runtime.blockedUntil.get(candidate.identityKey);
+    const blockedUntil = getEffectiveBlockedUntil(runtime, candidate);
     if (blockedUntil && blockedUntil > now) continue;
 
     // Resolve via the owner provider + ownerIndex so any expired OAuth token auto-refreshes cleanly.
@@ -1122,7 +1148,7 @@ export async function rotateCredential(
 
   let earliestUnblockAt: number | undefined;
   for (const slot of slots) {
-    const until = runtime.blockedUntil.get(slot.identityKey);
+    const until = getEffectiveBlockedUntil(runtime, slot);
     if (until !== undefined && (earliestUnblockAt === undefined || until < earliestUnblockAt)) {
       earliestUnblockAt = until;
     }
@@ -1166,8 +1192,8 @@ export async function snapshotProvider(provider: AuthProvider): Promise<AuthSnap
       hasRefresh: slot.hasRefresh,
       dead: slot.dead,
       active: idx === activeOAuthIdx,
-      blockedUntil: runtimeOAuth.blockedUntil.get(slot.identityKey),
-      blockedReason: runtimeOAuth.blockedReason.get(slot.identityKey),
+      blockedUntil: getEffectiveBlockedUntil(runtimeOAuth, slot),
+      blockedReason: getEffectiveBlockedReason(runtimeOAuth, slot),
       maskedToken: slot.maskedToken,
     })),
     ...keySlots.map((slot, idx) => ({

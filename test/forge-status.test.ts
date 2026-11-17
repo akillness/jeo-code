@@ -12,6 +12,7 @@ import {
 import { renderWelcome } from "../src/tui/components/welcome";
 import { buildRalphSubagentPrompt, formatRalphStreamEvent, formatRalphTodoGuide } from "../src/commands/team";
 import { visibleWidth } from "../src/tui/components/width";
+import { stripInlineMarkdown } from "../src/tui/components/markdown-text";
 import { parseChangelogSections, changelogText } from "../src/util/whats-new";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -139,9 +140,10 @@ test("welcome forge uses right-side metadata table only on wide terminals", () =
   // `getLatestChangelogItems`), so assert against that source of truth instead of one
   // release's headline text — the pinned string broke on every version bump.
   const newestSection = parseChangelogSections(changelogText).find(s => s.groups.some(g => g.items.length > 0));
-  const headline = newestSection?.groups.flatMap(g => g.items)[0] ?? "";
+  const headline = stripInlineMarkdown(newestSection?.groups.flatMap(g => g.items)[0] ?? "");
   expect(headline.length).toBeGreaterThan(20);
   expect(wide.join("\n")).toContain(headline.slice(0, 20));
+  expect(wide.join("\n")).not.toContain("• **");
   expect(wide.some(line => line.includes("Flow keys"))).toBe(true);
   expect(wide.some(line => line.includes("Project pulse"))).toBe(true);
   for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(119);

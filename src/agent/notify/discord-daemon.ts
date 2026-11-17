@@ -26,6 +26,7 @@ export interface DiscordDaemonDependencies {
   setTimeout?: (callback: () => void, ms: number) => Timer;
   clearTimeout?: (timer: Timer) => void;
   scanIntervalMs?: number;
+  maxReconnects?: number;
   ackTimeoutMs?: number;
   onError?: (message: string) => void;
   onFatal?: (message: string) => void;
@@ -223,8 +224,14 @@ export class DiscordDaemon {
               if (this.gateway !== ws || !this.gatewayInfo) return;
               if ((this.deps.now ?? Date.now)() >= this.gatewayLimitResetAt) {
                 let info: DiscordGatewayInfo;
-                try { info = await this.api.getGatewayBot(); } catch {
-                  if (!this.stopped && this.gateway === ws) this.fail("Discord gateway budget refresh failed");
+                try { info = await this.api.getGatewayBot(); } catch (error) {
+                  if (!this.stopped && this.gateway === ws) {
+                    if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+                    else {
+                      this.deps.onError?.("Discord gateway budget refresh failed");
+                      this.reconnect();
+                    }
+                  }
                   return;
                 }
                 if (this.stopped || this.gateway !== ws) return;
@@ -292,8 +299,8 @@ export class DiscordDaemon {
     const ws = this.gateway;
     this.gateway = undefined;
     try { ws?.close(4000); } catch {}
-    if (++this.reconnects > 8) { this.fail("Discord gateway reconnect limit reached"); return; }
-    const wait = Math.min(1_000 * 2 ** (this.reconnects - 1), 30_000);
+    if (++this.reconnects > (this.deps.maxReconnects ?? Infinity)) { this.fail("Discord gateway reconnect limit reached"); return; }
+    const wait = Math.min(1_000 * 2 ** Math.min(this.reconnects - 1, 5), 30_000);
     this.reconnectTimer = this.later(() => this.connectGateway(), wait);
   }
 

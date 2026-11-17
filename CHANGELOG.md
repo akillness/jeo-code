@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.56] - 2026-11-17
+_Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions._
+
+### Fixed
+- **Unbounded Discord & Slack notify daemon reconnects (`src/agent/notify/discord-daemon.ts`, `src/agent/notify/slack-daemon.ts`):** Remove the hardcoded 8-attempt consecutive reconnect ceiling (`maxReconnects` now defaults to `Infinity`, retaining explicit `deps.maxReconnects` override for tests and terminal close-code/auth checks), cap the backoff exponent at 30s without `Infinity` intermediates, and route transient `getGatewayBot()` errors during session-budget refresh through `reconnect()` instead of permanently stopping the daemon (preserving 401 auth denial fast-fail).
+- **Discord messenger backoff reset (`src/messenger/discord.ts`):** Reset the gateway reconnect delay back to 5s once `READY` or `RESUMED` establishes a healthy session so subsequent disconnects recover quickly instead of remaining pinned at the 30s backoff ceiling.
+
 ## [0.12.55] - 2026-11-17
 _Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`._
 

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { DiscordDaemon, type DiscordDaemonDependencies } from "../src/agent/notify/discord-daemon";
-import { DiscordApi } from "../src/agent/notify/discord-api";
+import { DiscordApi, DiscordApiError } from "../src/agent/notify/discord-api";
 import { SessionNotifyEndpoint, type RemoteUserMessage } from "../src/agent/notify/session-endpoint";
 import { resolveDiscordArtifactStage } from "../src/agent/notify/discord-artifacts";
 import * as fs from "node:fs/promises";
@@ -581,7 +581,7 @@ test("a delayed old-socket close cannot reject a replacement session's pending c
 
 test("bounded reconnect exhaustion signals terminal failure once and stale events cannot repeat it", async () => {
   const fatal: string[] = [];
-  const f = fixture([], { onFatal: message => fatal.push(message) });
+  const f = fixture([], { maxReconnects: 8, onFatal: message => fatal.push(message) });
   try {
     await f.ready();
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -602,6 +602,79 @@ test("bounded reconnect exhaustion signals terminal failure once and stale event
     expect(fatal).toHaveLength(1);
     expect(f.gateway.instances.length).toBe(connections);
   } finally { f.daemon.stop(); }
+});
+
+test("unbounded reconnect retries indefinitely at the 30s backoff cap", async () => {
+  const fatal: string[] = [];
+  const f = fixture([], { onFatal: message => fatal.push(message) });
+  try {
+    await f.ready();
+    for (let attempt = 0; attempt < 20; attempt++) {
+      f.gateway.instances.at(-1)!.onerror?.();
+      expect(fatal).toEqual([]);
+      expect(f.api.stopped).toBe(false);
+      f.clock.advance(Math.min(1000 * 2 ** attempt, 30000));
+    }
+    expect(fatal).toEqual([]);
+    expect(f.api.stopped).toBe(false);
+  } finally { f.daemon.stop(); }
+});
+
+test("transient gateway budget refresh failure reconnects instead of stopping permanently, while 401 still fails fast", async () => {
+  const errors: string[] = [];
+  const fatal: string[] = [];
+  let failRefresh = true;
+  class RefreshFailureService extends DiscordService {
+    override async getGatewayBot() {
+      if (this.stopped) return super.getGatewayBot();
+      if (failRefresh && this.remaining === 0) {
+        failRefresh = false;
+        throw new Error("temporary DNS failure on wake");
+      }
+      this.remaining = 5;
+      return super.getGatewayBot();
+    }
+  }
+  const api = new RefreshFailureService();
+  api.remaining = 1;
+  const f = fixture([], { api, onError: m => errors.push(m), onFatal: m => fatal.push(m) });
+  try {
+    await f.ready();
+    api.remaining = 0;
+    await f.gateway.instances[0]!.receive({ op: 9, d: false });
+    f.clock.advance(1000);
+    f.clock.now = 60000;
+    await f.gateway.instances[1]!.receive({ op: 10, d: { heartbeat_interval: 1000 } });
+    expect(fatal).toEqual([]);
+    expect(api.stopped).toBe(false);
+    expect(errors.some(e => /budget refresh/i.test(e))).toBe(true);
+    f.clock.advance(2000);
+    expect(f.gateway.instances.length).toBe(3);
+    await f.gateway.instances[2]!.receive({ op: 10, d: { heartbeat_interval: 1000 } });
+    expect(f.gateway.instances[2]!.sent.map(frame => frame.op)).toEqual([2]);
+    expect(fatal).toEqual([]);
+  } finally { f.daemon.stop(); }
+
+  const authFatal: string[] = [];
+  class AuthFailService extends DiscordService {
+    override async getGatewayBot() {
+      if (this.remaining === 0) throw new DiscordApiError("Discord request failed", 401);
+      return super.getGatewayBot();
+    }
+  }
+  const authApi = new AuthFailService();
+  authApi.remaining = 1;
+  const f2 = fixture([], { api: authApi, onFatal: m => authFatal.push(m) });
+  try {
+    await f2.ready();
+    authApi.remaining = 0;
+    await f2.gateway.instances[0]!.receive({ op: 9, d: false });
+    f2.clock.advance(1000);
+    f2.clock.now = 60000;
+    await f2.gateway.instances[1]!.receive({ op: 10, d: { heartbeat_interval: 1000 } });
+    expect(authFatal).toEqual(["Discord authentication denied"]);
+    expect(authApi.stopped).toBe(true);
+  } finally { f2.daemon.stop(); }
 });
 
 test("a transient outbound failure reports an error without declaring the provider fatal", async () => {

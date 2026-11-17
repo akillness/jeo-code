@@ -178,6 +178,7 @@ function connectGateway(
 	WebSocketImpl: typeof WebSocket,
 	clock: DiscordClock,
 	onThreadEvent: (type: "THREAD_UPDATE" | "THREAD_DELETE", value: unknown) => Promise<void>,
+	onEstablished?: () => void,
 ): Promise<void> {
 	if (signal.aborted) return Promise.resolve();
 	const result = Promise.withResolvers<void>();
@@ -312,10 +313,12 @@ function connectGateway(
 				session.id = packet.d.session_id;
 				established = true;
 				cancelHandshake?.();
+				onEstablished?.();
 			} else if (packet.t === "RESUMED") {
 				established = true;
 				resuming = false;
 				cancelHandshake?.();
+				onEstablished?.();
 			} else if ((established || resuming) && (packet.t === "THREAD_UPDATE" || packet.t === "THREAD_DELETE")) {
 				void onThreadEvent(packet.t, packet.d).catch(() => finish(new DiscordConfigurationError("Discord thread lifecycle handling failed")));
 			} else if ((established || resuming) && packet.t === "MESSAGE_CREATE") {
@@ -402,6 +405,7 @@ export function createDiscordAdapter(
 			let delay = 5_000;
 			while (!signal.aborted) {
 				let retryDelay = delay;
+				let establishedThisAttempt = false;
 				try {
 					if (!accountId) {
 						const user = await messengerFetchJson(
@@ -598,6 +602,10 @@ export function createDiscordAdapter(
 							failDispatch("Discord thread lifecycle handling failed");
 							throw error;
 						}),
+						() => {
+							establishedThisAttempt = true;
+							delay = 5_000;
+						},
 					);
 				} catch (error) {
 					if (signal.aborted) return;
@@ -617,6 +625,7 @@ export function createDiscordAdapter(
 					}
 				}
 				if (signal.aborted) return;
+				if (establishedThisAttempt) retryDelay = 5_000;
 				try {
 					await waitForReconnect(retryDelay, signal, clock);
 				} catch {

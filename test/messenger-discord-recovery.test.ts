@@ -686,3 +686,61 @@ test("Discord does not re-anchor an unversioned archive from an older same-state
     expect(lifecycle.slice(1)).not.toContain("unarchive");
   } finally { controller.abort(); await running; }
 });
+
+test("Discord messenger resets reconnect backoff to 5s after an established READY session", async () => {
+  const delays: number[] = [];
+  let attempt = 0;
+  let socket: FakeSocket | undefined;
+  const thirdAttemptReady = Promise.withResolvers<void>();
+  const fourthAttemptStarted = Promise.withResolvers<void>();
+  class FakeSocket extends EventTarget {
+    constructor(_url: string) {
+      super();
+      socket = this;
+      attempt++;
+      if (attempt === 1 || attempt === 2) {
+        queueMicrotask(() => {
+          const event = new Event("close");
+          Object.defineProperty(event, "code", { value: 1006 });
+          this.dispatchEvent(event);
+        });
+      } else if (attempt === 3) {
+        thirdAttemptReady.resolve();
+      } else if (attempt === 4) {
+        fourthAttemptStarted.resolve();
+      }
+    }
+    send(_value: string) {}
+    close() {}
+    receive(packet: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(packet) })); }
+  }
+  const clock = {
+    schedule(cb: () => void, delayMs: number) {
+      if (delayMs === 5_000 || delayMs === 10_000 || delayMs === 20_000 || delayMs === 30_000) {
+        delays.push(delayMs);
+        queueMicrotask(cb);
+      }
+      return () => {};
+    },
+    random: () => 0.5,
+  };
+  const fetchImpl: typeof fetch = async input => {
+    const p = new URL(String(input)).pathname;
+    if (p.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+    if (p.endsWith("/gateway/bot")) return Response.json({ url: "wss://gateway.discord.gg" });
+    return new Response(null, { status: 404 });
+  };
+  const adapter = createDiscordAdapter(settings.platforms.discord!, { JEO_DISCORD_BOT_TOKEN: "fake" }, { fetch: fetchImpl, WebSocket: FakeSocket as unknown as typeof WebSocket, clock });
+  const controller = new AbortController();
+  const running = adapter.start(async () => {}, controller.signal);
+  try {
+    await thirdAttemptReady.promise;
+    socket!.receive({ op: 10, d: { heartbeat_interval: 300000 } });
+    socket!.receive({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } });
+    const ev = new Event("close");
+    Object.defineProperty(ev, "code", { value: 1006 });
+    socket!.dispatchEvent(ev);
+    await fourthAttemptStarted.promise;
+    expect(delays).toEqual([5_000, 10_000, 5_000]);
+  } finally { controller.abort(); await running; }
+});

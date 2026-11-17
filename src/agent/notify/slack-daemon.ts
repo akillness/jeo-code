@@ -168,9 +168,9 @@ export class SlackDaemon {
     const ws = this.socket;
     this.socket = undefined;
     try { ws?.close(1000); } catch {}
-    const max = Math.max(0, Math.min(this.deps.maxReconnects ?? 8, 8));
+    const max = this.deps.maxReconnects ?? Infinity;
     if (++this.reconnects > max) { this.fail("Slack Socket Mode reconnect limit reached"); return; }
-    this.reconnectTimer = this.later(() => { void this.connectSocket(); }, Math.min(1000 * 2 ** (this.reconnects - 1), 30_000));
+    this.reconnectTimer = this.later(() => { void this.connectSocket(); }, Math.min(1000 * 2 ** Math.min(this.reconnects - 1, 5), 30_000));
   }
 
   private scheduleScan(): void {

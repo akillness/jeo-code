@@ -63,9 +63,36 @@ export function sharedIdentityKey(input: {
   return null;
 }
 
+let cachedSharedFile: {
+  filePath: string;
+  mtimeNs: bigint;
+  size: bigint;
+  ino: bigint;
+  data: SharedCooldownFile;
+} | null = null;
+
+function pruneActiveCooldowns(raw: SharedCooldownFile): SharedCooldownFile {
+  const now = Date.now();
+  const active: Record<string, SharedCooldownRecord> = {};
+  for (const [k, rec] of Object.entries(raw.cooldowns)) {
+    if (rec.blockedUntil > now) active[k] = rec;
+  }
+  return { version: 1, updatedAt: raw.updatedAt, cooldowns: active };
+}
+
 function readSharedFile(): SharedCooldownFile {
   const filePath = resolveSharedPoolPath();
   try {
+    const st = fs.statSync(filePath, { bigint: true });
+    if (
+      cachedSharedFile &&
+      cachedSharedFile.filePath === filePath &&
+      cachedSharedFile.mtimeNs === st.mtimeNs &&
+      cachedSharedFile.size === st.size &&
+      cachedSharedFile.ino === st.ino
+    ) {
+      return pruneActiveCooldowns(cachedSharedFile.data);
+    }
     const raw = fs.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw) as Partial<SharedCooldownFile>;
     if (parsed && parsed.version === 1 && parsed.cooldowns && typeof parsed.cooldowns === "object") {
@@ -80,10 +107,12 @@ function readSharedFile(): SharedCooldownFile {
           };
         }
       }
-      return { version: 1, updatedAt: parsed.updatedAt ?? now, cooldowns: active };
+      const data: SharedCooldownFile = { version: 1, updatedAt: parsed.updatedAt ?? now, cooldowns: active };
+      cachedSharedFile = { filePath, mtimeNs: st.mtimeNs, size: st.size, ino: st.ino, data };
+      return data;
     }
   } catch {
-    // Missing or malformed file starts fresh.
+    cachedSharedFile = null;
   }
   return { version: 1, updatedAt: Date.now(), cooldowns: {} };
 }
@@ -92,6 +121,7 @@ function writeSharedFile(data: SharedCooldownFile): void {
   const filePath = resolveSharedPoolPath();
   const dir = path.dirname(filePath);
   const tmpPath = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  cachedSharedFile = null;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -143,6 +173,7 @@ export function recordSharedCooldown(
 
 export function clearSharedCooldown(provider?: string): void {
   const filePath = resolveSharedPoolPath();
+  cachedSharedFile = null;
   if (!provider) {
     try {
       fs.unlinkSync(filePath);

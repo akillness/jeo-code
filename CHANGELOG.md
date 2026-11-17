@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.53] - 2026-11-17
+_Bridge OAuth 429 cooldown pools with jeopi, add local qev:8017 route-model & jev_decide, link @wiki graph edges with qev rerank, and optimize DB/cache memory and latency._
+
+### Added
+- **Cross-runtime OAuth pool & 429 cooldown synchronization (`src/auth/shared-pool-bridge.ts`, `src/auth/storage.ts`, `src/commands/auth.ts`):** Share active `anthropic`, `openai`/`openai-codex`, and `antigravity`/`google-antigravity` rate-limit cooldowns via mode-`0600` `~/.agents/auth-pool/cooldowns.json` (with `mtimeNs`-gated in-memory caching and hermetic test isolation) and add `jeo auth sync` to import active OAuth credentials from `~/.jeopi/agent/agent.db`.
+- **Local `qev:8017` model router, `jev_decide` tool & subagent quality gate (`src/agent/prompt-router.ts`, `src/agent/jev-tools.ts`, `src/agent/engine.ts`, `src/agent/task-tool.ts`):** Escalate ambiguous heuristic classifications to local `qev:8017` (`/v1/systemone`) with bounded 128-entry LRU caching and a 15s circuit breaker before paid `smol` LLM fallback, expose read-only `jev_decide`, and support optional `JEO_SUBAGENT_EVAL=1` 1-retry evaluation.
+- **`llm-wiki` `@wiki/` graph bridge & Noul `rerank` (`packages/jeo-mem/src/indexer.ts`, `packages/jeo-mem/src/query.ts`, `src/agent/jeox-tool.ts`):** Index project-matched `~/vaults/llm-wiki` docs into `@wiki/` chunks and `references` edges surfaced by `whoCalls`, add fail-open 500ms `qev:8017` Noul `rerank` to `search`/`scope`, enable WAL/mmap/cache PRAGMAs, skip `rebuildEdges` on no-op incremental builds, replace `stats().files` with `hasIndexedFiles()`, and cap `dbCache` with LRU eviction (`MAX_DB_CACHE = 4`).
+
 ## [0.12.52] - 2026-11-17
 _Restore resumed sessions directly onto the interactive working TUI, fix GFM table alignment/wrapping and inline Markdown rendering, and propagate Karpathy discipline across subagent and ralplan roles._
 

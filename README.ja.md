@@ -583,11 +583,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.53]** (2026-11-17) — Bridge OAuth 429 cooldown pools with jeopi, add local qev:8017 route-model & jev_decide, link @wiki graph edges with qev rerank, and optimize DB/cache memory and latency.
 - **[0.12.52]** (2026-11-17) — Restore resumed sessions directly onto the interactive working TUI, fix GFM table alignment/wrapping and inline Markdown rendering, and propagate Karpathy discipline across subagent and ralplan roles.
 - **[0.12.51]** (2026-11-17) — Sanitize stale local-tarball lockfiles in isolated global updates and rewrite messenger runtime manifests on CDN tarball fallback.
 - **[0.12.50]** (2026-11-17) — Add cache-busted registry metadata lookup and canonical tarball fallback so `jeo update` and `jeo messenger update` recover from post-publish npm CDN 404s.
 - **[0.12.49]** (2026-11-17) — Jeopi-inspired hierarchical subagent TUI panel, linear-time terminal/secret sanitization, thinking-stream throttling, and bounded memory retention.
-- **[0.12.48]** (2026-11-16) — Expand Discord session read exploration across sibling/parent/global roots while preserving private-path and write boundaries.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

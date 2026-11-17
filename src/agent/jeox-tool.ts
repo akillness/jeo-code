@@ -4,7 +4,7 @@
  * and token-optimized search/scope.
  */
 import * as path from "node:path";
-import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats } from "../../packages/jeo-mem/src/index";
+import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats, hasIndexedFiles } from "../../packages/jeo-mem/src/index";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 
@@ -14,6 +14,9 @@ export const JEOX_TOOL_PROTOCOL_LINE =
   `"impact" (reverse dependency closure: files, tests, symbols), "search" (BM25 search), "scope" (task manifest), ` +
   `"build" (refresh index), "status" (counts).`;
 
+const QEV_CIRCUIT_COOLDOWN_MS = 15_000;
+let qevRerankDownUntil = 0;
+
 async function rerankHitsWithQev<T extends { type?: string; path?: string; label?: string }>(
   query: string,
   hits: T[],
@@ -21,7 +24,9 @@ async function rerankHitsWithQev<T extends { type?: string; path?: string; label
 ): Promise<T[]> {
   const enabled = explicitRerank === true || (explicitRerank !== false && process.env.JEOX_JEV_RERANK === "1");
   if (!enabled || hits.length <= 1) return hits;
-  const endpoint = process.env.JEOX_QEV_URL?.trim() || "http://127.0.0.1:8017/v1/systemone";
+  const overrideUrl = process.env.JEOX_QEV_URL?.trim();
+  if (!overrideUrl && process.env.NODE_ENV !== "test" && Date.now() < qevRerankDownUntil) return hits;
+  const endpoint = overrideUrl || "http://127.0.0.1:8017/v1/systemone";
   const capped = hits.slice(0, 12);
   const state: Record<string, string> = { query };
   const questions: Record<string, { type: "noul"; instructions: string }> = {};
@@ -41,7 +46,11 @@ async function rerankHitsWithQev<T extends { type?: string; path?: string; label
       body: JSON.stringify({ state, model: "qev-0.8b-text-Q8_0", questions }),
       signal: AbortSignal.timeout(500),
     });
-    if (!resp.ok) return hits;
+    if (!resp.ok) {
+      if (!overrideUrl && process.env.NODE_ENV !== "test") qevRerankDownUntil = Date.now() + QEV_CIRCUIT_COOLDOWN_MS;
+      return hits;
+    }
+    qevRerankDownUntil = 0;
     const payload = (await resp.json()) as { answers?: Record<string, { noul?: number }> };
     const answers = payload?.answers;
     if (!answers || typeof answers !== "object") return hits;
@@ -55,20 +64,34 @@ async function rerankHitsWithQev<T extends { type?: string; path?: string; label
     scored.sort((a, b) => b.score - a.score || a.idx - b.idx);
     return [...scored.map((s) => s.item), ...hits.slice(12)];
   } catch {
+    if (!overrideUrl && process.env.NODE_ENV !== "test") qevRerankDownUntil = Date.now() + QEV_CIRCUIT_COOLDOWN_MS;
     return hits;
   }
 }
 
-/** Per-cwd DB connection cache — avoids re-opening on every tool call. */
+/** Per-cwd bounded LRU DB connection cache — avoids re-opening on every tool call without leaking FDs. */
+const MAX_DB_CACHE = 4;
 const dbCache = new Map<string, ReturnType<typeof openDb>>();
 function getDb(cwd: string): ReturnType<typeof openDb> {
   const key = path.resolve(cwd);
   let db = dbCache.get(key);
-  if (db) return db;
+  if (db) {
+    dbCache.delete(key);
+    dbCache.set(key, db);
+    return db;
+  }
   const dbDir = path.join(key, ".jeo", "db");
   const dbPath = path.join(dbDir, "jeo.db");
   db = openDb(dbPath);
-  if (stats(db).files === 0) indexDir(db, key);
+  if (!hasIndexedFiles(db)) indexDir(db, key);
+  if (dbCache.size >= MAX_DB_CACHE) {
+    const oldestKey = dbCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      const oldestDb = dbCache.get(oldestKey);
+      dbCache.delete(oldestKey);
+      try { oldestDb?.close(); } catch {}
+    }
+  }
   dbCache.set(key, db);
   return db;
 }

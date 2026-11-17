@@ -196,7 +196,14 @@ export function indexDir(db: Database, root: string, opts: { rebuild?: boolean; 
       }
     }
     for (const [path, r] of existing) if (!seen.has(path)) { clearFile(r.id); delFile.run(r.id); st.removed++; }
-    rebuildEdges(db);
+    const needsEdges =
+      Boolean(opts.rebuild) ||
+      st.added > 0 ||
+      st.changed > 0 ||
+      st.removed > 0 ||
+      (db.query("SELECT 1 FROM code_edges LIMIT 1").get() === null &&
+        db.query("SELECT 1 FROM code_refs LIMIT 1").get() !== null);
+    if (needsEdges) rebuildEdges(db);
   });
   work();
   st.ms = +(performance.now() - t0).toFixed(1);

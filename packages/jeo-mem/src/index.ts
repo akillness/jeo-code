@@ -5,6 +5,6 @@ export { SCHEMA_VERSION } from "./schema.ts";
 export { indexDir } from "./indexer.ts";
 export { chunkMarkdown } from "./chunk-md.ts";
 export { extractScript } from "./extract.ts";
-export { impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
+export { hasIndexedFiles, impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
 export { runCli } from "./cli.ts";
 export { runMcpServer, MCP_TOOLS } from "./mcp.ts";

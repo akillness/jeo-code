@@ -650,11 +650,27 @@ function buildClassifierPrompt(prompt: string): string {
   );
 }
 
+const QEV_ROUTER_CACHE_MAX = 128;
+const QEV_ROUTER_CACHE_TTL_MS = 5 * 60_000;
+const QEV_ROUTER_DOWN_COOLDOWN_MS = 15_000;
+const qevRouteCache = new Map<string, { tier: PromptTier; expiresAt: number }>();
+let qevRouterDownUntil = 0;
+
 async function escalateToQev(prompt: string, signal: AbortSignal | undefined): Promise<PromptTier | undefined> {
   if (process.env.JEO_QEV_ROUTER === "0") return undefined;
   const qevUrl = process.env.JEO_QEV_URL?.trim();
   if (process.env.NODE_ENV === "test" && !qevUrl) return undefined;
   const endpoint = qevUrl || "http://127.0.0.1:8017/v1/systemone";
+  const now = Date.now();
+  if (!qevUrl && process.env.NODE_ENV !== "test" && now < qevRouterDownUntil) return undefined;
+  const trimmedPrompt = prompt.slice(0, 1200);
+  const cacheKey = `${endpoint}\0${trimmedPrompt}`;
+  const cached = qevRouteCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    qevRouteCache.delete(cacheKey);
+    qevRouteCache.set(cacheKey, cached);
+    return cached.tier;
+  }
   try {
     const timeoutSig = AbortSignal.timeout(450);
     const reqSignal = signal ? AbortSignal.any([signal, timeoutSig]) : timeoutSig;
@@ -662,7 +678,7 @@ async function escalateToQev(prompt: string, signal: AbortSignal | undefined): P
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        state: { prompt: prompt.slice(0, 1200) },
+        state: { prompt: trimmedPrompt },
         model: "qev-0.8b-text-Q8_0",
         questions: {
           tier: {
@@ -674,7 +690,11 @@ async function escalateToQev(prompt: string, signal: AbortSignal | undefined): P
       }),
       signal: reqSignal,
     });
-    if (!resp.ok) return undefined;
+    if (!resp.ok) {
+      if (!qevUrl && process.env.NODE_ENV !== "test") qevRouterDownUntil = Date.now() + QEV_ROUTER_DOWN_COOLDOWN_MS;
+      return undefined;
+    }
+    qevRouterDownUntil = 0;
     const payload = (await resp.json()) as {
       answers?: { tier?: { choice?: unknown; probabilities?: Record<string, number> } };
     };
@@ -686,8 +706,14 @@ async function escalateToQev(prompt: string, signal: AbortSignal | undefined): P
         .sort((a, b) => b - a);
       if (sorted.length >= 2 && sorted[0]! - sorted[1]! < 0.12) return undefined;
     }
+    if (qevRouteCache.size >= QEV_ROUTER_CACHE_MAX) {
+      const oldest = qevRouteCache.keys().next().value;
+      if (oldest !== undefined) qevRouteCache.delete(oldest);
+    }
+    qevRouteCache.set(cacheKey, { tier: tierAns.choice, expiresAt: Date.now() + QEV_ROUTER_CACHE_TTL_MS });
     return tierAns.choice;
   } catch {
+    if (!qevUrl && process.env.NODE_ENV !== "test") qevRouterDownUntil = Date.now() + QEV_ROUTER_DOWN_COOLDOWN_MS;
     return undefined;
   }
 }

@@ -6,7 +6,7 @@ import { chunkMarkdown } from "./chunk-md.ts";
 import { rebuildEdges } from "./edges.ts";
 import { extractScript, isScript } from "./extract.ts";
 
-const IGNORE_DIRS = new Set(["node_modules", "dist", ".git", ".jeo", ".jeopi", ".mex", "coverage", "build", "graphify-out", "llm-wiki", "Library", "gen", "target"]);
+const IGNORE_DIRS = new Set(["node_modules", "dist", ".git", ".jeo", ".jeopi", ".mex", "coverage", "build", "graphify-out", "llm-wiki", "Library", "gen", "target", "__pycache__"]);
 const MAX_FILE_BYTES = 1_000_000;
 
 export interface IndexStats { scanned: number; added: number; changed: number; removed: number; unchanged: number; ms: number }
@@ -14,7 +14,14 @@ export interface IndexStats { scanned: number; added: number; changed: number; r
 const words = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.<>]/g, " ").toLowerCase();
 
 function* walk(root: string, dir = root): Generator<string> {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.isSymbolicLink()) continue;
     if (e.name.startsWith(".") && e.isDirectory() && e.name !== ".") continue;
     if (e.isDirectory()) {
       if (!IGNORE_DIRS.has(e.name)) yield* walk(root, join(dir, e.name));
@@ -44,11 +51,15 @@ function collectMarkdownFiles(dir: string, out: Array<{ absPath: string; mtimeMs
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
     if (entry.name.startsWith(".")) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) collectMarkdownFiles(full, out);
     else if (entry.isFile() && /\.(md|mdx)$/i.test(entry.name)) {
-      try { out.push({ absPath: full, mtimeMs: statSync(full).mtimeMs }); } catch {}
+      try {
+        const s = statSync(full);
+        if (s.isFile()) out.push({ absPath: full, mtimeMs: s.mtimeMs });
+      } catch {}
     }
   }
 }
@@ -150,14 +161,26 @@ export function indexDir(db: Database, root: string, opts: { rebuild?: boolean; 
   const work = db.transaction(() => {
     const seen = new Set<string>();
     for (const { rel, abs, isWiki } of allEntries) {
+      let stat;
+      try {
+        stat = statSync(abs);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
       seen.add(rel);
       st.scanned++;
-      const stat = statSync(abs);
       if (stat.size > MAX_FILE_BYTES) continue;
       const mtime = Math.floor(stat.mtimeMs);
       const prev = existing.get(rel);
       if (prev && prev.mtime === mtime) { st.unchanged++; continue; }
-      const text = readFileSync(abs, "utf8");
+      let text: string;
+      try {
+        text = readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
+      if (text.slice(0, 4096).includes("\0")) continue;
       const digest = Bun.hash(text).toString(36);
       if (prev && prev.digest === digest) { updFile.run(digest, mtime, new Date().toISOString(), prev.id); st.unchanged++; continue; }
       let fileId: number;
@@ -172,27 +195,34 @@ export function indexDir(db: Database, root: string, opts: { rebuild?: boolean; 
         const lang = isWiki ? "wiki" : isScript(rel) ? "script" : "markdown";
         fileId = (insFile.get(rel, lang, digest, mtime, new Date().toISOString()) as { id: number }).id; st.added++;
       }
-      if (!isWiki && isScript(rel)) {
-        const ex = extractScript(rel, text);
-        for (const i of ex.imports) insImp.run(fileId, i.spec, i.imported, i.local, i.reexport ? 1 : 0);
-        for (const n of ex.nodes) {
-          const id = (insNode.get(fileId, n.name, n.kind, n.startLine, n.endLine, n.exported ? 1 : 0) as { id: number }).id;
-          if (n.kind !== "module") insNodeFts.run(id, n.name, words(n.name));
-          for (const r of n.refs) insRef.run(id, r.name, r.kind, r.recv);
-        }
-      } else {
-        for (const c of chunkMarkdown(text)) {
-          const id = (insChunk.get(fileId, c.heading, c.startLine, c.endLine, c.text) as { id: number }).id;
-          insChunkFts.run(id, c.heading, c.text);
-        }
-        if (isWiki) {
-          const refs = extractWikiRefs(text);
-          if (refs.length > 0) {
-            const lineCount = Math.max(1, text.split("\n").length);
-            const nodeId = (insNode.get(fileId, rel, "wiki", 1, lineCount, 0) as { id: number }).id;
-            for (const ident of refs) insRef.run(nodeId, ident, "references", "");
+      try {
+        if (!isWiki && isScript(rel)) {
+          const ex = extractScript(rel, text);
+          for (const i of ex.imports) insImp.run(fileId, i.spec, i.imported, i.local, i.reexport ? 1 : 0);
+          for (const n of ex.nodes) {
+            const id = (insNode.get(fileId, n.name, n.kind, n.startLine, n.endLine, n.exported ? 1 : 0) as { id: number }).id;
+            if (n.kind !== "module") insNodeFts.run(id, n.name, words(n.name));
+            for (const r of n.refs) insRef.run(id, r.name, r.kind, r.recv);
+          }
+        } else {
+          for (const c of chunkMarkdown(text)) {
+            const id = (insChunk.get(fileId, c.heading, c.startLine, c.endLine, c.text) as { id: number }).id;
+            insChunkFts.run(id, c.heading, c.text);
+          }
+          if (isWiki) {
+            const refs = extractWikiRefs(text);
+            if (refs.length > 0) {
+              const lineCount = Math.max(1, text.split("\n").length);
+              const nodeId = (insNode.get(fileId, rel, "wiki", 1, lineCount, 0) as { id: number }).id;
+              for (const ident of refs) insRef.run(nodeId, ident, "references", "");
+            }
           }
         }
+      } catch {
+        clearFile(fileId);
+        delNodes.run(fileId);
+        delChunks.run(fileId);
+        delImps.run(fileId);
       }
     }
     for (const [path, r] of existing) if (!seen.has(path)) { clearFile(r.id); delFile.run(r.id); st.removed++; }

@@ -489,7 +489,30 @@ export async function readTool(
       }
       return lsTool(filePath, cwd);
     }
-    const content = await fs.readFile(absPath, "utf-8");
+    if (st && !st.isFile() && !st.isDirectory()) {
+      return {
+        success: false,
+        output: "",
+        error: `Cannot read non-regular file '${filePath}' (FIFO, socket, or device node would block indefinitely).`,
+      };
+    }
+    const maxReadBytes = Math.max(1_048_576, Number(jeoEnv("MAX_READ_BYTES") ?? "") || 16 * 1024 * 1024);
+    if (st && st.size > maxReadBytes) {
+      return {
+        success: false,
+        output: "",
+        error: `File '${filePath}' is too large (${(st.size / (1024 * 1024)).toFixed(1)} MiB, limit ${(maxReadBytes / (1024 * 1024)).toFixed(0)} MiB) — use 'search', 'jeox', or 'bash' head/sed to inspect sections.`,
+      };
+    }
+    const rawBuf = await fs.readFile(absPath);
+    if (!raw && rawBuf.length > 0 && rawBuf.subarray(0, Math.min(rawBuf.length, 8192)).includes(0)) {
+      return {
+        success: false,
+        output: "",
+        error: `Binary file '${filePath}' (${rawBuf.length} bytes) cannot be read as line-anchored text.`,
+      };
+    }
+    const content = rawBuf.toString("utf-8");
     if (st?.isFile()) markRead(absPath); // arm the blind-edit read-first guard
 
     if (raw) {

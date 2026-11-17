@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.54] - 2026-11-17
+_Close the `.jeo/db/jeo.db` auto-refresh & `<code_graph_scope>` reference loop across interactive/CLI/MCP/Discord sessions and harden runtime stall, OOM, and PTY `EIO` guards._
+
+### Changed
+- **Closed-loop `.jeo/db/jeo.db` auto-refresh & `<code_graph_scope>` reference (`src/agent/jeox-tool.ts`, `src/commands/launch.ts`, `src/commands/launch/flags.ts`, `src/agent/engine.ts`, `src/messenger/host-actions.ts`, `src/tui/components/forge.ts`, `packages/jeo-mem/src/cli.ts`, `packages/jeo-mem/src/mcp.ts`):** Track per-workspace DB freshness (`dirty` hook on workspace mutations + TTL incremental `indexDir` refresh), auto-refresh CLI and MCP `jeox_*` queries, expose `jeox` (`calc`, `bisect`, `jev_decide`) in `launch.ts` `KNOWN_TOOLS`, `buildToolProtocol`, Discord `READ_ONLY_TOOLS`/`AUTO_TOOLS`, and TUI Forge cards, add `jeox`-first symbol/call-graph lookup guidance, and inject compact per-turn `<code_graph_scope>` BM25 location hints into session prompts.
+
+### Fixed
+- **Runtime anti-stall, OOM & crash hardening (`src/agent/engine.ts`, `src/agent/tools.ts`, `packages/jeo-mem/src/db.ts`, `packages/jeo-mem/src/indexer.ts`, `packages/jeo-mem/src/query.ts`, `src/util/broken-pipe.ts`, `src/cli.ts`, `src/commands/messenger.ts`, `src/agent/memory.ts`):** Add per-tool watchdog timeouts (`JEO_TOOL_TIMEOUT_MS`) and bounded wrap-up timeouts (`JEO_WRAPUP_TIMEOUT_MS`) in `runAgentLoop`, reject blocking special files (FIFO/socket/device), oversized files (`JEO_MAX_READ_BYTES`), and binary NUL payloads in `readTool`, auto-recover corrupt `.jeo/db/jeo.db` files and fall back to `:memory:` on read-only sandboxes, guard `indexer.ts`/`query.ts` against broken symlinks, vanishing files, and large SQLite `IN` clauses, handle closed-PTY `EIO` write errors cleanly without crash dumps, abort timed-out `memory-distill` `callLlm` sockets, and prevent accidental detached test-runner self-spawning under `bun test`.
+
 ## [0.12.53] - 2026-11-17
 _Bridge OAuth 429 cooldown pools with jeopi, add local qev:8017 route-model & jev_decide, link @wiki graph edges with qev rerank, and optimize DB/cache memory and latency._
 

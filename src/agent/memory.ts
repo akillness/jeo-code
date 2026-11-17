@@ -862,7 +862,7 @@ async function cleanupStalePendingFiles(dir: string): Promise<void> {
       if (entry.isFile() && entry.name.startsWith("pending-distill-") && entry.name.endsWith(".json")) {
         const filePath = path.join(dir, entry.name);
         const stat = await fs.stat(filePath);
-        if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+        if (now - stat.mtimeMs > 60 * 60 * 1000) {
           await fs.unlink(filePath).catch(() => {});
         }
       }
@@ -1091,10 +1091,24 @@ export async function distillSessionMemory(
     ];
 
     const timeoutMs = opts.timeoutMs ?? 20_000;
-    const distilled = await Promise.race([
-      callLlm(prompt, { model: opts.model, jsonMode: true, maxTokens: 2_000, reasoningEffort: "none" }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`memory distill timed out after ${timeoutMs}ms`)), timeoutMs)),
-    ]);
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const distilled = await (async () => {
+      try {
+        return await Promise.race([
+          callLlm(prompt, { model: opts.model, jsonMode: true, maxTokens: 2_000, reasoningEffort: "none", signal: ac.signal }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              const err = new Error(`memory distill timed out after ${timeoutMs}ms`);
+              ac.abort(err);
+              reject(err);
+            }, timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    })();
 
     return await applyDistilledMemory(cwd, distilled, existingConcepts.length, !!legacyDoc, opts.sessionVerified === true);
   } catch (err: unknown) {
@@ -1160,6 +1174,8 @@ export function distillInvocation(argv1: string | undefined, execPath: string, c
   let base: string[];
   if (entrypoint === "" || entrypoint.startsWith("/$bunfs/") || entrypoint.startsWith("B:\\~BUN\\")) {
     base = [execPath];
+  } else if (/\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(entrypoint)) {
+    base = [execPath, path.resolve(import.meta.dir, "..", "cli.ts")];
   } else {
     const resolved = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
     base = /\.(ts|js|mjs)$/.test(entrypoint) ? [execPath, resolved] : [resolved];
@@ -1179,6 +1195,7 @@ export async function spawnDetachedDistill(
 ): Promise<boolean> {
   if (jeoEnv("NO_MEMORY") === "1") return false;
   if (history.filter(m => m.role !== "system").length < MIN_HISTORY_MESSAGES) return false;
+  if (!spawnImpl && (process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test")) return false;
   if (currentSandboxExecution()) {
     try {
       // The transcript and system prompt never enter the shared guest workspace.
@@ -1191,6 +1208,7 @@ export async function spawnDetachedDistill(
   try {
     const dir = path.join(cwd, ".jeo", "memory");
     await fs.mkdir(dir, { recursive: true });
+    await cleanupStalePendingFiles(dir);
     const payloadPath = path.join(dir, `pending-distill-${process.pid}-${Date.now()}.json`);
     await fs.writeFile(payloadPath, JSON.stringify({ model, messages: history }), "utf-8");
     const cmd = distillInvocation(process.argv[1], process.execPath, cwd, payloadPath);

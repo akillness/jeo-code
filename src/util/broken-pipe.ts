@@ -15,6 +15,11 @@
 export const BROKEN_PIPE_EXIT_CODE = 141;
 
 export function isBrokenPipeError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code;
-  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+  const e = err as { code?: unknown; syscall?: unknown; message?: unknown } | null;
+  const code = e?.code;
+  if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return true;
+  if (code === "EIO") {
+    return e?.syscall === "write" || /\bEIO\b.*\bwrite\b/i.test(String(e?.message ?? ""));
+  }
+  return false;
 }

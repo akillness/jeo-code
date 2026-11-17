@@ -23,6 +23,7 @@ import { selectDiscordModel } from "../messenger/model-selection";
 import type { MessengerGatewayOptions } from "../messenger/gateway";
 import { notifySessionEndpointPath } from "../agent/notify/paths";
 import { parseSessionEndpoint } from "../agent/notify/session-discovery";
+import { isBrokenPipeError } from "../util/broken-pipe";
 import type { SandboxConfig } from "../agent/sandbox/types";
 
 async function sendSandboxControl(config: MessengerConfig, id: string, userId: string, text: string, signal: AbortSignal): Promise<string> {
@@ -106,22 +107,36 @@ function parse(args: string[]): { action: MessengerAction; flags: Flags } {
 
 function terminalIO() {
 	let muted = false;
-	const output = new Writable({ write(chunk, _encoding, callback) { if (!muted) process.stdout.write(chunk); callback(); } });
+	const safeWrite = (text: string) => {
+		try { process.stdout.write(text); }
+		catch (err) { if (!isBrokenPipeError(err)) throw err; }
+	};
+	const output = new Writable({
+		write(chunk, _encoding, callback) {
+			if (!muted) {
+				try { process.stdout.write(chunk); }
+				catch (err) {
+					if (!isBrokenPipeError(err)) { callback(err as Error); return; }
+				}
+			}
+			callback();
+		},
+	});
 	const rl = createInterface({ input: process.stdin, output, terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY), historySize: 0 });
 	const controller = new AbortController();
 	const interrupted = new AbortController();
 	rl.on("SIGINT", () => { interrupted.abort(); rl.close(); });
 	rl.on("close", () => controller.abort());
 	const ask = async (question: string, secret = false) => {
-		process.stdout.write(question);
+		safeWrite(question);
 		muted = secret;
 		try { return (await rl.question("", { signal: controller.signal })).trim(); }
-		finally { muted = false; if (secret) process.stdout.write("\n"); }
+		finally { muted = false; if (secret) safeWrite("\n"); }
 	};
 	return {
 		interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 		signal: interrupted.signal,
-		say: (line: string) => process.stdout.write(`${line}\n`),
+		say: (line: string) => safeWrite(`${line}\n`),
 		ask: (question: string) => ask(question),
 		askSecret: (question: string) => ask(question, true),
 		close: () => rl.close(),

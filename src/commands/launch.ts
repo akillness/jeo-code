@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import { MUTATION_NUDGE_PREFIX } from "../agent/loop-guards";
 import { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
+import { jeoxScopePromptSection } from "../agent/jeox-tool";
 import { withUsageScope } from "../agent/usage-ledger";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
@@ -864,7 +865,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser", "jeox", "calc", "bisect", "jev_decide"]);
   if (currentSandboxExecution()) KNOWN_TOOLS.add("sandbox_request");
   let allowedTools = new Set(KNOWN_TOOLS);
 
@@ -974,6 +975,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const jev = routeSkillsForTask(task, workflowSkills);
       const note = skillAdvisoryRoutingNote(jev);
       if (note) sp += "\n\n" + note;
+    }
+    if (task.trim() && allowedTools.has("jeox") && !opts.skillRun) {
+      const scopeNote = jeoxScopePromptSection(cwd, task);
+      if (scopeNote) sp += "\n\n" + scopeNote;
     }
     return sp;
   };

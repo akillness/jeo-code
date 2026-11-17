@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ProviderName, type ModelRole, type ThinkLevel, catalogMetadata, PROVIDER_NAMES } from "../../ai";
+import { JEOX_TOOL_PROTOCOL_LINE } from "../../agent/jeox-tool";
 
 export interface LaunchFlags {
   list: boolean;
@@ -252,6 +253,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   find: "find   {globPattern}               — find files by name",
   search: "search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
   ls: "ls     {dirPath}                   — list a directory's entries (dirs first)",
+  jeox: JEOX_TOOL_PROTOCOL_LINE,
   computer: "computer {action, x?, y?, text?, key?, deltaX?, deltaY?, duration?, actions?} — desktop automation (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch)",
   sandbox_request: "sandbox_request {host, mode:'ro'|'rw'} requests additional session filesystem access; {action:'status'} reports requests, active grants and guest mount paths. Only direct terminal or authenticated remote /sandbox controls can approve, deny, or revoke access.",
 };
@@ -259,7 +261,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
 export function buildToolProtocol(allowedTools: Set<string>): string {
   const lines: string[] = ["You have these tools (call exactly ONE per step):"];
   let num = 1;
-  for (const name of ["read", "write", "edit", "bash", "find", "search", "ls", "computer", "sandbox_request"]) {
+  for (const name of ["read", "write", "edit", "bash", "find", "search", "ls", "jeox", "computer", "sandbox_request"]) {
     if (allowedTools.has(name)) {
       lines.push(`${num}. ${TOOL_DESCRIPTIONS[name]}`);
       num++;
@@ -270,6 +272,9 @@ export function buildToolProtocol(allowedTools: Set<string>): string {
   lines.push("Reply with STRICT JSON only — no code fences. You MAY include an optional leading");
   lines.push('"reasoning" string (one short sentence on your plan, shown live to the user) before "tool":');
   lines.push('{ "reasoning": "<one short sentence>", "tool": "<name>", "arguments": { ... } }');
-  lines.push("Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. Locate before you open: search/find first, then read the hit, instead of guessing paths.");
+  const locateRule = allowedTools.has("jeox")
+    ? "Locate before you open: prefer jeox (where-defined/who-calls/impact/search) for symbol & call-graph lookup, or search/find first, then read the hit, instead of guessing paths."
+    : "Locate before you open: search/find first, then read the hit, instead of guessing paths.";
+  lines.push(`Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. ${locateRule}`);
   return lines.join("\n");
 }

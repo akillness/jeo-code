@@ -23,7 +23,7 @@ import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
-import { createJeoxTool, JEOX_TOOL_PROTOCOL_LINE } from "./jeox-tool";
+import { createJeoxTool, JEOX_TOOL_PROTOCOL_LINE, markJeoxDirty } from "./jeox-tool";
 import { createJevDecideTool, JEV_DECIDE_TOOL_PROTOCOL_LINE } from "./jev-tools";
 import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
@@ -220,7 +220,7 @@ export const TOOL_PROTOCOL = [
   "Alternatively, you may batch up to 6 independent calls in a single turn using the following format:",
   '{ "reasoning": "<one short sentence>", "tools": [{ "tool": "<name>", "arguments": { ... } }, ...] }',
   "Batch only independent calls; NEVER batch 'done', and NEVER put a mutating tool (write/edit/bash) after another mutating tool in one batch whose inputs depend on the earlier one. In a multi-edit batch, let the turn `reasoning` name each change — not a vague one-liner.",
-  "Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. For multi-file or multi-step work, sketch a short plan (todo) before the first edit; a one-line change goes straight to the edit. Locate before you open: search/find first, then read the hit, instead of guessing paths.",
+  "Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. For multi-file or multi-step work, sketch a short plan (todo) before the first edit; a one-line change goes straight to the edit. Locate before you open: prefer jeox (where-defined/who-calls/impact/search) for symbol & call-graph lookup, or search/find first, then read the hit, instead of guessing paths.",
   "web_search reflex: if the request hinges on a name, version, library, or event you do not actually recognize, search before answering instead of guessing; never claim a result's absence proves nonexistence. When sources conflict or look incomplete, run another targeted search to disambiguate rather than picking one at random.",
   "Quoting fetched/searched text: paraphrase by default — quote at most one short phrase per source, cite it, and never paste long passages.",
 ].join("\n");
@@ -701,6 +701,42 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let lastCallUsage: { inputTokens: number; outputTokens: number } | undefined;
   let sawUsage = false;
   const finish = (r: AgentLoopResult): AgentLoopResult => (sawUsage ? { ...r, usage: { ...acc } } : r);
+  const WATCHDOG_EXEMPT_TOOLS = new Set(["task", "subagent", "approve", "eval", "job", "monitor", "debug", "computer", "sandbox_request"]);
+  const toolWatchdogMs = (tool: string, args: Record<string, any> | undefined): number => {
+    if (WATCHDOG_EXEMPT_TOOLS.has(tool)) return 0;
+    const raw = jeoEnv("TOOL_TIMEOUT_MS");
+    const base = raw !== undefined && raw.trim() !== "" ? Number(raw) : 180_000;
+    if (!Number.isFinite(base) || base <= 0) return 0;
+    const requested = Number(args?.timeoutMs ?? args?.stepTimeoutMs ?? NaN);
+    if ((tool === "bash" || tool === "bisect") && Number.isFinite(requested) && requested > 0) {
+      return Math.max(base, requested + 10_000);
+    }
+    return base;
+  };
+  const invokeWrapUp = async (messages: Message[]): Promise<string> => {
+    const raw = jeoEnv("WRAPUP_TIMEOUT_MS");
+    const timeoutMs = raw !== undefined && raw.trim() !== "" ? Number(raw) : 60_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return invokeCallLlm(messages, { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey });
+    }
+    const ctrl = new AbortController();
+    const sig = composeAbortSignal(opts.signal, ctrl.signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        invokeCallLlm(messages, { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: sig, sessionKey: opts.sessionKey }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            const err = new Error(`wrap-up call timed out after ${timeoutMs}ms`);
+            ctrl.abort(err);
+            reject(err);
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   // Salvage a spin-stop into a useful answer (C): instead of returning a bare
   // "Stopped: …" — throwing away everything found this turn — do ONE final no-tools
   // call asking the model to answer with what it already has. Mirrors the
@@ -708,19 +744,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const consolidateStop = async (stopReason: string, stopClass: AgentLoopResult["stopClass"]): Promise<AgentLoopResult> => {
     try {
       if (!opts.signal?.aborted) {
-        const wrapUp = await invokeCallLlm(
-          [
-            ...history,
-            {
-              role: "user",
-              content:
-                "Stop calling tools — you have been repeating the same call without making progress. " +
-                "Do NOT call any tool or emit JSON. Reply in plain prose: answer the request as best you can " +
-                "with what you have already found this turn, and state explicitly anything that is still uncertain.",
-            },
-          ],
-          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
-        );
+        const wrapUp = await invokeWrapUp([
+          ...history,
+          {
+            role: "user",
+            content:
+              "Stop calling tools — you have been repeating the same call without making progress. " +
+              "Do NOT call any tool or emit JSON. Reply in plain prose: answer the request as best you can " +
+              "with what you have already found this turn, and state explicitly anything that is still uncertain.",
+          },
+        ]);
         const consolidated = wrapUp.trim();
         // Defensive: the wrap-up call explicitly forbids tool/JSON output, but a
         // degenerate model under a long, polluted turn can still emit tool-call-shaped
@@ -1527,11 +1560,37 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 if (tool !== "bash") await host.authorizeTool(cwd, tool, executionArgs, hostSignal);
                 hostSignal.throwIfAborted();
               }
-              const res = await (host && hostSignal
-                ? withDiscordHostExecution({ ...host, signal: hostSignal }, () => sandboxedHandler(executionArgs, cwd, onProgress, hostSignal))
+              const watchdogMs = toolWatchdogMs(tool, executionArgs);
+              const runToolCall = async (callSig: AbortSignal | undefined) => host
+                ? withDiscordHostExecution({ ...host, signal: callSig! }, () => sandboxedHandler(executionArgs, cwd, onProgress, callSig))
                 : sandbox
-                  ? withSandboxExecution({ ...sandbox, signal: opts.signal ? composeAbortSignal(sandbox.signal, opts.signal) : sandbox.signal }, () => sandboxedHandler(executionArgs, cwd, onProgress, opts.signal))
-                  : sandboxedHandler(executionArgs, cwd, onProgress, opts.signal));
+                  ? withSandboxExecution({ ...sandbox, signal: callSig }, () => sandboxedHandler(executionArgs, cwd, onProgress, callSig))
+                  : sandboxedHandler(executionArgs, cwd, onProgress, callSig);
+              const baseCallSignal = host && hostSignal ? hostSignal : opts.signal;
+              let res: ToolResult;
+              if (watchdogMs > 0) {
+                const toolTimeoutCtrl = new AbortController();
+                const toolSignal = composeAbortSignal(baseCallSignal, toolTimeoutCtrl.signal);
+                let toolTimer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                  res = await Promise.race([
+                    runToolCall(toolSignal),
+                    new Promise<never>((_, reject) => {
+                      toolTimer = setTimeout(() => {
+                        const timeoutErr = new Error(
+                          `Tool '${tool}' timed out after ${watchdogMs >= 1000 ? `${Math.round(watchdogMs / 1000)}s` : `${watchdogMs}ms`} without completing.`,
+                        );
+                        toolTimeoutCtrl.abort(timeoutErr);
+                        reject(timeoutErr);
+                      }, watchdogMs);
+                    }),
+                  ]);
+                } finally {
+                  if (toolTimer) clearTimeout(toolTimer);
+                }
+              } else {
+                res = await runToolCall(baseCallSignal);
+              }
               success = res.success;
               images = res.images;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
@@ -1584,6 +1643,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             if (preHookResult.context) output = `${output}\n\n[pre-tool hook context]\n${preHookResult.context}`;
           }
         }
+      }
+      if (mutationMayHaveOccurred || (success && MUTATING_TOOL_NAMES[tool] === true)) {
+        markJeoxDirty(cwd);
       }
       return { success, output, images, mutationMayHaveOccurred, bracketed, workspace };
     };
@@ -1883,19 +1945,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     : `step budget of ${budget.limit()} reached`;
   try {
     if (!opts.signal?.aborted) {
-      const wrapUp = await invokeCallLlm(
-        [
-          ...history,
-          {
-            role: "user",
-            content:
-              "The budget for this turn is exhausted. Do NOT call any tool. " +
-              "Reply with plain prose (no JSON): consolidate what you accomplished this turn, " +
-              "the key findings/changes so far, and what remains to be done next.",
-          },
-        ],
-        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
-      );
+      const wrapUp = await invokeWrapUp([
+        ...history,
+        {
+          role: "user",
+          content:
+            "The budget for this turn is exhausted. Do NOT call any tool. " +
+            "Reply with plain prose (no JSON): consolidate what you accomplished this turn, " +
+            "the key findings/changes so far, and what remains to be done next.",
+        },
+      ]);
       const consolidated = wrapUp.trim();
       if (consolidated) {
         pushAssistantTurn(history, consolidated, "", []);

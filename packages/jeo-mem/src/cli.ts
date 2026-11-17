@@ -46,7 +46,7 @@ export async function runCli(argv: string[], out: (s: string) => void = console.
   const db = openDb(dbPath);
   const j = (o: unknown) => out(JSON.stringify(o));
   const ensureIndexed = () => {
-    if (stats(db).files === 0) indexDir(db, root);
+    try { indexDir(db, root); } catch { /* best-effort incremental refresh */ }
   };
   try {
     switch (cmd) {

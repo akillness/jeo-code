@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createJeoxTool } from "../src/agent/jeox-tool";
+import { createJeoxTool, markJeoxDirty, jeoxScopePromptSection } from "../src/agent/jeox-tool";
 
 test("jeox tool: auto-builds on first call, answers who-calls, where-defined, search", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jeox-tool-test-"));
@@ -61,4 +61,57 @@ test("jeox tool: auto-indexes pre-existing legacy DB with empty code_files table
   expect(res.output).toContain("src/legacy.ts");
 
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("jeox tool: auto-refreshes incrementally after edits via markJeoxDirty and TTL, and builds code_graph_scope", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jeox-refresh-test-"));
+  const prevEnable = process.env.JEO_ENABLE_JEOX_SCOPE_IN_TEST;
+  const prevTtl = process.env.JEO_DB_REFRESH_MS;
+  try {
+    fs.mkdirSync(path.join(tmp, "src"));
+    fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "fx" }));
+    fs.writeFileSync(path.join(tmp, "src", "alpha.ts"), `export function initialAlphaFn() { return 1; }\n`);
+
+    const tool = createJeoxTool();
+    const s0 = await tool({ action: "where-defined", name: "initialAlphaFn" }, tmp);
+    expect(s0.success).toBe(true);
+    expect(s0.output).toContain("src/alpha.ts");
+
+    // Add a new symbol + caller after initial ingest and signal dirty via mutation hook
+    const newFile = path.join(tmp, "src", "beta.ts");
+    fs.writeFileSync(
+      newFile,
+      `import { initialAlphaFn } from "./alpha";\nexport function newlyAddedBetaFn() { return initialAlphaFn(); }\n`,
+    );
+    markJeoxDirty(tmp);
+
+    const defNew = await tool({ action: "where-defined", name: "newlyAddedBetaFn" }, tmp);
+    expect(defNew.success).toBe(true);
+    expect(defNew.output).toContain("src/beta.ts");
+
+    const callers = await tool({ action: "who-calls", name: "initialAlphaFn" }, tmp);
+    expect(callers.success).toBe(true);
+    expect(callers.output).toContain("newlyAddedBetaFn");
+
+    // Verify TTL-triggered auto-refresh when an edit happens outside markJeoxDirty
+    process.env.JEO_DB_REFRESH_MS = "0";
+    const thirdFile = path.join(tmp, "src", "gamma.ts");
+    fs.writeFileSync(thirdFile, `export function ttlDiscoveredGammaFn() { return 3; }\n`);
+    const defTtl = await tool({ action: "where-defined", name: "ttlDiscoveredGammaFn" }, tmp);
+    expect(defTtl.success).toBe(true);
+    expect(defTtl.output).toContain("src/gamma.ts");
+
+    // Verify per-turn `<code_graph_scope>` references indexed symbols
+    process.env.JEO_ENABLE_JEOX_SCOPE_IN_TEST = "1";
+    const scope = jeoxScopePromptSection(tmp, "inspect newlyAddedBetaFn behavior");
+    expect(scope).toContain("<code_graph_scope>");
+    expect(scope).toContain("src/beta.ts");
+    expect(scope).toContain("newlyAddedBetaFn");
+  } finally {
+    if (prevEnable === undefined) delete process.env.JEO_ENABLE_JEOX_SCOPE_IN_TEST;
+    else process.env.JEO_ENABLE_JEOX_SCOPE_IN_TEST = prevEnable;
+    if (prevTtl === undefined) delete process.env.JEO_DB_REFRESH_MS;
+    else process.env.JEO_DB_REFRESH_MS = prevTtl;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DDL, SCHEMA_VERSION } from "./schema.ts";
 
-export function openDb(path: string): Database {
+function initDb(path: string): Database {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.exec(
@@ -19,4 +19,50 @@ export function openDb(path: string): Database {
     );
   }
   return db;
+}
+
+function isCorruptSqliteError(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? err ?? "");
+  const code = String((err as { code?: unknown })?.code ?? "");
+  return (
+    code === "SQLITE_CORRUPT" ||
+    code === "SQLITE_NOTADB" ||
+    /malformed|not a database|corrupt/i.test(msg)
+  );
+}
+
+function isReadOnlySqliteError(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? err ?? "");
+  const code = String((err as { code?: unknown })?.code ?? "");
+  return (
+    code === "EROFS" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "SQLITE_READONLY" ||
+    code === "SQLITE_CANTOPEN" ||
+    /readonly|read-only|unable to open|permission denied/i.test(msg)
+  );
+}
+
+export function openDb(path: string): Database {
+  if (path === ":memory:") return initDb(path);
+  try {
+    return initDb(path);
+  } catch (err) {
+    if (isCorruptSqliteError(err)) {
+      try {
+        rmSync(path, { force: true });
+        rmSync(`${path}-wal`, { force: true });
+        rmSync(`${path}-shm`, { force: true });
+        return initDb(path);
+      } catch (retryErr) {
+        if (isReadOnlySqliteError(retryErr)) return initDb(":memory:");
+        throw retryErr;
+      }
+    }
+    if (isReadOnlySqliteError(err)) {
+      return initDb(":memory:");
+    }
+    throw err;
+  }
 }

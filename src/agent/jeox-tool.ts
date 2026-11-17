@@ -3,8 +3,11 @@
  * Provides fast symbol definitions, callers, callees, reverse impact analysis,
  * and token-optimized search/scope.
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats, hasIndexedFiles } from "../../packages/jeo-mem/src/index";
+import { jeoEnv } from "../util/env";
+import { currentSandboxExecution } from "./hooks";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 
@@ -69,31 +72,113 @@ async function rerankHitsWithQev<T extends { type?: string; path?: string; label
   }
 }
 
-/** Per-cwd bounded LRU DB connection cache — avoids re-opening on every tool call without leaking FDs. */
+const DEFAULT_REFRESH_TTL_MS = 3_000;
+
+interface DbEntry {
+  db: ReturnType<typeof openDb>;
+  dbPath: string;
+  isMemory: boolean;
+  lastSyncAt: number;
+  dirty: boolean;
+}
+
+/** Per-cwd bounded LRU DB + freshness cache — avoids re-opening on every tool call without leaking FDs. */
 const MAX_DB_CACHE = 4;
-const dbCache = new Map<string, ReturnType<typeof openDb>>();
-function getDb(cwd: string): ReturnType<typeof openDb> {
+const dbCache = new Map<string, DbEntry>();
+
+function refreshTtlMs(): number {
+  const raw = Number(jeoEnv("DB_REFRESH_MS") ?? "");
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_REFRESH_TTL_MS;
+}
+
+export function markJeoxDirty(cwd: string): void {
+  const entry = dbCache.get(path.resolve(cwd));
+  if (entry) entry.dirty = true;
+}
+
+function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): ReturnType<typeof openDb> {
   const key = path.resolve(cwd);
-  let db = dbCache.get(key);
-  if (db) {
-    dbCache.delete(key);
-    dbCache.set(key, db);
-    return db;
-  }
-  const dbDir = path.join(key, ".jeo", "db");
-  const dbPath = path.join(dbDir, "jeo.db");
-  db = openDb(dbPath);
-  if (!hasIndexedFiles(db)) indexDir(db, key);
-  if (dbCache.size >= MAX_DB_CACHE) {
-    const oldestKey = dbCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      const oldestDb = dbCache.get(oldestKey);
-      dbCache.delete(oldestKey);
-      try { oldestDb?.close(); } catch {}
+  const dbPath = path.join(key, ".jeo", "db", "jeo.db");
+  let entry = dbCache.get(key);
+  if (entry) {
+    if (!entry.isMemory && !fs.existsSync(entry.dbPath)) {
+      try { entry.db.close(); } catch {}
+      dbCache.delete(key);
+      entry = undefined;
+    } else {
+      // Touch LRU position
+      dbCache.delete(key);
+      dbCache.set(key, entry);
     }
   }
-  dbCache.set(key, db);
-  return db;
+  if (!entry) {
+    const db = openDb(dbPath);
+    const filename = (db as { filename?: string }).filename ?? "";
+    const isMemory = filename === "" || filename === ":memory:";
+    if (dbCache.size >= MAX_DB_CACHE) {
+      const oldestKey = dbCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        const oldest = dbCache.get(oldestKey);
+        dbCache.delete(oldestKey);
+        try { oldest?.db.close(); } catch {}
+      }
+    }
+    entry = { db, dbPath, isMemory, lastSyncAt: 0, dirty: true };
+    dbCache.set(key, entry);
+  }
+  if (opts.sync !== false) {
+    let emptyDb = false;
+    try { emptyDb = !hasIndexedFiles(entry.db); } catch { emptyDb = true; }
+    if (entry.dirty || emptyDb || Date.now() - entry.lastSyncAt >= refreshTtlMs()) {
+      try {
+        indexDir(entry.db, key);
+        entry.lastSyncAt = Date.now();
+        entry.dirty = false;
+      } catch {
+        // Best-effort incremental refresh: keep serving last known snapshot on lock/race.
+      }
+    }
+  }
+  return entry.db;
+}
+
+/**
+ * Build a compact per-turn `<code_graph_scope>` hint block from `.jeo/db/jeo.db`
+ * so prompts automatically reference indexed symbol/doc locations before broad grep.
+ */
+export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { maxHits?: number }): string {
+  if (jeoEnv("NO_JEOX_CONTEXT") === "1" || jeoEnv("NO_MEMORY") === "1" || jeoEnv("STATIC_MEMORY") === "1") {
+    return "";
+  }
+  const q = (query ?? "").trim();
+  if (q.length < 4 || q.startsWith("/")) return "";
+
+  const key = path.resolve(cwd);
+  const dbPath = path.join(key, ".jeo", "db", "jeo.db");
+  const dbExists = fs.existsSync(dbPath);
+  if (currentSandboxExecution() && !dbExists) return "";
+
+  const isTestEnv = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test";
+  if (isTestEnv && jeoEnv("ENABLE_JEOX_SCOPE_IN_TEST") !== "1" && !dbExists) return "";
+
+  const hasProjectMarkers =
+    dbExists || [".git", "package.json", "tsconfig.json", "src"].some(m => fs.existsSync(path.join(key, m)));
+  if (!hasProjectMarkers) return "";
+
+  try {
+    const db = getFreshDb(key, { sync: true });
+    const hits = search(db, q, opts?.maxHits ?? 5);
+    if (hits.length === 0) return "";
+    const lines = hits.map(h => `- [${h.type}] ${h.path}:${h.start}-${h.end} — ${h.label}`);
+    return (
+      `<code_graph_scope>\n` +
+      `Indexed code-graph & doc locations matching this request (from .jeo/db/jeo.db — prefer \`jeox\` or targeted \`read\` lineRanges before broad grep):\n` +
+      `${lines.join("\n")}\n` +
+      `</code_graph_scope>`
+    );
+  } catch {
+    return "";
+  }
 }
 
 export function createJeoxTool(): ToolHandler {
@@ -107,7 +192,8 @@ export function createJeoxTool(): ToolHandler {
       };
     }
 
-    const db = getDb(cwd);
+    const isBuild = action === "build" || action === "index" || action === "reindex";
+    const db = getFreshDb(cwd, { sync: !isBuild });
 
     const name = String(args.name ?? args.target ?? "").trim();
     const query = String(args.query ?? args.q ?? name).trim();
@@ -163,6 +249,11 @@ export function createJeoxTool(): ToolHandler {
         case "index":
         case "reindex": {
           const res = indexDir(db, path.resolve(cwd), { rebuild });
+          const entry = dbCache.get(path.resolve(cwd));
+          if (entry) {
+            entry.lastSyncAt = Date.now();
+            entry.dirty = false;
+          }
           return { success: true, output: `Indexed in ${res.ms}ms: ${JSON.stringify(res)}` };
         }
         case "status":

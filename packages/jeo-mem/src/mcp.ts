@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { indexDir } from "./indexer.ts";
-import { impact, search, whatCalls, whereDefined, whoCalls } from "./query.ts";
+import { impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
 
 export const MCP_TOOLS = [
   {
@@ -90,6 +90,16 @@ export async function runMcpServer(db: Database, root: string): Promise<void> {
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
 
+  let lastSyncAt = 0;
+  const ensureFresh = (force = false) => {
+    try {
+      if (force || stats(db).files === 0 || Date.now() - lastSyncAt >= 3_000) {
+        indexDir(db, root);
+        lastSyncAt = Date.now();
+      }
+    } catch { /* best-effort: keep serving last known index */ }
+  };
+
   for await (const line of rl) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -118,29 +128,35 @@ export async function runMcpServer(db: Database, root: string): Promise<void> {
         switch (toolName) {
           case "jeox_where_defined":
           case "where_defined":
+            ensureFresh();
             content = whereDefined(db, args.name, args.limit ?? 5);
             break;
           case "jeox_who_calls":
           case "who_calls":
+            ensureFresh();
             content = whoCalls(db, args.name, { limit: args.limit ?? 5, strict: !!args.strict });
             break;
           case "jeox_what_calls":
           case "what_calls":
+            ensureFresh();
             content = whatCalls(db, args.name, { limit: args.limit ?? 5, strict: !!args.strict });
             break;
           case "jeox_impact":
           case "impact":
+            ensureFresh();
             content = impact(db, args.target ?? args.name, args.depth ?? 3, args.limit ?? 20, !!args.strict);
             break;
           case "jeox_search":
           case "search":
           case "query":
+            ensureFresh();
             content = search(db, args.query ?? args.q, args.limit ?? 5);
             break;
           case "jeox_build":
           case "build":
           case "index":
             content = indexDir(db, root, { rebuild: !!args.rebuild });
+            lastSyncAt = Date.now();
             break;
           default:
             reply(id, undefined, { code: -32601, message: `Unknown tool: ${toolName}` });

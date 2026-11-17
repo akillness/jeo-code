@@ -557,6 +557,20 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     };
   }
 
+  if (normalized === "jeox") {
+    const rawAction = stringArg(args, "action") ?? "status";
+    const action = cleanForgeField(rawAction, 64) || "status";
+    const rawSubject = stringArg(args, "name", "target", "query", "q");
+    const subject = rawSubject ? cleanForgeField(rawSubject, 128) : "";
+    const lines = [`action: ${action}`];
+    if (subject) lines.push(`target: ${subject}`);
+    return {
+      title: `Jeox: ${action}${subject ? ` ${subject}` : ""}`,
+      language: "text",
+      lines,
+    };
+  }
+
   return { title: `${safeTool} arguments`, language: "json", lines: jsonPreview(args) };
 }
 

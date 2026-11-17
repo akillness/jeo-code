@@ -71,8 +71,8 @@ function canonicalPath(target: string): string {
   }
 }
 
-const READ_ONLY_TOOLS: Record<string, true> = { read: true, find: true, search: true, ls: true };
-const AUTO_TOOLS: Record<string, true> = { ...READ_ONLY_TOOLS, write: true, edit: true, mkdir: true, calc: true, web_search: true };
+const READ_ONLY_TOOLS: Record<string, true> = { read: true, find: true, search: true, ls: true, jeox: true };
+const AUTO_TOOLS: Record<string, true> = { ...READ_ONLY_TOOLS, write: true, edit: true, mkdir: true, calc: true, web_search: true, jev_decide: true };
 const READ_COMMANDS: Record<string, true> = { pwd: true, ls: true, cat: true, head: true, tail: true, wc: true, grep: true, rg: true, find: true, stat: true, file: true, sort: true, uniq: true, diff: true, cmp: true, printf: true, echo: true, true: true, false: true, test: true, "[": true };
 const SAFE_GIT: Record<string, true> = { status: true, diff: true, log: true, show: true, "rev-parse": true, "ls-files": true, "ls-tree": true, "check-ignore": true, describe: true };
 const SAFE_ENV: Record<string, true> = { CI: true, NODE_ENV: true, FORCE_COLOR: true, NO_COLOR: true, TERM: true, COLUMNS: true, LINES: true, TZ: true };

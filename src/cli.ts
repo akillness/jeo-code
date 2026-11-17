@@ -39,7 +39,7 @@ const fatal = (err: unknown): never => {
   if (isBrokenPipeError(err)) process.exit(BROKEN_PIPE_EXIT_CODE);
   writeCrashLog(err);
   const msg = (err as Error)?.message ?? String(err);
-  process.stderr.write(`error: ${msg}\n`);
+  try { process.stderr.write(`error: ${msg}\n`); } catch {}
   process.exit(1);
 };
 process.on("uncaughtException", fatal);
@@ -57,6 +57,6 @@ try {
   // Service-readiness: never surface a raw stack trace to users; clean error + non-zero exit.
   restoreTerminalState();
   if (isBrokenPipeError(err)) process.exit(BROKEN_PIPE_EXIT_CODE);
-  process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`);
+  try { process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`); } catch {}
   process.exit(1);
 }

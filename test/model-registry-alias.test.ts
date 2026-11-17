@@ -40,3 +40,10 @@ test("validateAliases flags only targets missing from the catalog", () => {
   const bad = validateAliases({ ...BUILTIN_ALIASES, typo: "claude-typo-xyz" });
   expect(bad).toEqual([{ alias: "typo", target: "claude-typo-xyz" }]);
 });
+
+test("antigravity opus and sonnet aliases expand to the live CCA catalog ids", () => {
+  expect(expandAlias("antigravity/opus")).toBe("antigravity/claude-opus-4-6-thinking");
+  expect(expandAlias("antigravity/claude-opus-4-6")).toBe("antigravity/claude-opus-4-6-thinking");
+  expect(expandAlias("antigravity/sonnet")).toBe("antigravity/claude-sonnet-4-6");
+  expect(expandAlias("antigravity/claude-sonnet-4-6-thinking")).toBe("antigravity/claude-sonnet-4-6");
+});

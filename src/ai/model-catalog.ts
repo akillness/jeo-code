@@ -56,21 +56,11 @@ export interface CatalogModel {
 const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["low", "medium", "high"];
 
-// Antigravity (Cloud Code Assist) agent-mode model rows, verified against the
-// LIVE fetchAvailableModels response (agentModelSorts "Recommended" group +
-// per-id displayName, probed 2026-07-08). CRITICAL: several wire ids do NOT
-// mean what their name suggests — the displayName is the truth:
-//   gemini-3-flash-agent      → "Gemini 3.5 Flash (High)"   (flagship agent tier)
-//   gemini-3.5-flash-low      → "Gemini 3.5 Flash (Medium)"
-//   gemini-3.5-flash-extra-low→ "Gemini 3.5 Flash (Low)"
-//   gemini-pro-agent          → "Gemini 3.1 Pro (High)"     (the code-agent model;
-//                                replaces DEPRECATED gemini-3.1-pro-high, per the
-//                                backend's deprecatedModelIds.newModelId mapping —
-//                                BUILTIN_ALIASES keeps the old id working)
-//   claude-sonnet-4-6         → "Claude Sonnet 4.6 (Thinking)"
-// `sizeClass` pins each row's routing tier to that display truth so the name
-// suffix heuristic can't misfile them (releaseDate = the underlying base-model
-// announcement; Antigravity is a hosting layer, not a separate release).
+// Antigravity (Cloud Code Assist) agent-mode model rows, mirroring the live
+// fetchAvailableModels agent list. `sizeClass` pins each row's routing tier
+// so prompt-router.ts classifies Hydrogen/Carbon/Flash-3.8 tiers accurately
+// (releaseDate = the underlying base-model announcement; Antigravity is a
+// hosting layer, not a separate release).
 
 /** A curated set of common public models with their documented capabilities.
  *  Ordered NEWEST-FIRST within each provider block per `releaseDate`
@@ -140,13 +130,20 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // collisions with public Gemini/Anthropic ids. Rows mirror the LIVE
   // fetchAvailableModels agent list (see the block comment above ANTIGRAVITY rows'
   // sizeClass rationale near the top of this file). Newest first.
-  // Gemini 3.5 Flash tiers (base model released 2026-05, Google I/O):
-  { canonical: "antigravity/gemini-3-flash-agent", provider: "antigravity", providerModel: "gemini-3-flash-agent", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "large" }, // "Gemini 3.5 Flash (High)" — the HIGH agent model
-  { canonical: "antigravity/gemini-3.5-flash-low", provider: "antigravity", providerModel: "gemini-3.5-flash-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "mid" }, // "Gemini 3.5 Flash (Medium)"
-  { canonical: "antigravity/gemini-3.5-flash-extra-low", provider: "antigravity", providerModel: "gemini-3.5-flash-extra-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "small" }, // "Gemini 3.5 Flash (Low)"
-  // Gemini 3.1 Pro tiers (base model released 2026-02):
-  { canonical: "antigravity/gemini-pro-agent", provider: "antigravity", providerModel: "gemini-pro-agent", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Gemini 3.1 Pro (High)" — the CODE-AGENT model (replaces deprecated gemini-3.1-pro-high)
-  { canonical: "antigravity/gemini-3.1-pro-low", provider: "antigravity", providerModel: "gemini-3.1-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-02", sizeClass: "small" }, // "Gemini 3.1 Pro (Low)" — the LOW agent model
+  // Gemini 4 Hydrogen tiers:
+  { canonical: "antigravity/gemini-4-hydrogen-xhigh", provider: "antigravity", providerModel: "gemini-4-hydrogen-xhigh", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "large" },
+  { canonical: "antigravity/gemini-4-hydrogen-high", provider: "antigravity", providerModel: "gemini-4-hydrogen-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "large" },
+  { canonical: "antigravity/gemini-4-hydrogen-medium", provider: "antigravity", providerModel: "gemini-4-hydrogen-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-4-hydrogen-low", provider: "antigravity", providerModel: "gemini-4-hydrogen-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "small" },
+  // Gemini 4 Carbon tiers:
+  { canonical: "antigravity/gemini-4-carbon-high", provider: "antigravity", providerModel: "gemini-4-carbon-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-4-carbon-medium", provider: "antigravity", providerModel: "gemini-4-carbon-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-4-carbon-low", provider: "antigravity", providerModel: "gemini-4-carbon-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "small" },
+  // Gemini 3.8 Flash & Gemini 3 Flash tiers:
+  { canonical: "antigravity/gemini-3.8-flash-high", provider: "antigravity", providerModel: "gemini-3.8-flash-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-3.8-flash-medium", provider: "antigravity", providerModel: "gemini-3.8-flash-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-3.8-flash-low", provider: "antigravity", providerModel: "gemini-3.8-flash-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "small" },
+  { canonical: "antigravity/gemini-3-flash", provider: "antigravity", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2025-12", sizeClass: "small" },
   // Anthropic via Antigravity (wire id claude-sonnet-4-6 IS the thinking variant per its displayName):
   { canonical: "antigravity/claude-sonnet-4-6", provider: "antigravity", providerModel: "claude-sonnet-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Claude Sonnet 4.6 (Thinking)"
   { canonical: "antigravity/claude-opus-4-6-thinking", provider: "antigravity", providerModel: "claude-opus-4-6-thinking", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "large" }, // "Claude Opus 4.6 (Thinking)"

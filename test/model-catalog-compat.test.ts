@@ -40,10 +40,10 @@ test("recommendedModel returns a recommended id per provider", () => {
   expect(recommendedModel("anthropic")).toBe("claude-sonnet-5-5");
   expect(recommendedModel("openai")).toBe("gpt-5.5");
   expect(recommendedModel("gemini")).toBe("gemini-3-flash");
-  // Antigravity's recommended default is the code-agent model ("Gemini 3.1 Pro
-  // (High)") — it replaced antigravity/gpt-5.5, which left the catalog entirely.
-  expect(recommendedModel("antigravity")).toBe("antigravity/gemini-pro-agent");
-  expect(findCatalogEntry("antigravity/gemini-pro-agent")!.recommended).toBe(true);
+  // Antigravity's recommended default is the live Gemini 4 Hydrogen High flagship.
+  expect(recommendedModel("antigravity")).toBe("antigravity/gemini-4-hydrogen-high");
+  expect(findCatalogEntry("antigravity/gemini-4-hydrogen-high")!.recommended).toBe(true);
+  expect(findCatalogEntry("antigravity/gemini-pro-agent")).toBeUndefined();
   expect(findCatalogEntry("antigravity/gpt-5.5")).toBeUndefined();
 });
 

@@ -106,17 +106,24 @@ function installPickerScripts(scripts: Keypress[][]): void {
   } as typeof process.stdin.off;
 }
 
-async function runInteractiveModelPick(model: string, provider: ProviderName, pickerScriptsForRun: Keypress[][]): Promise<Record<string, unknown>> {
+async function runInteractiveModelPick(
+  model: string,
+  provider: ProviderName,
+  pickerScriptsForRun: Keypress[][],
+  options?: { initialRoutingEnabled?: boolean; logs?: string[] },
+): Promise<Record<string, unknown>> {
   liveModels = [{ provider, models: [model], ok: true, source: "oauth" }];
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
     providers: { openai: "sk-test" },
     defaultModel: "claude-sonnet-4-6",
-    routing: { enabled: false, tiers: { complex: { model: "claude-opus-4-8", thinking: "xhigh" } } },
+    routing: { enabled: options?.initialRoutingEnabled ?? false, tiers: { complex: { model: "claude-opus-4-8", thinking: "xhigh" } } },
   }));
   installPickerScripts(pickerScriptsForRun);
 
   const savedLog = console.log;
-  console.log = () => {};
+  console.log = (...args: unknown[]) => {
+    options?.logs?.push(args.map(String).join(" "));
+  };
   try {
     // Dynamic import is intentional: the launch module must observe the mocks above.
     const { runLaunchCommand } = await import("../src/commands/launch");
@@ -128,15 +135,16 @@ async function runInteractiveModelPick(model: string, provider: ProviderName, pi
   }
 }
 
-test("interactive /model can apply a picked catalog model to a PromptRouter tier and enables routing", async () => {
+test("interactive /model can apply a picked catalog model to a PromptRouter tier while keeping routing off by default", async () => {
+  const logs: string[] = [];
   const saved = await runInteractiveModelPick("gpt-5.5", "openai", [
     [enter],
     [down, down, down, enter],
     [enter],
-  ]);
+  ], { logs });
 
   expect(saved.routing).toMatchObject({
-    enabled: true,
+    enabled: false,
     tiers: {
       high: { model: "gpt-5.5", thinking: "low" },
       complex: { model: "claude-opus-4-8", thinking: "xhigh" },
@@ -144,6 +152,7 @@ test("interactive /model can apply a picked catalog model to a PromptRouter tier
   });
   expect(saved.defaultModel).toBe("claude-sonnet-4-6");
   expect(saved.recentModels).toBeUndefined();
+  expect(logs.some(line => line.includes("routing remains off by default (run /route on or /route on save to enable)."))).toBe(true);
 });
 
 test("interactive /model does not write unsupported route thinking for no-thinking catalog models", async () => {
@@ -153,13 +162,33 @@ test("interactive /model does not write unsupported route thinking for no-thinki
   ]);
 
   expect(saved.routing).toMatchObject({
-    enabled: true,
+    enabled: false,
     tiers: {
       trivial: { model: "gpt-4o" },
       complex: { model: "claude-opus-4-8", thinking: "xhigh" },
     },
   });
   expect((saved.routing as { tiers: { trivial: { thinking?: string } } }).tiers.trivial.thinking).toBeUndefined();
+  expect(saved.defaultModel).toBe("claude-sonnet-4-6");
+  expect(saved.recentModels).toBeUndefined();
+});
+
+test("interactive /model preserves routing.enabled when routing was already enabled", async () => {
+  const logs: string[] = [];
+  const saved = await runInteractiveModelPick("gpt-5.5", "openai", [
+    [enter],
+    [down, down, down, enter],
+    [enter],
+  ], { initialRoutingEnabled: true, logs });
+
+  expect(saved.routing).toMatchObject({
+    enabled: true,
+    tiers: {
+      high: { model: "gpt-5.5", thinking: "low" },
+      complex: { model: "claude-opus-4-8", thinking: "xhigh" },
+    },
+  });
+  expect(logs.some(line => line.includes("routing is on."))).toBe(true);
   expect(saved.defaultModel).toBe("claude-sonnet-4-6");
   expect(saved.recentModels).toBeUndefined();
 });

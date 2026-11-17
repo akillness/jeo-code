@@ -893,7 +893,7 @@ test("ModelManager.stream and call rotate on Antigravity RESOURCE_EXHAUSTED, HTT
   const agNotices: string[] = [];
   const agChunks: string[] = [];
   for await (const chunk of manager.stream([{ role: "user", content: "hi" }], {
-    model: "antigravity/gemini-3-flash-agent",
+    model: "antigravity/gemini-4-hydrogen-high",
     onNotice: msg => agNotices.push(msg),
   })) {
     agChunks.push(chunk);
@@ -908,7 +908,7 @@ test("ModelManager.stream and call rotate on Antigravity RESOURCE_EXHAUSTED, HTT
   seenAgAuth.length = 0;
   failAgAuth = "Bearer ag-tok-2";
   const agCallReply = await manager.call([{ role: "user", content: "hi" }], {
-    model: "antigravity/gemini-3-flash-agent",
+    model: "antigravity/gemini-4-hydrogen-high",
   });
   expect(agCallReply).toBe("ok-from-ag-tok-1");
   expect(seenAgAuth).toEqual(["Bearer ag-tok-2", "Bearer ag-tok-1"]);
@@ -1060,4 +1060,141 @@ test("loginHint, subscriptionHint, and apiKeyHint include pool:2 when poolSize o
   expect(apiKeyHint(keyStatus, true)).toContain("pool:2");
   expect(apiKeyHint(keyStatus, false)).toContain("pool:2");
   expect(apiKeyHint({ ...keyStatus, apiKeyPoolSize: 1 }, true)).not.toContain("pool:");
+});
+
+test("Antigravity rate_limit/usage_limit cooldowns are model-scoped and do not poison shared cooldowns.json", async () => {
+  const future = Date.now() + 3_600_000;
+  const sharedFile = path.join(tmpHome, "shared-cooldowns.json");
+  const prevShared = process.env.JEO_SHARED_AUTH_POOL_PATH;
+  process.env.JEO_SHARED_AUTH_POOL_PATH = sharedFile;
+
+  try {
+    await setOauthCredential("antigravity", {
+      access: "ag-m-1",
+      refresh: "ag-ref-m-1",
+      expires: future,
+      projectId: "proj-1",
+      email: "ag1@example.com",
+    });
+    await setOauthCredential("antigravity", {
+      access: "ag-m-2",
+      refresh: "ag-ref-m-2",
+      expires: future,
+      projectId: "proj-2",
+      email: "ag2@example.com",
+    });
+
+    const c1 = await resolveCredential("antigravity", { model: "antigravity/gemini-4-hydrogen-high" });
+    expect(c1.token).toBe("ag-m-1");
+
+    // Rate limit on gemini-4-hydrogen-high rotates to ag-m-2 for that model.
+    const rot = await rotateCredential(
+      "antigravity",
+      c1,
+      new Error("HTTP 429: RESOURCE_EXHAUSTED"),
+      { model: "antigravity/gemini-4-hydrogen-high" },
+    );
+    expect(rot.rotated).toBe(true);
+    expect(rot.credential.token).toBe("ag-m-2");
+
+    // Shared cooldowns.json must NOT be written/poisoned by model-scoped rate_limit.
+    expect(await Bun.file(sharedFile).exists()).toBe(false);
+
+    // The same account (ag-m-1) remains unblocked for a different Antigravity model (claude-sonnet-4-6).
+    expect(
+      await hasUnblockedPoolSibling("antigravity", rot.credential, { model: "antigravity/claude-sonnet-4-6" }),
+    ).toBe(true);
+    const otherModelCred = await resolveCredential("antigravity", {
+      accountIndex: 0,
+      model: "antigravity/claude-sonnet-4-6",
+    });
+    expect(otherModelCred.token).toBe("ag-m-1");
+
+    // Calling resolveCredential on the cooled-down model (without accountIndex) skips ag-m-1 and picks ag-m-2.
+    const sameModelCred = await resolveCredential("antigravity", { model: "antigravity/gemini-4-hydrogen-high" });
+    expect(sameModelCred.token).toBe("ag-m-2");
+
+    // A non-rate/usage limit failure (401 auth_rejected) DOES block the account across all models and writes shared cooldown.
+    const authRot = await rotateCredential(
+      "antigravity",
+      otherModelCred,
+      { status: 401, message: "HTTP 401 Unauthorized" },
+      { model: "antigravity/claude-sonnet-4-6" },
+    );
+    expect(authRot.rotated).toBe(true);
+    expect(authRot.credential.token).toBe("ag-m-2");
+    expect(await Bun.file(sharedFile).exists()).toBe(true);
+    expect(
+      await hasUnblockedPoolSibling("antigravity", authRot.credential, { model: "antigravity/gemini-4-carbon-high" }),
+    ).toBe(false);
+  } finally {
+    if (prevShared === undefined) delete process.env.JEO_SHARED_AUTH_POOL_PATH;
+    else process.env.JEO_SHARED_AUTH_POOL_PATH = prevShared;
+  }
+});
+
+test("ModelManager keeps dedicated antigravity OAuth isolated from gemini fallback on rotation, and rotates gemini fallback only when antigravity OAuth is absent", async () => {
+  const future = Date.now() + 3_600_000;
+  const manager = createModelManager();
+
+  // 1) Dedicated antigravity OAuth + gemini OAuth configured: rotation must NOT jump to gemini.
+  await setOauthCredential("antigravity", {
+    access: "ag-dedicated-1",
+    refresh: "ag-dedicated-ref-1",
+    expires: future,
+    projectId: "proj-ag",
+    email: "ag@example.com",
+  });
+  await setOauthCredential("gemini", {
+    access: "gem-only-1",
+    refresh: "gem-only-ref-1",
+    expires: future,
+    projectId: "proj-gem",
+    email: "gem@example.com",
+  });
+
+  const seenAuth: string[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    seenAuth.push(getHeader(init, "authorization") ?? "");
+    return sseResponse([
+      'data: {"error":{"code":429,"message":"Individual quota reached. Resets in 1h.","status":"QUOTA_EXHAUSTED"}}\n\n',
+    ]);
+  }) as typeof fetch;
+
+  await expect(
+    manager.call([{ role: "user", content: "hi" }], { model: "antigravity/gemini-4-hydrogen-high" }),
+  ).rejects.toThrow();
+  expect(seenAuth.every(h => h === "Bearer ag-dedicated-1")).toBe(true);
+  expect(seenAuth).not.toContain("Bearer gem-only-1");
+
+  // 2) When antigravity OAuth is absent, gemini OAuth fallback works and rotates across gemini OAuth slots.
+  await removeOAuthAccount("antigravity");
+  await clearAuthCooldown();
+  await setOauthCredential("gemini", {
+    access: "gem-only-2",
+    refresh: "gem-only-ref-2",
+    expires: future,
+    projectId: "proj-gem-2",
+    email: "gem2@example.com",
+  });
+
+  seenAuth.length = 0;
+  globalThis.fetch = (async (_input, init) => {
+    const auth = getHeader(init, "authorization") ?? "";
+    seenAuth.push(auth);
+    if (auth === "Bearer gem-only-1") {
+      return sseResponse([
+        'data: {"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}\n\n',
+      ]);
+    }
+    return sseResponse([
+      `data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "ok-from-gem-2" }] }, finishReason: "STOP" }] } })}\n\n`,
+    ]);
+  }) as typeof fetch;
+
+  const reply = await manager.call([{ role: "user", content: "hi" }], {
+    model: "antigravity/gemini-4-hydrogen-high",
+  });
+  expect(reply).toBe("ok-from-gem-2");
+  expect(seenAuth).toEqual(["Bearer gem-only-1", "Bearer gem-only-2"]);
 });

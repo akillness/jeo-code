@@ -61,6 +61,23 @@ test("resolveRetiredModel maps a sunset id forward and passes current ids throug
   expect(untouched.retirement).toBeUndefined();
 });
 
+test("all retired Antigravity Gemini ids map to live catalogued Antigravity models", () => {
+  const expected: Record<string, string> = {
+    "antigravity/gemini-3.1-pro-high": "antigravity/gemini-4-hydrogen-high",
+    "gemini-3.1-pro-high": "antigravity/gemini-4-hydrogen-high",
+    "antigravity/gemini-pro-agent": "antigravity/gemini-4-hydrogen-high",
+    "antigravity/gemini-3.1-pro-low": "antigravity/gemini-4-hydrogen-low",
+    "antigravity/gemini-3-flash-agent": "antigravity/gemini-3.8-flash-high",
+    "antigravity/gemini-3.5-flash-low": "antigravity/gemini-3.8-flash-medium",
+    "antigravity/gemini-3.5-flash-extra-low": "antigravity/gemini-3.8-flash-low",
+  };
+  for (const [retired, replacement] of Object.entries(expected)) {
+    const mapped = resolveRetiredModel(retired);
+    expect(mapped.model).toBe(replacement);
+    expect(findCatalogModel(mapped.model)).toBeDefined();
+  }
+});
+
 test("findRetiredPins names the exact config key holding the stale id", () => {
   const known = MODEL_RETIREMENTS[0]!;
   const pins = findRetiredPins({

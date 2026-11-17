@@ -21,10 +21,20 @@ export const BUILTIN_ALIASES: ModelAliases = {
   "opus5.5": "claude-opus-5-5",
   "sonnet5.5": "claude-sonnet-5-5",
 
-  // Antigravity's backend DEPRECATED this wire id (deprecatedModelIds:
-  // { "gemini-3.1-pro-high": { newModelId: "gemini-pro-agent" } }) — keep
-  // existing configs/roles pinned to the old id working on the successor.
-  "antigravity/gemini-3.1-pro-high": "antigravity/gemini-pro-agent",
+  // Antigravity retired Gemini wire ids -> live Antigravity successors.
+  "antigravity/gemini-3.1-pro-high": "antigravity/gemini-4-hydrogen-high",
+  "antigravity/gemini-pro-agent": "antigravity/gemini-4-hydrogen-high",
+  "antigravity/gemini-3.1-pro-low": "antigravity/gemini-4-hydrogen-low",
+  "antigravity/gemini-3-flash-agent": "antigravity/gemini-3.8-flash-high",
+  "antigravity/gemini-3.5-flash-low": "antigravity/gemini-3.8-flash-medium",
+  "antigravity/gemini-3.5-flash-extra-low": "antigravity/gemini-3.8-flash-low",
+
+  // Antigravity Claude selectors: Cloud Code Assist exposes `claude-opus-4-6-thinking`
+  // and `claude-sonnet-4-6` (bare `claude-opus-4-6` / `claude-sonnet-4-6-thinking` 404).
+  "antigravity/opus": "antigravity/claude-opus-4-6-thinking",
+  "antigravity/sonnet": "antigravity/claude-sonnet-4-6",
+  "antigravity/claude-opus-4-6": "antigravity/claude-opus-4-6-thinking",
+  "antigravity/claude-sonnet-4-6-thinking": "antigravity/claude-sonnet-4-6",
 };
 
 // Expand an alias to a concrete model id. Unknown input passes through unchanged.

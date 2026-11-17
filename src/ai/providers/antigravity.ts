@@ -3,7 +3,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError, ProviderStreamError, fetchWithArtifactFailSafe } from "./errors";
-import { serializeToolCalls, sanitizeGeminiToolParameters } from "../../agent/tool-schemas";
+import { serializeToolCalls, sanitizeGeminiToolParameters, sanitizeAntigravityClaudeToolParameters } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { geminiThinkingConfig, type GeminiThinkingConfig } from "./gemini";
 import { saveConfigPatch } from "../../agent/state";
@@ -17,11 +17,12 @@ const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googlea
  *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers —
  *  low/medium/high ALL think (reasoning at every level); only an
  *  UNSET effort stays non-thinking. */
-function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"]): number | undefined {
+function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh"): number | undefined {
   switch (effort) {
     case "low": return 4000;
     case "medium": return 10000;
-    case "high": return 24000;
+    case "high":
+    case "xhigh": return 24000;
     default: return undefined;
   }
 }
@@ -164,14 +165,18 @@ export const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 type CcaPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } }
-  | { functionCall: { name: string; args?: Record<string, unknown> }; thoughtSignature?: string }
-  | { functionResponse: { name: string; response: Record<string, unknown> } };
+  | { functionCall: { id?: string; name: string; args?: Record<string, unknown> }; thoughtSignature?: string }
+  | { functionResponse: { id?: string; name: string; response: Record<string, unknown> } };
 
 // Google Antigravity (Gemini 2.5 / 3+) strictly requires thoughtSignature on functionCall parts
 // in multi-turn tool calling (HTTP 400 "Function call is missing a thought_signature in functionCall parts").
-// When an authentic signature is captured on this turn, replay it on the first functionCall;
+// Claude served via Cloud Code Assist also translates functionCall/functionResponse to Anthropic
+// tool_use/tool_result and requires matching `id` fields on both.
+// When a same-model signature is captured, replay it on the first functionCall;
 // otherwise, supply the official Google sentinel SKIP_THOUGHT_SIGNATURE to bypass strict validation.
 function antigravityContents(messages: Message[], options?: CallOptions, stripArtifacts = false): { role: "user" | "model"; parts: CcaPart[] }[] {
+  const targetModel = options?.model ? antigravityModelId(options.model) : undefined;
+  const isClaude = targetModel ? targetModel.toLowerCase().includes("claude") : false;
   const nonSystem = messages.filter(m => m.role !== "system");
   const contents: { role: "user" | "model"; parts: CcaPart[] }[] = [];
   nonSystem.forEach((m, i) => {
@@ -179,14 +184,20 @@ function antigravityContents(messages: Message[], options?: CallOptions, stripAr
     let parts: CcaPart[];
     if (m.role === "assistant" && m.toolUse?.length) {
       const authenticSig = stripArtifacts ? undefined : (
-        m.reasoningArtifacts?.find(a => (a.provider === "antigravity" || a.provider === "gemini") && a.model === options?.model && a.thoughtSignature)?.thoughtSignature
-        ?? m.reasoningArtifacts?.find(a => (a.provider === "antigravity" || a.provider === "gemini") && a.thoughtSignature)?.thoughtSignature
-        ?? m.reasoningArtifacts?.find(a => !!a.thoughtSignature)?.thoughtSignature
+        m.reasoningArtifacts?.find(a =>
+          (a.provider === "antigravity" || a.provider === "gemini") &&
+          (!targetModel || antigravityModelId(a.model) === targetModel) &&
+          !!a.thoughtSignature
+        )?.thoughtSignature
       );
       const sig = authenticSig || SKIP_THOUGHT_SIGNATURE;
       parts = m.toolUse.map((tu, idx) => {
         const p: CcaPart = {
-          functionCall: { name: tu.tool, args: tu.arguments },
+          functionCall: {
+            ...(tu.id ? { id: tu.id } : {}),
+            name: tu.tool,
+            args: tu.arguments ?? {},
+          },
         };
         if (idx === 0) p.thoughtSignature = sig;
         return p;
@@ -201,16 +212,20 @@ function antigravityContents(messages: Message[], options?: CallOptions, stripAr
       const prevToolUse = nonSystem[i - 1].toolUse ?? [];
       parts = m.toolResults.map(tr => ({
         functionResponse: {
+          ...(tr.id ? { id: tr.id } : {}),
           name: prevToolUse.find(tu => tu.id === tr.id)?.tool ?? "tool",
           response: { output: tr.output },
         },
       }));
+      for (const img of m.images ?? []) {
+        parts.push({ inlineData: { mimeType: img.mediaType, data: img.data } });
+      }
       if (m.toolResultExtra) parts.push({ text: m.toolResultExtra });
     } else {
-      parts = [
-        ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
-        { text: m.content },
-      ];
+      const imgParts: CcaPart[] = m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? [];
+      parts = m.content
+        ? [...imgParts, { text: m.content }]
+        : (imgParts.length > 0 ? imgParts : [{ text: isClaude ? " " : m.content }]);
     }
     const prev = contents[contents.length - 1];
     if (prev && prev.role === role) prev.parts.push(...parts);
@@ -268,7 +283,8 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   if (options.tools?.length) {
     // NATIVE tool-calling: Gemini functionDeclarations through the CCA proxy. AUTO mode
     // keeps prose answers + the `done` tool both reachable.
-    request.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: sanitizeGeminiToolParameters(t.parameters) })) }];
+    const sanitizeParameters = isClaude ? sanitizeAntigravityClaudeToolParameters : sanitizeGeminiToolParameters;
+    request.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: sanitizeParameters(t.parameters) })) }];
     request.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
   }
 
@@ -381,6 +397,35 @@ async function fetchAntigravityFailSafe(messages: Message[], options: CallOption
   return response;
 }
 
+function hasValidToolEnvelopeText(text: string, fnCallCount: number, reason: string | undefined): boolean {
+  if (fnCallCount > 0 || (reason !== undefined && reason !== "finishReason=MALFORMED_FUNCTION_CALL")) return false;
+  let body = text.trim();
+  const fenced = /^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```$/.exec(body);
+  if (fenced) body = fenced[1]!.trim();
+  if (!body.startsWith("{") || !body.endsWith("}")) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const obj = parsed as { tool?: unknown; tools?: unknown };
+  if (typeof obj.tool === "string" && obj.tool.trim().length > 0) return true;
+  return (
+    Array.isArray(obj.tools) &&
+    obj.tools.length > 0 &&
+    obj.tools.every(
+      item =>
+        !!item &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        typeof (item as { tool?: unknown }).tool === "string" &&
+        (item as { tool: string }).tool.trim().length > 0,
+    )
+  );
+}
+
 export const antigravityAdapter: ProviderAdapter = {
   name: "antigravity",
   supportsNativeTools: true,
@@ -408,8 +453,13 @@ export const antigravityAdapter: ProviderAdapter = {
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
-    if (lastEmptyReason && (out || fnCalls.length)) throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
-    if (!terminal && (out || fnCalls.length)) throw new Error("Antigravity Cloud Code Assist response incomplete (missing finishReason).");
+    if (lastEmptyReason && (out || fnCalls.length) && !hasValidToolEnvelopeText(out, fnCalls.length, lastEmptyReason)) {
+      throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
+    }
+    if (!terminal && (out || fnCalls.length) && !hasValidToolEnvelopeText(out, fnCalls.length, lastEmptyReason)) {
+      const snippet = out.trim().slice(0, 200);
+      throw new Error(`Antigravity Cloud Code Assist response incomplete (missing finishReason)${snippet ? `: ${snippet}` : "."}`);
+    }
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) return envelope;
@@ -423,6 +473,7 @@ export const antigravityAdapter: ProviderAdapter = {
     // UI shows it even before/without `thought` parts — otherwise reasoning looked dead here.
     if (antigravityThinkingActive(options)) options.onReasoningStart?.();
     let yielded = false;
+    let out = "";
     let usage: CcaUsage | undefined;
     let lastEmptyReason: string | undefined;
     let terminal = false;
@@ -436,15 +487,20 @@ export const antigravityAdapter: ProviderAdapter = {
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
-      if (delta) { yielded = true; yield delta; }
+      if (delta) { out += delta; yielded = true; yield delta; }
       lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
       if (chunk.response?.candidates?.[0]?.finishReason) terminal = true;
       fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
-    if (lastEmptyReason && (yielded || fnCalls.length)) throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
-    if (!terminal && (yielded || fnCalls.length)) throw new Error("Antigravity Cloud Code Assist response incomplete (missing finishReason).");
+    if (lastEmptyReason && (yielded || fnCalls.length) && !hasValidToolEnvelopeText(out, fnCalls.length, lastEmptyReason)) {
+      throw new Error(`Antigravity Cloud Code Assist response incomplete (${lastEmptyReason}).`);
+    }
+    if (!terminal && (yielded || fnCalls.length) && !hasValidToolEnvelopeText(out, fnCalls.length, lastEmptyReason)) {
+      const snippet = out.trim().slice(0, 200);
+      throw new Error(`Antigravity Cloud Code Assist response incomplete (missing finishReason)${snippet ? `: ${snippet}` : "."}`);
+    }
     // Native tool calls have no text deltas — yield the re-serialized envelope once at end.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) { yielded = true; yield envelope; }

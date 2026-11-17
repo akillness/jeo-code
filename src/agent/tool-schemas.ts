@@ -423,3 +423,82 @@ export function sanitizeGeminiToolParameters(schema: Record<string, unknown> | u
 
   return out;
 }
+
+export function sanitizeAntigravityClaudeToolParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  const flatten = (node: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { ...node };
+
+    if (Array.isArray(out.anyOf)) {
+      const branches = out.anyOf.filter(isPlainObject).map(b => flatten(b));
+      delete out.anyOf;
+      const objectBranches = branches.filter(b => b.type === "object" || isPlainObject(b.properties));
+      if (objectBranches.length > 0) {
+        out.type = "object";
+        const mergedProps: Record<string, unknown> = isPlainObject(out.properties) ? { ...out.properties } : {};
+        for (const b of objectBranches) {
+          if (isPlainObject(b.properties)) {
+            for (const [pk, pv] of Object.entries(b.properties)) {
+              if (!(pk in mergedProps)) mergedProps[pk] = pv;
+            }
+          }
+          for (const [bk, bv] of Object.entries(b)) {
+            if (bk === "type" || bk === "properties" || bk === "required") continue;
+            if (out[bk] === undefined) out[bk] = bv;
+          }
+        }
+        out.properties = mergedProps;
+        const reqLists = objectBranches.map(b =>
+          Array.isArray(b.required) ? b.required.filter((r): r is string => typeof r === "string") : [],
+        );
+        let intersected = reqLists[0] ?? [];
+        for (let i = 1; i < reqLists.length; i++) {
+          const nextReqs = reqLists[i]!;
+          intersected = intersected.filter(r => nextReqs.includes(r));
+        }
+        if (intersected.length > 0) {
+          out.required = intersected;
+        } else {
+          delete out.required;
+        }
+      } else if (branches.length > 0) {
+        const chosen = branches[0]!;
+        for (const [bk, bv] of Object.entries(chosen)) {
+          if (out[bk] === undefined) out[bk] = bv;
+        }
+      }
+    }
+
+    if (isPlainObject(out.properties)) {
+      const props: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(out.properties)) {
+        props[k] = isPlainObject(v) ? flatten(v) : v;
+      }
+      out.properties = props;
+    }
+
+    if (isPlainObject(out.items)) {
+      out.items = flatten(out.items);
+    }
+
+    if (out.type === "object" && !isPlainObject(out.properties)) {
+      out.properties = {};
+    }
+
+    if (Array.isArray(out.required)) {
+      const declared = isPlainObject(out.properties) ? out.properties : undefined;
+      const filtered = out.required.filter(
+        (r): r is string => typeof r === "string" && (!declared || Object.keys(declared).length === 0 || r in declared),
+      );
+      if (filtered.length === 0) {
+        delete out.required;
+      } else {
+        out.required = filtered;
+      }
+    }
+
+    return out;
+  };
+
+  const geminiSanitized = sanitizeGeminiToolParameters(schema);
+  return flatten(geminiSanitized);
+}

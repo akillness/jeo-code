@@ -139,6 +139,7 @@ export interface ResolveCredentialOptions {
   forceRefresh?: boolean;
   allowGeminiFallback?: boolean;
   preferKind?: "oauth" | "api_key";
+  model?: string;
 }
 
 export interface RotateCredentialResult {
@@ -572,19 +573,42 @@ function buildApiKeySlots(
   }));
 }
 
-function getEffectiveBlockedUntil(runtime: PoolRuntimeEntry, slot: PoolCandidateSlot): number | undefined {
+function getEffectiveBlockedUntil(
+  runtime: PoolRuntimeEntry,
+  slot: PoolCandidateSlot,
+  model?: string,
+): number | undefined {
   const localUntil = runtime.blockedUntil.get(slot.identityKey);
+  const normalizedModel = model?.trim().toLowerCase();
+  const modelUntil = normalizedModel
+    ? runtime.blockedUntil.get(`${slot.identityKey}\0model:${normalizedModel}`)
+    : undefined;
   const shared =
     slot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())
       ? lookupSharedCooldown(slot.ownerProvider, slot)
       : undefined;
-  if (localUntil !== undefined && shared !== undefined) return Math.max(localUntil, shared.blockedUntil);
-  return localUntil ?? shared?.blockedUntil;
+  let effective = localUntil;
+  if (modelUntil !== undefined) {
+    effective = effective !== undefined ? Math.max(effective, modelUntil) : modelUntil;
+  }
+  if (shared !== undefined) {
+    effective = effective !== undefined ? Math.max(effective, shared.blockedUntil) : shared.blockedUntil;
+  }
+  return effective;
 }
 
-function getEffectiveBlockedReason(runtime: PoolRuntimeEntry, slot: PoolCandidateSlot): string | undefined {
+function getEffectiveBlockedReason(
+  runtime: PoolRuntimeEntry,
+  slot: PoolCandidateSlot,
+  model?: string,
+): string | undefined {
   const localReason = runtime.blockedReason.get(slot.identityKey);
   if (localReason) return localReason;
+  const normalizedModel = model?.trim().toLowerCase();
+  if (normalizedModel) {
+    const modelReason = runtime.blockedReason.get(`${slot.identityKey}\0model:${normalizedModel}`);
+    if (modelReason) return modelReason;
+  }
   if (slot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())) {
     return lookupSharedCooldown(slot.ownerProvider, slot)?.reason;
   }
@@ -594,7 +618,7 @@ function getEffectiveBlockedReason(runtime: PoolRuntimeEntry, slot: PoolCandidat
 function selectSlotIndex(
   slots: readonly PoolCandidateSlot[],
   runtime: PoolRuntimeEntry,
-  opts?: { sessionKey?: string; accountIndex?: number },
+  opts?: { sessionKey?: string; accountIndex?: number; model?: string },
 ): number {
   if (slots.length <= 1) return 0;
   if (opts?.accountIndex !== undefined && opts.accountIndex >= 0 && opts.accountIndex < slots.length) {
@@ -608,7 +632,7 @@ function selectSlotIndex(
       const pinnedIdx = slots.findIndex(s => s.identityKey === pinnedId);
       if (pinnedIdx !== -1) {
         const pinnedSlot = slots[pinnedIdx]!;
-        const blockedUntil = getEffectiveBlockedUntil(runtime, pinnedSlot);
+        const blockedUntil = getEffectiveBlockedUntil(runtime, pinnedSlot, opts?.model);
         if (!pinnedSlot.dead && (!blockedUntil || blockedUntil <= now)) {
           return pinnedIdx;
         }
@@ -621,7 +645,7 @@ function selectSlotIndex(
   for (let offset = 0; offset < slots.length; offset++) {
     const idx = (start + offset) % slots.length;
     const slot = slots[idx]!;
-    const blockedUntil = getEffectiveBlockedUntil(runtime, slot);
+    const blockedUntil = getEffectiveBlockedUntil(runtime, slot, opts?.model);
     if (!slot.dead && (!blockedUntil || blockedUntil <= now)) {
       return idx;
     }
@@ -634,7 +658,7 @@ function selectSlotIndex(
     const idx = (start + offset) % slots.length;
     const slot = slots[idx]!;
     if (slot.dead) continue;
-    const until = getEffectiveBlockedUntil(runtime, slot) ?? Number.POSITIVE_INFINITY;
+    const until = getEffectiveBlockedUntil(runtime, slot, opts?.model) ?? Number.POSITIVE_INFINITY;
     if (until < earliestUntil) {
       earliestUntil = until;
       bestIdx = idx;
@@ -888,6 +912,7 @@ export async function resolveCredential(
     const chosenIdx = selectSlotIndex(slots, runtimeOAuth, {
       sessionKey: opts?.sessionKey,
       accountIndex: opts?.accountIndex,
+      model: opts?.model,
     });
     const chosen = slots[chosenIdx]!;
     const entry = chosen.entry;
@@ -924,6 +949,9 @@ export async function resolveCredential(
           );
           if (remainingOAuth.length > 0 && opts?.accountIndex === undefined) {
             continue;
+          }
+          if (allowFallback && result.credential.provider !== provider && result.credential.kind !== "oauth") {
+            return { kind: "none", provider };
           }
           return result.credential;
         }
@@ -1003,7 +1031,7 @@ function classifyRotationCooldown(error: unknown): { cooldownMs: number; reason:
 export async function hasUnblockedPoolSibling(
   provider: AuthProvider,
   currentCredential: Credential,
-  opts?: { allowGeminiFallback?: boolean },
+  opts?: { allowGeminiFallback?: boolean; model?: string },
 ): Promise<boolean> {
   if (currentCredential.kind === "none") return false;
   const cfg = await readGlobalConfig();
@@ -1022,7 +1050,7 @@ export async function hasUnblockedPoolSibling(
     const token = slot.kind === "oauth" ? oauthEntryAccess(slot.entry) : slot.apiKey;
     if (token === currentCredential.token) return false;
     if (slot.dead) return false;
-    const until = getEffectiveBlockedUntil(runtime, slot);
+    const until = getEffectiveBlockedUntil(runtime, slot, opts?.model);
     return !until || until <= now;
   });
 }
@@ -1035,7 +1063,7 @@ export async function rotateCredential(
   provider: AuthProvider,
   failedCredential: Credential,
   error: unknown,
-  opts?: { sessionKey?: string; allowGeminiFallback?: boolean },
+  opts?: { sessionKey?: string; allowGeminiFallback?: boolean; model?: string },
 ): Promise<RotateCredentialResult> {
   if (failedCredential.kind === "none") {
     return {
@@ -1070,33 +1098,48 @@ export async function rotateCredential(
     };
   }
 
-  let failedIdx = slots.findIndex(slot => {
+  const failedIdx = slots.findIndex(slot => {
     const token = slot.kind === "oauth" ? oauthEntryAccess(slot.entry) : slot.apiKey;
     return token === failedCredential.token;
   });
-  if (failedIdx === -1) failedIdx = 0;
-
-  const failedSlot = slots[failedIdx]!;
   const { cooldownMs, reason } = classifyRotationCooldown(error);
   const now = Date.now();
-  const blockedUntilTarget = now + cooldownMs;
-  runtime.blockedUntil.set(failedSlot.identityKey, blockedUntilTarget);
-  runtime.blockedReason.set(failedSlot.identityKey, reason);
-  if (failedSlot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())) {
-    recordSharedCooldown(failedSlot.ownerProvider, failedSlot, blockedUntilTarget, reason);
+  const normalizedModel = opts?.model?.trim().toLowerCase();
+  const modelScoped =
+    provider === "antigravity" &&
+    (reason === "rate_limit" || reason === "usage_limit") &&
+    !!normalizedModel;
+
+  let fromLabel: string | undefined;
+  let searchStartOffset: number;
+  if (failedIdx !== -1) {
+    const failedSlot = slots[failedIdx]!;
+    const blockedUntilTarget = now + cooldownMs;
+    const blockKey = modelScoped
+      ? `${failedSlot.identityKey}\0model:${normalizedModel}`
+      : failedSlot.identityKey;
+    runtime.blockedUntil.set(blockKey, blockedUntilTarget);
+    runtime.blockedReason.set(blockKey, reason);
+    if (!modelScoped && failedSlot.kind === "oauth" && shouldUseSharedPool(resolveConfigDir())) {
+      recordSharedCooldown(failedSlot.ownerProvider, failedSlot, blockedUntilTarget, reason);
+    }
+
+    if (opts?.sessionKey && runtime.sessionPinned.get(opts.sessionKey) === failedSlot.identityKey) {
+      runtime.sessionPinned.delete(opts.sessionKey);
+    }
+
+    fromLabel = formatSlotLabel(failedSlot);
+    searchStartOffset = 1;
+  } else {
+    searchStartOffset = 0;
   }
 
-  if (opts?.sessionKey && runtime.sessionPinned.get(opts.sessionKey) === failedSlot.identityKey) {
-    runtime.sessionPinned.delete(opts.sessionKey);
-  }
-
-  const fromLabel = formatSlotLabel(failedSlot);
-
-  for (let offset = 1; offset < slots.length; offset++) {
-    const candidateIdx = (failedIdx + offset) % slots.length;
+  const baseIdx = failedIdx !== -1 ? failedIdx : ((runtime.cursor % slots.length) + slots.length) % slots.length;
+  for (let offset = searchStartOffset; offset < slots.length; offset++) {
+    const candidateIdx = (baseIdx + offset) % slots.length;
     const candidate = slots[candidateIdx]!;
     if (candidate.dead) continue;
-    const blockedUntil = getEffectiveBlockedUntil(runtime, candidate);
+    const blockedUntil = getEffectiveBlockedUntil(runtime, candidate, opts?.model);
     if (blockedUntil && blockedUntil > now) continue;
 
     // Resolve via the owner provider + ownerIndex so any expired OAuth token auto-refreshes cleanly.
@@ -1133,7 +1176,7 @@ export async function rotateCredential(
     return {
       rotated: true,
       credential: nextCred,
-      fromIndex: failedIdx,
+      fromIndex: failedIdx !== -1 ? failedIdx : 0,
       toIndex: candidateIdx,
       total: slots.length,
       fromLabel,
@@ -1143,12 +1186,12 @@ export async function rotateCredential(
   }
 
   // All accounts are currently blocked; advance cursor circularly for the next unblocked window.
-  runtime.cursor = (failedIdx + 1) % slots.length;
+  runtime.cursor = (baseIdx + 1) % slots.length;
   await persistDirPools();
 
   let earliestUnblockAt: number | undefined;
   for (const slot of slots) {
-    const until = getEffectiveBlockedUntil(runtime, slot);
+    const until = getEffectiveBlockedUntil(runtime, slot, opts?.model);
     if (until !== undefined && (earliestUnblockAt === undefined || until < earliestUnblockAt)) {
       earliestUnblockAt = until;
     }
@@ -1157,8 +1200,8 @@ export async function rotateCredential(
   return {
     rotated: false,
     credential: failedCredential,
-    fromIndex: failedIdx,
-    toIndex: failedIdx,
+    fromIndex: failedIdx !== -1 ? failedIdx : 0,
+    toIndex: failedIdx !== -1 ? failedIdx : 0,
     total: slots.length,
     fromLabel,
     reason,

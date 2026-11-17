@@ -166,36 +166,42 @@ test("inferCatalogMetadata: fable/mythos + single-digit 5th-gen ids infer Anthro
   }
 });
 
-// --- Antigravity catalog rows mirror the LIVE Cloud Code Assist agent set
-// (fetchAvailableModels, probed 2026-07-08). The wire ids LIE about tier — the
-// displayName is the truth, pinned per-row via explicit `sizeClass`. ---
+// --- Antigravity catalog rows mirror the LIVE Cloud Code Assist agent set.
+// `sizeClass` pins each row's routing tier explicitly. ---
 
-test("antigravity catalog is EXACTLY the live agent set — removed rows (gpt-5.5, 3.1-pro-high, opus-4-8*, 3-pro-*, 2.5-*) stay gone", () => {
+test("antigravity catalog is EXACTLY the live agent set — retired Gemini rows stay gone", () => {
   const rows = MODEL_CATALOG.filter(m => m.provider === "antigravity").map(m => m.canonical).sort();
   expect(rows).toEqual([
     "antigravity/claude-opus-4-6-thinking",
     "antigravity/claude-sonnet-4-6",
-    "antigravity/gemini-3-flash-agent",
-    "antigravity/gemini-3.1-pro-low",
-    "antigravity/gemini-3.5-flash-extra-low",
-    "antigravity/gemini-3.5-flash-low",
-    "antigravity/gemini-pro-agent",
+    "antigravity/gemini-3-flash",
+    "antigravity/gemini-3.8-flash-high",
+    "antigravity/gemini-3.8-flash-low",
+    "antigravity/gemini-3.8-flash-medium",
+    "antigravity/gemini-4-carbon-high",
+    "antigravity/gemini-4-carbon-low",
+    "antigravity/gemini-4-carbon-medium",
+    "antigravity/gemini-4-hydrogen-high",
+    "antigravity/gemini-4-hydrogen-low",
+    "antigravity/gemini-4-hydrogen-medium",
+    "antigravity/gemini-4-hydrogen-xhigh",
     "antigravity/gpt-oss-120b-medium",
   ]);
 });
 
-test("antigravity sizeClass pins displayName truth over the misleading wire-id suffixes", () => {
+test("antigravity sizeClass pins each live row's routing tier", () => {
   const sizeOf = (id: string) => MODEL_CATALOG.find(m => m.canonical === id)?.sizeClass;
-  // "Gemini 3.5 Flash (High)" — flagship despite the 'flash' segment:
-  expect(sizeOf("antigravity/gemini-3-flash-agent")).toBe("large");
-  // "Gemini 3.1 Pro (Low)" — low tier despite the 'pro' segment:
-  expect(sizeOf("antigravity/gemini-3.1-pro-low")).toBe("small");
-  // "Gemini 3.5 Flash (Medium)" / "(Low)":
-  expect(sizeOf("antigravity/gemini-3.5-flash-low")).toBe("mid");
-  expect(sizeOf("antigravity/gemini-3.5-flash-extra-low")).toBe("small");
-  // "Gemini 3.1 Pro (High)" — the code-agent model:
-  expect(sizeOf("antigravity/gemini-pro-agent")).toBe("mid");
-  // Anthropic via Antigravity:
+  expect(sizeOf("antigravity/gemini-4-hydrogen-xhigh")).toBe("large");
+  expect(sizeOf("antigravity/gemini-4-hydrogen-high")).toBe("large");
+  expect(sizeOf("antigravity/gemini-4-hydrogen-medium")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-4-hydrogen-low")).toBe("small");
+  expect(sizeOf("antigravity/gemini-4-carbon-high")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-4-carbon-medium")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-4-carbon-low")).toBe("small");
+  expect(sizeOf("antigravity/gemini-3.8-flash-high")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-3.8-flash-medium")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-3.8-flash-low")).toBe("small");
+  expect(sizeOf("antigravity/gemini-3-flash")).toBe("small");
   expect(sizeOf("antigravity/claude-sonnet-4-6")).toBe("mid");
   expect(sizeOf("antigravity/claude-opus-4-6-thinking")).toBe("large");
 });

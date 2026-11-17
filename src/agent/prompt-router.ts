@@ -609,8 +609,8 @@ function resolveTierThinking(tier: PromptTier, config: RoutingConfig): ThinkLeve
 }
 
 /** Apply one interactive `/model` pick to a PromptRouter tier without touching the
- *  global model registry. The write enables routing because a configured tier is
- *  otherwise invisible until `routing.enabled` is set. */
+ *  global model registry. Preserves `routing.enabled` (defaulting to `false`) so
+ *  picking a route tier keeps routing OFF by default until `/route on` or `/route on save`. */
 export function withRoutingTierSetting(
   config: Pick<Config, "routing">,
   tier: PromptTier,
@@ -618,7 +618,7 @@ export function withRoutingTierSetting(
 ): NonNullable<Config["routing"]> {
   return {
     ...(config.routing ?? {}),
-    enabled: true,
+    enabled: config.routing?.enabled ?? false,
     tiers: {
       ...(config.routing?.tiers ?? {}),
       [tier]: {

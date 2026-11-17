@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { nativeToolSchemasFor, serializeToolCalls, normalizeNativeToolName, sanitizeGeminiToolParameters } from "../src/agent/tool-schemas";
+import { nativeToolSchemasFor, serializeToolCalls, normalizeNativeToolName, sanitizeGeminiToolParameters, sanitizeAntigravityClaudeToolParameters } from "../src/agent/tool-schemas";
 
 test("nativeToolSchemasFor: always appends `done` and mirrors handler arg keys", () => {
   const schemas = nativeToolSchemasFor(["read", "bash"]);
@@ -364,5 +364,127 @@ test("sanitizeGeminiToolParameters: normalizes nullable type arrays and collapse
     type: "integer",
     minimum: 1,
     nullable: true,
+  });
+});
+
+test("sanitizeAntigravityClaudeToolParameters: flattens SCHEMAS.task without leaving any anyOf keys", () => {
+  const [taskSchema] = nativeToolSchemasFor(["task"]);
+  const geminiSanitized = sanitizeGeminiToolParameters(taskSchema!.parameters);
+  expect(collectKeysDeep(geminiSanitized).has("anyOf")).toBe(true);
+
+  const claudeSanitized = sanitizeAntigravityClaudeToolParameters(taskSchema!.parameters);
+  expect(collectKeysDeep(claudeSanitized).has("anyOf")).toBe(false);
+  const props = claudeSanitized.properties as Record<string, unknown>;
+  expect(props.tasks).toEqual({
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        task: { type: "string" },
+        context: { type: "string" },
+      },
+      required: ["task"],
+    },
+  });
+});
+
+test("sanitizeAntigravityClaudeToolParameters: recursively flattens nested property-level and multi-branch anyOf unions", () => {
+  const raw: Record<string, unknown> = {
+    type: "object",
+    required: [],
+    properties: {
+      scalarChoice: {
+        description: "Pick mode or count",
+        nullable: true,
+        anyOf: [
+          { type: "string", enum: ["fast", "accurate"] },
+          { type: "integer" },
+        ],
+      },
+      multiObj: {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              a: { type: "string" },
+              shared: { type: "number" },
+            },
+            required: ["a", "shared"],
+          },
+          {
+            type: "object",
+            properties: {
+              b: { type: "boolean" },
+              shared: { type: "number" },
+            },
+            required: ["b", "shared"],
+          },
+        ],
+      },
+      nested: {
+        type: "object",
+        properties: {
+          bareObj: { type: "object", required: [] },
+          list: {
+            type: "array",
+            items: {
+              anyOf: [
+                { type: "string" },
+                {
+                  type: "object",
+                  properties: {
+                    innerUnion: {
+                      description: "Inner choice",
+                      anyOf: [{ type: "boolean" }, { type: "string" }],
+                    },
+                  },
+                  required: ["innerUnion"],
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const sanitized = sanitizeAntigravityClaudeToolParameters(raw);
+  expect(collectKeysDeep(sanitized).has("anyOf")).toBe(false);
+  expect(sanitized.required).toBeUndefined();
+  expect(sanitized.properties).toEqual({
+    scalarChoice: {
+      description: "Pick mode or count",
+      nullable: true,
+      type: "string",
+      enum: ["fast", "accurate"],
+    },
+    multiObj: {
+      type: "object",
+      properties: {
+        a: { type: "string" },
+        shared: { type: "number" },
+        b: { type: "boolean" },
+      },
+      required: ["shared"],
+    },
+    nested: {
+      type: "object",
+      properties: {
+        bareObj: { type: "object", properties: {} },
+        list: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              innerUnion: {
+                description: "Inner choice",
+                type: "boolean",
+              },
+            },
+            required: ["innerUnion"],
+          },
+        },
+      },
+    },
   });
 });

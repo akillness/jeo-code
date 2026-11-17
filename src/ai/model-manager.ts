@@ -7,6 +7,7 @@ import {
   hasUnblockedPoolSibling,
   refreshOAuthToken,
   hasOAuthConfigured,
+  normalizeOAuthPool,
   apiKeyPoolFor,
   isOAuthProvider,
   type AuthProvider,
@@ -555,6 +556,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
       ? undefined
       : (options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel)),
     onReasoning: options.onReasoning,
+    onReasoningStart: options.onReasoningStart,
     onReasoningArtifact: options.onReasoningArtifact,
     tools: options.tools,
     sessionKey: options.sessionKey,
@@ -585,13 +587,14 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
 
   if (provider === "antigravity") {
     // Prefer the dedicated Antigravity login (its client is what the agent
-    // backend authorizes); fall back to a plain gemini OAuth token for users with
-    // their own project/permissions — this is now the DEFAULT OAuth-served path for
-    // Gemini models (google/gemini-* itself requires GEMINI_API_KEY, see
-    // `oauthServesModel` above).
+    // backend authorizes); fall back to a plain gemini OAuth token ONLY when
+    // no dedicated Antigravity login is configured, so gemini-cli tokens never
+    // mix into an active Antigravity OAuth pool during rotation.
+    const allowGeminiFallback = normalizeOAuthPool(config.oauth?.antigravity).length === 0;
     const credential = await resolveCredential("antigravity", {
       sessionKey: options.sessionKey,
-      allowGeminiFallback: true,
+      allowGeminiFallback,
+      model: callOptions.model,
     });
     if (credential.kind !== "oauth") {
       throw new Error("Antigravity models use Google OAuth. Run 'jeo auth login antigravity' (recommended) or 'jeo auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
@@ -955,13 +958,13 @@ export function createModelManager(resolve = resolveCall): ModelManager {
       }
 
       const authProvider = provider as AuthProvider;
-      const allowGeminiFallback = provider === "antigravity";
+      const allowGeminiFallback = provider === "antigravity" && credential.provider === "gemini";
       let activeCredential: Credential = credential;
       const triedTokens = new Set<string>([credential.token]);
       let refreshedCurrent = false;
 
       while (true) {
-        const canRotate = await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback });
+        const canRotate = await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback, model: callOptions.model });
         const attemptRetry = buildPoolRetryOptions(retry, canRotate);
         const callAttempt = async () => {
           const scope = currentUsageScope();
@@ -1005,6 +1008,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
           const rotation = await rotateCredential(authProvider, activeCredential, err, {
             sessionKey: callOptions.sessionKey,
             allowGeminiFallback,
+            model: callOptions.model,
           });
           if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) {
             throw err;
@@ -1024,14 +1028,14 @@ export function createModelManager(resolve = resolveCall): ModelManager {
       if (adapter.stream) {
         const streamFn = adapter.stream.bind(adapter);
         const authProvider = provider as AuthProvider;
-        const allowGeminiFallback = provider === "antigravity";
+        const allowGeminiFallback = provider === "antigravity" && credential.provider === "gemini";
         let activeCredential: Credential = credential;
         const triedTokens = new Set<string>(credential.kind !== "none" ? [credential.token] : []);
         let refreshedCurrent = false;
 
         while (true) {
           const canRotate = activeCredential.kind !== "none"
-            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback }));
+            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback, model: callOptions.model }));
           const attemptRetry = buildPoolRetryOptions(retry, canRotate);
           const abortRef: { current: AbortController | null } = { current: null };
           let usageAttempt: UsageAttempt | undefined;
@@ -1095,6 +1099,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             const rotation = await rotateCredential(authProvider, activeCredential, err, {
               sessionKey: callOptions.sessionKey,
               allowGeminiFallback,
+              model: callOptions.model,
             });
             if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) {
               if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
@@ -1115,14 +1120,14 @@ export function createModelManager(resolve = resolveCall): ModelManager {
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
         const authProvider = provider as AuthProvider;
-        const allowGeminiFallback = provider === "antigravity";
+        const allowGeminiFallback = provider === "antigravity" && credential.provider === "gemini";
         let activeCredential: Credential = credential;
         const triedTokens = new Set<string>(credential.kind !== "none" ? [credential.token] : []);
         let refreshedCurrent = false;
 
         while (true) {
           const canRotate = activeCredential.kind !== "none"
-            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback }));
+            && (await hasUnblockedPoolSibling(authProvider, activeCredential, { allowGeminiFallback, model: callOptions.model }));
           const attemptRetry = buildPoolRetryOptions(retry, canRotate);
           const callAttempt = async () => {
             const scope = currentUsageScope();
@@ -1157,6 +1162,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             const rotation = await rotateCredential(authProvider, activeCredential, err, {
               sessionKey: callOptions.sessionKey,
               allowGeminiFallback,
+              model: callOptions.model,
             });
             if (!rotation.rotated || rotation.credential.kind === "none" || triedTokens.has(rotation.credential.token)) throw err;
             triedTokens.add(rotation.credential.token);

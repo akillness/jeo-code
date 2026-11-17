@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { retryableStream } from "../src/ai/model-manager";
 import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter, SKIP_THOUGHT_SIGNATURE } from "../src/ai/providers/antigravity";
 import type { CallOptions, Message, ReasoningArtifact } from "../src/ai/types";
+import { nativeToolSchemasFor } from "../src/agent/tool-schemas";
 import { isRefusalError, isProviderStreamError, isRateLimitError, isMalformedFunctionCallError, defaultRetryable, withRetry } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
@@ -458,10 +459,10 @@ test("antigravityRequest serializes multi-turn toolUse and toolResults to native
   expect(contents[0].parts[0].text).toBe("read file");
 
   expect(contents[1].role).toBe("model");
-  expect(contents[1].parts[0].functionCall).toEqual({ name: "read", args: { filePath: "test.txt" } });
+  expect(contents[1].parts[0].functionCall).toEqual({ id: "call_1", name: "read", args: { filePath: "test.txt" } });
 
   expect(contents[2].role).toBe("user");
-  expect(contents[2].parts[0].functionResponse).toEqual({ name: "read", response: { output: "file content here" } });
+  expect(contents[2].parts[0].functionResponse).toEqual({ id: "call_1", name: "read", response: { output: "file content here" } });
 });
 
 test("antigravityRequest: attaches SKIP_THOUGHT_SIGNATURE to first functionCall when no artifact exists", () => {
@@ -644,6 +645,229 @@ test("antigravity failsafe retries with stripArtifacts (SKIP_THOUGHT_SIGNATURE) 
     const out = await antigravityAdapter.call(messages, opts, cred);
     expect(out).toBe("recovered successfully");
     expect(callCount).toBe(2);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityRequest: Claude models preserve matching tool_use/tool_result ids, forward toolResult images, and skip empty text parts", () => {
+  const messages: Message[] = [
+    {
+      role: "user",
+      content: "",
+      images: [{ mediaType: "image/png", data: "aW1nMQ==" }],
+    },
+    {
+      role: "assistant",
+      content: '{"tool":"read","arguments":{"filePath":"a.png"}}',
+      toolUse: [{ id: "call_1_0", tool: "read", arguments: { filePath: "a.png" } }],
+      // A Gemini signature from an earlier turn must NOT be replayed into Claude.
+      reasoningArtifacts: [
+        { provider: "antigravity", model: "antigravity/gemini-3-flash", thoughtSignature: "gemini_sig==" },
+      ],
+    },
+    {
+      role: "user",
+      content: "Tool [read] result (ok):",
+      toolResults: [{ id: "call_1_0", output: "Image read", isError: false }],
+      images: [{ mediaType: "image/png", data: "aW1nMg==" }],
+    },
+  ];
+  const { body } = antigravityRequest(
+    messages,
+    { model: "antigravity/claude-opus-4-6-thinking", reasoningEffort: "xhigh" as any } as any,
+    cred,
+  );
+  const payload = JSON.parse(body);
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 24000 });
+  const contents = payload.request.contents;
+  // Image-only user turn omits { text: "" } so Anthropic/CCA does not reject with text.text Field required.
+  expect(contents[0].parts).toEqual([{ inlineData: { mimeType: "image/png", data: "aW1nMQ==" } }]);
+  // Matching functionCall.id + cross-model signature dropped in favor of SKIP_THOUGHT_SIGNATURE.
+  expect(contents[1].parts[0].functionCall).toEqual({ id: "call_1_0", name: "read", args: { filePath: "a.png" } });
+  expect(contents[1].parts[0].thoughtSignature).toBe(SKIP_THOUGHT_SIGNATURE);
+  // Matching functionResponse.id + inlineData image attachment.
+  expect(contents[2].parts).toEqual([
+    { functionResponse: { id: "call_1_0", name: "read", response: { output: "Image read" } } },
+    { inlineData: { mimeType: "image/png", data: "aW1nMg==" } },
+  ]);
+});
+
+test("antigravityRequest: replays same-model signature even when prefix differs (claude-sonnet-4-6)", () => {
+  const sig = "Y2xhdWRlX3NpZ192YWxpZA==";
+  const messages: Message[] = [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: '{"tool":"read","arguments":{"filePath":"x"}}',
+      toolUse: [{ id: "call_2_0", tool: "read", arguments: { filePath: "x" } }],
+      reasoningArtifacts: [
+        { provider: "antigravity", model: "claude-sonnet-4-6", thoughtSignature: sig },
+      ],
+    },
+  ];
+  const { body } = antigravityRequest(
+    messages,
+    { model: "antigravity/claude-sonnet-4-6", reasoningEffort: "medium" } as any,
+    cred,
+  );
+  const payload = JSON.parse(body);
+  expect(payload.request.contents[1].parts[0].thoughtSignature).toBe(sig);
+  expect(payload.request.contents[1].parts[0].functionCall.id).toBe("call_2_0");
+});
+
+function hasKeyDeep(node: unknown, targetKey: string): boolean {
+  if (Array.isArray(node)) return node.some(item => hasKeyDeep(item, targetKey));
+  if (typeof node === "object" && node !== null) {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === targetKey || hasKeyDeep(v, targetKey)) return true;
+    }
+  }
+  return false;
+}
+
+test("antigravityRequest: claude-opus-4-6-thinking strips anyOf across all default+delegation schemas", () => {
+  const tools = nativeToolSchemasFor([
+    "read", "write", "edit", "bash", "find", "search", "ls", "mkdir", "delete",
+    "web_search", "computer", "calc", "jeox", "task", "subagent", "monitor",
+    "sandbox_request", "done",
+  ]);
+  const messages: Message[] = [{ role: "user", content: "hi" }];
+  const claudeReq = antigravityRequest(
+    messages,
+    { model: "antigravity/claude-opus-4-6-thinking", tools },
+    cred,
+  );
+  const claudePayload = JSON.parse(claudeReq.body) as {
+    request: { tools: [{ functionDeclarations: Array<{ name: string; parameters: Record<string, unknown> }> }] };
+  };
+  expect(hasKeyDeep(claudePayload.request.tools, "anyOf")).toBe(false);
+  const taskDecl = claudePayload.request.tools[0].functionDeclarations.find(d => d.name === "task")!;
+  expect((taskDecl.parameters.properties as Record<string, unknown>).tasks).toEqual({
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        task: { type: "string" },
+        context: { type: "string" },
+      },
+      required: ["task"],
+    },
+  });
+
+  // Gemini models preserve anyOf on SCHEMAS.task.
+  const geminiReq = antigravityRequest(
+    messages,
+    { model: "antigravity/gemini-3-flash", tools },
+    cred,
+  );
+  const geminiPayload = JSON.parse(geminiReq.body) as {
+    request: { tools: unknown };
+  };
+  expect(hasKeyDeep(geminiPayload.request.tools, "anyOf")).toBe(true);
+});
+
+test("antigravityAdapter.call and .stream surface a bounded text snippet when finishReason is missing", async () => {
+  const prevFetch = globalThis.fetch;
+  const messages: Message[] = [{ role: "user", content: "hi" }];
+  const opts: CallOptions = { model: "antigravity/gemini-3.5-flash" };
+  try {
+    const retirementMsg = "  Gemini 3.5 Flash is no longer available. Please migrate to a newer model.  ";
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: retirementMsg }]))) as typeof fetch;
+
+    await expect(antigravityAdapter.call(messages, opts, cred)).rejects.toThrow(
+      "Antigravity Cloud Code Assist response incomplete (missing finishReason): Gemini 3.5 Flash is no longer available. Please migrate to a newer model.",
+    );
+
+    const streamed: string[] = [];
+    let streamErr: Error | undefined;
+    try {
+      for await (const chunk of antigravityAdapter.stream!(messages, opts, cred)) {
+        streamed.push(chunk);
+      }
+    } catch (err) {
+      streamErr = err as Error;
+    }
+    expect(streamed.join("")).toBe(retirementMsg);
+    expect(streamErr).toBeDefined();
+    expect(streamErr!.message).toBe(
+      "Antigravity Cloud Code Assist response incomplete (missing finishReason): Gemini 3.5 Flash is no longer available. Please migrate to a newer model.",
+    );
+
+    // Bounded to 200 chars when text exceeds 200 characters.
+    const longMsg = "a".repeat(250);
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: longMsg }]))) as typeof fetch;
+    await expect(antigravityAdapter.call(messages, opts, cred)).rejects.toThrow(
+      `Antigravity Cloud Code Assist response incomplete (missing finishReason): ${"a".repeat(200)}`,
+    );
+
+    // Empty text with functionCall keeps the period-terminated message.
+    globalThis.fetch = (async () => responseEvents(candidate([{ functionCall: { name: "read", args: { filePath: "x" } } }]))) as typeof fetch;
+    await expect(antigravityAdapter.call(messages, opts, cred)).rejects.toThrow(
+      "Antigravity Cloud Code Assist response incomplete (missing finishReason).",
+    );
+    await expect((async () => {
+      for await (const _ of antigravityAdapter.stream!(messages, opts, cred)) { /* drain */ }
+    })()).rejects.toThrow(
+      "Antigravity Cloud Code Assist response incomplete (missing finishReason).",
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call and .stream preserve complete tool-call JSON text when CCA terminates with MALFORMED_FUNCTION_CALL and no functionCall parts", async () => {
+  const prevFetch = globalThis.fetch;
+  const jsonText = '{ "reasoning": "Read lines 1-3", "tool": "read", "arguments": { "filePath": "package.json", "lineRange": "1-3" } }';
+  try {
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: jsonText }]), candidate([], "MALFORMED_FUNCTION_CALL"))) as typeof fetch;
+    const callOut = await antigravityAdapter.call(retryMessages, retryOptions, cred);
+    expect(JSON.parse(callOut)).toMatchObject({ tool: "read", arguments: { filePath: "package.json", lineRange: "1-3" } });
+
+    let streamOut = "";
+    for await (const chunk of antigravityAdapter.stream!(retryMessages, retryOptions, cred)) {
+      streamOut += chunk;
+    }
+    expect(JSON.parse(streamOut)).toMatchObject({ tool: "read", arguments: { filePath: "package.json", lineRange: "1-3" } });
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call and .stream preserve complete tool-call JSON text when finishReason is omitted and no functionCall parts exist", async () => {
+  const prevFetch = globalThis.fetch;
+  const jsonText = '{ "reasoning": "Read lines 1-3", "tool": "read", "arguments": { "filePath": "package.json", "lineRange": "1-3" } }';
+  try {
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: jsonText }]))) as typeof fetch;
+    const callOut = await antigravityAdapter.call(retryMessages, retryOptions, cred);
+    expect(JSON.parse(callOut)).toMatchObject({ tool: "read", arguments: { filePath: "package.json", lineRange: "1-3" } });
+
+    let streamOut = "";
+    for await (const chunk of antigravityAdapter.stream!(retryMessages, retryOptions, cred)) {
+      streamOut += chunk;
+    }
+    expect(JSON.parse(streamOut)).toMatchObject({ tool: "read", arguments: { filePath: "package.json", lineRange: "1-3" } });
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call and .stream reject truncated mid-batch tool JSON when finishReason is omitted or MALFORMED_FUNCTION_CALL", async () => {
+  const prevFetch = globalThis.fetch;
+  const truncated = '{ "tools": [{ "tool": "read", "arguments": { "filePath": "a" } }, { "tool": "edit", ';
+  try {
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: truncated }]))) as typeof fetch;
+    await expect(antigravityAdapter.call(retryMessages, retryOptions, cred)).rejects.toThrow("missing finishReason");
+    await expect((async () => {
+      for await (const _ of antigravityAdapter.stream!(retryMessages, retryOptions, cred)) { /* drain */ }
+    })()).rejects.toThrow("missing finishReason");
+
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: truncated }], "MALFORMED_FUNCTION_CALL"))) as typeof fetch;
+    await expect(antigravityAdapter.call(retryMessages, retryOptions, cred)).rejects.toThrow("MALFORMED_FUNCTION_CALL");
+
+    const proseWithExample = 'Here is an example: {"tool":"read","arguments":{"filePath":"a"}} and more text...';
+    globalThis.fetch = (async () => responseEvents(candidate([{ text: proseWithExample }]))) as typeof fetch;
+    await expect(antigravityAdapter.call(retryMessages, retryOptions, cred)).rejects.toThrow("missing finishReason");
   } finally {
     globalThis.fetch = prevFetch;
   }

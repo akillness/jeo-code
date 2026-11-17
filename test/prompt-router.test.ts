@@ -540,7 +540,7 @@ test("resolveTierModel auto-select: OAuth-stored credential (not just providers 
     routing: { enabled: true },
   });
   const decision = (await routePrompt("what is this?", config)) as RouteDecision;
-  expect(decision.model).toBe("antigravity/gemini-3.5-flash-extra-low"); // only antigravity credentialed (via gemini OAuth fallback) -> cheapest = smallest size class, newest on the flat-price tie ("Gemini 3.5 Flash (Low)")
+  expect(decision.model).toBe("antigravity/gemini-4-hydrogen-low"); // only antigravity credentialed (via gemini OAuth fallback) -> cheapest = smallest size class, newest on the flat-price tie
 });
 
 test("resolveTierModel auto-select: Antigravity OAuth beats public Gemini API key on the trivial cheapest path", async () => {
@@ -592,17 +592,14 @@ test("resolveTierModel auto-select: high/complex tiers are session-stably reacha
   // "high": Anthropic (claude-sonnet-4-6), Google (strongest same-tier Gemini row),
   // OpenAI (gpt-oss-120b-medium) — all 3 companies reachable, never just Google's.
   expect(highModels).toContain("antigravity/claude-sonnet-4-6");
-  // Google's slot is deterministic, not a coin flip: gemini-3.5-flash-low and
-  // gemini-pro-agent tie on thinking/maxOutputTokens/contextTokens, so the
-  // releaseDate tiebreak picks the newer row (2026-05 > 2026-02) EVERY time —
-  // gemini-pro-agent never wins Google's company slot for "high".
-  expect(highModels.has("antigravity/gemini-3.5-flash-low")).toBe(true);
-  expect(highModels.has("antigravity/gemini-pro-agent")).toBe(false);
+  // Google's slot is deterministic: gemini-4-hydrogen-medium is the newest mid-class
+  // row (2026-10 > 2026-09 carbon > 2026-07 flash-3.8), so it wins Google's company slot.
+  expect(highModels.has("antigravity/gemini-4-hydrogen-medium")).toBe(true);
   expect(highModels).toContain("antigravity/gpt-oss-120b-medium");
   // "complex": only 2 companies have a large-class row (Anthropic's Opus, Google's
-  // flash-agent) — OpenAI's gpt-oss is mid-class only, correctly absent here.
+  // Hydrogen High/XHigh) — OpenAI's gpt-oss is mid-class only, correctly absent here.
   expect(complexModels).toContain("antigravity/claude-opus-4-6-thinking");
-  expect(complexModels).toContain("antigravity/gemini-3-flash-agent");
+  expect(complexModels).toContain("antigravity/gemini-4-hydrogen-xhigh");
   expect(complexModels).not.toContain("antigravity/gpt-oss-120b-medium");
   // Every reachable model stays provider-qualified — no bare/public id ever wins.
   for (const m of [...highModels, ...complexModels]) expect(m).toStartWith("antigravity/");
@@ -619,12 +616,12 @@ test("resolveTierModel auto-select: SAME session always resolves to the SAME ant
 
 test("resolveTierModel auto-select: an explicit roles.high override still wins over Antigravity's multi-company spread", () => {
   const config = credentialedConfig({
-    roles: { high: "antigravity/gemini-pro-agent" },
+    roles: { high: "antigravity/gemini-4-hydrogen-high" },
     oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
     routing: { enabled: true },
   });
   for (let i = 0; i < 20; i++) {
-    expect(resolveTierModel("high", config, `sess-${i}`)).toBe("antigravity/gemini-pro-agent");
+    expect(resolveTierModel("high", config, `sess-${i}`)).toBe("antigravity/gemini-4-hydrogen-high");
   }
 });
 
@@ -837,11 +834,8 @@ test("tierModelPool/cheapest/strongest: an antigravity API key alone credentials
 });
 
 // --- Antigravity tier mapping (catalog `sizeClass` truth over the wire-id suffix
-// heuristic): the LIVE Cloud Code Assist agent set names its ids misleadingly —
-// `gemini-3-flash-agent` is "Gemini 3.5 Flash (High)" (flagship), `gemini-3.1-pro-low`
-// is the LOW agent tier. Reverting a row's explicit `sizeClass` (or restoring the old
-// suffix-only sizeClassFor) moves rows between pools and reddens the exact-set
-// assertions below. ---
+// heuristic): `sizeClass` explicitly pins each Hydrogen / Carbon / Flash-3.8 tier
+// into its intended pool. ---
 
 function antigravityOnlyConfig(): Config {
   return credentialedConfig({
@@ -851,46 +845,42 @@ function antigravityOnlyConfig(): Config {
   });
 }
 
-test("tierModelPool: antigravity-OAuth-only trivial pool is EXACTLY the two Low-display rows (pro-low is 'small' despite its 'pro' segment)", () => {
-  // gemini-3.1-pro-low would land in "mid" under the suffix heuristic ('pro');
-  // its explicit sizeClass:"small" puts it in trivial instead.
+test("tierModelPool: antigravity-OAuth-only trivial pool contains ONLY the small/low rows", () => {
   expect(tierModelPool("trivial", antigravityOnlyConfig())).toEqual([
-    "antigravity/gemini-3.1-pro-low",
-    "antigravity/gemini-3.5-flash-extra-low",
+    "antigravity/gemini-3-flash",
+    "antigravity/gemini-3.8-flash-low",
+    "antigravity/gemini-4-carbon-low",
+    "antigravity/gemini-4-hydrogen-low",
   ]);
 });
 
-test("tierModelPool: antigravity-OAuth-only complex pool is EXACTLY opus-thinking + flash-agent (flash-agent is 'large' despite its 'flash' segment)", () => {
-  // gemini-3-flash-agent would land in "small" under the suffix heuristic ('flash');
-  // its explicit sizeClass:"large" makes it a complex-tier flagship instead.
+test("tierModelPool: antigravity-OAuth-only complex pool contains ONLY opus-thinking + hydrogen-high/xhigh", () => {
   expect(tierModelPool("complex", antigravityOnlyConfig())).toEqual([
     "antigravity/claude-opus-4-6-thinking",
-    "antigravity/gemini-3-flash-agent",
+    "antigravity/gemini-4-hydrogen-high",
+    "antigravity/gemini-4-hydrogen-xhigh",
   ]);
 });
 
-test("tierModelPool: antigravity-OAuth-only standard AND high pools carry the mid-class agents (pro-agent + sonnet), never the Low rows or flash-agent", () => {
+test("tierModelPool: antigravity-OAuth-only standard AND high pools carry the mid-class rows, never the Low rows or hydrogen-xhigh", () => {
   const config = antigravityOnlyConfig();
   for (const tier of ["standard", "high"] as const) {
     const pool = tierModelPool(tier, config);
-    expect(pool).toContain("antigravity/gemini-pro-agent"); // "Gemini 3.1 Pro (High)" — the code-agent model
-    expect(pool).toContain("antigravity/claude-sonnet-4-6"); // "Claude Sonnet 4.6 (Thinking)"
-    expect(pool).not.toContain("antigravity/gemini-3.1-pro-low");
-    expect(pool).not.toContain("antigravity/gemini-3.5-flash-extra-low");
-    expect(pool).not.toContain("antigravity/gemini-3-flash-agent"); // flagship, complex-only
+    expect(pool).toContain("antigravity/gemini-4-hydrogen-medium");
+    expect(pool).toContain("antigravity/gemini-4-carbon-high");
+    expect(pool).toContain("antigravity/claude-sonnet-4-6");
+    expect(pool).not.toContain("antigravity/gemini-4-hydrogen-low");
+    expect(pool).not.toContain("antigravity/gemini-3.8-flash-low");
+    expect(pool).not.toContain("antigravity/gemini-4-hydrogen-xhigh");
   }
 });
 
-test("cheapestCredentialed: on the flat Antigravity Gemini price tie, the SMALL size class wins — extra-low, never the large flash-agent", () => {
-  // Every antigravity/gemini-* row resolves to the same family price, so the
-  // size-class tiebreak decides. Without sizeClass pins, flash-agent ('flash'
-  // suffix → small) would enter the tie and win on canonical order — the exact
-  // quota-burning regression this pins.
-  expect(cheapestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-3.5-flash-extra-low");
+test("cheapestCredentialed: on the flat Antigravity Gemini price tie, the SMALL size class + newest release wins (hydrogen-low)", () => {
+  expect(cheapestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-4-hydrogen-low");
 });
 
-test("strongestCredentialed: antigravity-OAuth-only picks flash-agent — the 'Gemini 3.5 Flash (High)' flagship", () => {
-  expect(strongestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-3-flash-agent");
+test("strongestCredentialed: antigravity-OAuth-only picks the newest Gemini 4 Hydrogen flagship", () => {
+  expect(strongestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-4-hydrogen-high");
 });
 
 test("routePrompt: roles.smol unconfigured but a cheaper credentialed model exists -> escalation still fires via that fallback classifier", async () => {

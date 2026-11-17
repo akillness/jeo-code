@@ -35,13 +35,38 @@ export interface ModelRetirement {
 export const MODEL_RETIREMENTS: readonly ModelRetirement[] = [
   {
     retired: "antigravity/gemini-3.1-pro-high",
-    replacement: "antigravity/gemini-pro-agent",
-    note: "Antigravity retired gemini-3.1-pro-high; gemini-pro-agent is its code-agent successor.",
+    replacement: "antigravity/gemini-4-hydrogen-high",
+    note: "Antigravity retired gemini-3.1-pro-high; gemini-4-hydrogen-high is its flagship successor.",
   },
   {
     retired: "gemini-3.1-pro-high",
-    replacement: "antigravity/gemini-pro-agent",
-    note: "Antigravity retired gemini-3.1-pro-high; gemini-pro-agent is its code-agent successor.",
+    replacement: "antigravity/gemini-4-hydrogen-high",
+    note: "Antigravity retired gemini-3.1-pro-high; gemini-4-hydrogen-high is its flagship successor.",
+  },
+  {
+    retired: "antigravity/gemini-pro-agent",
+    replacement: "antigravity/gemini-4-hydrogen-high",
+    note: "Antigravity retired gemini-pro-agent; gemini-4-hydrogen-high is its flagship successor.",
+  },
+  {
+    retired: "antigravity/gemini-3.1-pro-low",
+    replacement: "antigravity/gemini-4-hydrogen-low",
+    note: "Antigravity retired gemini-3.1-pro-low; gemini-4-hydrogen-low is its successor.",
+  },
+  {
+    retired: "antigravity/gemini-3-flash-agent",
+    replacement: "antigravity/gemini-3.8-flash-high",
+    note: "Antigravity retired gemini-3-flash-agent; gemini-3.8-flash-high is its successor.",
+  },
+  {
+    retired: "antigravity/gemini-3.5-flash-low",
+    replacement: "antigravity/gemini-3.8-flash-medium",
+    note: "Antigravity retired gemini-3.5-flash-low; gemini-3.8-flash-medium is its successor.",
+  },
+  {
+    retired: "antigravity/gemini-3.5-flash-extra-low",
+    replacement: "antigravity/gemini-3.8-flash-low",
+    note: "Antigravity retired gemini-3.5-flash-extra-low; gemini-3.8-flash-low is its successor.",
   },
 ] as const;
 

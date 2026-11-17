@@ -219,15 +219,21 @@ test("modelServableWithConfig: verified end-to-end OAuth (anthropic) serves its 
   expect(modelServableWithConfig("anthropic", "claude-sonnet-4-6", { providers: {}, oauth: { anthropic: "tok" } })).toBe(true);
 });
 
-test("describeModel: deprecated antigravity/gemini-3.1-pro-high resolves to its successor gemini-pro-agent via BUILTIN_ALIASES", async () => {
-  // The Antigravity backend deprecated this wire id (deprecatedModelIds →
-  // newModelId: gemini-pro-agent); configs/roles pinned to the old id must keep
-  // working. Explicit empty config keeps the test off the user's global config.
-  const d = await describeModel("antigravity/gemini-3.1-pro-high", {});
-  expect(d.resolved).toBe("antigravity/gemini-pro-agent");
-  expect(d.provider).toBe("antigravity");
-  // The successor id itself passes through unchanged (not an alias loop).
-  expect((await describeModel("antigravity/gemini-pro-agent", {})).resolved).toBe("antigravity/gemini-pro-agent");
+test("describeModel: retired Antigravity Gemini ids resolve to live successors via BUILTIN_ALIASES", async () => {
+  const cases = [
+    ["antigravity/gemini-3.1-pro-high", "antigravity/gemini-4-hydrogen-high"],
+    ["antigravity/gemini-pro-agent", "antigravity/gemini-4-hydrogen-high"],
+    ["antigravity/gemini-3.1-pro-low", "antigravity/gemini-4-hydrogen-low"],
+    ["antigravity/gemini-3-flash-agent", "antigravity/gemini-3.8-flash-high"],
+    ["antigravity/gemini-3.5-flash-low", "antigravity/gemini-3.8-flash-medium"],
+    ["antigravity/gemini-3.5-flash-extra-low", "antigravity/gemini-3.8-flash-low"],
+  ] as const;
+  for (const [retired, live] of cases) {
+    const d = await describeModel(retired, {});
+    expect(d.resolved).toBe(live);
+    expect(d.provider).toBe("antigravity");
+    expect((await describeModel(live, {})).resolved).toBe(live);
+  }
 });
 
 test("describeModel: user modelAliases override the built-in deprecation mapping (config wins over BUILTIN_ALIASES)", async () => {
@@ -271,6 +277,78 @@ test("resolveCall: reasoningEffort 'none' explicitly disables thinking, ignoring
     const resLow = await resolveCall({ model: "claude-sonnet-5-5", reasoningEffort: "low" });
     expect(resLow.callOptions.reasoningEffort).toBe("low");
 
+  } finally {
+    if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = originalConfigDir;
+    require("node:fs").rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveCall: forwards onReasoningStart and expands antigravity/opus + antigravity/sonnet", async () => {
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
+  const tempDir = require("node:os").tmpdir() + "/jeo-test-ag-alias-" + Math.random().toString(36).slice(2);
+  require("node:fs").mkdirSync(tempDir, { recursive: true });
+  process.env.JEO_CONFIG_DIR = tempDir;
+
+  try {
+    const configPath = require("node:path").join(tempDir, "config.json");
+    require("node:fs").writeFileSync(configPath, JSON.stringify({
+      defaultModel: "antigravity/sonnet",
+      thinkingLevel: "high",
+      providers: {},
+      oauth: { antigravity: { access: "tok", refresh: "ref", projectId: "proj-1" } },
+    }));
+    const onReasoningStart = () => {};
+    const opusRes = await resolveCall({ model: "antigravity/opus", onReasoningStart });
+    expect(opusRes.provider).toBe("antigravity");
+    expect(opusRes.callOptions.model).toBe("antigravity/claude-opus-4-6-thinking");
+    expect(opusRes.callOptions.onReasoningStart).toBe(onReasoningStart);
+
+    const sonnetRes = await resolveCall({ model: "antigravity/sonnet" });
+    expect(sonnetRes.provider).toBe("antigravity");
+    expect(sonnetRes.callOptions.model).toBe("antigravity/claude-sonnet-4-6");
+  } finally {
+    if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = originalConfigDir;
+    require("node:fs").rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveCall: dedicated antigravity OAuth never falls back to gemini OAuth when cooling down", async () => {
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
+  const tempDir = require("node:os").tmpdir() + "/jeo-test-ag-nofallback-" + Math.random().toString(36).slice(2);
+  require("node:fs").mkdirSync(tempDir, { recursive: true });
+  process.env.JEO_CONFIG_DIR = tempDir;
+
+  try {
+    const future = Date.now() + 3_600_000;
+    const configPath = require("node:path").join(tempDir, "config.json");
+    require("node:fs").writeFileSync(configPath, JSON.stringify({
+      defaultModel: "antigravity/gemini-4-hydrogen-high",
+      providers: {},
+      oauth: {
+        antigravity: { access: "ag-only-tok", refresh: "ag-only-ref", expires: future, projectId: "ag-proj" },
+        gemini: { access: "gem-fallback-tok", refresh: "gem-fallback-ref", expires: future, projectId: "gem-proj" },
+      },
+    }));
+
+    const res = await resolveCall({ model: "antigravity/gemini-4-hydrogen-high" });
+    expect(res.credential.kind).toBe("oauth");
+    expect(res.credential.provider).toBe("antigravity");
+    expect(res.credential.token).toBe("ag-only-tok");
+
+    // When antigravity OAuth is absent, gemini OAuth fallback is used.
+    require("node:fs").writeFileSync(configPath, JSON.stringify({
+      defaultModel: "antigravity/gemini-4-hydrogen-high",
+      providers: {},
+      oauth: {
+        gemini: { access: "gem-fallback-tok", refresh: "gem-fallback-ref", expires: future, projectId: "gem-proj" },
+      },
+    }));
+    const fallbackRes = await resolveCall({ model: "antigravity/gemini-4-hydrogen-high" });
+    expect(fallbackRes.credential.kind).toBe("oauth");
+    expect(fallbackRes.credential.provider).toBe("gemini");
+    expect(fallbackRes.credential.token).toBe("gem-fallback-tok");
   } finally {
     if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = originalConfigDir;

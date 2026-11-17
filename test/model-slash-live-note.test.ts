@@ -73,9 +73,9 @@ test("/model <id>: the note STILL fires when that provider's discovery SUCCEEDED
   // Proves the harness actually exercises the gate (not a vacuous suppression):
   // antigravity's discovery succeeded but does not include this id.
   const live: ProviderModelsResult[] = [
-    { provider: "antigravity", ok: true, source: "oauth", models: ["antigravity/gemini-3.1-pro-low"] },
+    { provider: "antigravity", ok: true, source: "oauth", models: ["antigravity/gemini-3.8-flash-high"] },
   ];
-  const logs = await runPin("antigravity/gemini-pro-agent", live);
+  const logs = await runPin("antigravity/gemini-custom-absent", live);
   expect(logs.some(l => l.includes("not in the live") && l.includes("catalog"))).toBe(true);
 });
 

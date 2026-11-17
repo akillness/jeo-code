@@ -9,6 +9,7 @@
 import type { ProviderName } from "./types";
 import { openaiCompatDef, isBuiltinCompatProvider } from "./providers/openai-compatible-catalog";
 import { customProviderDef } from "./providers/custom-providers";
+import { resolveRetiredModel } from "./model-retirements";
 
 export type ThinkLevel = "low" | "medium" | "high" | "xhigh";
 
@@ -587,11 +588,21 @@ export function formatTokens(n: number): string {
 /** Exact lookup by canonical id or provider model id. */
 export function findCatalogModel(idOrModel: string): CatalogModel | undefined {
   const q = idOrModel.trim();
-  return MODEL_CATALOG.find(m =>
+  const direct = MODEL_CATALOG.find(m =>
     m.canonical === q
     || `${m.provider}/${m.providerModel}` === q
     || (!m.canonical.startsWith(`${m.provider}/`) && m.providerModel === q),
   );
+  if (direct) return direct;
+  const resolved = resolveRetiredModel(q).model;
+  if (resolved !== q) {
+    return MODEL_CATALOG.find(m =>
+      m.canonical === resolved
+      || `${m.provider}/${m.providerModel}` === resolved
+      || (!m.canonical.startsWith(`${m.provider}/`) && m.providerModel === resolved),
+    );
+  }
+  return undefined;
 }
 
 /**

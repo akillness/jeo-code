@@ -256,3 +256,59 @@ test.skipIf(process.platform === "win32")("PTY secret cannot be recalled at the 
     await fs.rm(root, { recursive: true, force: true });
   }
 }, 8000);
+
+test("Discord host bootstrap and shell termination support Windows platform", async () => {
+  const { readDiscordHostBootstrap, stopDiscordHostShell } = await import("../src/agent/discord-host");
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-win-host-")));
+  try {
+    const sessionDir = path.join(root, "sessions");
+    const workspaceRoot = path.join(root, "worktree");
+    const sourceRoot = path.join(root, "source");
+    const cleanupReceipt = path.join(sessionDir, "host-runtime", "sess-1", "receipt.json");
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.mkdir(workspaceRoot, { recursive: true });
+    await fs.mkdir(sourceRoot, { recursive: true });
+    await fs.mkdir(path.dirname(cleanupReceipt), { recursive: true });
+
+    const bootstrap = {
+      version: 1 as const,
+      mode: "host" as const,
+      cwd: workspaceRoot,
+      workspaceRoot,
+      sourceRoot,
+      sessionDir,
+      cleanupReceipt,
+      nonce: "test-nonce",
+      scope: { sessionId: "sess-1", generation: 0, epoch: "1" },
+    };
+
+    const env = {
+      JEO_MESSENGER_HOST_BOOTSTRAP: JSON.stringify(bootstrap),
+    };
+    const read = readDiscordHostBootstrap(env, { literalWorker: true, ipcAvailable: true });
+    expect(read).toBeDefined();
+    expect(read?.workspaceRoot).toBe(workspaceRoot);
+
+    let directKilled = false;
+    const mockShell = {
+      stdout: { read: async () => ({ done: true }), cancel: async () => {} },
+      stderr: { read: async () => ({ done: true }), cancel: async () => {} },
+      exit: Promise.resolve(0),
+      reaped: Promise.resolve(),
+      killGroup: () => "unsupported" as const,
+      killDirect: () => { directKilled = true; },
+      release: () => {},
+      dispose: () => {},
+    };
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      await stopDiscordHostShell(mockShell);
+      expect(directKilled).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

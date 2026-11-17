@@ -64,7 +64,13 @@ export interface DiscordThreadRegistry {
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const absolute = (value: unknown): value is string => typeof value === "string" && path.isAbsolute(value) && path.normalize(value) === value;
 const positive = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-const contained = (root: string, target: string) => { const relative = path.relative(root, target); return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)); };
+const samePath = (a: string, b: string) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+const contained = (root: string, target: string) => {
+	const normRoot = process.platform === "win32" ? root.toLowerCase() : root;
+	const normTarget = process.platform === "win32" ? target.toLowerCase() : target;
+	const relative = path.relative(normRoot, normTarget);
+	return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+};
 const aborted = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Discord request aborted"); };
 
 function sessionId(profile: string, key: string): string {
@@ -242,16 +248,16 @@ export function createDiscordThreadRegistry(config: MessengerConfig, retire: Dis
 
 	async function verifyWorkspace(workspace: DiscordThreadWorkspace): Promise<void> {
 		if (workspace.state !== "ready") throw new Error("Discord worktree creation is incomplete; explicit recovery is required");
-		if (await fs.realpath(workspace.worktreePath) !== workspace.worktreePath) throw new Error("Discord worktree path ownership changed");
+		if (!samePath(await fs.realpath(workspace.worktreePath), workspace.worktreePath)) throw new Error("Discord worktree path ownership changed");
 		const [root, common, branch, gitDir] = await Promise.all([
 			git(workspace.worktreePath, ["rev-parse", "--show-toplevel"]),
 			git(workspace.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
 			git(workspace.worktreePath, ["symbolic-ref", "--quiet", "HEAD"]),
 			git(workspace.worktreePath, ["rev-parse", "--absolute-git-dir"]),
 		]);
-		if (await fs.realpath(root) !== workspace.worktreePath || await fs.realpath(common) !== workspace.commonDir || branch !== `refs/heads/${workspace.branch}` || !contained(path.join(workspace.commonDir, "worktrees"), await fs.realpath(gitDir))) throw new Error("Discord linked worktree or branch ownership changed");
+		if (!samePath(await fs.realpath(root), workspace.worktreePath) || !samePath(await fs.realpath(common), workspace.commonDir) || branch !== `refs/heads/${workspace.branch}` || !contained(path.join(workspace.commonDir, "worktrees"), await fs.realpath(gitDir))) throw new Error("Discord linked worktree or branch ownership changed");
 		const backlink = (await fs.readFile(path.join(gitDir, "gitdir"), "utf8")).trim();
-		if (path.resolve(gitDir, backlink) !== path.join(workspace.worktreePath, ".git")) throw new Error("Discord worktree registration does not belong to this thread");
+		if (!samePath(path.resolve(gitDir, backlink), path.join(workspace.worktreePath, ".git"))) throw new Error("Discord worktree registration does not belong to this thread");
 		await git(workspace.worktreePath, ["cat-file", "-e", `${workspace.baseCommit}^{commit}`]);
 	}
 
@@ -336,7 +342,7 @@ export function createDiscordThreadRegistry(config: MessengerConfig, retire: Dis
 						const workspace = thread.workspaces.find(entry => entry.id === thread!.activeWorkspace)!;
 						await verifyWorkspace(workspace);
 						const cwd = await fs.realpath(thread.cwd);
-						if (cwd !== thread.cwd || !contained(workspace.worktreePath, cwd)) throw new Error("Discord cwd ownership changed");
+						if (!samePath(cwd, thread.cwd) || !contained(workspace.worktreePath, cwd)) throw new Error("Discord cwd ownership changed");
 					}
 					catch { return block(thread, "Discord worktree ownership could not be verified; no worker was started"); }
 				}

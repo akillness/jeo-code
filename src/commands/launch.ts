@@ -498,8 +498,11 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     const bootstrap = readDiscordHostBootstrap(process.env, { literalWorker: flags.literalWorker === true, ipcAvailable: typeof process.send === "function" });
     if (bootstrap) {
       if (!shutdownNonce || bootstrap.nonce !== shutdownNonce || !flags.resume || flags.resumeId !== bootstrap.scope.sessionId || flags.noSession || flags.worktree ||
-          fs.realpathSync(process.cwd()) !== bootstrap.cwd || fs.realpathSync(bootstrap.workspaceRoot) !== bootstrap.workspaceRoot ||
-          fs.realpathSync(bootstrap.sourceRoot) !== bootstrap.sourceRoot || !previousSessionDirectory || fs.realpathSync(previousSessionDirectory) !== bootstrap.sessionDir) {
+          ((process.platform === "win32" ? fs.realpathSync(process.cwd()).toLowerCase() !== bootstrap.cwd.toLowerCase() : fs.realpathSync(process.cwd()) !== bootstrap.cwd)) ||
+          ((process.platform === "win32" ? fs.realpathSync(bootstrap.workspaceRoot).toLowerCase() !== bootstrap.workspaceRoot.toLowerCase() : fs.realpathSync(bootstrap.workspaceRoot) !== bootstrap.workspaceRoot)) ||
+          ((process.platform === "win32" ? fs.realpathSync(bootstrap.sourceRoot).toLowerCase() !== bootstrap.sourceRoot.toLowerCase() : fs.realpathSync(bootstrap.sourceRoot) !== bootstrap.sourceRoot)) ||
+          !previousSessionDirectory ||
+          ((process.platform === "win32" ? fs.realpathSync(previousSessionDirectory).toLowerCase() !== bootstrap.sessionDir.toLowerCase() : fs.realpathSync(previousSessionDirectory) !== bootstrap.sessionDir))) {
         throw new Error("Discord host worker identity or workspace mismatch");
       }
       hostRuntime = createDiscordHostRuntime(bootstrap, request => {
@@ -4770,7 +4773,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }));
       const { provider } = await describeModel(target);
       const thinkingLabel = supportedThinking.length > 0 ? ` · thinking ${thinking}` : " · no thinking override (model does not advertise thinking)";
-      console.log(`Prompt route ${tier} set to ${target} (${provider})${thinkingLabel} — routing enabled in ~/.jeo/config.json. Clear any session model pin with /model auto to let routing evaluate prompts.`);
+      console.log(`Prompt route ${tier} set to ${target} (${provider})${thinkingLabel} — ${(sessionRouteOverride ?? !!cfgForPick.routing?.enabled) ? "routing is on. Clear any session model pin with /model auto to let routing evaluate prompts." : "routing remains off by default (run /route on or /route on save to enable)."}`);
       return true;
     }
 

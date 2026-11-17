@@ -35,7 +35,7 @@ export function readDiscordHostBootstrap(
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error("Invalid Discord host bootstrap"); }
   if (!options.literalWorker || !options.ipcAvailable || !isDiscordHostBootstrap(value)) throw new Error("Discord host execution requires a private literal-worker bootstrap");
-  if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) throw new Error("Discord host execution requires a non-root POSIX OS user");
+  if (typeof process.getuid === "function" && process.getuid() === 0) throw new Error("Discord host execution requires a non-root OS user");
   const root = path.resolve(value.workspaceRoot);
   if (!inside(root, value.cwd) || path.resolve(value.sourceRoot) === root || !inside(path.join(value.sessionDir, "host-runtime", value.scope.sessionId), value.cleanupReceipt)) throw new Error("Invalid Discord host workspace or receipt boundary");
   return structuredClone(value);
@@ -130,7 +130,10 @@ export async function runDiscordHostTurn<T>(runtime: DiscordHostRuntime, runId: 
 /** Never use an old numeric PID/PGID: the lease holder must still pin the whole group. */
 export async function stopDiscordHostShell(shell: LeasedShell): Promise<void> {
   const killed = shell.killGroup();
-  if (killed !== "delivered") throw new Error("Discord host shell termination is unconfirmed (unpinned or unsupported process group)");
+  if (killed !== "delivered") {
+    if (process.platform === "win32" && killed === "unsupported") shell.killDirect();
+    else throw new Error("Discord host shell termination is unconfirmed (unpinned or unsupported process group)");
+  }
   if (!await settlesWithin(shell.reaped, 3_000)) throw new Error("Discord host shell did not settle after its owned process group was killed");
 }
 

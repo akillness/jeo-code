@@ -977,7 +977,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (note) sp += "\n\n" + note;
     }
     if (task.trim() && allowedTools.has("jeox") && !opts.skillRun) {
-      const scopeNote = jeoxScopePromptSection(cwd, task);
+      const scopeNote = jeoxScopePromptSection(cwd, task, { sandboxed: Boolean(currentSandboxExecution()) });
       if (scopeNote) sp += "\n\n" + scopeNote;
     }
     return sp;

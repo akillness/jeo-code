@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.55] - 2026-11-17
+_Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`._
+
+### Fixed
+- **Standalone `jeox-tool.ts` TDZ cycle removal (`src/agent/jeox-tool.ts`, `src/commands/launch.ts`):** Remove the runtime `./hooks` import from `jeox-tool.ts` and pass `sandboxed: Boolean(currentSandboxExecution())` from `launch.ts` into `jeoxScopePromptSection`, making `jeox-tool.ts` a cycle-free leaf module regardless of ESM import order.
+
 ## [0.12.54] - 2026-11-17
 _Close the `.jeo/db/jeo.db` auto-refresh & `<code_graph_scope>` reference loop across interactive/CLI/MCP/Discord sessions and harden runtime stall, OOM, and PTY `EIO` guards._
 

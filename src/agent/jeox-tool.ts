@@ -7,7 +7,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats, hasIndexedFiles } from "../../packages/jeo-mem/src/index";
 import { jeoEnv } from "../util/env";
-import { currentSandboxExecution } from "./hooks";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 
@@ -146,7 +145,7 @@ function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): ReturnType<type
  * Build a compact per-turn `<code_graph_scope>` hint block from `.jeo/db/jeo.db`
  * so prompts automatically reference indexed symbol/doc locations before broad grep.
  */
-export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { maxHits?: number }): string {
+export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { maxHits?: number; sandboxed?: boolean }): string {
   if (jeoEnv("NO_JEOX_CONTEXT") === "1" || jeoEnv("NO_MEMORY") === "1" || jeoEnv("STATIC_MEMORY") === "1") {
     return "";
   }
@@ -156,7 +155,7 @@ export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { max
   const key = path.resolve(cwd);
   const dbPath = path.join(key, ".jeo", "db", "jeo.db");
   const dbExists = fs.existsSync(dbPath);
-  if (currentSandboxExecution() && !dbExists) return "";
+  if (opts?.sandboxed && !dbExists) return "";
 
   const isTestEnv = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test";
   if (isTestEnv && jeoEnv("ENABLE_JEOX_SCOPE_IN_TEST") !== "1" && !dbExists) return "";

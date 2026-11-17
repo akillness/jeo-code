@@ -231,3 +231,14 @@ test("isBrokenPipeError handles write EIO and spawnDetachedDistill skips spawnin
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("jeox-tool imports cleanly as a standalone entrypoint without circular TDZ ReferenceError", () => {
+  const repoRoot = path.resolve(import.meta.dir, "..");
+  const proc = Bun.spawnSync(["bun", "-e", 'await import("./src/agent/jeox-tool.ts")'], {
+    cwd: repoRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(proc.stderr.toString()).toBe("");
+  expect(proc.exitCode).toBe(0);
+});

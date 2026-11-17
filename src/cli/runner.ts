@@ -378,7 +378,7 @@ export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): stri
 }
 
 const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking", "--max-steps", "--append-system-prompt", "--skills", "--tools", "--system-prompt"]);
-const OPTIONAL_UUID_FLAGS = new Set(["--resume", "--continue", "-c"]);
+const OPTIONAL_UUID_FLAGS = new Set(["--resume", "-r", "--continue", "-c"]);
 const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps=", "--append-system-prompt=", "--skills=", "--tools=", "--system-prompt="];
 const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan", "-p", "--print", "--no-skills", "--no-tools"]);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

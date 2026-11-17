@@ -338,3 +338,34 @@ test("session resume restores compact editable history while retry and model his
     await fs.rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("renderSessionTimeline surface 'tui' renders subagent cards in chronological order with formatted Markdown", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tui-timeline-"));
+  try {
+    const session = await createSession(cwd);
+    await appendMessage(session.id, { role: "user", content: "코드 점검해줘" }, cwd);
+    await appendSubagentEvent(session.id, { runId: "r1", role: "reviewer", kind: "start", detail: "Inspect parser" }, cwd);
+    await appendSubagentMessage(session.id, { runId: "r1", role: "reviewer", message: { role: "assistant", content: "| check | status |\n| --- | --- |\n| **md** | `ok` |" } }, cwd);
+    await appendSubagentEvent(session.id, { runId: "r1", role: "reviewer", kind: "done", detail: "Review complete", success: true }, cwd);
+    await appendSubagentEvent(session.id, { runId: "r2", role: "tester", kind: "start", detail: "Open run" }, cwd);
+    await appendMessage(session.id, { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: "점검 완료" } }) }, cwd);
+
+    const loaded = await loadSession(session.id, cwd);
+    const lines = renderSessionTimeline(loaded.timeline, {
+      color: false,
+      unicode: true,
+      surface: "tui",
+      cols: 80,
+    });
+    const out = lines.join("\n");
+    expect(out).toContain("│ 코드 점검해줘");
+    expect(out).toContain("subagent reviewer · done");
+    expect(out).toContain("┌─");
+    expect(out).not.toContain("| **md** |");
+    expect(out).toContain("subagent tester · no completion observed");
+    expect(out.indexOf("Review complete")).toBeLessThan(out.indexOf("Open run"));
+    expect(out.indexOf("Open run")).toBeLessThan(out.indexOf("점검 완료"));
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});

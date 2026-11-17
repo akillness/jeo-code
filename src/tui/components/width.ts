@@ -503,6 +503,138 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
 }
 
 /**
+ * Find the last word boundary (space outside ANSI SGR escapes) inside `line`
+ * that fits strictly within `limit` display columns (`> 0`). Returns the string
+ * index of the whitespace char and the exact consumed prefix up to it, or null
+ * when no breakable word boundary fits.
+ */
+function findWordWrapBreak(line: string, limit: number): { head: string; skipSpaceLen: number } | null {
+  let w = 0;
+  let i = 0;
+  let sawNonSpace = false;
+  let lastSpaceIdx = -1;
+  let lastSpaceWidth = 0;
+  while (i < line.length) {
+    if (line[i] === "\x1b") {
+      SGR.lastIndex = i;
+      const m = SGR.exec(line);
+      if (m) {
+        i += m[0].length;
+        continue;
+      }
+    }
+    let cw: number;
+    let len: number;
+    if (line[i] === "\t") {
+      cw = TAB_STOP - (w % TAB_STOP);
+      len = 1;
+    } else {
+      const cluster = nextGraphemeCluster(line, i);
+      cw = cluster.width;
+      len = cluster.length;
+    }
+    if (w + cw > limit) break;
+    if (line[i] === " ") {
+      if (sawNonSpace) {
+        lastSpaceIdx = i;
+        lastSpaceWidth = w;
+      }
+    } else if (cw > 0) {
+      sawNonSpace = true;
+    }
+    w += cw;
+    i += len;
+  }
+  if (lastSpaceIdx <= 0 || lastSpaceWidth <= 0) return null;
+  let skipSpaceLen = 0;
+  while (lastSpaceIdx + skipSpaceLen < line.length && line[lastSpaceIdx + skipSpaceLen] === " ") {
+    skipSpaceLen++;
+  }
+  return { head: line.slice(0, lastSpaceIdx), skipSpaceLen };
+}
+
+/**
+ * Word-aware ANSI-preserving wrap to `cols` display columns. Prefers breaking
+ * at ASCII spaces when the remainder overflows `cols`, preserves active SGR
+ * colors across wrapped lines, and falls back to `wrapTextWithAnsi` only for
+ * indivisible space-free tokens (long URLs, paths, CJK runs without spaces).
+ */
+export function wrapTextWordAware(
+  text: string,
+  cols: number,
+  opts: { continuationIndent?: string } = {},
+): string[] {
+  const width = Math.max(1, cols);
+  const RESET = "\x1b[0m";
+  const contIndent = opts.continuationIndent ?? "";
+  const contIndentWidth = visibleWidth(contIndent);
+  const effectiveContIndent = contIndentWidth < width ? contIndent : "";
+  const effectiveContWidth = contIndentWidth < width ? contIndentWidth : 0;
+  const out: string[] = [];
+
+  for (const rawLine of text.split("\n")) {
+    if (visibleWidth(rawLine) <= width) {
+      out.push(rawLine);
+      continue;
+    }
+    let rest = rawLine;
+    let active = "";
+    let firstChunk = true;
+    while (rest.length > 0) {
+      const prefix = firstChunk ? "" : effectiveContIndent;
+      const avail = Math.max(1, width - (firstChunk ? 0 : effectiveContWidth));
+      if (visibleWidth(rest) <= avail) {
+        let line = prefix + active + rest;
+        if (active && !line.endsWith(RESET)) line += RESET;
+        out.push(line);
+        break;
+      }
+      const wordBreak = findWordWrapBreak(rest, avail);
+      if (wordBreak) {
+        let line = prefix + active + wordBreak.head;
+        const nextActive = sgrStateAfter(active, wordBreak.head);
+        if ((active || nextActive) && !line.endsWith(RESET)) line += RESET;
+        out.push(line);
+        const tailStart = wordBreak.head.length + wordBreak.skipSpaceLen;
+        active = sgrStateAfter(nextActive, rest.slice(wordBreak.head.length, tailStart));
+        rest = rest.slice(tailStart);
+        firstChunk = false;
+        if (rest.length === 0) break;
+        continue;
+      }
+      // Single token wider than `avail` — wrap one `avail` slice via grapheme-safe
+      // truncation and keep iterating so subsequent words wrap word-aware again.
+      const sliceHead = truncateToWidth(rest, avail);
+      const consumed = rest.startsWith(sliceHead)
+        ? sliceHead
+        : sliceHead.endsWith(RESET) && rest.startsWith(sliceHead.slice(0, -RESET.length))
+          ? sliceHead.slice(0, -RESET.length)
+          : sliceHead;
+      if (consumed.length === 0) {
+        const forced = nextGraphemeCluster(rest, 0);
+        const forcedText = rest.slice(0, forced.length);
+        let forcedLine = prefix + active + forcedText;
+        const nextActive = sgrStateAfter(active, forcedText);
+        if ((active || nextActive) && !forcedLine.endsWith(RESET)) forcedLine += RESET;
+        out.push(forcedLine);
+        active = nextActive;
+        rest = rest.slice(forced.length);
+        firstChunk = false;
+        continue;
+      }
+      let line = prefix + active + (consumed.length === sliceHead.length ? sliceHead : consumed);
+      const nextActive = sgrStateAfter(active, consumed);
+      if ((active || nextActive) && !line.endsWith(RESET)) line += RESET;
+      out.push(line);
+      active = nextActive;
+      rest = rest.slice(consumed.length).replace(/^ +/, "");
+      firstChunk = false;
+    }
+  }
+  return out;
+}
+
+/**
  * Single-slot memo for the live-frame wrap. The TUI's 120ms spinner tick re-renders
  * the whole frame ~8×/s, but the reasoning / tool-output stream text only changes when
  * a new delta arrives — so re-wrapping (grapheme-segmenting the up-to-16KB tail through

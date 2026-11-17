@@ -10,12 +10,20 @@
  */
 
 import type { Message } from "../../agent/loop";
+import type { TaskSubEvent } from "../../agent/task-tool";
 import { createSession, deleteSession, renameSession, loadSession, listSessions, sessionPath, resolveSessionRef, type SessionTimelineEntry } from "../../agent/session";
 import { SessionPicker, renderSessionPicker } from "../../tui/components/session-picker";
-import { formatTranscript } from "../../tui/components/transcript";
+import { extractLastAssistantReply, formatTranscript } from "../../tui/components/transcript";
 import { sanitizeForTerminal } from "../../tui/components/code-view";
 import { importGjcSession, listGjcSessions, type GjcSessionLeaf } from "../../agent/gjc-session-import";
 import { SelectList, renderSelectList, type SelectItem } from "../../tui/components/select-list";
+import { formatForgeBox, scaleForgeWidth } from "../../tui/components/forge";
+import { renderMarkdownBlock } from "../../tui/components/markdown-text";
+import { wrapTextWordAware } from "../../tui/components/width";
+import { accentPaint, accentShadowPaint, cardFillPaint, mutedPaint, resolveTheme, type EvolutionTheme } from "../../tui/components/themes";
+import { supportsUnicode } from "../../tui/components/capability";
+import { size as terminalSize } from "../../tui/terminal";
+import chalk from "chalk";
 
 export interface SessionSlashCtx {
   cwd: string;
@@ -32,7 +40,13 @@ export interface SessionSlashCtx {
   freshWelcomeLines: () => string[];
   logLines: (lines: string[]) => void;
   canSwitchSession?: () => boolean;
-  onSessionCommitted?: (id: string | undefined, draft: string) => void;
+  onSessionCommitted?: (id: string | undefined, draft: string, model?: string | null) => void;
+  /** Render the restored transcript in working-TUI surface mode when true. */
+  tui?: boolean;
+  /** Optional theme/width overrides for TUI session restore. */
+  theme?: EvolutionTheme;
+  cols?: number;
+  unicode?: boolean;
   /** Defer cross-session restores until the caller has revoked its sandbox. */
   requestSessionRestart?: (id: string) => void;
   /** Restore editor-local references without changing canonical retry content. */
@@ -113,43 +127,226 @@ function gjcResumeItems(pool: GjcSessionLeaf[]): SelectItem<GjcSessionLeaf>[] {
   }));
 }
 
+export interface SessionTimelineRenderOptions {
+  color?: boolean;
+  unicode?: boolean;
+  /** Render persisted history in working-TUI surface mode (`"tui"`) vs `"ledger"`. */
+  surface?: "ledger" | "tui";
+  cols?: number;
+  theme?: EvolutionTheme;
+}
+
+type SubagentSlotEntry =
+  | { kind: "notice"; text: string }
+  | { kind: "event"; runKey: string; event: TaskSubEvent }
+  | { kind: "message"; runKey: string; role: string; message: Message; truncated?: boolean }
+  | { kind: "incomplete"; runKey: string; role: string };
+
+function subagentRunRoleLabel(firstEvent?: TaskSubEvent, fallbackRole?: string): string {
+  const role = sanitizeForTerminal(firstEvent?.role || fallbackRole || "subagent") || "subagent";
+  const detachedId = firstEvent?.detachedId ? sanitizeForTerminal(firstEvent.detachedId) : "";
+  if (detachedId) return `${role}[${detachedId}]`;
+  if (firstEvent?.index && firstEvent?.total) return `${role}[${firstEvent.index}/${firstEvent.total}]`;
+  return role;
+}
+
 /** Replay only persisted records, in file order; the compacted model context is separate. */
-export function renderSessionTimeline(timeline: readonly SessionTimelineEntry[], color = false): string[] {
+export function renderSessionTimeline(
+  timeline: readonly SessionTimelineEntry[],
+  colorOrOpts: boolean | SessionTimelineRenderOptions = false,
+): string[] {
+  const opts: SessionTimelineRenderOptions =
+    typeof colorOrOpts === "boolean" ? { color: colorOrOpts } : colorOrOpts;
+  const color = opts.color ?? false;
+  const unicode = opts.unicode !== false;
+  const surface = opts.surface ?? "ledger";
+  const cols = opts.cols ?? 80;
+  const theme = opts.theme;
+  const mdAccent = color
+    ? (theme ? (s: string) => chalk.bold(accentPaint(theme)(s)) : (s: string) => chalk.bold(s))
+    : (s: string) => s;
+  const mdMuted = color
+    ? (theme ? mutedPaint(theme) : (s: string) => chalk.dim(s))
+    : (s: string) => s;
+
   const messages: Message[] = [];
-  const inserts: string[][] = [[]];
-  const runs = new Map<string, { role: string; completed: boolean }>();
+  const slotEntries: SubagentSlotEntry[][] = [[]];
+  const runs = new Map<string, { role: string; state: "running" | "done" | "incomplete" | "failed"; lastSlot: number }>();
   const earlyResponses = new Set(timeline.filter(e => e.type === "parent_response").map(e => e.id));
   const linkedMessages = new Map(timeline.flatMap(e => e.type === "message" && e.responseId ? [[e.responseId, e.message] as const] : []));
+
   for (const entry of timeline) {
     if (entry.type === "parent_response" || entry.type === "message") {
       if (entry.type === "message" && entry.responseId && earlyResponses.has(entry.responseId)) continue;
       const linked = entry.type === "parent_response" ? linkedMessages.get(entry.id) : undefined;
-      if (entry.type === "parent_response" && entry.truncated && !linked) inserts[messages.length]!.push("  … (stored parent response truncated)");
+      if (entry.type === "parent_response" && entry.truncated && !linked) {
+        slotEntries[messages.length]!.push({ kind: "notice", text: "  … (stored parent response truncated)" });
+      }
       messages.push(linked ?? entry.message);
-      inserts.push([]);
+      slotEntries.push([]);
       continue;
     }
-    const lines = inserts[messages.length]!;
+
+    const slot = messages.length;
+    const entries = slotEntries[slot]!;
     if (entry.type === "subagent_event") {
       const e = entry.event;
+      if (e.kind === "thinking") continue;
       const key = e.runId ?? e.detachedId ?? `${e.role}:${e.index ?? 0}`;
-      runs.set(key, { role: e.role, completed: e.kind === "done" || e.kind === "error" });
-      const detail = [e.detail, e.summary].filter(Boolean).join(" — ");
-      lines.push(`  subagent ${sanitizeForTerminal(e.role)} · ${e.kind}${e.success === false ? " (failed)" : ""}${detail ? `: ${sanitizeForTerminal(detail)}` : ""}`);
+      const state = e.kind === "done"
+        ? (e.success === false ? "incomplete" : "done")
+        : e.kind === "error"
+          ? "failed"
+          : "running";
+      runs.set(key, { role: e.role, state, lastSlot: slot });
+      entries.push({ kind: "event", runKey: key, event: e });
     } else if (entry.message.role !== "system") {
-      const text = sanitizeForTerminal(entry.message.content ?? "");
-      const bounded = text.slice(0, 262144);
-      lines.push(`  subagent ${sanitizeForTerminal(entry.role)} · ${entry.message.role}`);
-      lines.push(...bounded.split("\n").map(line => `    ${line}`));
-      if (bounded.length < text.length) lines.push(`    … (${text.length - bounded.length} characters omitted)`);
-      if (entry.truncated) lines.push("    … (stored message truncated)");
+      const key = entry.runId ?? `${entry.role}:msg`;
+      if (!runs.has(key)) runs.set(key, { role: entry.role, state: "running", lastSlot: slot });
+      else runs.get(key)!.lastSlot = slot;
+      entries.push({ kind: "message", runKey: key, role: entry.role, message: entry.message, truncated: entry.truncated });
     }
   }
-  for (const run of runs.values()) {
-    if (!run.completed) inserts[messages.length]!.push(`  subagent ${sanitizeForTerminal(run.role)} · no completion observed`);
+
+  for (const [key, run] of runs) {
+    if (run.state === "running") {
+      const targetSlot = slotEntries[run.lastSlot] ?? slotEntries[messages.length]!;
+      targetSlot.push({ kind: "incomplete", runKey: key, role: run.role });
+    }
   }
-  return formatTranscript(messages, { color, unicode: true, bodyLines: 2000,
-    beforeMessage: index => inserts[index]!, trailingLines: inserts[messages.length] });
+
+  const boxWidth = scaleForgeWidth(Math.max(24, cols - 1));
+  const boxInnerCols = Math.max(16, boxWidth - 4);
+
+  const renderSlot = (slotIdx: number): string[] => {
+    const entries = slotEntries[slotIdx] ?? [];
+    if (entries.length === 0) return [];
+
+    if (surface !== "tui") {
+      const out: string[] = [];
+      for (const item of entries) {
+        if (item.kind === "notice") {
+          out.push(item.text);
+        } else if (item.kind === "event") {
+          const e = item.event;
+          const detail = [e.detail, e.summary].filter(Boolean).join(" — ");
+          out.push(`  subagent ${sanitizeForTerminal(e.role)} · ${e.kind}${e.success === false ? " (failed)" : ""}${detail ? `: ${sanitizeForTerminal(detail)}` : ""}`);
+        } else if (item.kind === "incomplete") {
+          out.push(`  subagent ${sanitizeForTerminal(item.role)} · no completion observed`);
+        } else {
+          const text = sanitizeForTerminal(item.message.content ?? "");
+          const bounded = text.slice(0, 262144);
+          out.push(`  subagent ${sanitizeForTerminal(item.role)} · ${item.message.role}`);
+          const rendered = item.message.role === "assistant"
+            ? renderMarkdownBlock(bounded, { color, unicode, accent: mdAccent, muted: mdMuted })
+            : bounded;
+          out.push(...(rendered || bounded).split("\n").map(line => `    ${line}`));
+          if (bounded.length < text.length) out.push(`    … (${text.length - bounded.length} characters omitted)`);
+          if (item.truncated) out.push("    … (stored message truncated)");
+        }
+      }
+      return out;
+    }
+
+    // Working-TUI surface: group contiguous entries per subagent run inside the
+    // chronological slot into bordered subagent cards matching LaunchTui.
+    const tee = unicode ? "├─" : "|-";
+    const end = unicode ? "└─" : "`-";
+    const pipe = unicode ? "│ " : "| ";
+    const ell = unicode ? "…" : "...";
+    const paint = color && theme ? accentPaint(theme) : undefined;
+    const paintShadow = color && theme ? accentShadowPaint(theme) : undefined;
+    const fill = color && theme ? cardFillPaint(theme) : undefined;
+
+    type Group = { kind: "notice"; text: string } | { kind: "run"; runKey: string; items: Exclude<SubagentSlotEntry, { kind: "notice" }>[] };
+    const groups: Group[] = [];
+    for (const item of entries) {
+      if (item.kind === "notice") {
+        groups.push(item);
+        continue;
+      }
+      const last = groups[groups.length - 1];
+      if (last && last.kind === "run" && last.runKey === item.runKey) {
+        last.items.push(item);
+      } else {
+        groups.push({ kind: "run", runKey: item.runKey, items: [item] });
+      }
+    }
+
+    const out: string[] = [];
+    for (const grp of groups) {
+      if (out.length > 0) out.push("");
+      if (grp.kind === "notice") {
+        out.push(grp.text);
+        continue;
+      }
+      const runInfo = runs.get(grp.runKey);
+      const firstEv = grp.items.find((it): it is Extract<SubagentSlotEntry, { kind: "event" }> => it.kind === "event")?.event;
+      const fallbackRole = firstEv?.role ?? runInfo?.role ?? "subagent";
+      const roleLabel = subagentRunRoleLabel(firstEv, fallbackRole);
+      const hasIncomplete = grp.items.some(it => it.kind === "incomplete");
+      const titleState = hasIncomplete
+        ? "no completion observed"
+        : runInfo?.state ?? "done";
+
+      const boxLines: string[] = [];
+      grp.items.forEach((it, idx) => {
+        const branch = idx === grp.items.length - 1 ? end : tee;
+        const cont = idx === grp.items.length - 1 ? "  " : pipe;
+        if (it.kind === "event") {
+          const e = it.event;
+          const detail = [e.detail, e.summary].filter(Boolean).map(s => sanitizeForTerminal(String(s))).join(" — ");
+          const raw = `${branch} ${e.kind}${e.success === false ? " (failed)" : ""}${detail ? `: ${detail}` : ""}`;
+          const wrapped = wrapTextWordAware(raw, boxInnerCols, { continuationIndent: cont });
+          boxLines.push(...wrapped);
+        } else if (it.kind === "incomplete") {
+          boxLines.push(`${branch} no completion observed`);
+        } else {
+          boxLines.push(`${branch} ${sanitizeForTerminal(it.role)} · ${it.message.role}`);
+          const text = sanitizeForTerminal(it.message.content ?? "");
+          const bounded = text.slice(0, 262144);
+          const childBudget = Math.max(12, boxInnerCols - 2);
+          const rendered = it.message.role === "assistant"
+            ? renderMarkdownBlock(bounded, { color, unicode, maxWidth: childBudget, accent: mdAccent, muted: mdMuted })
+            : wrapTextWordAware(bounded, childBudget).join("\n");
+          for (const line of (rendered || bounded).split("\n")) {
+            boxLines.push(...wrapTextWordAware(`${cont}${line}`, boxInnerCols, { continuationIndent: cont }));
+          }
+          if (bounded.length < text.length) boxLines.push(`${cont}${ell} (${text.length - bounded.length} characters omitted)`);
+          if (it.truncated) boxLines.push(`${cont}${ell} (stored message truncated)`);
+        }
+      });
+
+      out.push(
+        ...formatForgeBox(
+          { title: `subagent ${roleLabel} · ${titleState}`, lines: boxLines },
+          {
+            width: boxWidth,
+            maxLines: Infinity,
+            unicode,
+            color,
+            paint,
+            paintShadow,
+            fill,
+            dim: color && titleState === "done",
+          },
+        ),
+      );
+    }
+    return out;
+  };
+
+  const renderedSlots = Array.from({ length: messages.length + 1 }, (_, i) => renderSlot(i));
+  return formatTranscript(messages, {
+    color,
+    unicode,
+    surface,
+    cols,
+    theme,
+    bodyLines: 2000,
+    beforeMessage: index => renderedSlots[index]!,
+    trailingLines: renderedSlots[messages.length]!,
+  });
 }
 
 export function sessionPromptHistory(messages: readonly Message[], mapper?: (message: Message) => string): string[] {
@@ -273,15 +470,14 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         history.length = 1;
         for (const m of messages) history.push(m);
         sessionId = rid;
-        ctx.onSessionCommitted?.(sessionId, header.draft ?? "");
         draft = header.draft ?? "";
         sessionModel = header.model;
         sessionModelChanged = true;
-
+        ctx.onSessionCommitted?.(sessionId, draft, header.model ?? null);
 
         // Seed /retry + reply marker from the last user/assistant turn.
         lastUserInput = sessionPromptHistory(messages)[0] ?? "";
-        lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
+        lastReply = extractLastAssistantReply(messages);
         // Seed readline's input history so ↑ in the prompt recalls THIS session's
         // prior prompts (not just lines typed in the current run). readline history
         // is newest-first; unshift in chronological order so the session's newest
@@ -293,21 +489,35 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         // Clean restore: wipe the screen + scrollback BEFORE replaying the
         // transcript so it can't collide with picker remnants, the prior
         // conversation, or the live input frame — the "/resume corrupts the
-        // TUI" fix. Same proven path as /clear; re-render the welcome banner
-        // so the resumed view reads like a fresh, intact screen.
-        if (process.stdout.isTTY) {
+        // TUI" fix. Re-render the welcome banner with the resumed session & model
+        // so the working TUI opens atop an intact, up-to-date header.
+        const isTty = !!process.stdout.isTTY;
+        const useTuiSurface = ctx.tui ?? isTty;
+        const cols = ctx.cols ?? (isTty ? terminalSize().cols : 80);
+        const unicode = ctx.unicode ?? supportsUnicode();
+        const theme = ctx.theme ?? (useTuiSurface || isTty ? resolveTheme(process.env) : undefined);
+        const color = isTty ? (theme?.color ?? true) : false;
+        if (isTty) {
           disarmPreview();
           process.stdout.write(clearScreen());
           console.log(freshWelcomeLines().join("\n"));
         }
-        const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-        console.log([
-          sep,
-          `resumed session ${rid} · ${messages.length} message(s)`,
-          sep,
-          ...renderSessionTimeline(timeline, !!process.stdout.isTTY),
-          sep,
-        ].join("\n"));
+        const sepWidth = Math.min(Math.max(20, cols - 1), isTty ? Math.max(20, cols - 1) : 48);
+        const sepGlyph = unicode ? "─" : "-";
+        const sepRaw = sepGlyph.repeat(sepWidth);
+        const sep = color && theme ? mutedPaint(theme)(sepRaw) : sepRaw;
+        const modelTag = header.model ? ` · model ${header.model}` : "";
+        const bannerRaw = `resumed session ${rid} · ${messages.length} message(s)${modelTag}`;
+        const bannerLines = wrapTextWordAware(bannerRaw, Math.max(20, cols - 1))
+          .map(line => (color && theme ? mutedPaint(theme)(line) : line));
+        const body = renderSessionTimeline(timeline, {
+          color,
+          unicode,
+          surface: useTuiSurface ? "tui" : "ledger",
+          cols,
+          theme,
+        });
+        console.log([sep, ...bannerLines, sep, ...body, sep].join("\n"));
       } catch (err) {
         console.log(`! ${(err as Error).message}`);
       }

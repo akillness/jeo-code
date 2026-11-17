@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import chalk from "chalk";
-import { stripMarkdown, renderMarkdownAnsi } from "../src/tui/components/markdown-text";
+import { stripMarkdown, renderMarkdownAnsi, renderMarkdownBlock } from "../src/tui/components/markdown-text";
+import { visibleWidth } from "../src/tui/components/width";
 
 test("stripMarkdown strips headers, bold, italic, code blocks, links, and blockquotes", () => {
   const input = `
@@ -134,4 +135,68 @@ test("renderMarkdownAnsi: muted painter (not raw dim) colors link URLs / blockqu
 
 test("stripMarkdown removes ~~strikethrough~~ markers", () => {
   expect(stripMarkdown("a ~~b~~ c")).toBe("a b c");
+});
+
+test("bold spans containing inline code / asterisks strip cleanly without leaking markers", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const md = "**`src/*.ts` 파일** 및 **2 * 3 = 6** 그리고 `*not_italic*`";
+    const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
+    const ansi = renderMarkdownAnsi(md);
+    expect(stripAnsi(ansi)).toBe("src/*.ts 파일 및 2 * 3 = 6 그리고 *not_italic*");
+    expect(stripMarkdown(md)).toBe("src/*.ts 파일 및 2 * 3 = 6 그리고 *not_italic*");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("stripMarkdown preserves snake_case identifiers, URLs, and nested fence bodies", () => {
+  const md = [
+    "Check `JEO_SESSION_DIR` and `snake_case_name` and https://example.com/a_b_c.",
+    "",
+    "````md",
+    "# heading inside fence",
+    "```ts",
+    "const x_y_z = a_b_c;",
+    "```",
+    "---",
+    "````",
+  ].join("\n");
+  const stripped = stripMarkdown(md);
+  expect(stripped).toContain("snake_case_name");
+  expect(stripped).toContain("https://example.com/a_b_c");
+  expect(stripped).toContain("# heading inside fence");
+  expect(stripped).toContain("const x_y_z = a_b_c;");
+  expect(stripped).toContain("---");
+});
+
+test("renderMarkdownBlock aligns tables with inline formatting and wraps prose to maxWidth", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const md = [
+      "### 결과 요약",
+      "",
+      "- [x] completed task with **bold detail** and `code_span` across a longer line that should wrap",
+      "> nested quote line that wraps nicely",
+      "",
+      "| 모듈 | 설명 |",
+      "| --- | --- |",
+      "| **transcript** | `surface: \"tui\"` 복원 |",
+    ].join("\n");
+    const rendered = renderMarkdownBlock(md, { color: true, unicode: true, maxWidth: 48 });
+    const lines = rendered.split("\n");
+    for (const line of lines) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(48);
+    }
+    const tableLines = lines.filter(l => /^[┌├└│]/.test(l));
+    expect(tableLines.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(tableLines.map(l => visibleWidth(l))).size).toBe(1);
+    const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
+    expect(plain).toContain("✔ completed task");
+    expect(plain).not.toContain("**transcript**");
+  } finally {
+    chalk.level = prev;
+  }
 });

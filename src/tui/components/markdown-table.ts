@@ -1,15 +1,49 @@
 /**
  * Render GFM markdown tables in assistant text as box-drawn tables (consensus-seed
- * P2.B8). Pure-TS, width-aware (uses ./width so CJK/emoji columns align). Non-table
- * text passes through untouched; a block is only treated as a table when it has a
- * header row, a `|---|---|` delimiter row, and at least one body row.
+ * P2.B8). Pure-TS, width-aware (uses ./width so CJK/emoji/ANSI columns align).
+ * Non-table text and fenced code blocks pass through untouched; a block is treated
+ * as a table when it has a header row, a `|---|---|` delimiter row, and at least
+ * one body row.
  */
-import { visibleWidth, truncateToWidth } from "./width";
+import { visibleWidth, truncateToWidth, wrapTextWordAware } from "./width";
+import { stripInlineMarkdown } from "./markdown-text";
 
 export interface TableRenderOptions {
   unicode?: boolean;
-  /** Hard cap on a column's display width before truncation; keeps wide tables on screen. */
+  /** Hard cap on a column's display width before truncation/wrapping; keeps wide tables on screen. */
   maxColWidth?: number;
+  /** Optional total table display width budget (terminal columns). Fits columns
+   *  proportionally via water-filling so box borders never overflow terminal width. */
+  maxWidth?: number;
+  /** Wrap cell contents onto multiple rows inside each cell instead of truncating.
+   *  Defaults to true when `maxWidth` is provided, false otherwise. */
+  wrapCells?: boolean;
+  /** Format each cell (inline Markdown -> ANSI/plain) BEFORE measuring column
+   *  widths and padding, so bold/code/italic/links align `│` borders accurately.
+   *  Defaults to `stripInlineMarkdown`. */
+  formatCell?: (cell: string) => string;
+}
+
+interface FenceState {
+  char: "`" | "~";
+  len: number;
+}
+
+function matchOpenFence(trimmed: string): FenceState | null {
+  const bt = trimmed.match(/^(`{3,})([^`]*)$/);
+  if (bt) return { char: "`", len: bt[1]!.length };
+  const tl = trimmed.match(/^(~{3,})(.*)$/);
+  if (tl) return { char: "~", len: tl[1]!.length };
+  return null;
+}
+
+function isCloseFence(trimmed: string, fence: FenceState): boolean {
+  const ch = fence.char;
+  if (!trimmed.startsWith(ch.repeat(fence.len))) return false;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] !== ch) return false;
+  }
+  return true;
 }
 
 /** A line carries an *unescaped* `|` — a real cell separator, not a literal `\|`. */
@@ -99,51 +133,179 @@ const TABLE_ASCII: TableGlyphs = {
   bl: "+", bt: "+", br: "+",
 };
 
+/** Proportionally fit column widths to stay within `contentBudget` via ascending
+ *  water-filling: narrow columns keep their natural width first, and only wider
+ *  columns share the remaining width budget evenly. */
+function fitWidthsWaterFill(natural: number[], contentBudget: number): number[] {
+  const cols = natural.length;
+  const total = natural.reduce((sum, w) => sum + w, 0);
+  if (total <= contentBudget) return [...natural];
+  const budget = Math.max(cols, contentBudget);
+  const fitted = new Array<number>(cols).fill(1);
+  const order = natural.map((w, idx) => ({ w, idx })).sort((a, b) => a.w - b.w);
+  let remBudget = budget;
+  for (let i = 0; i < order.length; i++) {
+    const remCols = order.length - i;
+    const fair = Math.floor(remBudget / remCols);
+    if (order[i]!.w <= fair) {
+      fitted[order[i]!.idx] = Math.max(1, order[i]!.w);
+      remBudget -= fitted[order[i]!.idx]!;
+    } else {
+      const base = Math.max(1, fair);
+      const extra = Math.max(0, remBudget - base * remCols);
+      for (let j = i; j < order.length; j++) {
+        fitted[order[j]!.idx] = base + (j - i < extra ? 1 : 0);
+      }
+      break;
+    }
+  }
+  return fitted;
+}
+
+/** Split `<br>` tags inside a table cell only outside backtick code spans, so
+ *  literal `` `<br>` `` documentation inside inline code stays intact. */
+function splitBrOutsideCode(raw: string): string[] {
+  if (!/<br\s*\/?>/i.test(raw)) return [raw];
+  const parts: string[] = [];
+  let cur = "";
+  let i = 0;
+  let tickLen = 0;
+  while (i < raw.length) {
+    if (raw[i] === "`") {
+      let n = 0;
+      while (i + n < raw.length && raw[i + n] === "`") n++;
+      if (tickLen === 0) tickLen = n;
+      else if (n === tickLen) tickLen = 0;
+      cur += raw.slice(i, i + n);
+      i += n;
+      continue;
+    }
+    if (tickLen === 0 && raw[i] === "<") {
+      const m = raw.slice(i).match(/^<br\s*\/?>/i);
+      if (m) {
+        parts.push(cur);
+        cur = "";
+        i += m[0].length;
+        continue;
+      }
+    }
+    cur += raw[i]!;
+    i++;
+  }
+  parts.push(cur);
+  return parts;
+}
+
 /** Render one parsed table (header + rows) to box-drawn lines. */
 function drawTable(header: string[], rows: string[][], aligns: Align[], opts: TableRenderOptions): string[] {
   const g = opts.unicode === false ? TABLE_ASCII : TABLE_UNICODE;
-  const cap = Math.max(4, opts.maxColWidth ?? 40);
+  const fmt = opts.formatCell ?? stripInlineMarkdown;
+  const wrapCells = opts.wrapCells ?? (opts.maxWidth !== undefined);
   const cols = Math.max(header.length, ...rows.map(r => r.length));
-  const norm = (r: string[]): string[] => Array.from({ length: cols }, (_, i) => truncateToWidth(r[i] ?? "", cap));
-  const h = norm(header);
-  const body = rows.map(norm);
   const aligned = Array.from({ length: cols }, (_, i) => aligns[i] ?? "left");
-  // Column width = max display width of header + body cells in that column.
-  const widths = Array.from({ length: cols }, (_, i) =>
-    Math.max(visibleWidth(h[i]!), ...body.map(r => visibleWidth(r[i]!)), 1),
-  );
+
+  // Format each cell (handling optional `<br>` breaks) BEFORE measuring widths
+  // so inline markers like `**`, `` ` ``, and `[label](url)` never skew padding.
+  const formatCellLines = (raw: string): string[] => {
+    return splitBrOutsideCode(raw).map(p => fmt(p.trim()));
+  };
+  const hCells = Array.from({ length: cols }, (_, i) => formatCellLines(header[i] ?? ""));
+  const bodyCells = rows.map(r => Array.from({ length: cols }, (_, i) => formatCellLines(r[i] ?? "")));
+
+  const cellWidth = (lines: string[]) =>
+    lines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+
+  const explicitCap = opts.maxColWidth !== undefined ? Math.max(4, opts.maxColWidth) : undefined;
+  const defaultCap = explicitCap ?? (opts.maxWidth !== undefined ? Math.max(12, opts.maxWidth) : 40);
+  const natural = Array.from({ length: cols }, (_, i) => {
+    const maxNatural = Math.max(cellWidth(hCells[i]!), ...bodyCells.map(r => cellWidth(r[i]!)), 1);
+    return explicitCap !== undefined ? Math.min(defaultCap, maxNatural) : Math.min(defaultCap, maxNatural);
+  });
+
+  const overhead = 3 * cols + 1;
+  const widths = opts.maxWidth !== undefined
+    ? fitWidthsWaterFill(natural, opts.maxWidth - overhead)
+    : natural;
+
+  const renderCellSubLines = (lines: string[], width: number): string[] => {
+    if (!wrapCells) {
+      const joined = lines.join(" ");
+      return [visibleWidth(joined) > width ? truncateToWidth(joined, width) : joined];
+    }
+    const wrapped: string[] = [];
+    for (const part of lines) {
+      if (visibleWidth(part) <= width) {
+        wrapped.push(part);
+      } else {
+        wrapped.push(...wrapTextWordAware(part, width));
+      }
+    }
+    return wrapped.length ? wrapped : [""];
+  };
+
   const rule = (l: string, mid: string, r: string): string =>
     l + widths.map(w => g.h.repeat(w + 2)).join(mid) + r;
-  const rowLine = (cells: string[]): string =>
-    g.v + cells.map((c, i) => " " + padCell(c, widths[i]!, aligned[i]!) + " ").join(g.v) + g.v;
+
+  const emitRow = (cells: string[][]): string[] => {
+    const wrappedCols = cells.map((c, i) => renderCellSubLines(c, widths[i]!));
+    const height = Math.max(1, ...wrappedCols.map(c => c.length));
+    const out: string[] = [];
+    for (let r = 0; r < height; r++) {
+      out.push(
+        g.v +
+          wrappedCols
+            .map((colLines, i) => " " + padCell(colLines[r] ?? "", widths[i]!, aligned[i]!) + " ")
+            .join(g.v) +
+          g.v,
+      );
+    }
+    return out;
+  };
+
   return [
     rule(g.tl, g.tt, g.tr),
-    rowLine(h),
+    ...emitRow(hCells),
     rule(g.ml, g.mm, g.mr),
-    ...body.map(rowLine),
+    ...bodyCells.flatMap(emitRow),
     rule(g.bl, g.bt, g.br),
   ];
 }
 
 /**
  * Replace every GFM table block in `text` with a box-drawn table. Returns the text
- * with tables rendered; all non-table lines are preserved verbatim.
+ * with tables rendered; fenced code blocks and all non-table lines are preserved verbatim.
  */
 export function renderMarkdownTables(text: string, opts: TableRenderOptions = {}): string {
   if (!text.includes("|")) return text;
-  const lines = text.split("\n");
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
+  let fence: FenceState | null = null;
   let i = 0;
   while (i < lines.length) {
+    const rawLine = lines[i]!;
+    const trimmed = rawLine.trim();
+    if (fence) {
+      if (isCloseFence(trimmed, fence)) fence = null;
+      out.push(rawLine);
+      i++;
+      continue;
+    }
+    const opened = matchOpenFence(trimmed);
+    if (opened) {
+      fence = opened;
+      out.push(rawLine);
+      i++;
+      continue;
+    }
     // A table needs: header row, delimiter row, ≥1 body row.
     if (
       i + 1 < lines.length &&
-      isTableRow(lines[i]!) &&
+      isTableRow(rawLine) &&
       isDelimiterRow(lines[i + 1]!) &&
       i + 2 < lines.length &&
       isTableRow(lines[i + 2]!)
     ) {
-      const header = splitCells(lines[i]!);
+      const header = splitCells(rawLine);
       const aligns = alignmentsFrom(lines[i + 1]!);
       const rows: string[][] = [];
       let j = i + 2;
@@ -155,7 +317,7 @@ export function renderMarkdownTables(text: string, opts: TableRenderOptions = {}
       i = j;
       continue;
     }
-    out.push(lines[i]!);
+    out.push(rawLine);
     i++;
   }
   return out.join("\n");

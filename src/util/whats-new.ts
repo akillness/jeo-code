@@ -8,6 +8,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { jeoEnv } from "./env";
 import chalk from "chalk";
 import { boxBlock, BOX_UNICODE, BOX_ASCII } from "../tui/components/layout";
+import { stripInlineMarkdown } from "../tui/components/markdown-text";
 
 // ---- "What's New" release notes ---------------------------------------------
 // Post-upgrade release notes use the bundled CHANGELOG.md
@@ -179,11 +180,11 @@ export function renderWhatsNew(sections: ChangelogSection[], opts?: WhatsNewRend
       const when = s.date ? ` — ${s.date}` : "";
       if (!emit(`${s.version}${when}`, accent)) break;
     }
-    if (s.summary && !emit(s.summary, dim)) break;
+    if (s.summary && !emit(stripInlineMarkdown(s.summary), dim)) break;
     for (const g of s.groups) {
-      if (g.label && !emit(g.label, boldPlain)) break outer;
+      if (g.label && !emit(stripInlineMarkdown(g.label), boldPlain)) break outer;
       for (const item of g.items) {
-        if (!emit(item, (l: string) => l, "bullet")) break outer;
+        if (!emit(stripInlineMarkdown(item), (l: string) => l, "bullet")) break outer;
       }
     }
   }

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import { renderForgeMark, FORGE_MARK_ART_GRAND } from "./ascii-art";
 import { truncate, isTTY } from "../terminal";
 import { detectColorLevel, ColorLevel, visibleWidth } from "./color";
+import { stripInlineMarkdown } from "./markdown-text";
 import { parseChangelogSections, changelogText } from "../../util/whats-new";
 
 function getLatestChangelogItems(): { version: string; items: string[] } {
@@ -83,7 +84,8 @@ function renderRightColumn(d: WelcomeData, width: number, unicode: boolean, useC
     const textWidth = Math.max(1, width - visibleWidth(prefix));
     const shown = changelog.items.slice(0, 3);
     for (const item of shown) {
-      const text = visibleWidth(item) > textWidth ? truncate(item, textWidth) : item;
+      const clean = stripInlineMarkdown(item);
+      const text = visibleWidth(clean) > textWidth ? truncate(clean, textWidth) : clean;
       lines.push(padLine(`${dim(prefix)}${gray(text)}`, width));
     }
   } else {

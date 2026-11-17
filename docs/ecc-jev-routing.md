@@ -23,7 +23,7 @@ jeo-code mapping (this release):
 
 | External concept | jeo-code implementation |
 | --- | --- |
-| Karpathy 4 principles | Bundled skill `karpathy-guidelines` (`src/prompts/skills/karpathy-guidelines/SKILL.md`) + always-on `KARPATHY_DISCIPLINE` block in `src/agent/engine.ts`, injected into `executorSystemPrompt()` and the interactive prompt in `src/commands/launch.ts` |
+| Karpathy 4 principles | Bundled skill `karpathy-guidelines` (`src/prompts/skills/karpathy-guidelines/SKILL.md`) + always-on `KARPATHY_DISCIPLINE` block in `src/agent/engine.ts`, injected into `executorSystemPrompt()`, `subagentSystemPrompt()`, and the interactive prompt in `src/commands/launch.ts` |
 | Think-before-coding ambiguity gate | Existing `deep-interview` workflow reused at turn scope; no new gate |
 | Goal-driven verification loop | Existing done-verification gate (`src/agent/loop-guards.ts` `classifyDoneGate`) — Karpathy text explicitly states a stale pass does not count |
 | Jev `route-skills` | Heuristic advisory router `src/agent/skill-router.ts` (`routeSkillsForTask`, gate/fit 0.30, sharded/shortlist, top-k 3, fail-open explicit-none) |

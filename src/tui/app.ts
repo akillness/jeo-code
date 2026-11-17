@@ -30,10 +30,8 @@ import { detectColorLevel, animatedGradientText, ColorLevel } from "./components
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, scaleForgeWidth, redactSecrets, type ForgeSummary } from "./components/forge";
 import { renderStatusBar, renderStatusBox, type StatusBoxData } from "./components/status";
 import { costForUsage } from "../ai/pricing";
-import { renderMarkdownTables } from "./components/markdown-table";
- 
-import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
-import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame, lastValueCache } from "./components/width";
+import { renderMarkdownBlock } from "./components/markdown-text";
+import { visibleWidth, wrapTextWithAnsi, wrapTextWordAware, truncateToWidth, sanitizeForFrame, lastValueCache } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, formatDuration as formatToolMs, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -971,7 +969,7 @@ export class LaunchTui {
     // so a long submitted query stays fully visible (no truncation).
     const body = text
       .split("\n")
-      .flatMap(line => wrapTextWithAnsi(line, Math.max(8, inner - 2)));
+      .flatMap(line => wrapTextWordAware(line, Math.max(8, inner - 2)));
     const rows = body.length ? body : [""];
     const top = border(g.tl + g.h.repeat(inner) + g.tr);
     const bottom = shadow(g.bl + g.h.repeat(inner) + g.br);
@@ -1602,13 +1600,18 @@ export class LaunchTui {
       const doneBadge = categoryBadge("done", { color: this.theme.color });
       finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
     }
-    // jeo-ref final-report rendering: GFM tables become box-drawn tables, then
-    // headings/bold/inline-code are styled (theme accent) instead of stripped.
+    // jeo-ref final-report rendering: GFM tables become box-drawn tables with
+    // cell-level inline Markdown alignment + width fitting; headings/bold/code
+    // are styled (theme accent) instead of stripped.
     // color:false keeps the plain stripMarkdown text for pipes/tests.
-    const tabled = renderMarkdownTables(reply, { unicode: this.unicode });
-    const renderedReply = this.theme.color
-      ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)), muted: mutedPaint(this.theme) })
-      : stripMarkdown(tabled);
+    const wrapCols = this.tty ? Math.max(20, size().cols) : undefined;
+    const renderedReply = renderMarkdownBlock(reply, {
+      color: this.theme.color,
+      unicode: this.unicode,
+      maxWidth: wrapCols,
+      accent: s => chalk.bold(accentPaint(this.theme)(s)),
+      muted: mutedPaint(this.theme),
+    });
     // Agent identity: a bold accent `jeo` label on its OWN line leads the reply
     // as a standalone header, instead of an inline `jeo>` prompt prefix.
     const nameLabel = this.agentLabel();
@@ -1643,9 +1646,9 @@ export class LaunchTui {
       // throwing off the trailing `\x1b[0J` cursor math (the reported "화면깨짐").
       // Split embedded newlines (multi-line replies / the budget consolidation
       // wrap-up), then wrap each physical line to the column count.
-      const wrapCols = Math.max(20, size().cols);
+      const physCols = wrapCols ?? Math.max(20, size().cols);
       const physicalLines = finalLines.flatMap(l =>
-        l.split("\n").flatMap(sub => (visibleWidth(sub) <= wrapCols ? [sub] : wrapTextWithAnsi(sub, wrapCols))),
+        l.split("\n").flatMap(sub => (visibleWidth(sub) <= physCols ? [sub] : wrapTextWordAware(sub, physCols))),
       );
       // Main-buffer hygiene after leaving the alt screen: the cursor lands on rows
       // that still hold pre-turn content (old footer box, project-context lines).

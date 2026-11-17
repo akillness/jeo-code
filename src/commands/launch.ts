@@ -127,9 +127,9 @@ import { attachImagePaths, insertImageTag, findImagePathTokens, reconcileImageTa
 import { copyTextToClipboard, readClipboardText } from "../tui/clipboard";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
 import type { ImageAttachment } from "../ai/types";
-import { renderMarkdownTables } from "../tui/components/markdown-table";
- 
-import { stripMarkdown } from "../tui/components/markdown-text";
+import { extractLastAssistantReply } from "../tui/components/transcript";
+import { renderMarkdownBlock } from "../tui/components/markdown-text";
+import { wrapTextWordAware } from "../tui/components/width";
 import { createMessengerActivityEvents } from "../messenger/activity";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
@@ -140,7 +140,7 @@ import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/comp
 import * as path from "node:path";
 import { homedir, tmpdir } from "node:os";
 import * as fs from "node:fs";
-import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
+import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint, mutedPaint } from "../tui/components/themes";
 import {
   sessionsDir,
   createSession,
@@ -150,6 +150,7 @@ import {
   appendSubagentEvent,
   appendSubagentMessage,
   type SubagentMessage,
+  type SessionTimelineEntry,
   loadSession,
   listSessions,
   latestSessionId,
@@ -1106,12 +1107,26 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
    *  mid-turn TUI binding): full last reply + full last tool output. */
   const composeDetailLines = (): string[] => {
     if (!lastReply && !lastToolDetail) return [];
-    const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
+    const cols = process.stdout.columns ?? 80;
+    const sep = "─".repeat(Math.min(48, Math.max(1, cols - 1)));
+    const detailTheme = resolveTheme(process.env);
+    const detailColor = !!process.stdout.isTTY && detailTheme.color;
     const toolDetail = lastToolDetail
       ? [sep, `detail · full last tool output (${lastToolDetail.tool})`, sep, ...lastToolDetail.output.split("\n").slice(0, 2000).map(sanitizeForTerminal)]
       : [];
     const replyDetail = lastReply
-      ? [sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n")]
+      ? [
+          sep,
+          "detail · full last response (ctrl+o)",
+          sep,
+          ...renderMarkdownBlock(sanitizeForTerminal(lastReply), {
+            color: detailColor,
+            unicode: supportsUnicode(),
+            maxWidth: Math.max(20, cols - 2),
+            accent: detailColor ? s => chalk.bold(accentPaint(detailTheme)(s)) : undefined,
+            muted: detailColor ? mutedPaint(detailTheme) : undefined,
+          }).split("\n"),
+        ]
       : [];
     return [...replyDetail, ...toolDetail, sep];
   };
@@ -1124,14 +1139,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   const flushSubagentWarnings = (): void => {
     for (const warning of pendingSubagentWarnings.splice(0)) console.error(warning);
   };
-  // True once a resume actually restored PRIOR messages (not just an empty
-  // placeholder). Consumed by the "INTERACTIVE mode" welcome-banner block below to
-  // skip the fresh-start clearScreen()+banner render — found live: printing the
-  // resumed transcript ledger here, then unconditionally wiping the screen and
-  // drawing the generic welcome box a few hundred lines later, buried the actual
-  // restored work under a "fresh start" banner instead of leaving it on screen.
-  let resumedWithHistory = false;
+  const deferResumeToInteractiveTui =
+    LaunchTui.usable(flags.noTui) &&
+    !flags.print &&
+    !flags.message &&
+    !flags.literalPrompt &&
+    !!process.stdin.isTTY &&
+    !!process.stdout.isTTY;
   let restoredSession = false;
+  let startupResumeBanner: string | undefined;
+  let startupResumedTimeline: SessionTimelineEntry[] | undefined;
 
   let compactionSeq = 0;
   if (!flags.noSession) {
@@ -1158,13 +1175,20 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             sessionModel = initialSessionModel ?? header.model;
             startupDraft = (await consumeSessionDraft(id, cwd)) ?? header.draft;
             lastUserInput = sessionPromptHistory(messages)[0] ?? "";
-            lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
+            lastReply = extractLastAssistantReply(messages);
             const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
-            if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
-            if (!flags.literalPrompt && timeline.length > 0) {
-              resumedWithHistory = true;
-              const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
-              console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
+            if (!flags.literalPrompt) {
+              const banner = `Resumed session ${id} (${messages.length} messages).${modelNote}`;
+              if (deferResumeToInteractiveTui) {
+                startupResumeBanner = banner;
+                if (timeline.length > 0) startupResumedTimeline = timeline;
+              } else {
+                console.log(banner);
+                if (timeline.length > 0) {
+                  const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
+                  console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
+                }
+              }
             }
 
 
@@ -1218,17 +1242,24 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           restoredSession = true;
           sessionModel = initialSessionModel ?? header.model;
           lastUserInput = sessionPromptHistory(messages)[0] ?? "";
-          lastReply = [...messages].reverse().find(m => m.role === "assistant" && !m.content.trimStart().startsWith("{"))?.content ?? "";
+          lastReply = extractLastAssistantReply(messages);
           // Restore the unsent input-box draft — see
           // startupDraft's own doc comment for why this path can't feed
           // queuedPromptInput.partial directly yet.
           if (header.draft) startupDraft = (await consumeSessionDraft(id, cwd)) ?? header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
-          if (!flags.literalPrompt) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
-          if (!flags.literalPrompt && timeline.length > 0) {
-            resumedWithHistory = true;
-            const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
-            console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
+          if (!flags.literalPrompt) {
+            const banner = `Resumed session ${id} (${messages.length} messages).${modelNote}`;
+            if (deferResumeToInteractiveTui) {
+              startupResumeBanner = banner;
+              if (timeline.length > 0) startupResumedTimeline = timeline;
+            } else {
+              console.log(banner);
+              if (timeline.length > 0) {
+                const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
+                console.log([sep, ...renderSessionTimeline(timeline, !!process.stdout.isTTY), sep].join("\n"));
+              }
+            }
           }
 
 
@@ -3157,7 +3188,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
         const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
         const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null, skillRun: true });
-        if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
+        if (!rendered) console.log(renderMarkdownBlock(reply, { color: false, unicode: supportsUnicode() }) + usage);
         else if (usage) console.log(usage.trim());
       };
 
@@ -3191,7 +3222,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             console.log(`JEO_MESSENGER_UNVERIFIED ${JSON.stringify(reply)}`);
             process.exitCode = 1;
           } else throw new Error("Messenger agent turn did not complete");
-        } else if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
+        } else if (!rendered) console.log(renderMarkdownBlock(reply, { color: false, unicode: supportsUnicode() }) + usage);
         else if (usage) console.log(usage.trim());
       } catch (err) {
         if (flags.literalPrompt) throw err;
@@ -3261,31 +3292,54 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
-  // welcomeData.cols is a launch-time snapshot; re-measure on every banner re-render
-  // (/clear, /resume) so the box fits the resized terminal instead of the old width.
-  const freshWelcomeLines = (): string[] =>
-    renderWelcome({ ...welcomeData, cols: terminalSize().cols });
-  // Fresh-start clear so the banner opens atop a clean screen. TTY only,
-  // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
-  // SKIPPED on a resume that actually restored prior messages: the transcript ledger
-  // was already printed above (during session persistence, right after "Resumed
-  // session ... (N messages)"), so clearing here would wipe it and the generic
-  // "fresh start" banner below would bury the just-restored work — live-verified via
-  // a real pty run of `--resume <id>`, which showed exactly that: the resumed
-  // conversation flashed on screen then vanished under the welcome box a moment later.
-  if (!resumedWithHistory) {
-    if (process.stdout.isTTY) process.stdout.write(clearScreen());
-    // Launch sweep: the forge mark's gradient loops seamlessly (default 2 full
-    // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
-    // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
-    const sweepable =
-      !!process.stdout.isTTY &&
-      welcomeTheme.color &&
-      detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
-      jeoEnv("NO_WELCOME_ANIM") !== "1";
-    const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
-    if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
-    else console.log(renderWelcome(welcomeData).join("\n"));
+  // welcomeData.cols is a launch-time snapshot; dynamically re-sync session,
+  // model, thinking, and terminal width on every banner re-render (/clear,
+  // /resume, resize, cold resume) so the working TUI always reflects the
+  // active resumed session.
+  const freshWelcomeLines = (): string[] => {
+    const currentModel = sessionModel || defaultModel;
+    welcomeData.model = currentModel;
+    welcomeData.provider = resolveProvider(currentModel);
+    welcomeData.thinking = sessionThinking ?? "medium";
+    welcomeData.sessionId = sessionId;
+    welcomeData.cols = terminalSize().cols;
+    return renderWelcome(welcomeData);
+  };
+  if (process.stdout.isTTY) process.stdout.write(clearScreen());
+  // Launch sweep: only on a fresh interactive start; resumed sessions and bare
+  // picker starts open immediately on the static banner so restored transcripts
+  // or picker lists appear without sweep lag.
+  const sweepable =
+    !restoredSession &&
+    !flags.resumeInteractive &&
+    !!process.stdout.isTTY &&
+    welcomeTheme.color &&
+    detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
+    jeoEnv("NO_WELCOME_ANIM") !== "1";
+  const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
+  if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
+  else console.log(freshWelcomeLines().join("\n"));
+  if (startupResumeBanner !== undefined) {
+    const cols = terminalSize().cols;
+    const unicode = supportsUnicode();
+    const sepRaw = (unicode ? "─" : "-").repeat(Math.max(20, cols - 1));
+    const sep = welcomeTheme.color ? mutedPaint(welcomeTheme)(sepRaw) : sepRaw;
+    const headerLines = wrapTextWordAware(startupResumeBanner, Math.max(20, cols - 1))
+      .map(line => (welcomeTheme.color ? mutedPaint(welcomeTheme)(line) : line));
+    const parts = [sep, ...headerLines, sep];
+    if (startupResumedTimeline && startupResumedTimeline.length > 0) {
+      parts.push(
+        ...renderSessionTimeline(startupResumedTimeline, {
+          color: welcomeTheme.color,
+          unicode,
+          surface: "tui",
+          cols,
+          theme: welcomeTheme,
+        }),
+        sep,
+      );
+    }
+    console.log(parts.join("\n"));
   }
   if (startupModel.notice) console.log(chalk.yellow(startupModel.notice));
 
@@ -3404,7 +3458,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useTui, undefined, { userCard: null, skillRun: true });
-      if (!rendered) console.log(`jeo> ${stripMarkdown(renderMarkdownTables(reply))}${usage}`);
+      if (!rendered) console.log(`jeo> ${renderMarkdownBlock(reply, { color: false, unicode: supportsUnicode() })}${usage}`);
       else if (usage) console.log(usage.trim());
     }
   };
@@ -5147,7 +5201,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           lastFooterKey = "";
           lastDrawnLines = [];
           out.write(clearScreen());
-          out.write(renderWelcome({ ...welcomeData, cols }).join("\n") + "\n");
+          out.write(freshWelcomeLines().join("\n") + "\n");
           footerRows = previewRowsFor(rows);
           const initial = Math.max(1, Math.min(footerRows, COMPACT_FOOTER_ROWS));
           if (initial > 1) out.write("\n".repeat(initial - 1) + cursorUp(initial - 1));
@@ -5249,16 +5303,33 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const pickResult = await runSessionSlash("/session resume", {
       cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
       advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+      tui: useTui, theme: uiTheme, unicode: supportsUnicode(),
       canSwitchSession: () => !hasPendingSessionInput(),
       promptHistoryText: message => compactPastes.restore(message),
       requestSessionRestart,
-      onSessionCommitted: (id, draft) => { if (id !== sessionId) void stopLaunchEndpoint(); sessionId = id; queuedPromptInput.partial = compactPastes.restore({ content: draft }); },
+      onSessionCommitted: (id, draft, nextModel) => {
+        if (id !== sessionId) void stopLaunchEndpoint();
+        sessionId = id;
+        if (nextModel !== undefined) sessionModel = initialSessionModel ?? nextModel ?? undefined;
+        queuedPromptInput.partial = compactPastes.restore({ content: draft });
+      },
     });
     sessionId = pickResult.sessionId;
     if (pickResult.sessionModel !== undefined) sessionModel = initialSessionModel ?? pickResult.sessionModel ?? undefined;
     if (pickResult.lastUserInput !== undefined) lastUserInput = pickResult.lastUserInput;
     if (pickResult.lastReply !== undefined) lastReply = pickResult.lastReply;
   }
+
+  const formatReplFallbackReply = (reply: string): string => {
+    const replColor = !!process.stdout.isTTY && uiTheme.color;
+    return renderMarkdownBlock(reply, {
+      color: replColor,
+      unicode: supportsUnicode(),
+      maxWidth: process.stdout.isTTY ? Math.max(20, (process.stdout.columns ?? 80) - 1) : undefined,
+      accent: replColor ? s => chalk.bold(uiAccent(s)) : undefined,
+      muted: replColor ? mutedPaint(uiTheme) : undefined,
+    });
+  };
 
   // Remote (Telegram) free-text reply / config command routing — wired here,
   // right before the REPL loop starts, since it needs `pendingImages`,
@@ -5421,7 +5492,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             const { done, steps, reply, rendered, usage } = await runTurn(request.text, useTui, request.images, { signal: request.signal, trustedContext });
             lastReply = reply;
             if (!rendered) {
-              console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
+              console.log(`jeo> ${formatReplFallbackReply(reply)}${usage}`);
               if (!done) console.log(`(agent did not converge in ${steps} steps)`);
             } else if (usage) console.log(usage.trim());
             const stagePath = request.stage && path.dirname(request.stage.output);
@@ -5652,12 +5723,14 @@ navMatches = [];
         const result = await runSessionSlash(input, {
           cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
           advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+          tui: useTui, theme: uiTheme, unicode: supportsUnicode(),
           canSwitchSession: () => !hasPendingSessionInput(preservedPartial),
           promptHistoryText: message => compactPastes.restore(message),
           requestSessionRestart,
-          onSessionCommitted: (id, draft) => {
+          onSessionCommitted: (id, draft, nextModel) => {
             if (id !== sessionId) void stopLaunchEndpoint();
             sessionId = id;
+            if (nextModel !== undefined) sessionModel = nextModel ?? undefined;
             queuedPromptInput.partial = compactPastes.restore({ content: draft });
           },
         });
@@ -5686,7 +5759,7 @@ navMatches = [];
           const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui, undefined, { displayInput: retryDisplay });
         lastReply = reply;
           if (!rendered) {
-            console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
+            console.log(`jeo> ${formatReplFallbackReply(reply)}${usage}`);
             if (!done) console.log(`(agent did not converge in ${steps} steps)`);
           } else if (usage) {
             console.log(usage.trim());
@@ -6434,7 +6507,7 @@ navMatches = [];
           console.log(chalk.dim(`(cancelled — dropped ${dropped} queued pasted command${dropped > 1 ? "s" : ""})`));
         }
         if (!rendered) {
-          console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
+          console.log(`jeo> ${formatReplFallbackReply(reply)}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);
         } else if (usage) {
           console.log(usage.trim());

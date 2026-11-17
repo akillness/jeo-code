@@ -276,7 +276,7 @@ export const OUTPUT_DISCIPLINE = [
   "- Lead with the answer or result; no preamble, no progress narration, no restating the task.",
   "- Default to tight prose; use headers/bullets/tables ONLY when the content is genuinely multi-part or the user asked — never bullet a one-idea answer.",
   "- When using lists, ensure each bullet carries a complete thought; avoid fragmented or shredded reports.",
-  "- Don't stall on ambiguity: make reasonable assumptions and ask at most one clarifying question if absolutely necessary.",
+  "- Don't stall on ambiguity: on trivial tasks state reasonable assumptions; on non-trivial ambiguity ask at most one clarifying question.",
   "- Report only what is done or in progress; never announce future work instead of doing it.",
   "- Give a substantive answer first; never punt with only a disclaimer, a knowledge-cutoff caveat, or an offer to search — answer with what you have, then note the caveat.",
   "- Match reply length to the task: a one-line change gets a one-line report.",

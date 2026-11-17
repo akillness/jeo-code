@@ -69,7 +69,7 @@ export function historyViewLines(history: Message[], arg: string, columns: numbe
     sep,
     `history · last ${maxTurns ?? "all"} turn(s) (/history all for everything)`,
     sep,
-    ...formatTranscript(history, { maxTurns, color: true, unicode: true }),
+    ...formatTranscript(history, { maxTurns, color: true, unicode: true, cols: columns }),
     sep,
   ];
 }

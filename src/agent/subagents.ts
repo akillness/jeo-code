@@ -8,7 +8,8 @@
  * Read-only roles (planner/architect/critic) get a mutation-free toolset so a
  * review/plan lane physically cannot edit the repo.
  */
-import { DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
+import { DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, type ToolHandler } from "./engine";
+
 import type { Config } from "./state";
 import type { CatalogModel } from "../ai/model-catalog";
 import architectPrompt from "../prompts/agents/architect.md" with { type: "text" };
@@ -208,11 +209,12 @@ export function resolveSubagentMaxSteps(roleId: string, config: Pick<Config, "su
 }
 
 function renderRolePrompt(template: string, role: SubagentRole): string {
-  return template
-    .replaceAll("{{TOOL_PROTOCOL}}", `${TOOL_PROTOCOL}\n\n${WORKING_DISCIPLINE}`)
-    .replaceAll("{{READONLY_TOOL_PROTOCOL}}", READONLY_TOOL_PROTOCOL)
+  const rendered = template
+    .replaceAll("{{TOOL_PROTOCOL}}", `${TOOL_PROTOCOL}\n\n${WORKING_DISCIPLINE}\n\n${KARPATHY_DISCIPLINE}`)
+    .replaceAll("{{READONLY_TOOL_PROTOCOL}}", `${READONLY_TOOL_PROTOCOL}\n\n${KARPATHY_DISCIPLINE}`)
     .replaceAll("{{ROLE_TITLE}}", role.title)
     .trim();
+  return rendered.includes(KARPATHY_DISCIPLINE) ? rendered : `${rendered}\n\n${KARPATHY_DISCIPLINE}`;
 }
 
 /** True when `marker` is present in `text` AND the span between it and the next

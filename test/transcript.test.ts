@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { formatTranscript } from "../src/tui/components/transcript";
+import { visibleWidth } from "../src/tui/components/width";
 import type { Message } from "../src/ai/types";
 import chalk from "chalk";
 import { CompactPasteStore } from "../src/commands/launch/input";
@@ -248,3 +249,33 @@ for (const { name, inputDisplay } of [
     expect(text).not.toContain("[Paste #1");
   });
 }
+
+test("formatTranscript surface 'tui' renders user cards, tool ledger, and aligned Markdown tables", () => {
+  const mdReply = [
+    "### 요약",
+    "",
+    "| 항목 | 상태 |",
+    "| --- | --- |",
+    "| **TUI 복원** | `done` |",
+  ].join("\n");
+  const messages: Message[] = [
+    { role: "user", content: "세션 복원 테스트" },
+    { role: "assistant", content: JSON.stringify({ tool: "read", arguments: { filePath: "src/cli.ts" } }) },
+    { role: "user", content: "Tool [read] result (ok):\nline 1" },
+    { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: mdReply } }) },
+  ];
+  const lines = formatTranscript(messages, { color: false, unicode: true, surface: "tui", cols: 72 }).map(stripAnsi);
+  const out = lines.join("\n");
+  expect(out).toContain("╭");
+  expect(out).toContain("│ 세션 복원 테스트");
+  expect(out).toContain("╰");
+  expect(out).toMatch(/✔ Read src\/cli\.ts/);
+  expect(out).toContain("\njeo\n");
+  expect(out).toContain("요약");
+  expect(out).not.toContain("| **TUI 복원** |");
+  const jeoIdx = lines.indexOf("jeo");
+  expect(jeoIdx).toBeGreaterThan(-1);
+  const tableLines = lines.slice(jeoIdx + 1).filter(l => /^[┌├└│]/.test(l));
+  expect(tableLines.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(tableLines.map(visibleWidth)).size).toBe(1);
+});

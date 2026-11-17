@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.52] - 2026-11-17
+_Restore resumed sessions directly onto the interactive working TUI, fix GFM table alignment/wrapping and inline Markdown rendering, and propagate Karpathy discipline across subagent and ralplan roles._
+
+### Changed
+- **Interactive working-TUI session restoration (`src/tui/components/transcript.ts`, `src/commands/launch/session-slash.ts`, `src/commands/launch.ts`, `src/commands/launch/slash-views.ts`, `src/cli/runner.ts`):** Add `surface: "tui"` user cards (`renderTuiUserCard`), chronological `formatForgeBox` subagent cards with child Markdown rendering, `extractLastAssistantReply` for `Ctrl+O` detail views after resume, deferred cold-start TTY restoration after `freshWelcomeLines()` with dynamic header session/model sync, interactive `/resume` session switching, and `-r` optional-UUID flag parity.
+- **Karpathy discipline propagation (`src/agent/engine.ts`, `src/agent/subagents.ts`, `src/commands/ralplan.ts`, `docs/ecc-jev-routing.md`):** Inject `KARPATHY_DISCIPLINE` across bundled and custom subagent role prompts via `renderRolePrompt`, add `KARPATHY_PLAN_RULES` to `ralplan` `PLANNER`/`ARCHITECT`/`CRITIC` drafting prompts, and refine `OUTPUT_DISCIPLINE` ambiguity guidance.
+
+### Fixed
+- **GFM table border alignment, narrow wrapping & inline Markdown rendering (`src/tui/components/markdown-table.ts`, `src/tui/components/markdown-text.ts`, `src/tui/components/width.ts`, `src/tui/app.ts`, `src/tui/components/welcome.ts`, `src/util/whats-new.ts`):** Pre-format table cells before `visibleWidth` measurement, skip tables inside fenced code blocks, split `<br>` outside code spans, fit narrow viewports via water-fill column allocation (`fitWidthsWaterFill`) and multi-line `wrapCells`, mask inline backtick spans linearly before emphasis/link styling, preserve `snake_case` in `stripMarkdown`, pass box-drawn tables through `renderMarkdownBlock` without word-wrap corruption, add `wrapTextWordAware`, and strip raw `CHANGELOG.md` inline markers in `What's New` banners.
+
 ## [0.12.51] - 2026-11-17
 _Sanitize stale local-tarball lockfiles in isolated global updates and rewrite messenger runtime manifests on CDN tarball fallback._
 

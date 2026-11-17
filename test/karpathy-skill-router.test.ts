@@ -1,7 +1,36 @@
 import { test, expect } from "bun:test";
 import { SKILLS, getSkill } from "../src/skills/catalog";
-import { KARPATHY_DISCIPLINE, executorSystemPrompt } from "../src/agent/engine";
+import { KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, executorSystemPrompt } from "../src/agent/engine";
+import { SUBAGENT_ROLES, getSubagentRole, subagentSystemPrompt } from "../src/agent/subagents";
 import { routeSkillsForTask, inventorySkillConflicts, skillAdvisoryRoutingNote, SKILL_ROUTE_GATE } from "../src/agent/skill-router";
+
+test("subagentSystemPrompt injects KARPATHY_DISCIPLINE across bundled and custom roles without duplication", () => {
+  for (const role of SUBAGENT_ROLES) {
+    const prompt = subagentSystemPrompt(role);
+    expect(prompt).toContain(KARPATHY_DISCIPLINE);
+    expect(prompt.split(KARPATHY_DISCIPLINE)).toHaveLength(2);
+  }
+
+  const defaultCustom = getSubagentRole("reviewer", {
+    subagents: { reviewer: { description: "Custom reviewer", readOnly: false } },
+  })!;
+  const defaultCustomPrompt = subagentSystemPrompt(defaultCustom);
+  expect(defaultCustomPrompt).toContain(KARPATHY_DISCIPLINE);
+  expect(defaultCustomPrompt.split(KARPATHY_DISCIPLINE)).toHaveLength(2);
+
+  const bareCustom = getSubagentRole("minimalist", {
+    subagents: { minimalist: { prompt: "You are {{ROLE_TITLE}}." } },
+  })!;
+  const bareCustomPrompt = subagentSystemPrompt(bareCustom);
+  expect(bareCustomPrompt).toContain("You are Minimalist.");
+  expect(bareCustomPrompt).toContain(KARPATHY_DISCIPLINE);
+  expect(bareCustomPrompt.split(KARPATHY_DISCIPLINE)).toHaveLength(2);
+});
+
+test("OUTPUT_DISCIPLINE harmonizes trivial assumption-stating with non-trivial clarification", () => {
+  expect(OUTPUT_DISCIPLINE).toContain("on trivial tasks state reasonable assumptions");
+  expect(OUTPUT_DISCIPLINE).toContain("on non-trivial ambiguity ask at most one clarifying question");
+});
 
 test("karpathy-guidelines is a registered bundled skill", () => {
   const names = SKILLS.map(s => s.name);

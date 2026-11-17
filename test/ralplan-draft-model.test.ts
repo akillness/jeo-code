@@ -58,13 +58,16 @@ test("ralplan drafting passes route to their per-role configured model; the cons
   // tool-call so the read-only critic converges to [OKAY]. This keeps the test to a
   // single loop-module mock (no engine mock that would leak into other suites).
   const draftModels: (string | undefined)[] = [];
+  const draftSystemPrompts: string[] = [];
   let gateCall = 0;
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (_msgs: unknown, opts: { model?: string; systemPrompt?: string }) => {
       if (opts?.systemPrompt) {
         draftModels.push(opts.model);
+        draftSystemPrompts.push(opts.systemPrompt);
         return VALID_PLAN;
       }
+
       gateCall++;
       if (gateCall === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "seed.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
@@ -91,4 +94,10 @@ test("ralplan drafting passes route to their per-role configured model; the cons
   // Exactly the three drafting passes (no repair/iterate), each on its role model:
   // Planner and Architect on the faster draft tier, the Critic-final on the strong one.
   expect(draftModels).toEqual(["plan-fast", "arch-fast", "crit-strong"]);
+  expect(draftSystemPrompts).toHaveLength(3);
+  for (const sys of draftSystemPrompts) {
+    expect(sys).toContain("Planning discipline:");
+    expect(sys).toContain("no unasked features");
+    expect(sys).toContain("simplest direct");
+  }
 });

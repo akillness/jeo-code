@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
+import chalk from "chalk";
 import { renderMarkdownTables } from "../src/tui/components/markdown-table";
+import { styleInlineMarkdown } from "../src/tui/components/markdown-text";
+import { visibleWidth } from "../src/tui/components/width";
 
 /** Count box-drawing column rules (│) in a rendered row = columns + 1. Ignores
  *  any ASCII `|` that is literal cell content. */
@@ -48,4 +51,66 @@ test("a table needs a delimiter row to be recognized", () => {
   // Two pipe rows with no `|---|` delimiter is not a table — left verbatim.
   const text = "| a | b |\n| c | d |";
   expect(renderMarkdownTables(text)).toBe(text);
+});
+
+test("inline markdown (**bold**, `code`, links, CJK, emoji) keeps every table row at identical display width", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const md = [
+      "| **항목** | `파일` | 상태 |",
+      "| :--- | :--- | ---: |",
+      "| **빌드 검증** | `src/tui/app.ts` | [로그](https://example.com/run_1) 🚀 |",
+      "| 일반 텍스트 | `foo_bar` | OK |",
+    ].join("\n");
+    const out = renderMarkdownTables(md, {
+      unicode: true,
+      formatCell: c => styleInlineMarkdown(c),
+    });
+    const lines = out.split("\n");
+    const rowWidths = lines.map(l => visibleWidth(l));
+    expect(new Set(rowWidths).size).toBe(1);
+    expect(out).not.toContain("**항목**");
+    expect(out).not.toContain("`src/tui/app.ts`");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("wide table fits within maxWidth and wraps multi-line cells cleanly inside borders", () => {
+  const md = [
+    "| Column | Description | Notes |",
+    "| --- | --- | --- |",
+    "| alpha | This is a very long description column with multiple English words and 한국어 텍스트 | short |",
+    "| `<br>` tag | Line one<br>Line two | ok |",
+  ].join("\n");
+  const maxWidth = 58;
+  const out = renderMarkdownTables(md, { unicode: true, maxWidth });
+  const lines = out.split("\n");
+  for (const line of lines) {
+    expect(visibleWidth(line)).toBeLessThanOrEqual(maxWidth);
+  }
+  expect(new Set(lines.map(l => visibleWidth(l))).size).toBe(1);
+  expect(out).toContain("multiple");
+  expect(out).toContain("텍스트");
+  expect(out).toContain("<br> tag");
+  expect(out).toContain("Line one");
+  expect(out).toContain("Line two");
+});
+
+test("pipe lines inside fenced code blocks are never parsed as GFM tables", () => {
+  const md = [
+    "```md",
+    "| A | B |",
+    "| --- | --- |",
+    "| 1 | 2 |",
+    "```",
+    "",
+    "| Real | Table |",
+    "| --- | --- |",
+    "| ok | yes |",
+  ].join("\n");
+  const out = renderMarkdownTables(md);
+  expect(out).toContain("| A | B |");
+  expect(out).toContain("┌──────┬───────┐");
 });

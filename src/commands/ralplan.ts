@@ -234,9 +234,15 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     `plan counts as done — a read-only-only plan (planner/architect/critic steps with no executor ` +
     `at all) needs no verifier, since nothing mutated.`;
 
-  const PLANNER = `You are the PLANNER. From the crystallized spec, sequence the work into a logical, outcome-based progression of concrete, ordered tasks.\n` + SCHEMA_SPEC;
-  const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, correct file targets, directory structure, and any missing setup/wiring/test steps. Return an improved plan (same shape).\n` + SCHEMA_SPEC;
-  const CRITIC = `You are the CRITIC. Finalize the plan: remove vague or redundant steps, make each step actionable and independently verifiable, and ensure the acceptance criteria are covered. Return the final plan (same shape).\n` + SCHEMA_SPEC;
+  const KARPATHY_PLAN_RULES =
+    `Planning discipline: keep steps minimal, surgical, and traced strictly to the crystallized spec — ` +
+    `no unasked features, speculative abstractions, or unnecessary layers; prefer the simplest direct ` +
+    `design; preserve any unresolved or contested spec trade-offs inside step names/targets instead of ` +
+    `silently picking one; make every step independently verifiable.`;
+
+  const PLANNER = `You are the PLANNER. From the crystallized spec, sequence the work into a logical, outcome-based progression of concrete, ordered tasks.\n${KARPATHY_PLAN_RULES}\n` + SCHEMA_SPEC;
+  const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, simplest direct design, correct file targets, directory structure, and any missing setup/wiring/test steps — push back on speculative abstractions or over-engineering. Return an improved plan (same shape).\n${KARPATHY_PLAN_RULES}\n` + SCHEMA_SPEC;
+  const CRITIC = `You are the CRITIC. Finalize the plan: remove vague, redundant, or over-engineered steps, make each step minimal, actionable, and independently verifiable, preserve any unresolved disagreement as an explicit decision/verification step, and ensure the acceptance criteria are covered. Return the final plan (same shape).\n${KARPATHY_PLAN_RULES}\n` + SCHEMA_SPEC;
 
   // Drafting passes honor the SAME per-role model config the rest of jeo uses
   // (resolveSubagentModel → config.subagents[role].model, else defaultModel).

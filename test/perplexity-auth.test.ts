@@ -22,6 +22,7 @@ import {
   loginPerplexity,
   perplexityJwtExpiryMs,
   refreshPerplexityToken,
+  verifyPerplexitySessionToken,
 } from "../src/auth/flows/perplexity.ts";
 import { canonicalSharedProvider, syncOAuthFromJeopi } from "../src/auth/shared-pool-bridge.ts";
 
@@ -348,5 +349,18 @@ describe("perplexity auth, config, flow & sync", () => {
     } finally {
       globalThis.fetch = prevFetch;
     }
+  });
+
+  it("verifyPerplexitySessionToken rejects logged-out {} sessions and accepts active user sessions", async () => {
+    makeIsolatedEnv();
+    globalThis.fetch = (async () => Response.json({})) as typeof fetch;
+    expect(await verifyPerplexitySessionToken("dead-token")).toEqual({ valid: false });
+
+    globalThis.fetch = (async () =>
+      Response.json({ user: { email: "active@example.com" } })) as typeof fetch;
+    expect(await verifyPerplexitySessionToken("live-token")).toEqual({
+      valid: true,
+      email: "active@example.com",
+    });
   });
 });

@@ -158,7 +158,7 @@ export function buildOnboardingChoices(unicode = true): SelectItem<OnboardingAct
     {
       value: "api-key",
       label: "Set an API key for a provider",
-      hint: `${arrow}groq, deepseek, mistral, openrouter, …`,
+      hint: `${arrow}groq, deepseek, mistral, openrouter, perplexity, …`,
     },
     {
       value: "api-add",

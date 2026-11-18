@@ -6,7 +6,7 @@ import { buildRecoverySnapshot, readGlobalConfig, type WorkflowRecoverySnapshot 
 import { listSessions } from "../agent/session";
 import { readGoalState } from "../agent/goal-verifier";
 import { daemonStatus, type DaemonStatus } from "../agent/notify/daemon-control";
-import { describeAllProviders, type CredentialKind } from "../ai/provider-status";
+import { describeAllProviders, describeSearchProviders, type CredentialKind } from "../ai/provider-status";
 
 export interface StatusProviderSummary {
   name: string;
@@ -58,6 +58,7 @@ export interface StatusDto {
   cwd: string;
   defaultModel?: string;
   providers: StatusProviderSummary[];
+  searchProviders: StatusProviderSummary[];
   sessions: {
     total: number;
     latestId?: string;
@@ -115,14 +116,19 @@ export async function buildStatusDto(
     daemonStatus().catch((): DaemonStatus => ({ configured: false, running: false, stale: false })),
   ]);
 
-  const rawProviders = await describeAllProviders(config);
-  const providers: StatusProviderSummary[] = rawProviders.map(p => ({
+  const [rawProviders, rawSearchProviders] = await Promise.all([
+    describeAllProviders(config),
+    describeSearchProviders(config),
+  ]);
+  const toSummary = (p: Awaited<ReturnType<typeof describeAllProviders>>[number]): StatusProviderSummary => ({
     name: p.name,
     ready: p.ready,
     authKind: p.kind,
     ...(typeof p.loggedIn === "boolean" ? { loggedIn: p.loggedIn } : {}),
     ...(p.custom ? { custom: true } : {}),
-  }));
+  });
+  const providers: StatusProviderSummary[] = rawProviders.map(toSummary);
+  const searchProviders: StatusProviderSummary[] = rawSearchProviders.map(toSummary);
 
   const recentSessions = sessions.slice(0, 10).map(sanitizeSessionSummary);
   const selectedRaw = opts.sessionId
@@ -200,6 +206,7 @@ export async function buildStatusDto(
     cwd,
     ...(config.defaultModel ? { defaultModel: config.defaultModel } : {}),
     providers,
+    searchProviders,
     sessions: {
       total: sessions.length,
       ...(sessions[0]?.id ? { latestId: sessions[0].id } : {}),
@@ -253,6 +260,8 @@ export async function runStatusCommand(args: string[] = [], cwd: string = proces
 
   const readyProviders = dto.providers.filter(p => p.ready).map(p => `${p.name} (${p.authKind})`);
   console.log(`Ready Auth:    ${readyProviders.length > 0 ? readyProviders.join(", ") : "none"}`);
+  const readySearchProviders = dto.searchProviders.filter(p => p.ready).map(p => `${p.name} (${p.authKind})`);
+  console.log(`Search Auth:   ${readySearchProviders.length > 0 ? readySearchProviders.join(", ") : "none"}`);
 
   console.log(chalk.bold("\n=== Sessions & Workflow Contract ==="));
   console.log(`Saved Sessions: ${dto.sessions.total}${dto.sessions.latestId ? ` (latest: ${dto.sessions.latestId})` : ""}`);

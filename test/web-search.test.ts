@@ -14,6 +14,7 @@ import {
   parseHtmlResults,
   parseLiteResults,
   decodeResultUrl,
+  setPerplexityBrowserRunnerForTest,
 } from "../src/agent/web-search";
 import { webSearchCardLines } from "../src/tui/components/forge";
 import * as fs from "node:fs/promises";
@@ -27,7 +28,7 @@ const SEARCH_ENV_KEYS = [
   "JEO_SEARCH_API_KEY_GEMINI", "JEO_SEARCH_MODEL_GEMINI",
   "PERPLEXITY_COOKIES", "PERPLEXITY_API_KEY", "PPLX_API_KEY",
   "PERPLEXITY_OAUTH_TOKEN", "JEO_SEARCH_API_KEY_PERPLEXITY",
-  "JEO_SEARCH_MODEL_PERPLEXITY", "OPENROUTER_API_KEY", "JEO_AUTH_NO_BORROW",
+  "JEO_SEARCH_MODEL_PERPLEXITY", "JEO_PERPLEXITY_BROWSER", "OPENROUTER_API_KEY", "JEO_AUTH_NO_BORROW",
   "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
 ];
 
@@ -964,6 +965,87 @@ test("resolveSearchChain: stored config.json perplexity credentials (OAuth or AP
     else process.env.JEO_CONFIG_DIR = savedCfgDir;
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
+});
+
+test("parsePerplexityAskStream: ignores intermediate final=true when final_sse_message=false / status=PENDING and keeps COMPLETED payload", async () => {
+  const sseText = [
+    `data: ${JSON.stringify({
+      status: "PENDING",
+      final: true,
+      final_sse_message: false,
+      blocks: [{ intended_usage: "ask_text", markdown_block: { chunks: ["Partial "], chunk_starting_offset: 0 } }],
+    })}`,
+    "",
+    `data: not-valid-json-keepalive`,
+    "",
+    `data: ${JSON.stringify({
+      status: "COMPLETED",
+      final: true,
+      final_sse_message: true,
+      display_model: "turbo",
+      uuid: "completed-uuid-1",
+      blocks: [
+        { intended_usage: "ask_text", markdown_block: { chunks: ["Full ", "completed answer"], chunk_starting_offset: 0 } },
+        { intended_usage: "web_results", web_result_block: { web_results: [{ name: "Src 1", url: "https://src1.example" }] } },
+      ],
+    })}`,
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const parsed = await parsePerplexityAskStream(sseText, "fallback");
+  expect(parsed.answer).toBe("Full completed answer");
+  expect(parsed.sources).toEqual([{ title: "Src 1", url: "https://src1.example", snippet: undefined, publishedDate: undefined }]);
+  expect(parsed.model).toBe("turbo");
+  expect(parsed.requestId).toBe("completed-uuid-1");
+});
+
+test("webSearchTool: Korean sign-up wall / fraud_authwall_upsell fails over to browser fallback or DuckDuckGo", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "perplexity" }, async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("perplexity.ai")) {
+        const sse = `data: ${JSON.stringify({
+          status: "COMPLETED",
+          final: true,
+          final_sse_message: true,
+          upsell_information: { name: "fraud_authwall_upsell", upsell_type: "LOGIN" },
+          blocks: [{ intended_usage: "ask_text", markdown_block: { answer: "가입한 뒤 요청을 다시 보내주세요." } }],
+        })}\n\n`;
+        return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(
+        `<a class="result__a" href="https://example.com/ddg-ko">DDG Korean Fallback</a><a class="result__snippet">Live DDG result</a>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }) as typeof fetch;
+    try {
+      // Without browser runner (test env), fails over to DuckDuckGo instead of returning Korean authwall text as success
+      const ddgRes = await webSearchTool({ query: "대한민국 뉴스" });
+      expect(ddgRes.success).toBe(true);
+      expect(ddgRes.output).toContain("Provider: DuckDuckGo");
+      expect(ddgRes.output).not.toContain("가입한 뒤 요청을 다시 보내주세요");
+
+      // With browser runner fallback enabled, returns Perplexity browser results
+      setPerplexityBrowserRunnerForTest(async req => ({
+        provider: "Perplexity",
+        answer: `Browser answer for ${req.query}`,
+        sources: [{ title: "Perplexity Browser Source", url: "https://pplx-browser.example" }],
+        citations: [],
+        searchQueries: [],
+        model: "turbo",
+      }));
+      const browserRes = await webSearchTool({ query: "대한민국 뉴스" });
+      expect(browserRes.success).toBe(true);
+      expect(browserRes.output).toContain("Provider: Perplexity");
+      expect(browserRes.output).toContain("Browser answer for 대한민국 뉴스");
+      expect(browserRes.output).toContain("https://pplx-browser.example");
+    } finally {
+      setPerplexityBrowserRunnerForTest(null);
+      globalThis.fetch = realFetch;
+    }
+  });
 });
 
 // Restore module-level model hint for other tests.

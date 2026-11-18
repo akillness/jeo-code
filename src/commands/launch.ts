@@ -4720,7 +4720,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         renderLoginPicker(list, {
           title: "Login with OAuth / subscription  ↑↓ move · Enter select · Esc cancel",
           cols,
-          rows: Math.max(4, Math.min(rows, 8)),
+          rows: Math.max(4, Math.min(rows, 14)),
           unicode: true,
           color: true,
         }),
@@ -6143,7 +6143,7 @@ navMatches = [];
           const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // token-keyed subscription/plan products
           let target = nonFlag.map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t) || subs.has(t));
           if (!target) {
-            const statuses = await describeAllProviders();
+            const statuses = [...(await describeAllProviders()), ...(await describeSearchProviders())];
             if (process.stdin.isTTY && process.stdout.isTTY) {
               target = await pickCloudProvider(statuses);
             } else {

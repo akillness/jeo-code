@@ -51,6 +51,21 @@ export async function extractPerplexityMacAppToken(): Promise<string | null> {
   }
 
   try {
+    const statusProc = Bun.spawn(["defaults", "read", NATIVE_APP_BUNDLE, "cachedLaunchLoginStatus"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [statusExit, statusOut] = await Promise.all([
+      statusProc.exited,
+      new Response(statusProc.stdout).text(),
+    ]);
+    if (statusExit === 0) {
+      const loginStatus = statusOut.trim().toLowerCase();
+      if (loginStatus === "0" || loginStatus === "false") {
+        return null;
+      }
+    }
+
     const proc = Bun.spawn(["defaults", "read", NATIVE_APP_BUNDLE, "authToken"], {
       stdout: "pipe",
       stderr: "ignore",
@@ -65,6 +80,29 @@ export async function extractPerplexityMacAppToken(): Promise<string | null> {
     return token;
   } catch {
     return null;
+  }
+}
+
+export async function verifyPerplexitySessionToken(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ valid: boolean; email?: string }> {
+  try {
+    const timeoutSignal = AbortSignal.timeout(5000);
+    const mergedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const res = await fetch(`${PERPLEXITY_AUTH_BASE}/session`, {
+      headers: perplexityAuthHeaders(false, `__Secure-next-auth.session-token=${token}`),
+      signal: mergedSignal,
+    });
+    if (!res.ok) return { valid: res.status !== 401 && res.status !== 403 };
+    const data = (await res.json().catch(() => null)) as { user?: { email?: unknown } } | null;
+    if (!data || typeof data !== "object" || !data.user) {
+      return { valid: false };
+    }
+    const email = typeof data.user.email === "string" && data.user.email.trim() ? data.user.email.trim() : undefined;
+    return { valid: true, email };
+  } catch {
+    return { valid: true };
   }
 }
 
@@ -195,12 +233,17 @@ export async function loginPerplexity(ctrl: OAuthController): Promise<OAuthCrede
     ctrl.onProgress?.("Checking for Perplexity desktop app...");
     const nativeJwt = await extractPerplexityMacAppToken();
     if (nativeJwt) {
-      ctrl.onProgress?.("Found Perplexity JWT from native app");
-      return {
-        access: nativeJwt,
-        refresh: nativeJwt,
-        expires: perplexityJwtExpiryMs(nativeJwt),
-      };
+      const verified = await verifyPerplexitySessionToken(nativeJwt, ctrl.signal);
+      if (verified.valid) {
+        ctrl.onProgress?.("Found active Perplexity session from native app");
+        return {
+          access: nativeJwt,
+          refresh: nativeJwt,
+          expires: perplexityJwtExpiryMs(nativeJwt),
+          ...(verified.email ? { email: verified.email } : {}),
+        };
+      }
+      ctrl.onProgress?.("Perplexity desktop app session is logged out; falling back to email login...");
     }
   }
 
@@ -230,11 +273,15 @@ export async function refreshPerplexityToken(token: string): Promise<OAuthCreden
   if (nativeJwt) {
     const nativeExpires = perplexityJwtExpiryMs(nativeJwt);
     if (nativeExpires > Date.now()) {
-      return {
-        access: nativeJwt,
-        refresh: nativeJwt,
-        expires: nativeExpires,
-      };
+      const verified = await verifyPerplexitySessionToken(nativeJwt);
+      if (verified.valid) {
+        return {
+          access: nativeJwt,
+          refresh: nativeJwt,
+          expires: nativeExpires,
+          ...(verified.email ? { email: verified.email } : {}),
+        };
+      }
     }
   }
 

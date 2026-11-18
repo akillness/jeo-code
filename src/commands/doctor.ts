@@ -1,8 +1,9 @@
 import { readGlobalConfig } from "../agent/state";
 import { describeHooks, type HookReport } from "../agent/hooks";
 import { findRetiredPins } from "../ai/model-retirements";
-import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
+import { resolveCredential, snapshotProvider, OAUTH_PROVIDERS, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider, describeProvider } from "../ai";
+import { describeSearchProviders } from "../ai/provider-status";
 
 import { effectiveCredentialForProvider } from "../ai/model-manager";
 import { resolveModelId } from "../ai/model-registry";
@@ -491,7 +492,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   }
 
   const oauthHealth: { provider: string; refreshable: boolean; expiresInMin?: number; email?: string }[] = [];
-  for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
+  for (const p of OAUTH_PROVIDERS) {
     const snap = await snapshotProvider(p);
     if (!snap.oauth) continue;
     oauthHealth.push({
@@ -501,6 +502,13 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
       email: snap.oauthEmail,
     });
   }
+  const searchStatuses = await describeSearchProviders(config);
+  const searchProbes = searchStatuses.map(s => ({
+    name: s.name,
+    credential: s.kind,
+    status: s.ready ? ("ok" as const) : ("skipped" as const),
+    detail: s.label,
+  }));
 
   const defaultProbe = probes.find(p => p.name === defaultProvider);
   const ready = defaultProvider === "agy"
@@ -544,6 +552,7 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
         latencyMs: p.result.latencyMs ?? null,
         detail: p.result.detail,
       })),
+      searchProviders: searchProbes,
       oauth: oauthHealth,
       ready,
       hooks,
@@ -599,11 +608,20 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   for (const line of providerTableLines(probes, cols, unicode)) console.log(line);
 
   console.log("");
+  if (searchProbes.length) {
+    console.log("Search providers (web_search #1 priority):");
+    for (const s of searchProbes) {
+      const rawBadge = (s.status === "ok" ? "ok" : "not configured").padEnd(16);
+      const badge = s.status === "ok" ? chalk.green(rawBadge) : chalk.yellow(rawBadge);
+      console.log(`  ${s.name.padEnd(12)} ${badge} ${s.detail}`);
+    }
+    console.log("");
+  }
   const oauthLines = oauthHealth.map(o => {
     let detail = o.refreshable ? "refreshable" : "manual (no refresh)";
     if (o.expiresInMin !== undefined) detail += o.expiresInMin <= 0 ? ", expired (auto-refresh on next call)" : `, expires in ${o.expiresInMin}m`;
     if (o.email) detail += `, ${o.email}`;
-    return `  ${o.provider.padEnd(10)} ${detail}`;
+    return `  ${o.provider.padEnd(12)} ${detail}`;
   });
   if (oauthLines.length) {
     console.log("OAuth tokens:");

@@ -32,7 +32,7 @@ import {
 } from "../ai/providers/custom-providers";
 import { listProviderModels } from "../ai/model-discovery";
 import { writeModelCache } from "../ai/model-cache";
-import { describeProvider } from "../ai/provider-status";
+import { describeProvider, describeSearchProviders, PROVIDER_NAMES, SEARCH_PROVIDER_NAMES } from "../ai/provider-status";
 
 const USAGE = [
   "Usage: jeo provider <command>",
@@ -43,6 +43,7 @@ const USAGE = [
   "  remove <id>                            Unregister a custom provider",
   "  presets                                List the built-in provider presets",
   "  test <id>                              Probe a provider's endpoint and credential",
+  "  Search & OAuth (perplexity, …)     : 'jeo auth login <provider>' or 'jeo setup'",
   "",
   "Flags for add:",
   "  --id <id>            Routing prefix + config key (e.g. my-proxy → my-proxy/<model>)",
@@ -88,7 +89,16 @@ export async function runProviderCommand(args: string[]): Promise<void> {
 }
 
 async function runList(): Promise<void> {
-  console.log(formatCustomProviderList(await readGlobalConfig()).join("\n"));
+  const cfg = await readGlobalConfig();
+  console.log(formatCustomProviderList(cfg).join("\n"));
+  const search = await describeSearchProviders(cfg);
+  if (search.length) {
+    console.log("");
+    console.log("Search providers (web_search #1 priority):");
+    for (const s of search) {
+      console.log(`  ${s.name}  [${s.ready ? "ready" : "not configured"}]  ${s.label}`);
+    }
+  }
 }
 
 async function runAdd(rest: string[]): Promise<void> {
@@ -159,12 +169,23 @@ async function probe(id: string, opts: { failOnError: boolean }): Promise<void> 
   const def = customProviderDef(id);
   if (!def) {
     const status = await describeProvider(id, cfg);
-    if (!status.ready && status.kind === "none") {
-      console.log(`No provider '${id}'. Run 'jeo provider list' or 'jeo provider add --id ${id} --base-url <url>'.`);
+    if ((SEARCH_PROVIDER_NAMES as readonly string[]).includes(id)) {
+      console.log(`Probing ${id} (built-in search provider · web_search #1 priority)`);
+      console.log(`  credential: ${status.ready ? status.label : `MISSING — ${status.label}`}`);
+      console.log(
+        status.ready
+          ? "  status    : OK — web_search prioritizes Perplexity automatically."
+          : "  status    : NOT READY — run 'jeo auth login perplexity', 'jeo setup', or set PERPLEXITY_API_KEY / PERPLEXITY_COOKIES.",
+      );
+      if (opts.failOnError && !status.ready) process.exitCode = 1;
+      return;
+    }
+    if ((PROVIDER_NAMES as readonly string[]).includes(id)) {
+      console.log(`'${id}' is a built-in provider (${status.label}) — check it with 'jeo doctor'.`);
       if (opts.failOnError) process.exitCode = 1;
       return;
     }
-    console.log(`'${id}' is a built-in provider — check it with 'jeo doctor'.`);
+    console.log(`No provider '${id}'. Run 'jeo provider list' or 'jeo provider add --id ${id} --base-url <url>'.`);
     if (opts.failOnError) process.exitCode = 1;
     return;
   }

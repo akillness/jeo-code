@@ -119,9 +119,16 @@ interface PerplexityAskSource {
 export interface PerplexityAskStreamEvent {
   status?: string;
   final?: boolean;
+  final_sse_message?: boolean;
   text?: string;
   blocks?: PerplexityAskBlock[];
   sources_list?: PerplexityAskSource[];
+  upsell_information?: {
+    name?: string;
+    upsell_type?: string;
+    cta?: string;
+    cta_information?: { disallow_close?: boolean };
+  };
   error_code?: string;
   error_message?: string;
   display_model?: string;
@@ -172,6 +179,15 @@ async function readMacPerplexityAuthToken(): Promise<string | undefined> {
     return undefined;
   }
   try {
+    const statusRes = await execFileAsync("defaults", ["read", "ai.perplexity.mac", "cachedLaunchLoginStatus"], {
+      timeout: 2000,
+    }).catch(() => null);
+    if (statusRes) {
+      const loginStatus = statusRes.stdout.trim().toLowerCase();
+      if (loginStatus === "0" || loginStatus === "false") {
+        return undefined;
+      }
+    }
     const { stdout } = await execFileAsync("defaults", ["read", "ai.perplexity.mac", "authToken"], { timeout: 2000 });
     const token = stdout.trim();
     return token.length > 0 ? token : undefined;
@@ -444,10 +460,21 @@ function buildAskAnswer(event: PerplexityAskStreamEvent): string {
   return "";
 }
 
+const PERPLEXITY_AUTH_WALL_RE =
+  /\b(?:sign up|log in|sign in)\b|가입한\s*뒤|로그인(?:한\s*뒤|하세|해\s*주)|회원가입/i;
+
+function isAuthWallUpsell(event: PerplexityAskStreamEvent): boolean {
+  const upsell = event.upsell_information;
+  if (!upsell) return false;
+  if (upsell.name === "fraud_authwall_upsell") return true;
+  return upsell.upsell_type === "LOGIN" && upsell.cta_information?.disallow_close === true;
+}
+
 interface AskAccumulatorState {
   answer: string;
   model?: string;
   requestId?: string;
+  authWall: boolean;
   sourcesByUrl: Map<string, WebSearchSource>;
   mergedEvent: PerplexityAskStreamEvent;
 }
@@ -458,6 +485,9 @@ function applyAskEvent(state: AskAccumulatorState, rawEvent: unknown): boolean {
   if (event.error_code || event.error_message) {
     const message = event.error_message ?? event.error_code ?? "unknown error";
     throw new Error(`Perplexity ask stream error: ${message}`);
+  }
+  if (isAuthWallUpsell(event)) {
+    state.authWall = true;
   }
   state.mergedEvent = mergeAskEventSnapshot(state.mergedEvent, event);
   const eventAnswer = buildAskAnswer(state.mergedEvent);
@@ -473,7 +503,10 @@ function applyAskEvent(state: AskAccumulatorState, rawEvent: unknown): boolean {
   if (typeof state.mergedEvent.uuid === "string" && state.mergedEvent.uuid) {
     state.requestId = state.mergedEvent.uuid;
   }
-  return Boolean(state.mergedEvent.final || state.mergedEvent.status === "COMPLETED");
+  if (event.final_sse_message === true || state.mergedEvent.status === "COMPLETED") {
+    return true;
+  }
+  return Boolean(event.final === true && event.final_sse_message !== false && event.status !== "PENDING");
 }
 
 /** Parse an iterable sequence of decoded Perplexity `perplexity_ask` SSE JSON objects. */
@@ -483,6 +516,7 @@ export function parsePerplexityAskEvents(
 ): WebSearchResponse {
   const state: AskAccumulatorState = {
     answer: "",
+    authWall: false,
     sourcesByUrl: new Map<string, WebSearchSource>(),
     mergedEvent: { blocks: [] },
   };
@@ -513,7 +547,11 @@ async function* readSseJsonEvents(stream: ReadableStream<Uint8Array>): AsyncGene
     if (rawData === "" || rawData === "[DONE]") {
       return { done: rawData === "[DONE]" };
     }
-    return { done: false, payload: JSON.parse(rawData) };
+    try {
+      return { done: false, payload: JSON.parse(rawData) };
+    } catch {
+      return { done: false };
+    }
   };
 
   const processLine = (rawLine: string): { done: boolean; payload?: unknown } | undefined => {
@@ -556,11 +594,10 @@ async function* readSseJsonEvents(stream: ReadableStream<Uint8Array>): AsyncGene
   }
 }
 
-/** Parse a `perplexity_ask` SSE stream (ReadableStream or raw SSE text) into the unified response. */
-export async function parsePerplexityAskStream(
+async function parsePerplexityAskStreamDetailed(
   streamOrText: ReadableStream<Uint8Array> | string,
   fallbackRequestId?: string,
-): Promise<WebSearchResponse> {
+): Promise<{ response: WebSearchResponse; authWall: boolean }> {
   const stream =
     typeof streamOrText === "string"
       ? new ReadableStream<Uint8Array>({
@@ -572,6 +609,7 @@ export async function parsePerplexityAskStream(
       : streamOrText;
   const state: AskAccumulatorState = {
     answer: "",
+    authWall: false,
     sourcesByUrl: new Map<string, WebSearchSource>(),
     mergedEvent: { blocks: [] },
   };
@@ -579,14 +617,26 @@ export async function parsePerplexityAskStream(
     if (applyAskEvent(state, event)) break;
   }
   return {
-    provider: "Perplexity",
-    answer: state.answer || undefined,
-    sources: [...state.sourcesByUrl.values()],
-    citations: [],
-    searchQueries: [],
-    model: state.model,
-    requestId: state.requestId ?? fallbackRequestId,
+    authWall: state.authWall,
+    response: {
+      provider: "Perplexity",
+      answer: state.answer || undefined,
+      sources: [...state.sourcesByUrl.values()],
+      citations: [],
+      searchQueries: [],
+      model: state.model,
+      requestId: state.requestId ?? fallbackRequestId,
+    },
   };
+}
+
+/** Parse a `perplexity_ask` SSE stream (ReadableStream or raw SSE text) into the unified response. */
+export async function parsePerplexityAskStream(
+  streamOrText: ReadableStream<Uint8Array> | string,
+  fallbackRequestId?: string,
+): Promise<WebSearchResponse> {
+  const { response } = await parsePerplexityAskStreamDetailed(streamOrText, fallbackRequestId);
+  return response;
 }
 
 /** Parse a non-streaming Perplexity (or OpenRouter `perplexity/*`) `chat/completions` JSON response. */
@@ -815,20 +865,250 @@ async function callPerplexityAsk(
   if (!response.body) {
     throw new Error("Perplexity ask API returned no response body");
   }
-  const parsed = await parsePerplexityAskStream(response.body, requestId);
-  if (parsed.sources.length === 0 && (!parsed.answer?.trim() || /\b(?:sign up|log in)\b/i.test(parsed.answer))) {
-    throw new Error(`Perplexity ask returned no search results${parsed.answer ? `: ${parsed.answer.trim().slice(0, 120)}` : ""}`);
-  }
+  const { response: parsed, authWall } = await parsePerplexityAskStreamDetailed(response.body, requestId);
+  assertValidPerplexityAskResponse(parsed, authWall);
   if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
     parsed.sources = parsed.sources.slice(0, req.limit);
   }
   return parsed;
 }
 
+function assertValidPerplexityAskResponse(parsed: WebSearchResponse, authWall: boolean): void {
+  if (
+    parsed.sources.length === 0 &&
+    (authWall || !parsed.answer?.trim() || PERPLEXITY_AUTH_WALL_RE.test(parsed.answer))
+  ) {
+    throw new Error(
+      `Perplexity ask returned no search results${parsed.answer ? `: ${parsed.answer.trim().slice(0, 120)}` : ""}`,
+    );
+  }
+}
+
+const PERPLEXITY_BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const PERPLEXITY_BROWSER_IDLE_MS = 60_000;
+
+interface PerplexityBrowserHandle {
+  browser: { isConnected(): boolean; close(): Promise<void> };
+  context: { cookies(): Promise<Array<{ name: string }>>; close(): Promise<void> };
+  page: {
+    isClosed(): boolean;
+    goto(url: string, opts: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
+    waitForTimeout(ms: number): Promise<void>;
+    evaluate<T, A>(fn: (arg: A) => Promise<T>, arg: A): Promise<T>;
+  };
+}
+
+let perplexityBrowserHandle: PerplexityBrowserHandle | null = null;
+let perplexityBrowserInitPromise: Promise<PerplexityBrowserHandle> | null = null;
+let perplexityBrowserIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let perplexityExitHookRegistered = false;
+let perplexityBrowserRunnerOverride: ((req: SearchRequest) => Promise<WebSearchResponse>) | null = null;
+
+/** Test hook: inject a fake browser search runner without launching Chromium. */
+export function setPerplexityBrowserRunnerForTest(
+  runner: ((req: SearchRequest) => Promise<WebSearchResponse>) | null,
+): void {
+  perplexityBrowserRunnerOverride = runner;
+}
+
+function clearPerplexityBrowserIdleTimer(): void {
+  if (perplexityBrowserIdleTimer) {
+    clearTimeout(perplexityBrowserIdleTimer);
+    perplexityBrowserIdleTimer = null;
+  }
+}
+
+function schedulePerplexityBrowserClose(): void {
+  clearPerplexityBrowserIdleTimer();
+  perplexityBrowserIdleTimer = setTimeout(() => {
+    void closePerplexityBrowser();
+  }, PERPLEXITY_BROWSER_IDLE_MS);
+  perplexityBrowserIdleTimer.unref?.();
+}
+
+/** Close the cached headless Chromium instance used for Perplexity browser search. */
+export async function closePerplexityBrowser(): Promise<void> {
+  clearPerplexityBrowserIdleTimer();
+  const handle = perplexityBrowserHandle;
+  perplexityBrowserHandle = null;
+  if (handle) {
+    await handle.context.close().catch(() => {});
+    await handle.browser.close().catch(() => {});
+  }
+}
+
+async function ensurePerplexityBrowserPage(): Promise<PerplexityBrowserHandle> {
+  clearPerplexityBrowserIdleTimer();
+  if (
+    perplexityBrowserHandle &&
+    perplexityBrowserHandle.browser.isConnected() &&
+    !perplexityBrowserHandle.page.isClosed()
+  ) {
+    return perplexityBrowserHandle;
+  }
+  if (perplexityBrowserInitPromise) return perplexityBrowserInitPromise;
+
+  perplexityBrowserInitPromise = (async () => {
+    await closePerplexityBrowser();
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const resolved = Intl.DateTimeFormat().resolvedOptions();
+      const locale = resolved.locale || "ko-KR";
+      const timezoneId = resolved.timeZone || "Asia/Seoul";
+      const context = await browser.newContext({
+        userAgent: PERPLEXITY_BROWSER_USER_AGENT,
+        locale,
+        timezoneId,
+      });
+      const page = await context.newPage();
+      await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+      for (let i = 0; i < 40; i++) {
+        const names = new Set((await context.cookies()).map(c => c.name));
+        if (names.has("pplx.visitor-id") && names.has("pplx.edge-sid") && names.has("cf_clearance")) {
+          break;
+        }
+        await page.waitForTimeout(200);
+      }
+      if (!perplexityExitHookRegistered) {
+        perplexityExitHookRegistered = true;
+        process.once("exit", () => {
+          void closePerplexityBrowser();
+        });
+      }
+      const handle: PerplexityBrowserHandle = { browser, context, page };
+      perplexityBrowserHandle = handle;
+      return handle;
+    } catch (error) {
+      await browser.close().catch(() => {});
+      throw error;
+    }
+  })().finally(() => {
+    perplexityBrowserInitPromise = null;
+  });
+
+  return perplexityBrowserInitPromise;
+}
+
+async function executePerplexityBrowserAsk(
+  handle: PerplexityBrowserHandle,
+  req: SearchRequest,
+): Promise<WebSearchResponse> {
+  const requestId = randomUUID();
+  const resolved = Intl.DateTimeFormat().resolvedOptions();
+  const body = {
+    query_str: req.query,
+    params: {
+      attachments: [],
+      language: /[가-힣]/.test(req.query) ? "ko-KR" : (resolved.locale || "en-US"),
+      timezone: resolved.timeZone || "UTC",
+      search_focus: "internet",
+      sources: ["web"],
+      frontend_uuid: requestId,
+      mode: "copilot",
+      model_preference: "turbo",
+      is_related_query: false,
+      is_sponsored: false,
+      frontend_context_uuid: randomUUID(),
+      prompt_source: "user",
+      query_source: "home",
+      is_incognito: false,
+      local_search_enabled: false,
+      use_schematized_api: true,
+      send_back_text_in_streaming_api: false,
+      skip_search_enabled: false,
+      always_search_override: true,
+      search_recency_filter: req.recency ?? null,
+      supported_block_use_cases: [
+        "answer_modes",
+        "markdown_block",
+        "web_results",
+        "ask_text",
+        "search_result_widgets",
+      ],
+      version: PERPLEXITY_OAUTH_API_VERSION,
+    },
+  };
+
+  const res = await handle.page.evaluate(
+    async ({ bodyObj, timeoutMs }: { bodyObj: typeof body; timeoutMs: number }) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch("https://www.perplexity.ai/rest/sse/perplexity_ask", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            "X-Request-ID": bodyObj.params.frontend_uuid,
+            "X-Perplexity-Request-Endpoint": "https://www.perplexity.ai/rest/sse/perplexity_ask",
+            "X-Perplexity-Request-Reason": "ask-query-state-provider",
+          },
+          body: JSON.stringify(bodyObj),
+          signal: controller.signal,
+        });
+        return { ok: response.ok, status: response.status, text: await response.text() };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    { bodyObj: body, timeoutMs: PERPLEXITY_HARD_TIMEOUT_MS },
+  );
+
+  if (!res.ok) {
+    throw new Error(`Perplexity browser ask error (${res.status}): ${res.text.slice(0, 300)}`);
+  }
+  const { response: parsed, authWall } = await parsePerplexityAskStreamDetailed(res.text, requestId);
+  assertValidPerplexityAskResponse(parsed, authWall);
+  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+    parsed.sources = parsed.sources.slice(0, req.limit);
+  }
+  return parsed;
+}
+
+/** Execute a Perplexity search through a headless Playwright browser session. */
+export async function searchPerplexityViaBrowser(req: SearchRequest): Promise<WebSearchResponse> {
+  if (perplexityBrowserRunnerOverride) {
+    return perplexityBrowserRunnerOverride(req);
+  }
+  const hadWarmHandle = Boolean(perplexityBrowserHandle);
+  try {
+    const handle = await ensurePerplexityBrowserPage();
+    const res = await executePerplexityBrowserAsk(handle, req);
+    schedulePerplexityBrowserClose();
+    return res;
+  } catch (err) {
+    if (hadWarmHandle) {
+      await closePerplexityBrowser();
+      const freshHandle = await ensurePerplexityBrowserPage();
+      try {
+        const res = await executePerplexityBrowserAsk(freshHandle, req);
+        schedulePerplexityBrowserClose();
+        return res;
+      } catch (retryErr) {
+        await closePerplexityBrowser();
+        throw retryErr;
+      }
+    }
+    await closePerplexityBrowser();
+    throw err;
+  }
+}
+
+function shouldTryPerplexityBrowserFallback(explicit: boolean, methods: PerplexityAuthMethod[]): boolean {
+  if (jeoEnv("PERPLEXITY_BROWSER") === "0") return false;
+  const inTest = process.env.NODE_ENV === "test";
+  if (inTest && jeoEnv("PERPLEXITY_BROWSER") !== "1" && !perplexityBrowserRunnerOverride) {
+    return false;
+  }
+  return explicit || methods.some(m => m.type === "cookies" || m.type === "oauth");
+}
+
 async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean } = {}): Promise<WebSearchResponse> {
   const explicit = opts.explicit ?? jeoEnv("SEARCH_PROVIDER")?.toLowerCase() === "perplexity";
   const methods = await resolvePerplexityAuthMethods(explicit);
-  if (methods.length === 0) {
+  if (methods.length === 0 && !shouldTryPerplexityBrowserFallback(explicit, methods)) {
     throw new Error(
       "Perplexity: no direct credentials (set PERPLEXITY_COOKIES, PERPLEXITY_API_KEY, or run 'jeo auth login perplexity')",
     );
@@ -840,6 +1120,13 @@ async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean }
         return await callPerplexityApi(auth, req);
       }
       return await callPerplexityAsk(auth, req);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (shouldTryPerplexityBrowserFallback(explicit, methods)) {
+    try {
+      return await searchPerplexityViaBrowser(req);
     } catch (error) {
       lastError = error;
     }

@@ -1,13 +1,27 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { isModelAuthenticated, resolveStartupDefaultModel } from "../src/agent/session-model";
+import { resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { Config } from "../src/agent/state";
 
-// The unauthenticated scenarios must not be rescued by keys that happen to be set in the
-// developer's or CI's environment, so the credential env vars are cleared for this file.
-const ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "XAI_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN"];
+// The unauthenticated scenarios must not be rescued by keys or stored logins that happen to
+// live in the developer's or CI's environment, so credential env vars and JEO_CONFIG_DIR are isolated.
+const ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "XAI_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN", "JEO_CONFIG_DIR"];
 const saved: Record<string, string | undefined> = {};
-beforeEach(() => { for (const k of ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; } });
-afterEach(() => { for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+let tmpConfigDir: string | undefined;
+beforeEach(() => {
+  for (const k of ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+  tmpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "jeo-session-model-"));
+  process.env.JEO_CONFIG_DIR = tmpConfigDir;
+});
+afterEach(() => {
+  resetLiveCodexModels();
+  resetLiveProviderModels();
+  for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  if (tmpConfigDir) { fs.rmSync(tmpConfigDir, { recursive: true, force: true }); tmpConfigDir = undefined; }
+});
 
 const config = (over: Partial<Config>): Config => ({ providers: {}, defaultModel: "claude-haiku-5-5", thinkingLevel: "medium", ...over });
 const oauth = (access = "tok") => ({ access, refresh: "r", expires: Date.now() + 3_600_000 });

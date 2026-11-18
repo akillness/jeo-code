@@ -15,6 +15,8 @@ import {
   parseLiteResults,
   decodeResultUrl,
   setPerplexityBrowserRunnerForTest,
+  buildPerplexityBrowserCookies,
+  clearPerplexitySessionCacheForTest,
 } from "../src/agent/web-search";
 import { webSearchCardLines } from "../src/tui/components/forge";
 import * as fs from "node:fs/promises";
@@ -28,7 +30,8 @@ const SEARCH_ENV_KEYS = [
   "JEO_SEARCH_API_KEY_GEMINI", "JEO_SEARCH_MODEL_GEMINI",
   "PERPLEXITY_COOKIES", "PERPLEXITY_API_KEY", "PPLX_API_KEY",
   "PERPLEXITY_OAUTH_TOKEN", "JEO_SEARCH_API_KEY_PERPLEXITY",
-  "JEO_SEARCH_MODEL_PERPLEXITY", "JEO_PERPLEXITY_BROWSER", "OPENROUTER_API_KEY", "JEO_AUTH_NO_BORROW",
+  "JEO_SEARCH_MODEL_PERPLEXITY", "JEO_PERPLEXITY_BROWSER", "JEO_PERPLEXITY_VERIFY_SESSION",
+  "OPENROUTER_API_KEY", "JEO_AUTH_NO_BORROW",
   "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
 ];
 
@@ -1048,5 +1051,204 @@ test("webSearchTool: Korean sign-up wall / fraud_authwall_upsell fails over to b
   });
 });
 
+test("webSearchTool: logged_out_thread_sign_in (without disallow_close) & non-English auth-wall fails over to DuckDuckGo", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "perplexity" }, async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("perplexity.ai")) {
+        const sse = `data: ${JSON.stringify({
+          status: "COMPLETED",
+          final: true,
+          final_sse_message: true,
+          privacy_state: "INCOGNITO",
+          upsell_information: { name: "logged_out_thread_sign_in", upsell_type: "LOGIN", cta: "SIGN_UP_OR_LOGIN" },
+          blocks: [{ intended_usage: "ask_text", markdown_block: { answer: "Daftar dan ulangi permintaan Anda." } }],
+        })}\n\n`;
+        return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(
+        `<a class="result__a" href="https://example.com/ddg-id">DDG Fallback</a><a class="result__snippet">Live DDG result</a>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "latest typescript release" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: DuckDuckGo");
+      expect(res.output).not.toContain("Daftar dan ulangi permintaan Anda");
+      expect(res.output).toContain("https://example.com/ddg-id");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test("webSearchTool: Perplexity OAuth receiving logged_out_thread_sign_in with 0 sources fails over to DuckDuckGo", async () => {
+  await withSearchEnv({ PERPLEXITY_OAUTH_TOKEN: "pplx-stale-token" }, async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("perplexity.ai")) {
+        const sse = `data: ${JSON.stringify({
+          status: "COMPLETED",
+          final: true,
+          final_sse_message: true,
+          privacy_state: "INCOGNITO",
+          upsell_information: { name: "logged_out_thread_sign_in", upsell_type: "LOGIN", cta: "SIGN_UP_OR_LOGIN" },
+          blocks: [{ intended_usage: "ask_text", markdown_block: { answer: "Bitte melden Sie sich an." } }],
+        })}\n\n`;
+        return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(
+        `<a class="result__a" href="https://example.com/ddg-oauth-fallback">DDG OAuth Fallback</a><a class="result__snippet">Live DDG result</a>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "bun release notes" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: DuckDuckGo");
+      expect(res.output).not.toContain("Bitte melden Sie sich an");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test("resolveSearchChain: skips logged-out 5-part Perplexity JWE and promotes native search, while keeping live 5-part JWE #1", async () => {
+  clearPerplexitySessionCacheForTest();
+  const realFetch = globalThis.fetch;
+  try {
+    const deadJwe = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..iv.dead.tag";
+    globalThis.fetch = (async () => Response.json({})) as typeof fetch;
+    await withSearchEnv(
+      {
+        PERPLEXITY_OAUTH_TOKEN: deadJwe,
+        JEO_PERPLEXITY_VERIFY_SESSION: "1",
+        JEO_SEARCH_API_KEY: "sk-ant-test",
+      },
+      async () => {
+        const chain = await resolveSearchChain({ modelProvider: "anthropic" });
+        expect(chain.map(p => p.id)).toEqual(["anthropic", "duckduckgo"]);
+      },
+    );
+
+    clearPerplexitySessionCacheForTest();
+    const liveJwe = "hdr.ekey.iv.live.tag";
+    globalThis.fetch = (async () => Response.json({ user: { email: "live@example.com" } })) as typeof fetch;
+    await withSearchEnv(
+      {
+        PERPLEXITY_OAUTH_TOKEN: liveJwe,
+        JEO_PERPLEXITY_VERIFY_SESSION: "1",
+        JEO_SEARCH_API_KEY: "sk-ant-test",
+      },
+      async () => {
+        const chain = await resolveSearchChain({ modelProvider: "anthropic" });
+        expect(chain.map(p => p.id)).toEqual(["perplexity", "anthropic", "duckduckgo"]);
+      },
+    );
+  } finally {
+    clearPerplexitySessionCacheForTest();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("webSearchTool: auth-wall invalidates cached Perplexity OAuth token so subsequent resolveSearchChain skips dead OAuth", async () => {
+  clearPerplexitySessionCacheForTest();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("perplexity.ai")) {
+      const sse = `data: ${JSON.stringify({
+        status: "COMPLETED",
+        final: true,
+        final_sse_message: true,
+        upsell_information: { name: "logged_out_thread_sign_in", upsell_type: "LOGIN" },
+        blocks: [{ intended_usage: "ask_text", markdown_block: { answer: "Sign in to continue." } }],
+      })}\n\n`;
+      return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    return new Response(
+      `<a class="result__a" href="https://example.com/ddg-cached">DDG Cached</a><a class="result__snippet">Snippet</a>`,
+      { status: 200, headers: { "content-type": "text/html" } },
+    );
+  }) as typeof fetch;
+  try {
+    await withSearchEnv({ PERPLEXITY_OAUTH_TOKEN: "pplx-cached-dead-token" }, async () => {
+      expect((await resolveSearchChain()).map(p => p.id)).toEqual(["perplexity", "duckduckgo"]);
+      const res = await webSearchTool({ query: "cache invalidation test" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: DuckDuckGo");
+      expect((await resolveSearchChain()).map(p => p.id)).toEqual(["duckduckgo"]);
+    });
+  } finally {
+    clearPerplexitySessionCacheForTest();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("buildPerplexityBrowserCookies & searchPerplexityViaBrowser: injects PERPLEXITY_COOKIES and OAuth session cookie into browser fallback", async () => {
+  const parsedCookies = buildPerplexityBrowserCookies({
+    cookies: "__Host-next-auth.csrf-token=abc=123; cf_clearance=cfval",
+    oauthToken: "hdr.ekey.iv.live.tag",
+  });
+  expect(parsedCookies).toEqual([
+    { name: "__Host-next-auth.csrf-token", value: "abc=123", url: "https://www.perplexity.ai", secure: true },
+    { name: "cf_clearance", value: "cfval", domain: ".perplexity.ai", path: "/", secure: true },
+    {
+      name: "__Secure-next-auth.session-token",
+      value: "hdr.ekey.iv.live.tag",
+      domain: ".perplexity.ai",
+      path: "/",
+      httpOnly: true,
+      secure: true,
+    },
+  ]);
+
+  // Explicit PERPLEXITY_COOKIES session cookie is preserved without duplicating OAuth cookie
+  const overridden = buildPerplexityBrowserCookies({
+    cookies: "__Secure-next-auth.session-token=cookie-wins; other=1",
+    oauthToken: "oauth-loses",
+  });
+  expect(overridden).toHaveLength(2);
+  expect(overridden[0]?.value).toBe("cookie-wins");
+
+  // On Cloudflare 403 from direct HTTP with OAuth, browser fallback receives the OAuth cookie
+  const realFetch = globalThis.fetch;
+  let capturedBrowserCookies: unknown[] | undefined;
+  globalThis.fetch = (async () => new Response("Just a moment...", { status: 403 })) as typeof fetch;
+  setPerplexityBrowserRunnerForTest(async (req, cookies) => {
+    capturedBrowserCookies = cookies;
+    return {
+      provider: "Perplexity",
+      answer: `Browser OAuth answer for ${req.query}`,
+      sources: [{ title: "Auth Browser Src", url: "https://auth-browser.example" }],
+      citations: [],
+      searchQueries: [],
+    };
+  });
+  try {
+    await withSearchEnv({ PERPLEXITY_OAUTH_TOKEN: "live-oauth-for-browser" }, async () => {
+      const res = await webSearchTool({ query: "cloudflare bypass with oauth" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: Perplexity");
+      expect(res.output).toContain("Browser OAuth answer for cloudflare bypass with oauth");
+      expect(capturedBrowserCookies).toEqual([
+        {
+          name: "__Secure-next-auth.session-token",
+          value: "live-oauth-for-browser",
+          domain: ".perplexity.ai",
+          path: "/",
+          httpOnly: true,
+          secure: true,
+        },
+      ]);
+    });
+  } finally {
+    setPerplexityBrowserRunnerForTest(null);
+    globalThis.fetch = realFetch;
+  }
+});
 // Restore module-level model hint for other tests.
 setWebSearchActiveModel(undefined);

@@ -5,7 +5,19 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { openDb, whereDefined, whoCalls, whatCalls, impact, search, indexDir, stats, hasIndexedFiles } from "../../packages/jeo-mem/src/index";
+import {
+  openDb,
+  resolveExtDbPath,
+  indexDir,
+  indexExtDir,
+  hasIndexedFiles,
+  multiWhereDefined,
+  multiWhoCalls,
+  multiWhatCalls,
+  multiImpact,
+  multiSearch,
+  multiStats,
+} from "../../packages/jeo-mem/src/index";
 import { jeoEnv } from "../util/env";
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
@@ -76,6 +88,8 @@ const DEFAULT_REFRESH_TTL_MS = 3_000;
 interface DbEntry {
   db: ReturnType<typeof openDb>;
   dbPath: string;
+  extDb: ReturnType<typeof openDb> | null;
+  extDbPath: string;
   isMemory: boolean;
   lastSyncAt: number;
   dirty: boolean;
@@ -95,13 +109,19 @@ export function markJeoxDirty(cwd: string): void {
   if (entry) entry.dirty = true;
 }
 
-function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): ReturnType<typeof openDb> {
+function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): DbEntry {
   const key = path.resolve(cwd);
   const dbPath = path.join(key, ".jeo", "db", "jeo.db");
+  const extDbPath = resolveExtDbPath(dbPath);
   let entry = dbCache.get(key);
   if (entry) {
-    if (!entry.isMemory && !fs.existsSync(entry.dbPath)) {
+    const extFilename = (entry.extDb as { filename?: string } | null)?.filename ?? "";
+    const extIsMemory = extFilename === "" || extFilename === ":memory:";
+    const dbMissing = !entry.isMemory && !fs.existsSync(entry.dbPath);
+    const extMissing = entry.extDb !== null && !extIsMemory && !fs.existsSync(entry.extDbPath);
+    if (dbMissing || extMissing) {
       try { entry.db.close(); } catch {}
+      try { entry.extDb?.close(); } catch {}
       dbCache.delete(key);
       entry = undefined;
     } else {
@@ -112,6 +132,12 @@ function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): ReturnType<type
   }
   if (!entry) {
     const db = openDb(dbPath);
+    let extDb: ReturnType<typeof openDb> | null = null;
+    try {
+      extDb = openDb(extDbPath);
+    } catch {
+      extDb = null;
+    }
     const filename = (db as { filename?: string }).filename ?? "";
     const isMemory = filename === "" || filename === ":memory:";
     if (dbCache.size >= MAX_DB_CACHE) {
@@ -120,25 +146,38 @@ function getFreshDb(cwd: string, opts: { sync?: boolean } = {}): ReturnType<type
         const oldest = dbCache.get(oldestKey);
         dbCache.delete(oldestKey);
         try { oldest?.db.close(); } catch {}
+        try { oldest?.extDb?.close(); } catch {}
       }
     }
-    entry = { db, dbPath, isMemory, lastSyncAt: 0, dirty: true };
+    entry = { db, dbPath, extDb, extDbPath, isMemory, lastSyncAt: 0, dirty: true };
     dbCache.set(key, entry);
   }
   if (opts.sync !== false) {
     let emptyDb = false;
     try { emptyDb = !hasIndexedFiles(entry.db); } catch { emptyDb = true; }
     if (entry.dirty || emptyDb || Date.now() - entry.lastSyncAt >= refreshTtlMs()) {
+      let synced = false;
       try {
         indexDir(entry.db, key);
-        entry.lastSyncAt = Date.now();
-        entry.dirty = false;
+        synced = true;
       } catch {
         // Best-effort incremental refresh: keep serving last known snapshot on lock/race.
       }
+      if (entry.extDb) {
+        try {
+          indexExtDir(entry.extDb, key);
+          synced = true;
+        } catch {
+          // Best-effort incremental refresh on ext DB.
+        }
+      }
+      if (synced) {
+        entry.lastSyncAt = Date.now();
+        entry.dirty = false;
+      }
     }
   }
-  return entry.db;
+  return entry;
 }
 
 /**
@@ -154,7 +193,7 @@ export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { max
 
   const key = path.resolve(cwd);
   const dbPath = path.join(key, ".jeo", "db", "jeo.db");
-  const dbExists = fs.existsSync(dbPath);
+  const dbExists = fs.existsSync(dbPath) || fs.existsSync(resolveExtDbPath(dbPath));
   if (opts?.sandboxed && !dbExists) return "";
 
   const isTestEnv = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test";
@@ -165,8 +204,9 @@ export function jeoxScopePromptSection(cwd: string, query?: string, opts?: { max
   if (!hasProjectMarkers) return "";
 
   try {
-    const db = getFreshDb(key, { sync: true });
-    const hits = search(db, q, opts?.maxHits ?? 5);
+    const entry = getFreshDb(key, { sync: true });
+    const dbs = [entry.db, ...(entry.extDb ? [entry.extDb] : [])];
+    const hits = multiSearch(dbs, q, opts?.maxHits ?? 5);
     if (hits.length === 0) return "";
     const lines = hits.map(h => `- [${h.type}] ${h.path}:${h.start}-${h.end} — ${h.label}`);
     return (
@@ -192,7 +232,8 @@ export function createJeoxTool(): ToolHandler {
     }
 
     const isBuild = action === "build" || action === "index" || action === "reindex";
-    const db = getFreshDb(cwd, { sync: !isBuild });
+    const entry = getFreshDb(cwd, { sync: !isBuild });
+    const dbs = [entry.db, ...(entry.extDb ? [entry.extDb] : [])];
 
     const name = String(args.name ?? args.target ?? "").trim();
     const query = String(args.query ?? args.q ?? name).trim();
@@ -206,40 +247,40 @@ export function createJeoxTool(): ToolHandler {
         case "who-calls":
         case "whocalls": {
           if (!name) return { success: false, output: "", error: `who-calls requires a symbol "name".` };
-          const hits = whoCalls(db, name, { limit, strict });
+          const hits = multiWhoCalls(dbs, name, { limit, strict });
           if (!hits.length) return { success: true, output: `0 callers found for "${name}".` };
           return { success: true, output: JSON.stringify(hits, null, 2) };
         }
         case "what-calls":
         case "whatcalls": {
           if (!name) return { success: false, output: "", error: `what-calls requires a symbol "name".` };
-          const hits = whatCalls(db, name, { limit, strict });
+          const hits = multiWhatCalls(dbs, name, { limit, strict });
           if (!hits.length) return { success: true, output: `0 callees found for "${name}".` };
           return { success: true, output: JSON.stringify(hits, null, 2) };
         }
         case "where-defined":
         case "wheredefined": {
           if (!name) return { success: false, output: "", error: `where-defined requires a symbol "name".` };
-          const hits = whereDefined(db, name, limit);
+          const hits = multiWhereDefined(dbs, name, limit);
           if (!hits.length) return { success: true, output: `0 definitions found for "${name}".` };
           return { success: true, output: JSON.stringify(hits, null, 2) };
         }
         case "impact": {
           if (!name) return { success: false, output: "", error: `impact requires a symbol or path "target".` };
-          const imp = impact(db, name, depth, limit * 4, strict);
+          const imp = multiImpact(dbs, name, depth, limit * 4, strict);
           return { success: true, output: JSON.stringify(imp, null, 2) };
         }
         case "search":
         case "query": {
           if (!query) return { success: false, output: "", error: `search requires a "query" string.` };
-          const rawHits = search(db, query, limit);
+          const rawHits = multiSearch(dbs, query, limit);
           const hits = await rerankHitsWithQev(query, rawHits, typeof args.rerank === "boolean" ? args.rerank : undefined);
           if (!hits.length) return { success: true, output: `0 search hits for "${query}".` };
           return { success: true, output: JSON.stringify(hits, null, 2) };
         }
         case "scope": {
           if (!query) return { success: false, output: "", error: `scope requires a task "query" string.` };
-          const rawHits = search(db, query, limit);
+          const rawHits = multiSearch(dbs, query, limit);
           const hits = await rerankHitsWithQev(query, rawHits, typeof args.rerank === "boolean" ? args.rerank : undefined);
           const manifest = { meta: { task: query, hits: hits.length, preview: "none" }, hits };
           return { success: true, output: JSON.stringify(manifest, null, 2) };
@@ -247,17 +288,18 @@ export function createJeoxTool(): ToolHandler {
         case "build":
         case "index":
         case "reindex": {
-          const res = indexDir(db, path.resolve(cwd), { rebuild });
-          const entry = dbCache.get(path.resolve(cwd));
-          if (entry) {
-            entry.lastSyncAt = Date.now();
-            entry.dirty = false;
-          }
-          return { success: true, output: `Indexed in ${res.ms}ms: ${JSON.stringify(res)}` };
+          const absRoot = path.resolve(cwd);
+          const res = indexDir(entry.db, absRoot, { rebuild });
+          const extRes = entry.extDb ? indexExtDir(entry.extDb, absRoot, { rebuild }) : undefined;
+          entry.lastSyncAt = Date.now();
+          entry.dirty = false;
+          const payload = extRes ? { ...res, ext: extRes } : res;
+          const totalMs = +(res.ms + (extRes?.ms ?? 0)).toFixed(1);
+          return { success: true, output: `Indexed in ${totalMs}ms: ${JSON.stringify(payload)}` };
         }
         case "status":
         case "stats": {
-          const st = stats(db);
+          const st = multiStats(entry.db, entry.extDb);
           return { success: true, output: JSON.stringify(st, null, 2) };
         }
         default:

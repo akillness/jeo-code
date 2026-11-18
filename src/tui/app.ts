@@ -73,6 +73,8 @@ function shortModelName(raw?: string): string {
 
 interface SubagentSlotMeta {
   slot: number | string;
+  seq: number;
+  index?: number;
   role: string;
   roleLabel: string;
   assignment: string;
@@ -410,6 +412,7 @@ export class LaunchTui {
   private readonly detachedSubagentSlots = new Set<number | string>();
   private readonly subagentSlotMeta = new Map<number | string, SubagentSlotMeta>();
   private readonly subagentLiveOrder: (number | string)[] = [];
+  private subagentSeq = 0;
   private subagentSlotRev = 0;
   private subagentPanelCache: { cols: number; spin: string; slotRev: number; validUntilMs: number; lines: string[] } | null = null;
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
@@ -1237,14 +1240,19 @@ export class LaunchTui {
     };
     const upsertMeta = (kind: "start" | "step" | "tool" | "thinking") => {
       let meta = this.subagentSlotMeta.get(slot);
+      const toolDetail = kind === "tool"
+        ? (cleanSummary && cleanSummary !== detail ? `${detail || "tool"} — ${safeSlice(cleanSummary, 80)}` : (detail || "tool"))
+        : detail;
       if (!meta || kind === "start") {
         meta = {
           slot,
+          seq: meta?.seq ?? ++this.subagentSeq,
+          index: e.index ?? meta?.index,
           role,
           roleLabel,
           assignment: detail || (kind === "start" ? "starting" : ""),
           activeKind: kind,
-          activeText: kind === "start" ? "" : (detail || ""),
+          activeText: kind === "start" ? "" : (toolDetail || ""),
           activeOk: kind === "tool" ? e.success !== false : undefined,
           step: e.step,
           maxSteps: e.maxSteps,
@@ -1257,13 +1265,14 @@ export class LaunchTui {
       } else {
         meta.role = role;
         meta.roleLabel = roleLabel;
+        if (e.index !== undefined) meta.index = e.index;
         if (e.detachedId) meta.detached = true;
         if (e.step !== undefined) meta.step = e.step;
         if (e.maxSteps !== undefined) meta.maxSteps = e.maxSteps;
         if (modelShort) meta.model = modelShort;
         if (kind === "tool") meta.toolCount++;
         meta.activeKind = kind;
-        meta.activeText = detail || (kind === "step" ? "working" : kind === "tool" ? "tool" : "thinking");
+        meta.activeText = toolDetail || (kind === "step" ? "working" : kind === "tool" ? "tool" : "thinking");
         meta.activeOk = kind === "tool" ? e.success !== false : undefined;
         meta.cachedSubKey = undefined;
         meta.cachedSubRow = undefined;
@@ -1272,23 +1281,33 @@ export class LaunchTui {
     };
 
     switch (e.kind) {
-      case "start":
+      case "start": {
         upsertMeta("start");
         touchSlot(`${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`);
-        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}${modelShort ? ` (${modelShort})` : ""}\n`, "subagent");
+        const line = `${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}${modelShort ? ` (${modelShort})` : ""}\n`;
+        // On a TTY, update the live bottom subagent panel in-place rather than pushing
+        // scrollback lines mid-turn; non-TTY mode keeps appending to the stream summary.
+        if (!this.tty) this.appendLedger(line, "subagent");
+        else this.recordActivity(line);
         break;
+      }
       case "step": {
         upsertMeta("step");
         touchSlot(`${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`);
         const stepTag = e.step !== undefined ? ` (${e.step}${e.maxSteps !== undefined ? `/${e.maxSteps}` : ""})` : "";
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}${stepTag}\n`, "subagent");
+        const line = `  ${badge} ${branch} ${roleLabel} · ${detail || "working"}${stepTag}\n`;
+        if (!this.tty) this.appendLedger(line, "subagent");
+        else this.recordActivity(line);
         break;
       }
-      case "tool":
+      case "tool": {
         upsertMeta("tool");
         touchSlot(`${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
+        const line = `  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`;
+        if (!this.tty) this.appendLedger(line, "subagent");
+        else this.recordActivity(line);
         break;
+      }
       case "thinking":
         // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
         // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
@@ -1353,7 +1372,7 @@ export class LaunchTui {
       color: this.theme.color, paint, paintShadow: paint, dim: success && this.theme.color,
     });
     const activityText = safeDetail ? `${safeTitle}: ${safeDetail}` : safeTitle;
-    this.appendLedger(lines.join("\n") + "\n", "subagent", activityText);
+    this.appendLedger(lines.join("\n") + "\n", this.tty ? "card" : "subagent", activityText);
   }
 
   start(): void {
@@ -1367,6 +1386,7 @@ export class LaunchTui {
     this.subagentRecordedSlots.clear();
     this.detachedSubagentSlots.clear();
     this.subagentSlotMeta.clear();
+    this.subagentSeq = 0;
     this.subagentSlotRev = 0;
     this.subagentPanelCache = null;
     this.lastStreamDraw = 0;
@@ -1768,7 +1788,18 @@ export class LaunchTui {
     }
     const boxWidth = scaleForgeWidth(cols);
     const lineWidth = Math.max(1, boxWidth - 3);
-    const order = [...this.subagentLiveOrder].reverse();
+    // Keep worker rows in stable dispatch/creation order (no row jumping on concurrent events).
+    const order = [...this.subagentLiveOrder].sort((a, b) => {
+      const ma = this.subagentSlotMeta.get(a);
+      const mb = this.subagentSlotMeta.get(b);
+      const da = ma?.detached ? 1 : 0;
+      const db = mb?.detached ? 1 : 0;
+      if (da !== db) return da - db;
+      const ia = ma?.index ?? ma?.seq ?? 0;
+      const ib = mb?.index ?? mb?.seq ?? 0;
+      if (ia !== ib) return ia - ib;
+      return (ma?.seq ?? 0) - (mb?.seq ?? 0);
+    });
     const hierarchical = order.length <= 3 && boxWidth >= 52;
     const maxWorkers = hierarchical ? order.length : LaunchTui.SUBAGENT_PANEL_MAX_ROWS;
     const shown = order.slice(0, maxWorkers);
@@ -1802,6 +1833,10 @@ export class LaunchTui {
     };
 
     let validUntilMs = Number.POSITIVE_INFINITY;
+    let totalTools = 0;
+    for (const slot of order) {
+      totalTools += this.subagentSlotMeta.get(slot)?.toolCount ?? 0;
+    }
     const lines: string[] = [];
     for (const slot of shown) {
       const meta = this.subagentSlotMeta.get(slot);
@@ -1830,25 +1865,30 @@ export class LaunchTui {
         const prefixPlain = `${spin} ${meta.roleLabel} · `;
         const prefixStyled = `${spin} ${roleBold} · `;
         lines.push(fitWithStats(prefixPlain, prefixStyled, meta.assignment || "starting", statsParts));
-        if (meta.activeKind !== "start" && meta.activeText && (meta.activeText !== meta.assignment || meta.activeOk === false)) {
-          const subKey = `${lineWidth}:${this.theme.color ? 1 : 0}:${this.unicode ? 1 : 0}`;
-          if (meta.cachedSubKey !== subKey || meta.cachedSubRow === undefined) {
-            meta.cachedSubKey = subKey;
-            let beat: string;
-            if (meta.activeKind === "tool") {
-              const g = meta.activeOk === false ? (this.unicode ? "✗" : "x") : (this.unicode ? "✓" : "v");
-              beat = this.theme.color ? (meta.activeOk === false ? chalk.red(g) : chalk.green(g)) : g;
-            } else if (meta.activeKind === "step") {
-              beat = this.unicode ? "·" : "-";
-            } else {
-              beat = ell;
-            }
-            const styledText = this.theme.color ? chalk.dim(meta.activeText) : meta.activeText;
-            const styledTree = this.theme.color ? chalk.dim(`  ${treeGlyph} `) : `  ${treeGlyph} `;
-            meta.cachedSubRow = truncateToWidth(`${styledTree}${beat} ${styledText}`, lineWidth);
+        const subKey = `${lineWidth}:${this.theme.color ? 1 : 0}:${this.unicode ? 1 : 0}`;
+        if (meta.cachedSubKey !== subKey || meta.cachedSubRow === undefined) {
+          meta.cachedSubKey = subKey;
+          let beat: string;
+          let subText: string;
+          if (meta.activeKind === "start") {
+            beat = this.unicode ? "▸" : ">";
+            subText = `starting${ell}`;
+          } else if (meta.activeKind === "tool") {
+            const g = meta.activeOk === false ? (this.unicode ? "✗" : "x") : (this.unicode ? "✓" : "v");
+            beat = this.theme.color ? (meta.activeOk === false ? chalk.red(g) : chalk.green(g)) : g;
+            subText = meta.activeText || "tool";
+          } else if (meta.activeKind === "step") {
+            beat = this.unicode ? "·" : "-";
+            subText = meta.activeText && meta.activeText !== meta.assignment ? meta.activeText : `working${ell}`;
+          } else {
+            beat = ell;
+            subText = meta.activeText || `thinking${ell}`;
           }
-          lines.push(meta.cachedSubRow);
+          const styledText = this.theme.color ? chalk.dim(subText) : subText;
+          const styledTree = this.theme.color ? chalk.dim(`  ${treeGlyph} `) : `  ${treeGlyph} `;
+          meta.cachedSubRow = truncateToWidth(`${styledTree}${beat} ${styledText}`, lineWidth);
         }
+        lines.push(meta.cachedSubRow);
       } else {
         const hasActive = meta.activeKind !== "start" && meta.activeText;
         let beatPlain: string;
@@ -1874,7 +1914,8 @@ export class LaunchTui {
     }
     if (extra > 0) lines.push(`${ell} +${extra} more running`);
     if (!Number.isFinite(validUntilMs)) validUntilMs = now + 1000;
-    const rendered = formatForgeBox({ title: `subagents · ${this.subagentLiveSlots.size} running`, lines }, {
+    const toolSummary = totalTools > 0 ? ` · ${totalTools} ${totalTools === 1 ? "tool" : "tools"}` : "";
+    const rendered = formatForgeBox({ title: `subagents · ${this.subagentLiveSlots.size} running${toolSummary}`, lines }, {
       width: boxWidth, maxLines: LaunchTui.SUBAGENT_PANEL_MAX_ROWS + 1,
       unicode: this.unicode, color: this.theme.color,
       paint: this.theme.color ? accentPaint(this.theme) : (s: string) => s,
@@ -2002,6 +2043,7 @@ export class LaunchTui {
       usage: this.turnUsage,
       costUsd: costForUsage(this.footer.model, this.turnUsage) ?? undefined,
       subagentActive: this.subagentActive,
+      subagentCount: this.subagentLiveSlots.size,
     };
   }
   /**

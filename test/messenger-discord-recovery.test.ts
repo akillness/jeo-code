@@ -796,3 +796,239 @@ test("Discord adapter skips REST lookups for non-allowlisted users and redacts b
     expect(postedBodies[0]).toContain("[REDACTED_TOKEN]");
   } finally { controller.abort(); await running; }
 });
+
+test("Discord deps.onError isolates transient deliver() and handler errors while keeping 401 fatal", async () => {
+  const socketReady = Promise.withResolvers<void>();
+  const secondDelivered = Promise.withResolvers<void>();
+  const delivered: string[] = [];
+  const errors: string[] = [];
+  let socket: FakeSocket;
+  class FakeSocket extends EventTarget {
+    constructor(_url: string) { super(); socket = this; socketReady.resolve(); }
+    send(_value: string) {}
+    close() {}
+    receive(packet: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(packet) })); }
+  }
+  let parentCalls = 0;
+  const fetchImpl: typeof fetch = async input => {
+    const p = new URL(String(input)).pathname;
+    if (p.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+    if (p.endsWith("/gateway/bot")) return Response.json({ url: "wss://gateway.discord.gg" });
+    if (p.endsWith("/channels/parent")) {
+      parentCalls++;
+      if (parentCalls === 1) return new Response(null, { status: 503 });
+      if (parentCalls === 2) return Response.json({ id: "parent", type: 0 });
+      return Response.json({ id: "parent", type: 0 });
+    }
+    if (p.endsWith("/channels/fatal")) return new Response(null, { status: 401 });
+    throw new Error(`Unexpected fake request: ${p}`);
+  };
+  let handlerCalls = 0;
+  const adapter = createDiscordAdapter(
+    settings.platforms.discord!,
+    { JEO_DISCORD_BOT_TOKEN: "secret-discord-token" },
+    { fetch: fetchImpl, WebSocket: FakeSocket as unknown as typeof WebSocket, onError: msg => errors.push(msg) },
+  );
+  const controller = new AbortController();
+  let outcome: { error: unknown } | { stopped: true } | undefined;
+  const running = adapter.start(async message => {
+    handlerCalls++;
+    if (handlerCalls === 1) throw new Error("handler failed with secret-discord-token");
+    delivered.push(message.text);
+    secondDelivered.resolve();
+  }, controller.signal).then(() => { outcome = { stopped: true }; }, error => { outcome = { error }; });
+  try {
+    await socketReady.promise;
+    socket!.receive({ op: 10, d: { heartbeat_interval: 300000 } });
+    socket!.receive({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } });
+
+    // Transient REST 503 during deliver() is isolated via deps.onError.
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "m1", channel_id: "parent", guild_id: "guild", author: { id: "owner" }, mentions: [{ id: "bot" }], content: "rest-503" } });
+    for (let i = 0; i < 60; i++) await Promise.resolve();
+
+    // Handler throw during deliver() is also isolated without leaking secrets or crashing gateway.
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "m2", channel_id: "parent", guild_id: "guild", author: { id: "owner" }, mentions: [{ id: "bot" }], content: "handler-throw" } });
+    for (let i = 0; i < 60; i++) await Promise.resolve();
+
+    // Subsequent valid message still delivers on the same gateway connection.
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 4, d: { id: "m3", channel_id: "parent", guild_id: "guild", author: { id: "owner" }, mentions: [{ id: "bot" }], content: "healthy" } });
+    await secondDelivered.promise;
+    expect(outcome).toBeUndefined();
+    expect(delivered).toEqual(["healthy"]);
+    expect(errors).toEqual([
+      "Discord message delivery failed (HTTP 503)",
+      "Discord message delivery failed",
+    ]);
+
+    // 401 in deliver() remains fatal even when deps.onError is provided.
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 5, d: { id: "m4", channel_id: "fatal", guild_id: "guild", author: { id: "owner" }, mentions: [{ id: "bot" }], content: "auth-fail" } });
+    await running;
+    expect(outcome).toHaveProperty("error");
+    if (outcome && "error" in outcome) {
+      expect(String(outcome.error)).toMatch(/Discord authentication failed \(HTTP 401\)/);
+    }
+  } finally { controller.abort(); await running; }
+});
+
+test("Discord deps.onError isolates connectGateway() / REST discovery errors while 401 and 403 remain fatal", async () => {
+  // Transient 503 during connection setup is reported via deps.onError and retries.
+  const delivered = Promise.withResolvers<string>();
+  const errors: string[] = [];
+  let gatewayAttempts = 0;
+  class FakeSocket extends EventTarget {
+    constructor(_url: string) {
+      super();
+      queueMicrotask(() => {
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 300000 } }) }));
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "s1", resume_gateway_url: "wss://gateway.discord.gg" } }) }));
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "m1", channel_id: "dm", author: { id: "owner" }, content: "recovered" } }) }));
+      });
+    }
+    send(_value: string) {}
+    close() {}
+  }
+  const clock = {
+    random: () => 0,
+    schedule(cb: () => void, _delay: number) {
+      queueMicrotask(cb);
+      return () => {};
+    },
+  };
+  const adapter = createDiscordAdapter(
+    settings.platforms.discord!,
+    { JEO_DISCORD_BOT_TOKEN: "fake" },
+    {
+      clock,
+      WebSocket: FakeSocket as unknown as typeof WebSocket,
+      onError: msg => {
+        errors.push(msg);
+        throw new Error("operator log sink threw");
+      },
+      fetch: async input => {
+        const p = new URL(String(input)).pathname;
+        if (p.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+        if (p.endsWith("/gateway/bot")) {
+          gatewayAttempts++;
+          if (gatewayAttempts === 1) return new Response(null, { status: 503 });
+          return Response.json({ url: "wss://gateway.discord.gg" });
+        }
+        throw new Error(`Unexpected fake request: ${p}`);
+      },
+    },
+  );
+  const controller = new AbortController();
+  const running = adapter.start(async msg => { delivered.resolve(msg.text); }, controller.signal);
+  try {
+    expect(await delivered.promise).toBe("recovered");
+    expect(errors).toEqual(["Discord connection failed (HTTP 503)"]);
+  } finally { controller.abort(); await running; }
+
+  // Fatal 401 and 403 on discovery reject immediately even with deps.onError.
+  for (const status of [401, 403] as const) {
+    const fatalErrors: string[] = [];
+    let scheduled = 0;
+    const fatalAdapter = createDiscordAdapter(
+      settings.platforms.discord!,
+      { JEO_DISCORD_BOT_TOKEN: "fake" },
+      {
+        clock: { random: () => 0, schedule: () => { scheduled++; return () => {}; } },
+        WebSocket: FakeSocket as unknown as typeof WebSocket,
+        onError: msg => fatalErrors.push(msg),
+        fetch: async input => {
+          const p = new URL(String(input)).pathname;
+          if (p.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+          if (p.endsWith("/gateway/bot")) return new Response(null, { status });
+          return new Response(null, { status: 404 });
+        },
+      },
+    );
+    await expect(fatalAdapter.start(async () => {}, new AbortController().signal)).rejects.toThrow(`HTTP ${status}`);
+    expect(fatalErrors).toEqual([]);
+    expect(scheduled).toBe(0);
+  }
+});
+
+test("Discord activityMessages entry is deleted in finally even when final PATCH fails", async () => {
+  const requests: Array<{ method: string; path: string }> = [];
+  let patchMode: "fail-500" | "fail-404" | "ok" = "fail-500";
+  let createdSeq = 0;
+  const adapter = createDiscordAdapter(
+    settings.platforms.discord!,
+    { JEO_DISCORD_BOT_TOKEN: "fake" },
+    {
+      fetch: async (input, init) => {
+        const p = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        requests.push({ method, path: p });
+        if (method === "POST" && p.endsWith("/channels/parent/messages")) {
+          return Response.json({ id: `act-${++createdSeq}` });
+        }
+        if (method === "PATCH") {
+          if (patchMode === "fail-500") return new Response(null, { status: 500 });
+          if (patchMode === "fail-404") return new Response(null, { status: 404 });
+          return Response.json({ id: p.split("/").at(-1) });
+        }
+        return new Response(null, { status: 404 });
+      },
+    },
+  );
+  const msg: MessengerMessage = {
+    platform: "discord", accountId: "bot", channelId: "parent", senderId: "owner", messageId: "m1", text: "hi", direct: false, mentioned: true,
+  };
+
+  await adapter.activity!(msg, "Working");
+  await expect(adapter.activity!(msg, undefined, undefined, "failure")).rejects.toThrow();
+
+  // Because finally deleted the key, a follow-up finalize is a no-op and a new activity creates via POST.
+  requests.length = 0;
+  await adapter.activity!(msg, undefined);
+  expect(requests).toEqual([]);
+
+  await adapter.activity!(msg, "Retrying");
+  expect(requests).toEqual([{ method: "POST", path: "/api/v10/channels/parent/messages" }]);
+
+  // 404 on finalize also resolves without throwing and deletes the stale key.
+  patchMode = "fail-404";
+  await adapter.activity!(msg, undefined);
+  requests.length = 0;
+  await adapter.activity!(msg, "After 404");
+  expect(requests).toEqual([{ method: "POST", path: "/api/v10/channels/parent/messages" }]);
+});
+
+test("Discord activityMessages enforces bounded 10,000-entry LRU eviction", async () => {
+  const requests: Array<{ method: string; path: string }> = [];
+  let recording = false;
+  let nextId = 0;
+  const adapter = createDiscordAdapter(
+    settings.platforms.discord!,
+    { JEO_DISCORD_BOT_TOKEN: "fake" },
+    {
+      fetch: async (input, init) => {
+        const p = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        if (recording) requests.push({ method, path: p });
+        if (method === "POST") return Response.json({ id: `act-${nextId++}` });
+        return Response.json({ id: p.split("/").at(-1) });
+      },
+    },
+  );
+  const makeMsg = (i: number): MessengerMessage => ({
+    platform: "discord", accountId: "bot", channelId: "parent", senderId: "owner", messageId: `m-${i}`, text: "hi", direct: false, mentioned: true,
+  });
+
+  for (let i = 0; i < 10_000; i++) {
+    await adapter.activity!(makeMsg(i), "step 1");
+  }
+  // Touch m-0 via PATCH so it moves to MRU, leaving m-1 as the oldest entry.
+  await adapter.activity!(makeMsg(0), "step 2");
+  // Insert the 10,001st distinct key, evicting m-1.
+  await adapter.activity!(makeMsg(10_000), "step 1");
+
+  recording = true;
+  await adapter.activity!(makeMsg(0), "step 3");
+  await adapter.activity!(makeMsg(1), "step 2");
+  expect(requests).toEqual([
+    { method: "PATCH", path: "/api/v10/channels/parent/messages/act-0" },
+    { method: "POST", path: "/api/v10/channels/parent/messages" },
+  ]);
+});

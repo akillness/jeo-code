@@ -377,15 +377,17 @@ async function fetchAntigravity(messages: Message[], options: CallOptions, crede
   // Resolve the project id up front: stored credential → env → lazy
   // loadCodeAssist/onboardUser discovery (persisted for future sessions).
   const projectId = await resolveAntigravityProjectId(credential, { signal: options.signal });
-  let last: Response | undefined;
-  for (const endpoint of ENDPOINTS) {
-    const { url, headers, body } = antigravityRequest(messages, options, credential, endpoint, projectId, stripArtifacts);
+  for (let i = 0; i < ENDPOINTS.length; i++) {
+    const { url, headers, body } = antigravityRequest(messages, options, credential, ENDPOINTS[i]!, projectId, stripArtifacts);
     const res = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (res.ok) return res;
-    last = res;
-    if (res.status !== 404 && res.status !== 503) break;
+    if ((res.status === 404 || res.status === 503) && i < ENDPOINTS.length - 1) {
+      await res.body?.cancel().catch(() => {});
+      continue;
+    }
+    return res;
   }
-  return last!;
+  throw new Error("No Antigravity endpoints configured.");
 }
 
 async function fetchAntigravityFailSafe(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {

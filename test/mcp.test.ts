@@ -1,10 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { drainIncomingMessages, handleLine } from "../src/mcp/server";
 import { TOOLS } from "../src/mcp/tools";
 import type { JsonRpcResponse } from "../src/mcp/protocol";
+import * as doctorCommand from "../src/commands/doctor";
 
 test("handleLine: malformed JSON-RPC inputs return -32600/-32700, never throw (no server crash)", async () => {
   // valid JSON but not an object → must NOT throw (the bug: `null.jsonrpc` killed the stdin loop)
@@ -123,3 +124,70 @@ function parseFramedResponse(output: string): JsonRpcResponse {
   const body = output.slice(bodyStart, bodyStart + length);
   return JSON.parse(body) as JsonRpcResponse;
 }
+
+test("captureCommand captures process.stdout.write and console.info/warn/debug without corrupting stdout", async () => {
+  const leakedStdout: string[] = [];
+  const origLog = console.log;
+  const origInfo = console.info;
+  const origWarn = console.warn;
+  const origDebug = console.debug;
+  const stdoutSpy = spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+    leakedStdout.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write);
+  const doctorSpy = spyOn(doctorCommand, "runDoctorCommand").mockImplementation(async () => {
+    console.log("from-log", { ok: true });
+    console.info("from-info");
+    console.warn("from-warn");
+    console.debug("from-debug");
+    process.stdout.write("from-stdout-str\n");
+    process.stdout.write(Buffer.from("from-stdout-buf\n"));
+    process.stdout.write(new Uint8Array(Buffer.from("from-stdout-u8\n")));
+  });
+  try {
+    const res = await handleLine('{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"jeo_doctor","arguments":{}}}', TOOLS);
+    expect(res?.error).toBeUndefined();
+    const result = res?.result as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0]?.text).toBe([
+      'from-log {"ok":true}',
+      "from-info",
+      "from-warn",
+      "from-debug",
+      "from-stdout-str",
+      "from-stdout-buf",
+      "from-stdout-u8",
+    ].join("\n"));
+    expect(leakedStdout).toEqual([]);
+    expect(console.log).toBe(origLog);
+    expect(console.info).toBe(origInfo);
+    expect(console.warn).toBe(origWarn);
+    expect(console.debug).toBe(origDebug);
+    expect(process.stdout.write).toBe(stdoutSpy as unknown as typeof process.stdout.write);
+  } finally {
+    doctorSpy.mockRestore();
+    stdoutSpy.mockRestore();
+  }
+});
+
+test("captureCommand restores console methods and process.stdout.write when the wrapped command throws", async () => {
+  const origLog = console.log;
+  const origInfo = console.info;
+  const origWarn = console.warn;
+  const origDebug = console.debug;
+  const origWrite = process.stdout.write;
+  const doctorSpy = spyOn(doctorCommand, "runDoctorCommand").mockImplementation(async () => {
+    console.info("before-boom");
+    throw new Error("doctor exploded");
+  });
+  try {
+    const res = await handleLine('{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"jeo_doctor","arguments":{}}}', TOOLS);
+    expect(res).toMatchObject({ id: 43, error: { code: -32603, message: "doctor exploded" } });
+    expect(console.log).toBe(origLog);
+    expect(console.info).toBe(origInfo);
+    expect(console.warn).toBe(origWarn);
+    expect(console.debug).toBe(origDebug);
+    expect(process.stdout.write).toBe(origWrite);
+  } finally {
+    doctorSpy.mockRestore();
+  }
+});

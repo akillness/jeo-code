@@ -1,4 +1,5 @@
 import { callLlm, type Message } from "./loop";
+import type { ToolResultRecord } from "../ai/types";
 import { countTokensAccurate, encodingFamilyForModel } from "./tokenizer";
 
 export interface CompactionOptions {
@@ -65,11 +66,18 @@ const messageTokenCache = new WeakMap<Message, number>();
 export function estimateMessageTokens(msg: Message): number {
   const hit = messageTokenCache.get(msg);
   if (hit !== undefined) return hit;
-  let n = estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
+  const contentTokens = estimateTokens(msg.content);
+  let toolTokens = msg.toolResultExtra ? estimateTokens(msg.toolResultExtra) : 0;
+  for (const r of msg.toolResults ?? []) {
+    toolTokens += estimateTokens(r.output);
+  }
+  let n = estimateTokens(msg.role) + Math.max(contentTokens, toolTokens) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
   // Native reasoning artifacts (signature / encrypted_content / thought text) are NOT in
   // `content` but become REAL input tokens once an adapter replays them — count them so
   // the context meter and compaction trigger stay honest (OpenAI encrypted blobs are KB-scale).
-  // toolUse/toolResults/toolResultExtra are already reflected in `content`, so they are not re-added.
+  // toolUse/toolResults/toolResultExtra are normally mirrored in `content`, so taking Math.max
+  // avoids double-counting while still accounting for native tool results when `content` is
+  // empty, elided, or smaller than multiple native tool_result records.
   for (const a of msg.reasoningArtifacts ?? []) {
     n += estimateTokens(a.text ?? "") + estimateTokens(a.signature ?? "")
       + estimateTokens(a.redacted ?? "") + estimateTokens(a.thoughtSignature ?? "")
@@ -114,7 +122,7 @@ export function trimToolResultsInPlace(
   const candidates: number[] = [];
   for (let i = 0; i < history.length; i++) {
     const m = history[i]!;
-    if (m.role === "user" && TOOL_RESULT_RE.test(m.content)) candidates.push(i);
+    if (m.role === "user" && (TOOL_RESULT_RE.test(m.content) || Boolean(m.toolResults?.length))) candidates.push(i);
   }
   const trimmable = candidates.slice(0, Math.max(0, candidates.length - keepRecent));
 
@@ -124,8 +132,24 @@ export function trimToolResultsInPlace(
     const m = history[i]!;
     const header = m.content.match(TOOL_RESULT_RE)?.[0] ?? "Tool result:";
     const stub = `${header} [elided mid-turn to free context — re-run the tool if this result is needed again]`;
-    if (m.content.length <= stub.length) continue; // already tiny — nothing to win
-    const replacement: Message = { ...m, content: stub };
+    const eligible =
+      m.content.length > stub.length ||
+      (m.images?.length ?? 0) > 0 ||
+      Boolean(m.toolResultExtra) ||
+      (m.toolResults?.some(r => r.output.length > stub.length) ?? false);
+    if (!eligible) continue; // already tiny — nothing to win
+    const { images: _images, toolResultExtra: _extra, toolResults, ...rest } = m;
+    const replacement: Message = {
+      ...rest,
+      content: stub,
+      ...(toolResults?.length
+        ? {
+            toolResults: toolResults.map(r =>
+              r.output.length > stub.length ? { ...r, output: stub } : r,
+            ),
+          }
+        : {}),
+    };
     tokens -= estimateMessageTokens(m);
     history[i] = replacement;
     tokens += estimateMessageTokens(replacement);
@@ -259,10 +283,54 @@ function clampRecentMessagesByTokens(messages: Message[], budgetTokens: number):
   const overhead = messages.reduce((sum, msg) => sum + estimateTokens(msg.role) + 1, 0);
   const contentBudget = Math.max(0, budgetTokens - overhead);
   const perMessageBudget = Math.floor(contentBudget / messages.length);
-  return messages.map(msg => ({
-    ...msg,
-    content: truncateRecentContentByTokens(msg.content, perMessageBudget),
-  }));
+  return messages.map(msg => {
+    const maxImages = perMessageBudget >= IMAGE_TOKEN_ESTIMATE
+      ? Math.floor(perMessageBudget / IMAGE_TOKEN_ESTIMATE)
+      : 0;
+    const keptImages = msg.images?.length && maxImages > 0
+      ? msg.images.slice(0, maxImages)
+      : undefined;
+    const textBudget = Math.max(0, perMessageBudget - (keptImages?.length ?? 0) * IMAGE_TOKEN_ESTIMATE);
+
+    const clampedContent = truncateRecentContentByTokens(msg.content, textBudget);
+
+    let clampedToolResults: ToolResultRecord[] | undefined;
+    let clampedExtra: string | undefined;
+    const resultTokens = msg.toolResults?.map(r => estimateTokens(r.output)) ?? [];
+    const extraTokens = msg.toolResultExtra ? estimateTokens(msg.toolResultExtra) : 0;
+    const totalNativeTokens = resultTokens.reduce((s, t) => s + t, 0) + extraTokens;
+
+    if (totalNativeTokens <= textBudget) {
+      clampedToolResults = msg.toolResults?.length ? msg.toolResults : undefined;
+      clampedExtra = msg.toolResultExtra || undefined;
+    } else {
+      if (msg.toolResults?.length) {
+        clampedToolResults = msg.toolResults.map((r, idx) => {
+          const share = textBudget > 0 && totalNativeTokens > 0
+            ? Math.floor(textBudget * (resultTokens[idx]! / totalNativeTokens))
+            : 0;
+          const nextOutput = truncateRecentContentByTokens(r.output, share);
+          return nextOutput === r.output ? r : { ...r, output: nextOutput };
+        });
+      }
+      if (msg.toolResultExtra) {
+        const extraShare = textBudget > 0 && totalNativeTokens > 0
+          ? Math.floor(textBudget * (extraTokens / totalNativeTokens))
+          : 0;
+        const nextExtra = truncateRecentContentByTokens(msg.toolResultExtra, extraShare);
+        if (nextExtra.length > 0) clampedExtra = nextExtra;
+      }
+    }
+
+    const { images: _images, toolResults: _toolResults, toolResultExtra: _extra, ...rest } = msg;
+    return {
+      ...rest,
+      content: clampedContent,
+      ...(keptImages?.length ? { images: keptImages } : {}),
+      ...(clampedToolResults?.length ? { toolResults: clampedToolResults } : {}),
+      ...(clampedExtra ? { toolResultExtra: clampedExtra } : {}),
+    };
+  });
 }
 
 const SUMMARY_PREFIX = "[Earlier conversation summary]\n";

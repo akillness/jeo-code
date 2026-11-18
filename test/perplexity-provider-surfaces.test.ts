@@ -273,6 +273,54 @@ describe("jeo doctor Perplexity search-provider parity", () => {
     expect(humanOut).toContain("Search providers (web_search #1 priority):");
     expect(humanOut).toMatch(/perplexity\s+ok\s+API key · web_search #1 priority/);
   });
+
+  test("oauth.perplexity 5-part JWE reports status='fail' when /api/auth/session is logged out and 'ok' when live", async () => {
+    await writeConfig({
+      providers: {},
+      defaultModel: "gpt-4o",
+      oauth: {
+        perplexity: {
+          access: "hdr.ekey.iv.cipher.tag",
+          refresh: "hdr.ekey.iv.cipher.tag",
+          expires: 8.64e15,
+        },
+      },
+    });
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/api/auth/session")) return Response.json({});
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const deadJson = JSON.parse(await captureConsoleLog(() => runDoctorCommand(["--json"])));
+    expect(deadJson.searchProviders).toEqual([
+      expect.objectContaining({
+        name: "perplexity",
+        credential: "oauth",
+        status: "fail",
+        detail: expect.stringContaining("jeo auth login perplexity"),
+      }),
+    ]);
+
+    const deadHuman = stripAnsi(await captureConsoleLog(() => runDoctorCommand([])));
+    expect(deadHuman).toMatch(/perplexity\s+expired/);
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/api/auth/session")) return Response.json({ user: { email: "live@example.com" } });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const liveJson = JSON.parse(await captureConsoleLog(() => runDoctorCommand(["--json"])));
+    expect(liveJson.searchProviders).toEqual([
+      expect.objectContaining({
+        name: "perplexity",
+        credential: "oauth",
+        status: "ok",
+      }),
+    ]);
+  });
 });
 
 describe("jeo provider Perplexity search-provider parity", () => {

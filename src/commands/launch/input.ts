@@ -2,10 +2,20 @@ import { verticalCursorOffset, rowBoundaryOffset, validatedInputDisplay } from "
 import { visibleWidth } from "../../tui/components/width";
 import type { Message } from "../../ai/types";
 
+/** Default cap on retained compact paste bodies and total characters per REPL session. */
+export const MAX_COMPACT_PASTES = 200;
+export const MAX_COMPACT_PASTE_BYTES = 8 * 1024 * 1024;
+
 /** Editor-only references. Expansion is one pass so pasted marker-like text stays literal. */
 export class CompactPasteStore {
   private pastes = new Map<string, string>();
   private nextId = 0;
+  private totalBytes = 0;
+
+  constructor(
+    private readonly maxEntries = MAX_COMPACT_PASTES,
+    private readonly maxBytes = MAX_COMPACT_PASTE_BYTES,
+  ) {}
 
   store(content: string): string {
     if (!content) return "";
@@ -13,6 +23,14 @@ export class CompactPasteStore {
     const columns = lines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
     const marker = `[Paste #${++this.nextId}, ${lines.length} lines, ${columns} cols]`;
     this.pastes.set(marker, content);
+    this.totalBytes += content.length;
+    while (this.pastes.size > this.maxEntries || (this.totalBytes > this.maxBytes && this.pastes.size > 1)) {
+      const oldest = this.pastes.keys().next();
+      if (oldest.done) break;
+      const evicted = this.pastes.get(oldest.value);
+      this.pastes.delete(oldest.value);
+      if (evicted !== undefined) this.totalBytes -= evicted.length;
+    }
     return marker;
   }
 
@@ -62,6 +80,7 @@ export class CompactPasteStore {
   clear(): void {
     this.pastes.clear();
     this.nextId = 0;
+    this.totalBytes = 0;
   }
 }
 

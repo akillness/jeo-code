@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, jest, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -210,6 +210,9 @@ class FakeWebSocket {
   }
   emitMessage(data: string): void {
     for (const cb of this.listeners.message ?? []) cb({ data });
+  }
+  emitError(): void {
+    for (const cb of this.listeners.error ?? []) cb({});
   }
 }
 
@@ -2291,4 +2294,215 @@ test("Telegram polling checkpoints a successful callback cancel when acknowledgm
   expect(durableOffset).toBe(78);
   expect(socket.sent.map(raw => JSON.parse(raw).type)).toEqual(["cancel"]);
   expect(telegram.sent.map(message => message.text)).toContain("⏹ Cancelled 'executor-1' via button.");
+});
+
+test("TelegramDaemon flushPool runs single-flight without concurrent Bot API sends and resets after failure", async () => {
+  const telegram = new FakeTelegramApi();
+  const firstStarted = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  let activeSends = 0;
+  let maxConcurrentSends = 0;
+  let callIndex = 0;
+  telegram.sendMessage = async (chatId, text, options) => {
+    callIndex++;
+    activeSends++;
+    maxConcurrentSends = Math.max(maxConcurrentSends, activeSends);
+    telegram.sent.push({ chatId, text, options });
+    try {
+      if (callIndex === 1) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+      if (callIndex === 3) {
+        throw new Error("transient send failure");
+      }
+      return { ok: true };
+    } finally {
+      activeSends--;
+    }
+  };
+  const daemon = makeDaemon(telegram);
+
+  const first = daemon.handleInboundText("/help");
+  await firstStarted.promise;
+  const second = daemon.handleInboundText("/subagents");
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(maxConcurrentSends).toBe(1);
+  expect(telegram.sent.map(m => m.text)).toEqual([HELP_TEXT]);
+
+  releaseFirst.resolve();
+  expect(await first).toBe(true);
+  expect(await second).toBe(true);
+  expect(maxConcurrentSends).toBe(1);
+  // Subsequent flush after a failed send: retry is queued in RateLimitPool and succeeds on the next flushPool().
+  const retried = daemon.handleInboundText("/help");
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await daemon["flushPool"]();
+  expect(await retried).toBe(true);
+  expect(telegram.sent.map(m => m.text)).toEqual([HELP_TEXT, "No subagents running.", HELP_TEXT, HELP_TEXT]);
+});
+
+test("TelegramDaemon scanSessions runs single-flight and resets scanning guard even after readdir errors", async () => {
+  FakeWebSocket.instances = [];
+  const scanStarted = Promise.withResolvers<void>();
+  const releaseScan = Promise.withResolvers<string[]>();
+  let readdirCalls = 0;
+  let shouldFail = false;
+  const daemon = new TelegramDaemon({
+    chatId: "999",
+    telegram: new FakeTelegramApi() as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    readdir: async () => {
+      readdirCalls++;
+      if (readdirCalls === 1) {
+        scanStarted.resolve();
+        return await releaseScan.promise;
+      }
+      if (shouldFail) throw new Error("readdir failed");
+      return ["sess-2.json"];
+    },
+    readFile: async p => JSON.stringify({ url: "ws://127.0.0.1:9", token: "t", pid: 111, cwd: p.includes("sess-2") ? "/tmp/b" : "/tmp/a" }),
+    isPidAlive: () => true,
+  });
+
+  const firstScan = daemon.scanSessions();
+  await scanStarted.promise;
+  // Overlapping scan returns immediately without invoking readdir or opening duplicate sockets.
+  await daemon.scanSessions();
+  expect(readdirCalls).toBe(1);
+
+  releaseScan.resolve(["sess-1.json"]);
+  await firstScan;
+  expect(daemon.sessions.size).toBe(1);
+  expect(FakeWebSocket.instances).toHaveLength(1);
+
+  // A readdir error must clear `scanning` in finally so subsequent scans still run.
+  shouldFail = true;
+  await daemon.scanSessions();
+  expect(readdirCalls).toBe(2);
+
+  shouldFail = false;
+  await daemon.scanSessions();
+  expect(readdirCalls).toBe(3);
+  expect(daemon.sessions.has("sess-2")).toBe(true);
+  expect(FakeWebSocket.instances).toHaveLength(2);
+  daemon.stop();
+});
+
+test("TelegramDaemon connectSession evicts session, closes WS, and fails pending ACKs on socket error", async () => {
+  FakeWebSocket.instances = [];
+  const telegram = new FakeTelegramApi();
+  const daemon = new TelegramDaemon({
+    chatId: "999",
+    telegram: telegram as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    ackTimeoutMs: 30_000,
+    readdir: async () => ["abcd1234.json"],
+    readFile: async () => JSON.stringify({ url: "ws://127.0.0.1:9", token: "t", pid: 111, cwd: "/tmp/proj" }),
+    isPidAlive: () => true,
+  });
+  await daemon.scanSessions();
+  expect(daemon.sessions.has("abcd1234")).toBe(true);
+  const ws = FakeWebSocket.instances[0]!;
+  const conn = daemon.sessions.get("abcd1234")!;
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", sessionId: "abcd1234", pid: 111, subagents: [] }));
+
+  // Trigger a /steer with a 30s ackTimeout; socket error must immediately resolve the pending ACK as failed.
+  const steerPromise = daemon.handleInboundText("/steer abcd1234 executor-1 hurry");
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(ws.sent.map(raw => JSON.parse(raw).type)).toEqual(["steer"]);
+
+  ws.emitError();
+  expect(daemon.sessions.has("abcd1234")).toBe(false);
+  expect(ws.closed).toBe(true);
+  await steerPromise;
+  expect(telegram.sent.at(-1)?.text).toContain("Steer failed");
+
+  // Re-scanning reconnects cleanly once the errored socket was evicted.
+  await daemon.scanSessions();
+  expect(daemon.sessions.has("abcd1234")).toBe(true);
+  expect(FakeWebSocket.instances).toHaveLength(2);
+  daemon.stop();
+});
+
+test("TelegramDaemon connectSession evicts unverified sessions after handshakeTimeoutMs while keeping verified ones", async () => {
+  jest.useFakeTimers();
+  try {
+    FakeWebSocket.instances = [];
+    const daemon = new TelegramDaemon({
+      chatId: "999",
+      telegram: new FakeTelegramApi() as unknown as TelegramApi,
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      handshakeTimeoutMs: 50,
+      readdir: async () => ["unverified.json", "verified.json"],
+      readFile: async p => JSON.stringify({ url: "ws://127.0.0.1:9", token: "t", pid: p.includes("unverified") ? 111 : 222, cwd: "/tmp/proj" }),
+      isPidAlive: () => true,
+    });
+    await daemon.scanSessions();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(daemon.sessions.has("unverified")).toBe(true);
+    expect(daemon.sessions.has("verified")).toBe(true);
+
+    const verifiedConn = daemon.sessions.get("verified")!;
+    await daemon.handleSessionMessage(verifiedConn, JSON.stringify({ type: "snapshot", sessionId: "verified", pid: 222, subagents: [] }));
+
+    jest.advanceTimersByTime(49);
+    expect(daemon.sessions.has("unverified")).toBe(true);
+    jest.advanceTimersByTime(1);
+
+    expect(daemon.sessions.has("unverified")).toBe(false);
+    expect(FakeWebSocket.instances[0]!.closed).toBe(true);
+    expect(daemon.sessions.has("verified")).toBe(true);
+    expect(FakeWebSocket.instances[1]!.closed).toBe(false);
+    daemon.stop();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("Telegram polling survives non-array results and invalid update_ids without corrupting updateOffset", async () => {
+  const telegram = new FakeTelegramApi();
+  const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+  const savedOffsets: number[] = [];
+  const offsets: (number | undefined)[] = [];
+  const backoffDelays: number[] = [];
+  let poll = 0;
+  let daemon!: TelegramDaemon;
+  telegram.getUpdates = async (offset?: number) => {
+    offsets.push(offset);
+    poll++;
+    if (poll === 1) return { ok: true, result: "corrupt-not-array" } as unknown as TelegramGetUpdatesResult;
+    if (poll === 2) {
+      return {
+        ok: true,
+        result: [
+          null as unknown as TelegramUpdate,
+          { update_id: -1, message: { message_id: 1, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } },
+          { update_id: 1.5, message: { message_id: 2, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } },
+          { update_id: "80" as unknown as number, message: { message_id: 3, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } },
+          { update_id: Number.MAX_SAFE_INTEGER, message: { message_id: 4, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } },
+          { update_id: 80, message: { message_id: 5, date: 2_000_000_000, chat: { id: 999, type: "private" }, from: { id: 999, is_bot: false }, text: "/help" } },
+        ],
+      };
+    }
+    daemon.stop();
+    return { ok: true, result: [] };
+  };
+  try {
+    daemon = makePollDaemon(
+      telegram,
+      async ms => { backoffDelays.push(ms); },
+      {
+        loadUpdateOffset: async () => 80,
+        saveUpdateOffset: async next => { savedOffsets.push(next); },
+      },
+    );
+    await daemon.start();
+    expect(backoffDelays).toEqual([1_000]);
+    expect(offsets).toEqual([80, 80, 81]);
+    expect(savedOffsets).toEqual([81]);
+    expect(telegram.sent.map(m => m.text)).toEqual([HELP_TEXT]);
+  } finally {
+    stderrSpy.mockRestore();
+  }
 });

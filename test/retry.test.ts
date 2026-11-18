@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, vi } from "bun:test";
 import { withRetry, defaultRetryable, isRateLimitError, isConnectionError, withConnectionContext, ConnectionContextError } from "../src/util/retry";
 import { resolveRetryOptions } from "../src/ai/model-manager";
 
@@ -666,4 +666,110 @@ test("withConnectionContext: a non-connection error passes through UNCHANGED (no
 test("withConnectionContext: a successful call resolves normally", async () => {
   const result = await withConnectionContext(async () => "ok", "anthropic", undefined);
   expect(result).toBe("ok");
+});
+
+test("withRetry: already-aborted signal (or aborted inside fn) throws immediately without calling onRetry or sleeping", async () => {
+  const ctrl = new AbortController();
+  ctrl.abort(new Error("already aborted"));
+  let attempts = 0;
+  let onRetryCalls = 0;
+  const sleeps: number[] = [];
+
+  let caught: unknown;
+  try {
+    await withRetry(
+      async () => {
+        attempts++;
+        throw { status: 503, message: "HTTP 503: overloaded" };
+      },
+      {
+        retries: 4,
+        baseDelayMs: 60_000,
+        signal: ctrl.signal,
+        onRetry: () => { onRetryCalls++; },
+        sleep: async ms => { sleeps.push(ms); },
+      },
+    );
+  } catch (err) {
+    caught = err;
+  }
+
+  expect((caught as Error).message).toBe("already aborted");
+  expect(attempts).toBe(1);
+  expect(onRetryCalls).toBe(0);
+  expect(sleeps).toEqual([]);
+
+  // Also when fn itself triggers abort before throwing a retryable error:
+  const inFnCtrl = new AbortController();
+  let inFnAttempts = 0;
+  let inFnOnRetry = 0;
+  const inFnSleeps: number[] = [];
+  let inFnCaught: unknown;
+  try {
+    await withRetry(
+      async () => {
+        inFnAttempts++;
+        inFnCtrl.abort(new Error("aborted during attempt"));
+        throw new Error("fetch failed");
+      },
+      {
+        retries: 4,
+        baseDelayMs: 60_000,
+        signal: inFnCtrl.signal,
+        onRetry: () => { inFnOnRetry++; },
+        sleep: async ms => { inFnSleeps.push(ms); },
+      },
+    );
+  } catch (err) {
+    inFnCaught = err;
+  }
+
+  expect((inFnCaught as Error).message).toBe("aborted during attempt");
+  expect(inFnAttempts).toBe(1);
+  expect(inFnOnRetry).toBe(0);
+  expect(inFnSleeps).toEqual([]);
+});
+
+test("withRetry: mid-wait abort cancels defaultSleep immediately without sleeping out the backoff window or retrying", async () => {
+  vi.useFakeTimers();
+  try {
+    const ctrl = new AbortController();
+    let attempts = 0;
+    let onRetryCalls = 0;
+
+    const pending = withRetry(
+      async () => {
+        attempts++;
+        throw { status: 429, message: "rate limited", retryAfterMs: 60_000 };
+      },
+      {
+        retries: 3,
+        signal: ctrl.signal,
+        onRetry: () => { onRetryCalls++; },
+      },
+    );
+
+    // Flush microtasks so attempt 1 throws, onRetry runs once, and defaultSleep arms its 60s timer.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attempts).toBe(1);
+    expect(onRetryCalls).toBe(1);
+
+    ctrl.abort(new Error("mid-wait defaultSleep cancel"));
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      caught = err;
+    }
+
+    expect((caught as Error).message).toBe("mid-wait defaultSleep cancel");
+    // Advancing past the original 60s backoff must NOT fire a cleared timer or second attempt.
+    vi.advanceTimersByTime(70_000);
+    await Promise.resolve();
+    expect(attempts).toBe(1);
+    expect(onRetryCalls).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

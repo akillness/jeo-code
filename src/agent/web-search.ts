@@ -26,6 +26,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { isPerplexityJweToken, verifyPerplexitySessionToken } from "../auth/flows/perplexity";
 import { jeoEnv } from "../util/env";
 import { getClaudeCodeVersion, parseRequiredClaudeCodeVersion, raiseClaudeCodeVersion } from "../ai/claude-code-version";
 import type { ToolResult } from "./tools";
@@ -133,6 +134,7 @@ export interface PerplexityAskStreamEvent {
   error_message?: string;
   display_model?: string;
   uuid?: string;
+  privacy_state?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,9 +166,41 @@ export function jwtExpiryMs(token: string): number | undefined {
   }
 }
 
+const PERPLEXITY_SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
+const perplexitySessionCache = new Map<string, { valid: boolean; checkedAt: number }>();
+
+function perplexityTokenCacheKey(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Test hook: clear cached Perplexity session verification outcomes. */
+export function clearPerplexitySessionCacheForTest(): void {
+  perplexitySessionCache.clear();
+}
+
+function markPerplexitySessionInvalid(token: string): void {
+  perplexitySessionCache.set(perplexityTokenCacheKey(token), { valid: false, checkedAt: Date.now() });
+}
+
 function isPerplexityJwtValid(token: string): boolean {
   const exp = jwtExpiryMs(token);
   return exp === undefined || exp > Date.now() + PERPLEXITY_OAUTH_EXPIRY_BUFFER_MS;
+}
+
+async function isPerplexityOAuthTokenUsable(token: string): Promise<boolean> {
+  if (!isPerplexityJwtValid(token)) return false;
+  const key = perplexityTokenCacheKey(token);
+  const cached = perplexitySessionCache.get(key);
+  if (cached && Date.now() - cached.checkedAt < PERPLEXITY_SESSION_CACHE_TTL_MS) {
+    return cached.valid;
+  }
+  const verifyRemote = process.env.NODE_ENV !== "test" || jeoEnv("PERPLEXITY_VERIFY_SESSION") === "1";
+  if (isPerplexityJweToken(token) && verifyRemote) {
+    const verified = await verifyPerplexitySessionToken(token);
+    perplexitySessionCache.set(key, { valid: verified.valid, checkedAt: Date.now() });
+    return verified.valid;
+  }
+  return true;
 }
 
 async function readMacPerplexityAuthToken(): Promise<string | undefined> {
@@ -190,7 +224,7 @@ async function readMacPerplexityAuthToken(): Promise<string | undefined> {
     }
     const { stdout } = await execFileAsync("defaults", ["read", "ai.perplexity.mac", "authToken"], { timeout: 2000 });
     const token = stdout.trim();
-    return token.length > 0 ? token : undefined;
+    return token.length > 0 && token !== "(null)" ? token : undefined;
   } catch {
     return undefined;
   }
@@ -214,18 +248,19 @@ async function resolvePerplexityAuthMethods(explicit: boolean): Promise<Perplexi
   // 2. Perplexity OAuth (stored credential / env / macOS app token fallback)
   let oauthToken: string | undefined;
   const storedOAuth = await resolveCredential("perplexity" as AuthProvider, { preferKind: "oauth" }).catch(() => null);
-  if (storedOAuth?.kind === "oauth" && storedOAuth.token.trim() && isPerplexityJwtValid(storedOAuth.token.trim())) {
-    oauthToken = storedOAuth.token.trim();
+  const storedToken = storedOAuth?.kind === "oauth" ? storedOAuth.token.trim() : "";
+  if (storedToken && (await isPerplexityOAuthTokenUsable(storedToken))) {
+    oauthToken = storedToken;
   }
   if (!oauthToken) {
     const envOAuth = process.env.PERPLEXITY_OAUTH_TOKEN?.trim();
-    if (envOAuth && isPerplexityJwtValid(envOAuth)) {
+    if (envOAuth && (await isPerplexityOAuthTokenUsable(envOAuth))) {
       oauthToken = envOAuth;
     }
   }
   if (!oauthToken) {
     const macToken = await readMacPerplexityAuthToken();
-    if (macToken && isPerplexityJwtValid(macToken)) {
+    if (macToken && (await isPerplexityOAuthTokenUsable(macToken))) {
       oauthToken = macToken;
     }
   }
@@ -461,13 +496,19 @@ function buildAskAnswer(event: PerplexityAskStreamEvent): string {
 }
 
 const PERPLEXITY_AUTH_WALL_RE =
-  /\b(?:sign up|log in|sign in)\b|가입한\s*뒤|로그인(?:한\s*뒤|하세|해\s*주)|회원가입/i;
+  /\b(?:sign up|log in|sign in)\b|가입한\s*뒤|로그인(?:한\s*뒤|하세|해\s*주)|회원가입|daftar\s+dan\s+ulangi|iniciar\s+sesi[oó]n|se\s+connecter|anmelden|ログイン/i;
 
 function isAuthWallUpsell(event: PerplexityAskStreamEvent): boolean {
   const upsell = event.upsell_information;
   if (!upsell) return false;
-  if (upsell.name === "fraud_authwall_upsell") return true;
-  return upsell.upsell_type === "LOGIN" && upsell.cta_information?.disallow_close === true;
+  const name = upsell.name?.toLowerCase() ?? "";
+  return (
+    upsell.upsell_type === "LOGIN" ||
+    name.includes("authwall") ||
+    name.includes("sign_in") ||
+    name.includes("login") ||
+    upsell.cta_information?.disallow_close === true
+  );
 }
 
 interface AskAccumulatorState {
@@ -860,7 +901,9 @@ async function callPerplexityAsk(
   });
   if (!response.ok) {
     const detail = (await response.text().catch(() => "")).slice(0, 300);
-    throw new Error(`Perplexity ask API error (${response.status}): ${detail}`);
+    const msg = `Perplexity ask API error (${response.status}): ${detail}`;
+    if (response.status === 401) throw new PerplexityAuthWallError(msg);
+    throw new Error(msg);
   }
   if (!response.body) {
     throw new Error("Perplexity ask API returned no response body");
@@ -873,14 +916,21 @@ async function callPerplexityAsk(
   return parsed;
 }
 
+class PerplexityAuthWallError extends Error {
+  readonly authWall = true;
+}
+
 function assertValidPerplexityAskResponse(parsed: WebSearchResponse, authWall: boolean): void {
-  if (
-    parsed.sources.length === 0 &&
-    (authWall || !parsed.answer?.trim() || PERPLEXITY_AUTH_WALL_RE.test(parsed.answer))
-  ) {
-    throw new Error(
-      `Perplexity ask returned no search results${parsed.answer ? `: ${parsed.answer.trim().slice(0, 120)}` : ""}`,
-    );
+  if (parsed.sources.length === 0) {
+    const matchesAuthWallText = Boolean(parsed.answer && PERPLEXITY_AUTH_WALL_RE.test(parsed.answer));
+    if (authWall || matchesAuthWallText) {
+      throw new PerplexityAuthWallError(
+        `Perplexity ask returned no search results${parsed.answer ? `: ${parsed.answer.trim().slice(0, 120)}` : ""}`,
+      );
+    }
+    if (!parsed.answer?.trim()) {
+      throw new Error("Perplexity ask returned no search results");
+    }
   }
 }
 
@@ -888,9 +938,65 @@ const PERPLEXITY_BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const PERPLEXITY_BROWSER_IDLE_MS = 60_000;
 
+export interface PerplexityBrowserCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  url?: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+}
+
+/** Build Playwright cookie objects from `PERPLEXITY_COOKIES` and/or an OAuth session token. */
+export function buildPerplexityBrowserCookies(auth?: {
+  cookies?: string;
+  oauthToken?: string;
+}): PerplexityBrowserCookie[] {
+  const result: PerplexityBrowserCookie[] = [];
+  const seenNames = new Set<string>();
+
+  if (auth?.cookies) {
+    for (const part of auth.cookies.split(";")) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) continue;
+      const name = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim();
+      if (!name) continue;
+      seenNames.add(name);
+      if (name.startsWith("__Host-")) {
+        result.push({ name, value, url: "https://www.perplexity.ai", secure: true });
+      } else {
+        result.push({ name, value, domain: ".perplexity.ai", path: "/", secure: true });
+      }
+    }
+  }
+
+  const oauthToken = auth?.oauthToken?.trim();
+  if (oauthToken && !seenNames.has("__Secure-next-auth.session-token")) {
+    result.push({
+      name: "__Secure-next-auth.session-token",
+      value: oauthToken,
+      domain: ".perplexity.ai",
+      path: "/",
+      httpOnly: true,
+      secure: true,
+    });
+  }
+
+  return result;
+}
+
 interface PerplexityBrowserHandle {
+  authKey: string;
   browser: { isConnected(): boolean; close(): Promise<void> };
-  context: { cookies(): Promise<Array<{ name: string }>>; close(): Promise<void> };
+  context: {
+    addCookies(cookies: PerplexityBrowserCookie[]): Promise<void>;
+    cookies(): Promise<Array<{ name: string }>>;
+    close(): Promise<void>;
+  };
   page: {
     isClosed(): boolean;
     goto(url: string, opts: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
@@ -903,11 +1009,14 @@ let perplexityBrowserHandle: PerplexityBrowserHandle | null = null;
 let perplexityBrowserInitPromise: Promise<PerplexityBrowserHandle> | null = null;
 let perplexityBrowserIdleTimer: ReturnType<typeof setTimeout> | null = null;
 let perplexityExitHookRegistered = false;
-let perplexityBrowserRunnerOverride: ((req: SearchRequest) => Promise<WebSearchResponse>) | null = null;
+let perplexityBrowserActiveRequests = 0;
+let perplexityBrowserRunnerOverride:
+  | ((req: SearchRequest, cookies?: PerplexityBrowserCookie[]) => Promise<WebSearchResponse>)
+  | null = null;
 
 /** Test hook: inject a fake browser search runner without launching Chromium. */
 export function setPerplexityBrowserRunnerForTest(
-  runner: ((req: SearchRequest) => Promise<WebSearchResponse>) | null,
+  runner: ((req: SearchRequest, cookies?: PerplexityBrowserCookie[]) => Promise<WebSearchResponse>) | null,
 ): void {
   perplexityBrowserRunnerOverride = runner;
 }
@@ -921,8 +1030,11 @@ function clearPerplexityBrowserIdleTimer(): void {
 
 function schedulePerplexityBrowserClose(): void {
   clearPerplexityBrowserIdleTimer();
+  if (perplexityBrowserActiveRequests > 0) return;
   perplexityBrowserIdleTimer = setTimeout(() => {
-    void closePerplexityBrowser();
+    if (perplexityBrowserActiveRequests === 0) {
+      void closePerplexityBrowser();
+    }
   }, PERPLEXITY_BROWSER_IDLE_MS);
   perplexityBrowserIdleTimer.unref?.();
 }
@@ -938,16 +1050,22 @@ export async function closePerplexityBrowser(): Promise<void> {
   }
 }
 
-async function ensurePerplexityBrowserPage(): Promise<PerplexityBrowserHandle> {
+async function ensurePerplexityBrowserPage(
+  browserCookies: PerplexityBrowserCookie[],
+  authKey: string,
+): Promise<PerplexityBrowserHandle> {
   clearPerplexityBrowserIdleTimer();
+  while (perplexityBrowserInitPromise) {
+    await perplexityBrowserInitPromise.catch(() => {});
+  }
   if (
     perplexityBrowserHandle &&
+    perplexityBrowserHandle.authKey === authKey &&
     perplexityBrowserHandle.browser.isConnected() &&
     !perplexityBrowserHandle.page.isClosed()
   ) {
     return perplexityBrowserHandle;
   }
-  if (perplexityBrowserInitPromise) return perplexityBrowserInitPromise;
 
   perplexityBrowserInitPromise = (async () => {
     await closePerplexityBrowser();
@@ -962,6 +1080,9 @@ async function ensurePerplexityBrowserPage(): Promise<PerplexityBrowserHandle> {
         locale,
         timezoneId,
       });
+      if (browserCookies.length > 0) {
+        await context.addCookies(browserCookies);
+      }
       const page = await context.newPage();
       await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded", timeout: 30_000 });
       for (let i = 0; i < 40; i++) {
@@ -977,7 +1098,7 @@ async function ensurePerplexityBrowserPage(): Promise<PerplexityBrowserHandle> {
           void closePerplexityBrowser();
         });
       }
-      const handle: PerplexityBrowserHandle = { browser, context, page };
+      const handle: PerplexityBrowserHandle = { authKey, browser, context, page };
       perplexityBrowserHandle = handle;
       return handle;
     } catch (error) {
@@ -1038,6 +1159,7 @@ async function executePerplexityBrowserAsk(
       try {
         const response = await fetch("https://www.perplexity.ai/rest/sse/perplexity_ask", {
           method: "POST",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
@@ -1057,7 +1179,9 @@ async function executePerplexityBrowserAsk(
   );
 
   if (!res.ok) {
-    throw new Error(`Perplexity browser ask error (${res.status}): ${res.text.slice(0, 300)}`);
+    const msg = `Perplexity browser ask error (${res.status}): ${res.text.slice(0, 300)}`;
+    if (res.status === 401) throw new PerplexityAuthWallError(msg);
+    throw new Error(msg);
   }
   const { response: parsed, authWall } = await parsePerplexityAskStreamDetailed(res.text, requestId);
   assertValidPerplexityAskResponse(parsed, authWall);
@@ -1067,42 +1191,78 @@ async function executePerplexityBrowserAsk(
   return parsed;
 }
 
+async function resolvePerplexityBrowserAuthCookies(
+  methods?: PerplexityAuthMethod[],
+): Promise<PerplexityBrowserCookie[]> {
+  const resolved = methods ?? (await resolvePerplexityAuthMethods(false));
+  const cookiesMethod = resolved.find((m): m is Extract<PerplexityAuthMethod, { type: "cookies" }> => m.type === "cookies");
+  const oauthMethod = resolved.find((m): m is Extract<PerplexityAuthMethod, { type: "oauth" }> => m.type === "oauth");
+  return buildPerplexityBrowserCookies({
+    cookies: cookiesMethod?.cookies,
+    oauthToken: oauthMethod?.token,
+  });
+}
+
 /** Execute a Perplexity search through a headless Playwright browser session. */
-export async function searchPerplexityViaBrowser(req: SearchRequest): Promise<WebSearchResponse> {
+export async function searchPerplexityViaBrowser(
+  req: SearchRequest,
+  authMethods?: PerplexityAuthMethod[],
+): Promise<WebSearchResponse> {
+  const browserCookies = await resolvePerplexityBrowserAuthCookies(authMethods);
   if (perplexityBrowserRunnerOverride) {
-    return perplexityBrowserRunnerOverride(req);
+    return perplexityBrowserRunnerOverride(req, browserCookies);
   }
-  const hadWarmHandle = Boolean(perplexityBrowserHandle);
+  const authKey = createHash("sha256").update(JSON.stringify(browserCookies)).digest("hex");
+  const hadWarmHandle = Boolean(
+    perplexityBrowserHandle &&
+      perplexityBrowserHandle.authKey === authKey &&
+      perplexityBrowserHandle.browser.isConnected() &&
+      !perplexityBrowserHandle.page.isClosed(),
+  );
+  perplexityBrowserActiveRequests++;
   try {
-    const handle = await ensurePerplexityBrowserPage();
-    const res = await executePerplexityBrowserAsk(handle, req);
-    schedulePerplexityBrowserClose();
-    return res;
+    const handle = await ensurePerplexityBrowserPage(browserCookies, authKey);
+    return await executePerplexityBrowserAsk(handle, req);
   } catch (err) {
-    if (hadWarmHandle) {
-      await closePerplexityBrowser();
-      const freshHandle = await ensurePerplexityBrowserPage();
-      try {
-        const res = await executePerplexityBrowserAsk(freshHandle, req);
-        schedulePerplexityBrowserClose();
-        return res;
-      } catch (retryErr) {
+    if (hadWarmHandle && !(err instanceof PerplexityAuthWallError)) {
+      if (perplexityBrowserActiveRequests <= 1) {
         await closePerplexityBrowser();
+      }
+      const freshHandle = await ensurePerplexityBrowserPage(browserCookies, authKey);
+      try {
+        return await executePerplexityBrowserAsk(freshHandle, req);
+      } catch (retryErr) {
+        if (perplexityBrowserActiveRequests <= 1) {
+          await closePerplexityBrowser();
+        }
         throw retryErr;
       }
     }
-    await closePerplexityBrowser();
+    if (perplexityBrowserActiveRequests <= 1) {
+      await closePerplexityBrowser();
+    }
     throw err;
+  } finally {
+    perplexityBrowserActiveRequests = Math.max(0, perplexityBrowserActiveRequests - 1);
+    if (perplexityBrowserHandle) {
+      schedulePerplexityBrowserClose();
+    }
   }
 }
 
-function shouldTryPerplexityBrowserFallback(explicit: boolean, methods: PerplexityAuthMethod[]): boolean {
+function shouldTryPerplexityBrowserFallback(
+  explicit: boolean,
+  methods: PerplexityAuthMethod[],
+  oauthAuthInvalid = false,
+): boolean {
   if (jeoEnv("PERPLEXITY_BROWSER") === "0") return false;
   const inTest = process.env.NODE_ENV === "test";
   if (inTest && jeoEnv("PERPLEXITY_BROWSER") !== "1" && !perplexityBrowserRunnerOverride) {
     return false;
   }
-  return explicit || methods.some(m => m.type === "cookies" || m.type === "oauth");
+  if (explicit) return true;
+  if (methods.some(m => m.type === "cookies")) return true;
+  return !oauthAuthInvalid && methods.some(m => m.type === "oauth");
 }
 
 async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean } = {}): Promise<WebSearchResponse> {
@@ -1114,6 +1274,7 @@ async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean }
     );
   }
   let lastError: unknown;
+  let oauthAuthInvalid = false;
   for (const auth of methods) {
     try {
       if (auth.type === "api_key") {
@@ -1122,13 +1283,35 @@ async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean }
       return await callPerplexityAsk(auth, req);
     } catch (error) {
       lastError = error;
+      if (auth.type === "oauth" && error instanceof PerplexityAuthWallError) {
+        markPerplexitySessionInvalid(auth.token);
+        oauthAuthInvalid = true;
+      }
     }
   }
-  if (shouldTryPerplexityBrowserFallback(explicit, methods)) {
+  if (shouldTryPerplexityBrowserFallback(explicit, methods, oauthAuthInvalid)) {
+    const browserMethods = oauthAuthInvalid ? methods.filter(m => m.type !== "oauth") : methods;
     try {
-      return await searchPerplexityViaBrowser(req);
+      return await searchPerplexityViaBrowser(req, browserMethods);
     } catch (error) {
       lastError = error;
+      if (error instanceof PerplexityAuthWallError) {
+        const oauthMethod = browserMethods.find(
+          (m): m is Extract<PerplexityAuthMethod, { type: "oauth" }> => m.type === "oauth",
+        );
+        const cookiesMethod = browserMethods.find(
+          (m): m is Extract<PerplexityAuthMethod, { type: "cookies" }> => m.type === "cookies",
+        );
+        const cookieOverridesSession = Boolean(
+          cookiesMethod &&
+            buildPerplexityBrowserCookies({ cookies: cookiesMethod.cookies }).some(
+              c => c.name === "__Secure-next-auth.session-token",
+            ),
+        );
+        if (oauthMethod && !cookieOverridesSession) {
+          markPerplexitySessionInvalid(oauthMethod.token);
+        }
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test, vi } from "bun:test";
 import { createModelManager, retryableStream, streamIdleMs } from "../src/ai/model-manager";
 import type { CallOptions, Message as AiMessage, ProviderAdapter } from "../src/ai/types";
 import { runAgentLoop } from "../src/agent/engine";
@@ -180,5 +180,161 @@ test("mid-stream stream idle sets midStreamIdle=true and engine recovers instead
     expect(notices.some(n => /mid-response provider fault/.test(n) && /auto-retry #1/.test(n))).toBe(true);
   } finally {
     delete process.env.JEO_TRANSIENT_NETWORK_BACKOFF_BASE_MS;
+  }
+});
+
+test("retryableStream: early consumer break calls iter.return() to close the underlying stream", async () => {
+  let returnCalls = 0;
+  const makeIter = (): AsyncIterator<string> => {
+    let idx = 0;
+    return {
+      next: async () => {
+        idx++;
+        if (idx <= 3) return { value: `chunk-${idx}`, done: false };
+        return { value: undefined as unknown as string, done: true };
+      },
+      return: async () => {
+        returnCalls++;
+        return { value: undefined as unknown as string, done: true };
+      },
+    };
+  };
+
+  const received: string[] = [];
+  for await (const chunk of retryableStream(
+    makeIter,
+    { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+    { idleMs: 500 },
+  )) {
+    received.push(chunk);
+    if (received.length === 1) break;
+  }
+
+  expect(received).toEqual(["chunk-1"]);
+  expect(returnCalls).toBe(1);
+});
+
+test("retryableStream: mid-stream iterator error and mid-stream idle both call iter.return() to close the underlying stream", async () => {
+  let errReturnCalls = 0;
+  let errAttempts = 0;
+  const makeErrIter = (): AsyncIterator<string> => {
+    errAttempts++;
+    let idx = 0;
+    return {
+      next: async () => {
+        if (idx++ === 0) return { value: "first", done: false };
+        throw new Error("socket closed mid-stream");
+      },
+      return: async () => {
+        errReturnCalls++;
+        return { value: undefined as unknown as string, done: true };
+      },
+    };
+  };
+
+  const received: string[] = [];
+  let caughtErr: unknown;
+  try {
+    for await (const chunk of retryableStream(
+      makeErrIter,
+      { retries: 3, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+      { idleMs: 500 },
+    )) {
+      received.push(chunk);
+    }
+  } catch (err) {
+    caughtErr = err;
+  }
+
+  expect(received).toEqual(["first"]);
+  expect(errAttempts).toBe(1);
+  expect(errReturnCalls).toBe(1);
+  expect((caughtErr as Error).message).toBe("socket closed mid-stream");
+
+  let idleReturnCalls = 0;
+  vi.useFakeTimers();
+  try {
+    const stalledSecondChunk = Promise.withResolvers<IteratorResult<string>>();
+    const makeStallIter = (): AsyncIterator<string> => {
+      let idx = 0;
+      return {
+        next: async () => {
+          if (idx++ === 0) return { value: "first", done: false };
+          return stalledSecondChunk.promise;
+        },
+        return: async () => {
+          idleReturnCalls++;
+          return { value: undefined as unknown as string, done: true };
+        },
+      };
+    };
+
+    const stream = retryableStream(
+      makeStallIter,
+      { retries: 2, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+      { idleMs: 50 },
+    );
+    const first = await stream.next();
+    expect(first).toEqual({ value: "first", done: false });
+
+    const secondPromise = stream.next();
+    vi.advanceTimersByTime(60);
+    let idleErr: unknown;
+    try {
+      await secondPromise;
+    } catch (err) {
+      idleErr = err;
+    }
+    expect(isStreamIdleError(idleErr)).toBe(true);
+    expect(isMidStreamIdleError(idleErr)).toBe(true);
+    expect(idleReturnCalls).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("retryableStream: 5000-chunk stream succeeds cleanly with idleWatchdog across multiple idle-sized spans without spurious idle errors", async () => {
+  vi.useFakeTimers();
+  try {
+    const startNow = Date.now();
+    let onIdleCalls = 0;
+    const totalChunks = 5000;
+    const makeIter = (): AsyncIterator<string> => {
+      let idx = 0;
+      return {
+        next: async () => {
+          if (idx >= totalChunks) return { value: undefined as unknown as string, done: true };
+          // Periodically advance fake time by 25ms (< 100ms idleMs) so total elapsed virtual
+          // time (9 * 25ms = 225ms) exceeds idleMs without any single gap stalling.
+          if (idx > 0 && idx % 500 === 0) {
+            vi.advanceTimersByTime(25);
+          }
+          const value = `c${idx}`;
+          idx++;
+          return { value, done: false };
+        },
+      };
+    };
+
+    let count = 0;
+    let firstChunk: string | undefined;
+    let lastChunk: string | undefined;
+    for await (const chunk of retryableStream(
+      makeIter,
+      { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+      { idleMs: 100, onIdle: () => { onIdleCalls++; } },
+    )) {
+      if (count === 0) firstChunk = chunk;
+      lastChunk = chunk;
+      count++;
+    }
+
+    expect(count).toBe(totalChunks);
+    expect(firstChunk).toBe("c0");
+    expect(lastChunk).toBe(`c${totalChunks - 1}`);
+    expect(onIdleCalls).toBe(0);
+    expect(Date.now() - startNow).toBeGreaterThanOrEqual(225);
+  } finally {
+    vi.useRealTimers();
   }
 });

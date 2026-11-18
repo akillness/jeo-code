@@ -169,11 +169,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
   const baseDelayMs = opts?.baseDelayMs ?? 250;
   const maxDelayMs = opts?.maxDelayMs ?? 4000;
   const isRetryable = opts?.isRetryable ?? defaultRetryable;
-  const sleep = opts?.sleep ?? ((ms: number) => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, ms);
-    return promise;
-  });
+  const customSleep = opts?.sleep;
   const random = opts?.random ?? Math.random;
   const onRetry = opts?.onRetry;
   const rateLimitMinDelayMs = opts?.rateLimitMinDelayMs ?? 0;
@@ -186,6 +182,9 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
     try {
       return await fn();
     } catch (err) {
+      if (signal?.aborted) {
+        throw signal.reason ?? err;
+      }
       // Rate-limit (429) errors may use a higher attempt cap so a transient per-minute window
       // can reset before we surface the failure. `rateLimitMaxServerDelayMs` is opt-in
       // (unset by default): only when explicitly configured and the server's own wait exceeds
@@ -227,10 +226,27 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
         throw err;
       }
 
-      await abortableSleep(sleep, delay, signal);
+      await (customSleep ? abortableSleep(customSleep, delay, signal) : defaultSleep(delay, signal));
       attempt++;
     }
   }
+}
+
+/** Default abortable sleep: clears its timer when `signal` aborts so multi-hour
+ *  `Retry-After` timers do not linger after cancellation. */
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onAbort = () => {
+    clearTimeout(timer);
+    reject(signal?.reason ?? new Error("aborted"));
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  return promise;
 }
 
 /** Race `sleep(ms)` against `signal`; an already-aborted or mid-wait-aborted signal rejects

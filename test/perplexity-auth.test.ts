@@ -19,6 +19,7 @@ import { OAUTH_FLOW_REGISTRY } from "../src/auth/flows/index.ts";
 import {
   PERPLEXITY_NEVER_EXPIRES,
   extractPerplexityMacAppToken,
+  isPerplexityJweToken,
   loginPerplexity,
   perplexityJwtExpiryMs,
   refreshPerplexityToken,
@@ -362,5 +363,70 @@ describe("perplexity auth, config, flow & sync", () => {
       valid: true,
       email: "active@example.com",
     });
+  });
+
+  it("isPerplexityJweToken distinguishes 5-part NextAuth JWEs (including alg:dir empty ekey) from 3-part JWTs and opaque strings", () => {
+    expect(isPerplexityJweToken("hdr.ekey.iv.ciphertext.tag")).toBe(true);
+    expect(isPerplexityJweToken("eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..ivpart.cipherpart.tagpart")).toBe(true);
+    expect(isPerplexityJweToken(makeJwt({ sub: "u1" }))).toBe(false);
+    expect(isPerplexityJweToken("pplx-opaque-token")).toBe(false);
+    expect(isPerplexityJweToken("a.b.c..e")).toBe(false);
+    expect(isPerplexityJweToken("a.b.c.d.e!")).toBe(false);
+  });
+
+  it("verifyPerplexitySessionToken does not falsely reject Cloudflare 403 HTML challenges", async () => {
+    makeIsolatedEnv();
+    globalThis.fetch = (async () =>
+      new Response("<html>Just a moment...</html>", {
+        status: 403,
+        headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+      })) as typeof fetch;
+    expect(await verifyPerplexitySessionToken("eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..iv.cipher.tag")).toEqual({
+      valid: true,
+    });
+  });
+
+  it("refreshPerplexityToken verifies 5-part JWE sessions against /api/auth/session and rejects logged-out JWEs", async () => {
+    makeIsolatedEnv();
+    const jwe = "hdr.ekey.iv.ciphertext.tag";
+
+    globalThis.fetch = (async () => Response.json({ user: { email: "live@example.com" } })) as typeof fetch;
+    expect(await refreshPerplexityToken(jwe)).toEqual({
+      access: jwe,
+      refresh: jwe,
+      expires: PERPLEXITY_NEVER_EXPIRES,
+      email: "live@example.com",
+    });
+
+    globalThis.fetch = (async () => Response.json({})) as typeof fetch;
+    await expect(refreshPerplexityToken(jwe)).rejects.toThrow("invalid_token");
+  });
+
+  it("syncOAuthFromJeopi skips logged-out 5-part Perplexity JWEs", async () => {
+    const dir = makeIsolatedEnv();
+    const dbPath = join(dir, "agent.db");
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE auth_credentials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      credential_type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      disabled_cause TEXT DEFAULT NULL,
+      identity_key TEXT DEFAULT NULL
+    );`);
+    const deadJwe = "hdr.ekey.iv.deadcipher.tag";
+    db.prepare("INSERT INTO auth_credentials(provider, credential_type, data, disabled_cause) VALUES (?,?,?,?)").run(
+      "perplexity",
+      "oauth",
+      JSON.stringify({ access: deadJwe, refresh: deadJwe, expires: PERPLEXITY_NEVER_EXPIRES }),
+      null,
+    );
+    db.close();
+
+    globalThis.fetch = (async () => Response.json({})) as typeof fetch;
+    const syncRes = await syncOAuthFromJeopi({ agentDbPath: dbPath });
+    expect(syncRes.imported).toBe(0);
+    expect(syncRes.skipped).toBe(1);
+    expect(await resolveCredential("perplexity")).toEqual({ kind: "none", provider: "perplexity" });
   });
 });

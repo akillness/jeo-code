@@ -353,3 +353,116 @@ test("protected shutdown rejects a stale-nonce frame ACK and a kill-driven crash
   expect(await rejected).toMatchObject({ message: expect.stringContaining("REVOKE_INCOMPLETE") });
   await expect(pool.close()).rejects.toThrow("REVOKE_INCOMPLETE");
 });
+
+test("dead unacked sandbox worker frees capacity for unrelated keys while quarantining only its own key", async () => {
+  const { pool, workers, turn } = sandboxPool({ limit: 1, reply: false });
+  const failed = turn("first").catch(error => error);
+  expect(workers).toHaveLength(1);
+  workers[0]!.exit(17);
+  expect(await failed).toMatchObject({ message: expect.stringMatching(/Messenger worker stopped|REVOKE_INCOMPLETE/) });
+
+  // The crashed key remains quarantined.
+  await expect(turn("retry")).rejects.toThrow("REVOKE_INCOMPLETE");
+
+  // An unrelated conversation recovers the single pool slot without being wedged by the dead unacked worker.
+  const unrelated = await pool.turn("other-conversation", ["B"], "/tmp", {}, "hello", new AbortController().signal, undefined, "B");
+  expect(unrelated).toBe("B:hello");
+  workers[1]!.acknowledge();
+  workers[1]!.exit();
+  expect(workers).toHaveLength(2);
+  await expect(pool.close()).rejects.toThrow("REVOKE_INCOMPLETE");
+});
+
+test("dead unacked retiring worker releases capacity for subsequent unrelated turns after waiter rejects", async () => {
+  const { pool, workers, turn } = sandboxPool({ limit: 1 });
+  expect(await turn("first")).toBe("A:first");
+  const worker = workers[0]!;
+
+  const waiting = pool.turn("other-conversation", ["B"], "/tmp", {}, "second", new AbortController().signal, undefined, "B").catch(error => error);
+  await worker.stopping;
+  worker.exit(0); // Exits without supervisor cleanup ACK.
+
+  expect(await waiting).toMatchObject({ message: expect.stringContaining("capacity unavailable") });
+  await expect(turn("retry")).rejects.toThrow("REVOKE_INCOMPLETE");
+
+  // Once the unacked retiring worker has exited, unrelated keys can acquire the freed slot.
+  expect(await pool.turn("other-conversation", ["B"], "/tmp", {}, "third", new AbortController().signal, undefined, "B")).toBe("B:third");
+  expect(workers).toHaveLength(2);
+});
+
+test("stop() cleans up in-flight stop and aborted keySignal state when cleanup fails or times out", async () => {
+  const { pool, workers, turn } = sandboxPool({ limit: 1 });
+  expect(await turn("first")).toBe("A:first");
+  const worker = workers[0]!;
+
+  const stop1 = pool.stop("conversation").catch(error => error);
+  const stopConcurrent = pool.stop("conversation").catch(error => error);
+  await worker.stopping;
+  jest.advanceTimersByTime(shutdownTimeoutMs * 2);
+
+  const err1 = await stop1 as Error;
+  const err2 = await stopConcurrent as Error;
+  expect(err1.message).toContain("REVOKE_INCOMPLETE");
+  expect(err2.message).toContain("REVOKE_INCOMPLETE");
+
+  // Because the rejected stop cleaned up `stops`, a subsequent stop() re-enters and waits on the live worker
+  // instead of returning a stale cached promise before the worker actually exits.
+  let secondSettled = false;
+  const stop2 = pool.stop("conversation").catch(error => error).finally(() => { secondSettled = true; });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(secondSettled).toBe(false);
+
+  worker.acknowledge();
+  worker.exit(0);
+  expect(await stop2).toMatchObject({ message: expect.stringContaining("REVOKE_INCOMPLETE") });
+
+  // Once the 15-minute quarantine TTL expires, a new turn on the key succeeds rather than staying aborted by a stale keySignal.
+  jest.advanceTimersByTime(15 * 60_000);
+  expect(await turn("after-ttl")).toBe("A:after-ttl");
+  expect(workers).toHaveLength(2);
+});
+
+test("quarantined keys expire after 15m TTL and enforce bounded LRU eviction at 1024 entries", async () => {
+  const { pool, workers, turn } = sandboxPool({ limit: 1 });
+
+  // Quarantine 1024 distinct keys (`k-0` .. `k-1023`).
+  for (let i = 0; i < 1024; i++) {
+    const key = `k-${i}`;
+    expect(await pool.turn(key, ["A"], "/tmp", {}, "ping", new AbortController().signal, undefined, "A")).toBe("A:ping");
+    workers[i]!.exit(17);
+    for (let t = 0; t < 6; t++) await Promise.resolve();
+  }
+
+  // Touch `k-0` so it becomes MRU in the quarantine cache, leaving `k-1` as the oldest LRU entry.
+  await expect(pool.turn("k-0", ["A"], "/tmp", {}, "probe", new AbortController().signal, undefined, "A")).rejects.toThrow("REVOKE_INCOMPLETE");
+
+  // Adding a 1025th quarantined key evicts `k-1` while keeping `k-0` and `k-1024`.
+  expect(await pool.turn("k-1024", ["A"], "/tmp", {}, "ping", new AbortController().signal, undefined, "A")).toBe("A:ping");
+  workers[1024]!.exit(17);
+  for (let t = 0; t < 6; t++) await Promise.resolve();
+
+  await expect(pool.turn("k-0", ["A"], "/tmp", {}, "still-blocked", new AbortController().signal, undefined, "A")).rejects.toThrow("REVOKE_INCOMPLETE");
+  await expect(pool.turn("k-1024", ["A"], "/tmp", {}, "still-blocked", new AbortController().signal, undefined, "A")).rejects.toThrow("REVOKE_INCOMPLETE");
+  expect(await pool.turn("k-1", ["A"], "/tmp", {}, "evicted", new AbortController().signal, undefined, "A")).toBe("A:evicted");
+
+  // Verify TTL boundary: 1ms before 15m stays quarantined; at 15m the quarantine expires.
+  workers[1025]!.exit(17);
+  for (let t = 0; t < 6; t++) await Promise.resolve();
+  jest.advanceTimersByTime(15 * 60_000 - 1);
+  await expect(pool.turn("k-1", ["A"], "/tmp", {}, "before-ttl", new AbortController().signal, undefined, "A")).rejects.toThrow("REVOKE_INCOMPLETE");
+  jest.advanceTimersByTime(1);
+  expect(await pool.turn("k-1", ["A"], "/tmp", {}, "at-ttl", new AbortController().signal, undefined, "A")).toBe("A:at-ttl");
+});
+
+test("stop() clears keySignals after unacked exit rejection so post-TTL turns succeed", async () => {
+  const { pool, workers, turn } = sandboxPool({ limit: 1 });
+  expect(await turn("first")).toBe("A:first");
+  const worker = workers[0]!;
+  const stopping = pool.stop("conversation").catch(error => error);
+  await worker.stopping;
+  worker.exit(1);
+  expect(await stopping).toMatchObject({ message: expect.stringContaining("REVOKE_INCOMPLETE") });
+
+  jest.advanceTimersByTime(15 * 60_000);
+  expect(await turn("recovered")).toBe("A:recovered");
+});

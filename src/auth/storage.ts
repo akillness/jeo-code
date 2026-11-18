@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -158,9 +158,12 @@ const DEFAULT_USAGE_LIMIT_COOLDOWN_MS = 30 * 60_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 5 * 60_000;
 const MAX_SESSION_PINS = 128;
+const MAX_LOADED_POOL_DIRS = 32;
 
 const LockFileSchema = z.object({
-  pid: z.number().optional(),
+  pid: z.number().int().positive().optional(),
+  nonce: z.string().min(1).optional(),
+  acquiredAt: z.number().optional(),
   createdAt: z.number().optional(),
 });
 
@@ -206,6 +209,7 @@ interface PoolRuntimeEntry {
 
 const inFlightRefresh = new Map<string, Promise<RefreshResult>>();
 const loadedPoolDirs = new Map<string, Map<string, PoolRuntimeEntry>>();
+const heldLockNonces = new Map<string, string>();
 
 function resolveConfigDir(): string {
   return jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".jeo");
@@ -226,7 +230,17 @@ function canPersistPoolState(): boolean {
 async function getDirPools(): Promise<Map<string, PoolRuntimeEntry>> {
   const dir = resolveConfigDir();
   const existing = loadedPoolDirs.get(dir);
-  if (existing) return existing;
+  if (existing) {
+    loadedPoolDirs.delete(dir);
+    loadedPoolDirs.set(dir, existing);
+    return existing;
+  }
+
+  while (loadedPoolDirs.size >= MAX_LOADED_POOL_DIRS) {
+    const oldestDir = loadedPoolDirs.keys().next().value;
+    if (oldestDir === undefined) break;
+    loadedPoolDirs.delete(oldestDir);
+  }
 
   const map = new Map<string, PoolRuntimeEntry>();
   loadedPoolDirs.set(dir, map);
@@ -259,13 +273,35 @@ async function getDirPools(): Promise<Map<string, PoolRuntimeEntry>> {
   return map;
 }
 
+function pruneExpiredCooldownsInDirMap(dirMap: Map<string, PoolRuntimeEntry>, now: number): void {
+  for (const [key, entry] of dirMap.entries()) {
+    for (const [idKey, until] of entry.blockedUntil.entries()) {
+      if (until <= now) {
+        entry.blockedUntil.delete(idKey);
+        entry.blockedReason.delete(idKey);
+      }
+    }
+    for (const idKey of entry.blockedReason.keys()) {
+      if (!entry.blockedUntil.has(idKey)) {
+        entry.blockedReason.delete(idKey);
+      }
+    }
+    if (entry.cursor === 0 && entry.blockedUntil.size === 0 && entry.sessionPinned.size === 0) {
+      dirMap.delete(key);
+    }
+  }
+}
+
 async function persistDirPools(): Promise<void> {
+  const now = Date.now();
+  for (const dirMap of loadedPoolDirs.values()) {
+    pruneExpiredCooldownsInDirMap(dirMap, now);
+  }
   if (!canPersistPoolState()) return;
   const dir = resolveConfigDir();
   const map = loadedPoolDirs.get(dir);
   if (!map) return;
 
-  const now = Date.now();
   const pools: Record<string, z.infer<typeof PersistedPoolEntrySchema>> = {};
   for (const [key, entry] of map.entries()) {
     const blockedUntil: Record<string, number> = {};
@@ -282,7 +318,6 @@ async function persistDirPools(): Promise<void> {
       pools[key] = { cursor: entry.cursor, blockedUntil, blockedReason, sessionPinned };
     }
   }
-
   const target = poolStatePath(dir);
   const tmpPath = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
@@ -347,49 +382,145 @@ export async function resetAuthPoolState(provider?: AuthProvider): Promise<void>
   await persistDirPools();
 }
 
-export async function acquireLock(provider: AuthProvider, timeoutMs = 5000): Promise<void> {
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+    return code === "EPERM";
+  }
+}
+
+type LockHolderStatus =
+  | { status: "missing" }
+  | { status: "corrupt" }
+  | { status: "live"; pid: number; timestamp?: number }
+  | { status: "dead"; pid?: number; timestamp?: number };
+
+async function inspectLockHolder(lockPath: string): Promise<LockHolderStatus> {
+  let content: string;
+  try {
+    content = await fs.readFile(lockPath, "utf-8");
+    if (content.length === 0) {
+      // Brief grace window in case a concurrent locker just created the file and is mid-write.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 20);
+      await promise;
+      content = await fs.readFile(lockPath, "utf-8");
+    }
+  } catch (err: unknown) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : undefined;
+    if (code === "ENOENT") return { status: "missing" };
+    return { status: "corrupt" };
+  }
+
+  try {
+    const parsed = LockFileSchema.safeParse(JSON.parse(content));
+    if (!parsed.success) return { status: "corrupt" };
+    const timestamp = parsed.data.acquiredAt ?? parsed.data.createdAt;
+    const pid = parsed.data.pid;
+    if (typeof pid === "number") {
+      return isPidAlive(pid)
+        ? { status: "live", pid, timestamp }
+        : { status: "dead", pid, timestamp };
+    }
+    return { status: "dead", timestamp };
+  } catch {
+    return { status: "corrupt" };
+  }
+}
+
+async function tryCreateLockFile(lockPath: string): Promise<string | null> {
+  let handle: fs.FileHandle;
+  try {
+    handle = await fs.open(lockPath, "wx");
+  } catch (err: unknown) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : undefined;
+    if (code === "EEXIST") return null;
+    throw err;
+  }
+  const nonce = randomUUID();
+  try {
+    const info = JSON.stringify({ pid: process.pid, nonce, acquiredAt: Date.now() });
+    await handle.writeFile(info, "utf-8");
+    await handle.close();
+    heldLockNonces.set(lockPath, nonce);
+    return nonce;
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await fs.unlink(lockPath).catch(() => {});
+    throw err;
+  }
+}
+
+async function breakStaleLock(lockPath: string, timeoutMs: number, forceAtDeadline: boolean): Promise<void> {
+  const breakerPath = `${lockPath}.breaking`;
+  const breakerNonce = await tryCreateLockFile(breakerPath);
+  if (!breakerNonce) {
+    // Clean up an abandoned breaker file older than timeoutMs.
+    try {
+      const stat = await fs.stat(breakerPath);
+      if (stat.mtimeMs + timeoutMs < Date.now()) {
+        await fs.unlink(breakerPath).catch(() => {});
+      }
+    } catch {}
+    return;
+  }
+  try {
+    const holder = await inspectLockHolder(lockPath);
+    const now = Date.now();
+    if (holder.status === "dead") {
+      if (forceAtDeadline || (typeof holder.timestamp === "number" && holder.timestamp + timeoutMs < now)) {
+        await fs.unlink(lockPath).catch(() => {});
+      }
+    } else if (holder.status === "corrupt") {
+      try {
+        const stat = await fs.stat(lockPath);
+        if (forceAtDeadline || stat.mtimeMs + timeoutMs < now) {
+          await fs.unlink(lockPath).catch(() => {});
+        }
+      } catch {}
+    }
+  } finally {
+    await fs.unlink(breakerPath).catch(() => {});
+  }
+}
+
+export async function acquireLock(provider: AuthProvider, timeoutMs = 5000): Promise<string> {
   const lockPath = getLockPath(provider);
   const dir = path.dirname(lockPath);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
-  const deadline = Date.now() + Math.max(timeoutMs * 2, 1_000);
+  const waitBudgetMs = Math.max(timeoutMs * 2, 1_000);
+  const deadline = Date.now() + waitBudgetMs;
   while (true) {
-    try {
-      const handle = await fs.open(lockPath, "wx");
-      const info = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
-      await handle.writeFile(info, "utf-8");
-      await handle.close();
-      return;
-    } catch (err: unknown) {
-      const code = err && typeof err === "object" && "code" in err ? String(err.code) : undefined;
-      if (code !== "EEXIST") {
-        throw err;
-      }
-      try {
-        const content = await fs.readFile(lockPath, "utf-8");
-        const parsed = LockFileSchema.safeParse(JSON.parse(content));
-        if (parsed.success && typeof parsed.data.createdAt === "number" && parsed.data.createdAt + timeoutMs < Date.now()) {
-          await fs.unlink(lockPath).catch(() => {});
-        }
-      } catch {
-        try {
-          const stat = await fs.stat(lockPath);
-          if (stat.mtimeMs + timeoutMs < Date.now()) {
-            await fs.unlink(lockPath).catch(() => {});
-          }
-        } catch {}
-      }
+    const acquiredNonce = await tryCreateLockFile(lockPath);
+    if (acquiredNonce) return acquiredNonce;
+
+    const holder = await inspectLockHolder(lockPath);
+
+    if (holder.status === "dead" || holder.status === "corrupt") {
+      await breakStaleLock(lockPath, timeoutMs, false);
     }
+
     if (Date.now() >= deadline) {
-      await fs.unlink(lockPath).catch(() => {});
-      const handle = await fs.open(lockPath, "wx").catch(() => null);
-      if (handle) {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now(), stolen: true }), "utf-8");
-        await handle.close();
-        return;
+      const finalHolder = await inspectLockHolder(lockPath);
+      if (finalHolder.status === "missing") {
+        const retryNonce = await tryCreateLockFile(lockPath);
+        if (retryNonce) return retryNonce;
+      } else if (finalHolder.status === "live") {
+        throw new Error(
+          `OAuth lock for ${provider} is held by live process ${finalHolder.pid}; refusing to steal after ${waitBudgetMs}ms (${lockPath})`,
+        );
+      } else {
+        await breakStaleLock(lockPath, timeoutMs, true);
+        const stolenNonce = await tryCreateLockFile(lockPath);
+        if (stolenNonce) return stolenNonce;
       }
       throw new Error(
-        `OAuth lock for ${provider} could not be acquired within ${Math.max(timeoutMs * 2, 1_000)}ms (${lockPath})`,
+        `OAuth lock for ${provider} could not be acquired within ${waitBudgetMs}ms (${lockPath})`,
       );
     }
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -398,9 +529,23 @@ export async function acquireLock(provider: AuthProvider, timeoutMs = 5000): Pro
   }
 }
 
-export async function releaseLock(provider: AuthProvider): Promise<void> {
+export async function releaseLock(provider: AuthProvider, nonce?: string): Promise<void> {
   const lockPath = getLockPath(provider);
-  await fs.unlink(lockPath).catch(() => {});
+  const expectedNonce = nonce ?? heldLockNonces.get(lockPath);
+  if (!expectedNonce) return;
+  try {
+    const content = await fs.readFile(lockPath, "utf-8");
+    const parsed = LockFileSchema.safeParse(JSON.parse(content));
+    if (parsed.success && parsed.data.nonce === expectedNonce) {
+      await fs.unlink(lockPath).catch(() => {});
+    }
+  } catch {
+    // Missing or unreadable lock file — do not unlink another holder's lock.
+  } finally {
+    if (heldLockNonces.get(lockPath) === expectedNonce) {
+      heldLockNonces.delete(lockPath);
+    }
+  }
 }
 
 export function normalizeOAuthPool(raw: OAuthPoolEntry | undefined): OAuthEntry[] {
@@ -753,7 +898,7 @@ export async function refreshOAuthSlot(
   if (!isOAuthProvider(provider)) {
     return { refreshed: false, reason: "no_oauth_token", credential: await resolveCredential(provider) };
   }
-  await acquireLock(provider);
+  const lockNonce = await acquireLock(provider);
   try {
     const cfg = await readGlobalConfig();
     const pool = normalizeOAuthPool(cfg.oauth?.[provider]);
@@ -872,7 +1017,7 @@ export async function refreshOAuthSlot(
       };
     }
   } finally {
-    await releaseLock(provider);
+    await releaseLock(provider, lockNonce);
   }
 }
 
@@ -1327,11 +1472,11 @@ export async function setOauthToken(
   token: string,
   opts?: { replaceAll?: boolean },
 ): Promise<{ poolSize: number; index: number; added: boolean }> {
-  await acquireLock(provider);
+  const lockNonce = await acquireLock(provider);
   try {
     return await upsertOAuthEntryNoLock(provider, token, opts);
   } finally {
-    await releaseLock(provider);
+    await releaseLock(provider, lockNonce);
   }
 }
 
@@ -1350,11 +1495,11 @@ export async function setOauthCredential(
   cred: StoredOAuth,
   opts?: { replaceAll?: boolean },
 ): Promise<{ poolSize: number; index: number; added: boolean }> {
-  await acquireLock(provider);
+  const lockNonce = await acquireLock(provider);
   try {
     return await upsertOAuthEntryNoLock(provider, cred, opts);
   } finally {
-    await releaseLock(provider);
+    await releaseLock(provider, lockNonce);
   }
 }
 
@@ -1381,7 +1526,7 @@ export async function removeOAuthAccount(
     return { removed: cleared, remaining: 0 };
   }
 
-  await acquireLock(provider);
+  const lockNonce = await acquireLock(provider);
   try {
     const raw = await readRawGlobalConfig();
     const pool = normalizeOAuthPool(raw.oauth?.[provider]);
@@ -1435,7 +1580,7 @@ export async function removeOAuthAccount(
       removedLabel: formatSlotLabel(targetSlot),
     };
   } finally {
-    await releaseLock(provider);
+    await releaseLock(provider, lockNonce);
   }
 }
 

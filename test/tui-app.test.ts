@@ -116,21 +116,36 @@ test("LaunchTui: JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen
   }
 });
 
-test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on a TTY", () => {
+test("LaunchTui: subagent progress updates the bottom live box in-place on a TTY without pushing scrollback", () => {
   const out: string[] = [];
+  const origInsertAbove = Renderer.prototype.insertAbove;
+  let insertAboveCalls = 0;
+  Renderer.prototype.insertAbove = function (text: string) {
+    insertAboveCalls++;
+    return origInsertAbove.call(this, text);
+  };
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
-  tui.start();
-  out.length = 0;
-  tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard" });
-  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
-  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  const ledger = out.join("");
-  // Both nested events flush into scrollback as static lines ending in a newline.
-  // 0.4.8's pinned fast-path may interpose a cursor-down (\x1b[<N>B) before the
-  // newline that scrolls the line into history — tolerate it.
-  expect(ledger).toMatch(/EXECUTOR · Add a retry guard(?:\x1b\[\d+B)?\n/);
-  expect(ledger).toMatch(/read src\/agent\/engine\.ts(?:\x1b\[\d+B)?\n/);
-  tui.finish("done");
+  try {
+    tui.start();
+    out.length = 0;
+    tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard" });
+    out.length = 0;
+    tui.onSubagentEvent({ role: "executor", kind: "step", step: 1, maxSteps: 6, detail: "inspect engine.ts" });
+    tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    // start/step/tool update the live panel strictly in-place — zero insertAbove flushes or screen-pushing newlines.
+    expect(insertAboveCalls).toBe(0);
+    const liveUpdate = out.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(liveUpdate).not.toContain("\n");
+    expect(liveUpdate).toContain("subagents · 1 running · 1 tool");
+    expect(liveUpdate).toContain("read src/agent/engine.ts");
+    // Completion flushes the final outcome card once.
+    tui.onSubagentEvent({ role: "executor", kind: "done", detail: "guard added", success: true });
+    expect(insertAboveCalls).toBe(1);
+  } finally {
+    Renderer.prototype.insertAbove = origInsertAbove;
+    tui.finish("done");
+  }
 });
 
 test("LaunchTui (inline): flushed ledger lines are NOT duplicated inside the live frame", () => {
@@ -445,7 +460,7 @@ test("LaunchTui resize: a ledger flush arriving before repaint stays anchored", 
     // Simulate the pty shrinking before SIGWINCH/repaint is processed. The async
     // ledger callback runs first and therefore exercises insertAbove() directly.
     setRowsOnly(6);
-    tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard" });
+    tui.events().onToolResult!("read", true, "ok");
     const flushed = out.join("");
     const cursorUps = [...flushed.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
     expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(5);
@@ -1404,7 +1419,7 @@ test("LaunchTui: the live-frame interval skips scheduled frames while write() si
     backpressured = false;
     drain?.();
     vi.advanceTimersByTime(120);
-    expect(out.join("")).toContain("calling model");
+    expect(strip(out.join(""))).toContain("calling model");
   } finally {
     tui.finish("");
     once.mockRestore();

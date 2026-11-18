@@ -8,7 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { notifyDaemonLockPath, notifyDaemonLogPath, notifyDir } from "./paths";
 import { readGlobalConfig } from "../state";
@@ -87,6 +87,49 @@ function procStartTimeMs(pid: number): number | undefined {
   }
 }
 
+const PROBE_TIMEOUT_MS = 2_000;
+
+async function spawnStdoutWithTimeout(command: string, args: string[], timeoutMs = PROBE_TIMEOUT_MS): Promise<string | undefined> {
+  return await new Promise<string | undefined>(resolve => {
+    let child: ChildProcess;
+    try {
+      child = nodeSpawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    let settled = false;
+    let buf = "";
+    let killTimer: Timer | undefined;
+    const finish = (value: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch {}
+      killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, 200);
+      killTimer.unref?.();
+      finish(undefined);
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout?.on("data", d => {
+      if (buf.length <= 4096) buf += d;
+    });
+    child.on("error", () => {
+      clearTimeout(killTimer);
+      finish(undefined);
+    });
+    child.on("close", code => {
+      clearTimeout(killTimer);
+      finish(code === 0 ? buf : undefined);
+    });
+  });
+}
+
 /** Best-effort actual OS process start time in epoch ms. Tries `/proc` first (Linux,
  *  no subprocess, works in distroless/sandboxed containers), then `ps -o etime=`
  *  (POSIX-portable across macOS/Linux; unsupported on Windows, where there is no
@@ -97,19 +140,7 @@ export async function processStartTimeMs(pid: number): Promise<number | undefine
   if (process.platform === "win32") return undefined;
   const viaProc = procStartTimeMs(pid);
   if (viaProc !== undefined) return viaProc;
-  const output = await new Promise<string | undefined>(resolve => {
-    let child: ReturnType<typeof nodeSpawn>;
-    try {
-      child = nodeSpawn("ps", ["-o", "etime=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"] });
-    } catch {
-      resolve(undefined);
-      return;
-    }
-    let buf = "";
-    child.stdout?.on("data", d => { buf += d; });
-    child.on("error", () => resolve(undefined));
-    child.on("close", code => resolve(code === 0 ? buf : undefined));
-  });
+  const output = await spawnStdoutWithTimeout("ps", ["-o", "etime=", "-p", String(pid)]);
   if (output === undefined) return undefined;
   const ms = parseEtimeToMs(output);
   return ms === undefined ? undefined : Date.now() - ms;
@@ -161,13 +192,7 @@ export async function hostBootTimeMs(): Promise<number | undefined> {
   let raw: string | undefined;
   if (process.platform === "linux") raw = await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8").catch(() => undefined);
   else if (process.platform === "darwin") {
-    raw = await new Promise<string | undefined>(resolve => {
-      const child = nodeSpawn("sysctl", ["-n", "kern.bootsessionuuid"], { stdio: ["ignore", "pipe", "ignore"] });
-      let output = "";
-      child.stdout?.on("data", chunk => { output += chunk; });
-      child.on("error", () => resolve(undefined));
-      child.on("close", code => resolve(code === 0 ? output : undefined));
-    });
+    raw = await spawnStdoutWithTimeout("sysctl", ["-n", "kern.bootsessionuuid"]);
   }
   if (!raw || !/^[a-f0-9-]{36}$/i.test(raw.trim())) return undefined;
   return Number.parseInt(createHash("sha256").update(raw.trim().toLowerCase()).digest("hex").slice(0, 13), 16) + 1;
@@ -315,11 +340,15 @@ export type SpawnLike = (cmd: string[], cwd: string) => { unref(): void };
 const defaultSpawn: SpawnLike = (cmd, cwd) => {
   fsSync.mkdirSync(notifyDir(), { recursive: true, mode: 0o700 });
   const logFd = fsSync.openSync(notifyDaemonLogPath(), "a");
-  // node:child_process with detached:true (NOT Bun.spawn) — same rationale as
-  // memory.ts's spawnDetachedDistill: the child needs its own session/process
-  // group so a closing terminal/tmux pane does not kill it before it's ready.
-  const child = nodeSpawn(cmd[0]!, cmd.slice(1), { cwd, detached: true, stdio: ["ignore", logFd, logFd] });
-  return { unref: () => child.unref() };
+  try {
+    // node:child_process with detached:true (NOT Bun.spawn) — same rationale as
+    // memory.ts's spawnDetachedDistill: the child needs its own session/process
+    // group so a closing terminal/tmux pane does not kill it before it's ready.
+    const child = nodeSpawn(cmd[0]!, cmd.slice(1), { cwd, detached: true, stdio: ["ignore", logFd, logFd] });
+    return { unref: () => child.unref() };
+  } finally {
+    fsSync.closeSync(logFd);
+  }
 };
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number, stepMs = 100): Promise<boolean> {

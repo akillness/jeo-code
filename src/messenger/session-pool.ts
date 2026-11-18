@@ -32,6 +32,8 @@ interface Worker {
 	dead: boolean;
 	forceSent?: boolean;
 	exited?: boolean;
+	processExited?: boolean;
+	exitSettled?: boolean;
 	cleanupNonce?: string;
 	cleanupGone?: boolean;
 	cleanupError?: Error;
@@ -47,6 +49,8 @@ export const MESSENGER_SESSION_LIMIT = 8;
 /** Operator-visible worker stderr is bounded per worker so a chatty worker cannot flood the gateway log. */
 export const MESSENGER_WORKER_DIAGNOSTIC_LINES = 20;
 const MAX_DIAGNOSTIC_LINE_LENGTH = 300;
+const MAX_QUARANTINED_KEYS = 1024;
+const QUARANTINE_TTL_MS = 15 * 60_000;
 
 export interface MessengerSessionPool {
 	turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string>;
@@ -79,11 +83,38 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 	const keyTails = new Map<string, Promise<void>>();
 	const keySignals = new Map<string, AbortController>();
 	const stops = new Map<string, Promise<void>>();
-	const quarantined = new Map<string, Error>();
+	const quarantined = new Map<string, { error: Error; at: number }>();
+	let cleanupFailure: Error | undefined;
 	const requireSandboxCleanup = options.requireSandboxCleanup === true;
 	const onDiagnostic = options.onDiagnostic;
 	const reapOrphans = options.reapOrphans;
 	const incomplete = (detail: string) => new Error(`REVOKE_INCOMPLETE: ${detail}`);
+
+	function getQuarantined(key: string): Error | undefined {
+		const entry = quarantined.get(key);
+		if (!entry) return undefined;
+		if (Date.now() - entry.at >= QUARANTINE_TTL_MS) {
+			quarantined.delete(key);
+			return undefined;
+		}
+		quarantined.delete(key);
+		quarantined.set(key, entry);
+		return entry.error;
+	}
+
+	function quarantine(key: string, error: Error): void {
+		const now = Date.now();
+		for (const [k, entry] of quarantined) {
+			if (now - entry.at >= QUARANTINE_TTL_MS) quarantined.delete(k);
+		}
+		quarantined.delete(key);
+		quarantined.set(key, { error, at: now });
+		while (quarantined.size > MAX_QUARANTINED_KEYS) {
+			const oldest = quarantined.keys().next().value;
+			if (oldest === undefined) break;
+			quarantined.delete(oldest);
+		}
+	}
 
 	let closed = false;
 	const closedSignal = new AbortController();
@@ -127,17 +158,15 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		worker.dead = true;
 		if (workers.get(key) === worker) workers.delete(key);
 		if (!worker.cleanupNonce) allWorkers.delete(worker);
-		if (!worker.exited || worker.cleanupNonce) {
+		if (!worker.exitSettled && (!worker.exited || worker.cleanupNonce)) {
 			retiring.set(key, worker.exit);
-			void worker.exit.then(
-				() => { if (retiring.get(key) === worker.exit) retiring.delete(key); },
-				() => { /* Keep the key blocked when process exit cannot be confirmed. */ },
-			);
+			const clearRetiring = () => { if (retiring.get(key) === worker.exit) retiring.delete(key); };
+			void worker.exit.then(clearRetiring, clearRetiring);
 		}
 		if (worker.idleTimer) clearTimeout(worker.idleTimer);
 		if (worker.exitTimer) clearTimeout(worker.exitTimer);
 		worker.idleTimer = undefined;
-		if (!worker.exited) {
+		if (!worker.exited && !worker.processExited) {
 			if (worker.cleanupNonce) {
 				const channel = worker.child.send;
 				if (typeof channel !== "function") {
@@ -238,12 +267,29 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			try { onDiagnostic(key, worker.diagnostics > MESSENGER_WORKER_DIAGNOSTIC_LINES ? "further worker output suppressed" : line); }
 			catch { /* The operator log never affects the turn. */ }
 		};
-		void child.exited.then(code => { if (code !== 0 || worker.pending) diagnose(`worker exited with code ${code}${worker.pending ? " during a turn" : ""}`); }, () => {});
+		void child.exited.then(code => {
+			worker.processExited = true;
+			if (code !== 0 || worker.pending) diagnose(`worker exited with code ${code}${worker.pending ? " during a turn" : ""}`);
+		}, () => {});
 		exits.set(worker.exit, worker);
 		void worker.exit.then(() => {
+			worker.exitSettled = true;
 			exits.delete(worker.exit);
-			if (cleanupNonce) allWorkers.delete(worker);
-		}, () => { if (!cleanupNonce) exits.delete(worker.exit); });
+			allWorkers.delete(worker);
+		}, reason => {
+			worker.exitSettled = true;
+			if (worker.processExited || !cleanupNonce) {
+				exits.delete(worker.exit);
+				allWorkers.delete(worker);
+			}
+			if (cleanupNonce) {
+				const failure = reason instanceof Error ? reason : incomplete(String(reason));
+				quarantine(key, failure);
+				cleanupFailure ??= failure;
+			} else if (!worker.processExited) {
+				quarantine(key, new Error("Messenger worker exit could not be confirmed"));
+			}
+		});
 		workers.set(key, worker);
 		allWorkers.set(worker, key);
 		const stdoutDone = readLines(child.stdout, line => {
@@ -307,7 +353,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 	}
 
 	function turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string> {
-		const blocked = quarantined.get(key);
+		const blocked = getQuarantined(key);
 		if (blocked) return Promise.reject(blocked);
 		if (closed || signal.aborted || stops.has(key)) return Promise.reject(new Error("Messenger request aborted"));
 		let keySignal = keySignals.get(key);
@@ -344,6 +390,8 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 
 	async function runTurn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string> {
 		if (closed || signal.aborted) throw new Error("Messenger request aborted");
+		const blocked = getQuarantined(key);
+		if (blocked) throw blocked;
 		for (;;) {
 			const existing = workers.get(key);
 			if (existing && existing.policyKey !== policyKey) {
@@ -395,15 +443,20 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 					Promise.all(owned.map(worker => worker.exit)),
 					new Promise<never>((_, reject) => { timer = setTimeout(() => reject(incomplete("worker cleanup is still pending; key quarantined")), shutdownTimeoutMs * 2); }),
 				]);
-				if (quarantined.has(key)) throw quarantined.get(key);
+				const existingQuarantine = getQuarantined(key);
+				if (existingQuarantine) throw existingQuarantine;
 			} catch (error) {
 				const failure = incomplete(`worker cleanup failed; key quarantined: ${error instanceof Error ? error.message : "unknown failure"}`);
-				quarantined.set(key, failure);
+				quarantine(key, failure);
 				throw failure;
 			} finally { clearTimeout(timer); }
 		})();
 		stops.set(key, stopping);
-		void stopping.then(() => { stops.delete(key); keySignals.delete(key); }, () => {});
+		const cleanupStop = () => {
+			if (stops.get(key) === stopping) stops.delete(key);
+			if (keySignals.get(key)?.signal.aborted) keySignals.delete(key);
+		};
+		void stopping.then(cleanupStop, cleanupStop);
 		return stopping;
 	}
 
@@ -424,7 +477,10 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 				]);
 			} finally { if (timer) clearTimeout(timer); }
 		};
-		if (await waitForExits()) return;
+		if (await waitForExits()) {
+			if (requireSandboxCleanup && cleanupFailure) throw cleanupFailure;
+			return;
+		}
 		if (requireSandboxCleanup) throw incomplete("worker cleanup is still pending; cleanup owner retained");
 		for (const worker of exits.values()) forceKill(worker);
 		if (!(await waitForExits())) throw new Error("Messenger workers did not exit after forced termination");

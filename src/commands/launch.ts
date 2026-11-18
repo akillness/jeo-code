@@ -224,6 +224,7 @@ import {
   createInFlightAbortHarness,
   classifyMidTurnLine,
   decideCtrlC,
+  CTRLC_COLLAPSE_MS,
   filterPromptInputChunk,
   pasteIdleDecision,
   PASTE_MERGE_IDLE_MS,
@@ -421,9 +422,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let resumeId: string | undefined;
   for (;;) {
     const next = await runLaunchScope(args, resumeId);
-    if (!next) return;
+    if (!next) break;
     resumeId = next;
     process.chdir(launchCwd);
+  }
+  const code = typeof process.exitCode === "number" ? process.exitCode : 0;
+  const sessionName = process.env.JEO_TMUX_SESSION_NAME;
+  if (shouldSelfCloseTmuxSession(code, process.env) && sessionName) {
+    try {
+      Bun.spawnSync(["tmux", "kill-session", "-t", `=${sessionName}`], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    } catch { /* best-effort */ }
   }
 }
 
@@ -444,6 +455,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     await written.promise;
   };
   const close = (): Promise<void> => closing ??= (async () => {
+    const deadline = Date.now() + 5_000;
     for (;;) {
       try {
         await setup.promise;
@@ -451,13 +463,17 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
         await stopEndpoint?.();
         await supervisor?.close();
         if (stateDirectory) fs.rmSync(stateDirectory, { recursive: true, force: true });
-        await acknowledge(true);
+        await acknowledge(true).catch(error => {
+          if (!(error instanceof Error) || !("code" in error) || error.code !== "EPIPE") throw error;
+        });
         return;
       } catch (error) {
         console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
         await acknowledge(false).catch(() => { /* A broken parent pipe must not destroy the cleanup owner. */ });
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
         const retry = Promise.withResolvers<void>();
-        setTimeout(retry.resolve, 1_000);
+        setTimeout(retry.resolve, Math.min(1_000, remaining));
         await retry.promise;
       }
     }
@@ -526,7 +542,6 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     await close();
     process.removeListener("SIGTERM", handleTermination);
     process.removeListener("message", handleControlMessage);
-    process.removeListener("SIGINT", handleTermination);
     if (previousSessionDirectory === undefined) delete process.env.JEO_SESSION_DIR;
     else process.env.JEO_SESSION_DIR = previousSessionDirectory;
   }
@@ -564,6 +579,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     } catch { /* best-effort */ }
   };
   process.on("exit", closeTmuxSession);
+  let drainPromptListeners: () => void = () => {};
+  try {
   // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
   // surfaces as an opaque downstream EMFILE ("too many open files") from file
   // watching, the browser tool, or a broad repo scan — warn up front with
@@ -687,69 +704,109 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           process.exit(1);
         }
         const sessionName = alloc.name;
-        // Session profile (mouse / clipboard / copy-mode style / @jeo-*
-        // markers): wheel-up enters copy-mode over the REAL pane history, so the
-        // mid-turn scrollback (ledger lines flushed above the live frame) is
-        // reachable with the mouse wheel. Session-scoped (`-t =name`, never -g).
-        // Best-effort per command: an old tmux missing an option is fine.
-        for (const profileCmd of tmuxProfileCommands(sessionName, process.env, { branch: branch || undefined, project: cwd })) {
-          try { Bun.spawnSync([tmuxBin, ...profileCmd.args]); } catch { /* best-effort */ }
-        }
-        // Reap orphaned jeo sessions: each detached, long-idle `jeo launch` REPL
-        // pins tens of MB forever, so over days they pile up and aggregate RSS
-        // climbs (the "jeo/bun 프로세스가 쌓여 메모리가 점점 커진다" report). Sweep the
-        // jeo-owned, unattached, long-idle ones — never the one just created.
-        // Best-effort; opt out with JEO_TMUX_REAP=0.
+        let attach: Bun.Subprocess | undefined;
+        let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
+        const killOrphanedTmuxSession = (): void => {
+          try {
+            const alive = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`], {
+              stdout: "ignore",
+              stderr: "ignore",
+            }).exitCode === 0;
+            if (alive) {
+              Bun.spawnSync([tmuxBin, "kill-session", "-t", `=${sessionName}`], {
+                stdout: "ignore",
+                stderr: "ignore",
+              });
+            }
+          } catch { /* best-effort */ }
+        };
+        const onAttachInterrupt = (signal: "SIGINT" | "SIGTERM"): void => {
+          if (interruptedSignal) return;
+          interruptedSignal = signal;
+          try { attach?.kill(); } catch { /* best-effort */ }
+          killOrphanedTmuxSession();
+          process.exitCode = signal === "SIGINT" ? 130 : 143;
+        };
+        const onAttachSigint = (): void => {
+          onAttachInterrupt("SIGINT");
+        };
+        const onAttachSigterm = (): void => {
+          onAttachInterrupt("SIGTERM");
+        };
+        process.on("SIGINT", onAttachSigint);
+        process.on("SIGTERM", onAttachSigterm);
         try {
-          const reaped = reapStaleTmuxSessions(tmuxBin, [sessionName]);
-          if (reaped.length > 0) {
-            console.log(
-              `Reaped ${reaped.length} idle jeo tmux session${reaped.length === 1 ? "" : "s"}: ${reaped.join(", ")}`,
-            );
+          // Session profile (mouse / clipboard / copy-mode style / @jeo-*
+          // markers): wheel-up enters copy-mode over the REAL pane history, so the
+          // mid-turn scrollback (ledger lines flushed above the live frame) is
+          // reachable with the mouse wheel. Session-scoped (`-t =name`, never -g).
+          // Best-effort per command: an old tmux missing an option is fine.
+          for (const profileCmd of tmuxProfileCommands(sessionName, process.env, { branch: branch || undefined, project: cwd })) {
+            try { Bun.spawnSync([tmuxBin, ...profileCmd.args]); } catch { /* best-effort */ }
           }
-        } catch { /* best-effort */ }
-        console.log(
-          sessionName === sessionBase
-            ? `Starting new tmux session: ${sessionName}`
-            : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
-        );
-
-        // NOTE: never `tmux resize-window` here. tmux flips the window's `window-size`
-        // option to `manual` as a side effect of that command, which permanently
-        // detaches the window from the attached client's geometry — the terminal is
-        // resized, tmux keeps the window frozen at its old size, and the pane is shown
-        // letterboxed/cut with jeo never receiving SIGWINCH (the "TUI is stuck at the
-        // launch size and the screen is cut" report). `new-session -x/-y` already
-        // creates the detached window at the caller's size, and `window-size latest`
-        // (asserted in tmuxProfileCommands) makes the attach and every later terminal
-        // resize track the client automatically.
-
-        const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-        });
-        // A nonzero attach exit (e.g. "open terminal failed: not a terminal" when
-        // stdout isn't a real TTY, a too-small client, or a transient server error)
-        // otherwise vanished: jeo returned 0 and the freshly created session was left
-        // orphaned with no hint. Surface it. Only advise reattach when the session is
-        // STILL live — if the inner jeo already exited (bad args, instant crash) the
-        // session is gone and "reattach" would be misleading.
-        const attachCode = await attach.exited;
-        if (attachCode !== 0) {
-          const alive = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`], {
-            stdout: "ignore",
-            stderr: "ignore",
-          }).exitCode === 0;
-          console.error(
-            alive
-              ? `Error: tmux attach failed (exit ${attachCode}). The session is still running; reattach with: tmux attach -t ${sessionName}`
-              : `Error: tmux session ${sessionName} ended before it could be attached (attach exit ${attachCode}).`,
+          // Reap orphaned jeo sessions: each detached, long-idle `jeo launch` REPL
+          // pins tens of MB forever, so over days they pile up and aggregate RSS
+          // climbs (the "jeo/bun 프로세스가 쌓여 메모리가 점점 커진다" report). Sweep the
+          // jeo-owned, unattached, long-idle ones — never the one just created.
+          // Best-effort; opt out with JEO_TMUX_REAP=0.
+          try {
+            const reaped = reapStaleTmuxSessions(tmuxBin, [sessionName]);
+            if (reaped.length > 0) {
+              console.log(
+                `Reaped ${reaped.length} idle jeo tmux session${reaped.length === 1 ? "" : "s"}: ${reaped.join(", ")}`,
+              );
+            }
+          } catch { /* best-effort */ }
+          console.log(
+            sessionName === sessionBase
+              ? `Starting new tmux session: ${sessionName}`
+              : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
           );
-          process.exitCode = attachCode;
-        }
-        return;
 
+          // NOTE: never `tmux resize-window` here. tmux flips the window's `window-size`
+          // option to `manual` as a side effect of that command, which permanently
+          // detaches the window from the attached client's geometry — the terminal is
+          // resized, tmux keeps the window frozen at its old size, and the pane is shown
+          // letterboxed/cut with jeo never receiving SIGWINCH (the "TUI is stuck at the
+          // launch size and the screen is cut" report). `new-session -x/-y` already
+          // creates the detached window at the caller's size, and `window-size latest`
+          // (asserted in tmuxProfileCommands) makes the attach and every later terminal
+          // resize track the client automatically.
+
+          attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
+            stdin: "inherit",
+            stdout: "inherit",
+            stderr: "inherit",
+          });
+          // A nonzero attach exit (e.g. "open terminal failed: not a terminal" when
+          // stdout isn't a real TTY, a too-small client, or a transient server error)
+          // or signal interruption before attach cleans up the orphaned session so
+          // failed `--tmux` launches never leave detached sessions behind.
+          const attachCode = await attach.exited;
+          if (interruptedSignal) {
+            killOrphanedTmuxSession();
+            process.exitCode = interruptedSignal === "SIGINT" ? 130 : 143;
+          } else if (attachCode !== 0) {
+            const alive = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`], {
+              stdout: "ignore",
+              stderr: "ignore",
+            }).exitCode === 0;
+            console.error(
+              alive
+                ? `Error: tmux attach failed (exit ${attachCode}); session is still running (reattach with: tmux attach -t ${sessionName}).`
+                : `Error: tmux session ${sessionName} ended before it could be attached (attach exit ${attachCode}).`,
+            );
+            process.exitCode = attachCode;
+          }
+          return;
+        } catch (err) {
+          try { attach?.kill(); } catch { /* best-effort */ }
+          killOrphanedTmuxSession();
+          throw err;
+        } finally {
+          process.removeListener("SIGINT", onAttachSigint);
+          process.removeListener("SIGTERM", onAttachSigterm);
+        }
       } else {
         console.warn("warning: tmux is not available on PATH. Launching directly...");
       }
@@ -1462,21 +1519,56 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     subagentRegistry.cancelAll();
     jobRegistry.cancelAll();
     monitorRegistry.cancelAll();
-    void liveDiscordBridge?.close();
-    void stopLaunchEndpoint();
-    void stopSessionNotifyEndpoint(subagentRegistry);
+    if (!liveDiscordBridge && !sessionNotifyEndpoint && !turnSandboxScope) {
+      void stopLaunchEndpoint();
+      void stopSessionNotifyEndpoint(subagentRegistry);
+      process.exit(130);
+      return;
+    }
+    let drainTimer: Timer | undefined;
+    const drain = Promise.race([
+      Promise.allSettled([
+        liveDiscordBridge?.close(),
+        stopLaunchEndpoint(),
+        stopSessionNotifyEndpoint(subagentRegistry),
+      ]).finally(() => { clearTimeout(drainTimer); }),
+      new Promise<void>(resolve => {
+        drainTimer = setTimeout(resolve, 500);
+        drainTimer.unref?.();
+      }),
+    ]);
     if (turnSandboxScope) {
-      void turnSandboxScope.supervisor.close().then(() => process.exit(130), error => {
+      let settled = false;
+      const finish = (code: number): void => {
+        if (settled) return;
+        settled = true;
+        process.exit(code);
+      };
+      const timer = setTimeout(() => {
+        console.error("REVOKE_INCOMPLETE: sandbox close timed out");
+        finish(1);
+      }, 3_000);
+      timer.unref?.();
+      void Promise.all([drain, turnSandboxScope.supervisor.close()]).then(() => {
+        clearTimeout(timer);
+        finish(130);
+      }, error => {
+        clearTimeout(timer);
         console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
+        finish(1);
       });
       return;
     }
-    process.exit(130);
+    void drain.then(() => process.exit(130));
   };
   // One-shot default: no prompt box or raw mode to restore, so the core IS the exit.
   // The interactive section reassigns this with the terminal-restoring wrapper.
   let forceExitFromCtrlC: () => void = hardExitCore;
+  let handleTurnCtrlC: (onBeforeExit?: () => void) => void = onBeforeExit => {
+    onBeforeExit?.();
+    forceExitFromCtrlC();
+  };
+  let resetTurnCtrlCArmed = (): void => {};
   const runTurnScoped = async (
     userInput: string,
     useTui: boolean,
@@ -1490,6 +1582,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     opts?.signal?.throwIfAborted();
     if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
     setHookSessionId(sessionId);
+    resetTurnCtrlCArmed();
     let busyDraftHasPaste = false;
     const captureLiveInput = (chunk: string, view: LaunchTui | null): { captured: boolean; submittedEnter: boolean; handled: boolean } => {
       if (!queueBusyInput || !queueBusySnapshot) return { captured: false, submittedEnter: false, handled: false };
@@ -1594,7 +1687,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           if (handled) return;
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") cliTui?.setLivePromptInput(expandSentinel(queueBusySnapshot?.().text ?? ""));
         },
-        onHardExit: () => { hardExit = true; },
+        onHardExit: () => { if (oneShot) hardExit = true; else handleTurnCtrlC(() => { hardExit = true; }); },
       });
       const abortRemote = () => harness.controller.abort();
       opts?.signal?.addEventListener("abort", abortRemote, { once: true });
@@ -1675,7 +1768,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       onBufferedInput: chunk => { captureLiveInput(chunk, null); },
       onBufferedInputAfterAbort: chunk => { captureAfterAbort(chunk, null); },
       pasteActiveAfterAbort: emergencyPasteActive,
-      onHardExit: () => forceExitFromCtrlC(),
+      onHardExit: () => { handleTurnCtrlC(); },
     }) : undefined;
     if (preflightHarness) interactiveTurnActive = true;
     try {
@@ -2054,8 +2147,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           if (!handled && captured && jeoEnv("NO_LIVE_DRAFT") !== "1") tui?.setLivePromptInput(expandSentinel(queueBusySnapshot?.().text ?? ""));
         },
         onHardExit: () => {
-          if (tui) tui.finish("Cancelled.", { ok: false });
-          forceExitFromCtrlC();
+          handleTurnCtrlC(() => { if (tui) tui.finish("Cancelled.", { ok: false }); });
         },
       });
       const abortRemoteCompaction = () => compactHarness.controller.abort();
@@ -2225,8 +2317,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           else console.log(msg);
         },
         onHardExit: () => {
-          if (tui) tui.finish("Cancelled.", { ok: false });
-          forceExitFromCtrlC();
+          handleTurnCtrlC(() => { if (tui) tui.finish("Cancelled.", { ok: false }); });
         },
       });
       const abortRemote = () => harness.controller.abort();
@@ -3345,9 +3436,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const harness = createInFlightAbortHarness({
         captureEsc: false,
         onAbortNotice: msg => console.log(msg),
-        onHardExit: () => forceExitFromCtrlC(),
+        onHardExit: () => { handleTurnCtrlC(); },
       });
       const ac = harness.controller;
+      activeTurnAbort = () => ac.abort();
 
       const opts = {
         cwd,
@@ -3389,6 +3481,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         reason = err.message;
       } finally {
         harness.dispose();
+        activeTurnAbort = undefined;
       }
 
       const endMsg: Message = {
@@ -3479,7 +3572,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // 10-listener default → MaxListenersExceededWarning + a real leak. Track each remover
   // and drain it on every exit path so the process listener set returns to baseline.
   const promptListenerCleanups: Array<() => void> = [];
-  const drainPromptListeners = () => {
+  drainPromptListeners = () => {
     for (const off of promptListenerCleanups.splice(0)) { try { off(); } catch { /* best effort */ } }
   };
   const onPromptExit = (cleanup: () => void): void => {
@@ -3656,6 +3749,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // tracks the last buffered line so the dropped-marker fallback is IDLE-based (never cuts a
   // large paste still streaming in — see pasteIdleDecision).
   const pasteMerge: { buf: string[]; endWaiters: Array<() => void>; lastActivityAt: number } = { buf: [], endWaiters: [], lastActivityAt: 0 };
+  let pasteMergeTimer: Timer | undefined;
   let pasteLineFired = false; // the line that resolved rl.question came from inside a paste
   let draftHasPaste = false;
   let explicitDraftPaste = false;
@@ -3759,29 +3853,39 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // aborts the stale question AND resolves this race with the injected text
     // in one atomic step, so there is exactly one winner and no zombie.
     const questionAbort = new AbortController();
+    let stdinClosedResolve: ((value: string) => void) | undefined;
     let remoteInjectResolve: ((value: { remote: string }) => void) | undefined;
+    let questionSettled = false;
     pendingRemoteInject = (text: string) => {
       if (!remoteInjectResolve) return false; // already fired or the race already settled
-      questionAbort.abort();
-      remoteInjectResolve({ remote: text });
+      const resolve = remoteInjectResolve;
       remoteInjectResolve = undefined;
+      questionAbort.abort();
+      resolve({ remote: text });
       return true;
     };
     try {
       // Bun's question() resets the caret but keeps a prefilled draft.
       const rlCursor = rl as unknown as { cursor: number };
       const cursor = rlCursor.cursor;
-      const question = rl.question(prompt, { signal: questionAbort.signal }).catch<string | typeof REMOTE_ABORT_SENTINEL>(err => {
-        if (err instanceof Error && err.name === "AbortError") return REMOTE_ABORT_SENTINEL;
-        throw err;
-      });
+      const question = rl.question(prompt, { signal: questionAbort.signal }).then(
+        res => { questionSettled = true; return res; },
+        err => {
+          questionSettled = true;
+          if (err instanceof Error && err.name === "AbortError") return REMOTE_ABORT_SENTINEL;
+          throw err;
+        },
+      );
       if (rl.line && typeof cursor === "number") rlCursor.cursor = cursor;
-      const value = await Promise.race<string | typeof REMOTE_ABORT_SENTINEL | { remote: string }>([
+      const value: string | symbol | { remote: string } = await Promise.race<string | symbol | { remote: string }>([
         question,
         new Promise<string>(resolve => {
+          stdinClosedResolve = resolve;
           notifyStdinClosed = () => {
             if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
-            resolve(pendingStdinLines.shift() ?? "/exit");
+            const r = stdinClosedResolve;
+            stdinClosedResolve = undefined;
+            r?.(pendingStdinLines.shift() ?? "/exit");
           };
         }),
         new Promise<{ remote: string }>(resolve => {
@@ -3791,12 +3895,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       ]);
       // The aborted `rl.question()` lost the race (a remote message or stdin-close
       // won it first) — its sentinel must never be treated as real submitted input.
-      if (value === REMOTE_ABORT_SENTINEL) {
+      if (typeof value === "symbol") {
         exclusiveRemote?.finish();
         exclusiveRemote = undefined;
         return promptInput(prompt);
       }
-      if (typeof value === "object") {
+      if (typeof value === "object" && value !== null) {
         promptWasRemote = true;
         return value.remote;
       }
@@ -3809,7 +3913,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           await new Promise<void>(resolve => {
             if (!promptPasteActive) { resolve(); return; }
             let done = false;
-            const finish = () => { if (done) return; done = true; resolve(); };
+            const finish = () => {
+              if (done) return;
+              done = true;
+              clearTimeout(pasteMergeTimer);
+              pasteMergeTimer = undefined;
+              const idx = pasteMerge.endWaiters.indexOf(finish);
+              if (idx >= 0) pasteMerge.endWaiters.splice(idx, 1);
+              resolve();
+            };
             // Woken immediately by the 201~ paste-end marker (endWaiters).
             pasteMerge.endWaiters.push(finish);
             // Fallback for a DROPPED end-marker: idle-based, so a large paste still
@@ -3819,10 +3931,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
               if (done) return;
               if (!promptPasteActive) { finish(); return; }
               const { fire, waitMs } = pasteIdleDecision(Date.now() - pasteMerge.lastActivityAt);
-              if (fire) { finish(); return; }
-              setTimeout(tick, waitMs);
+              if (fire) {
+                promptPasteActive = false;
+                finish();
+                return;
+              }
+              pasteMergeTimer = setTimeout(tick, waitMs);
             };
-            setTimeout(tick, PASTE_MERGE_IDLE_MS);
+            pasteMergeTimer = setTimeout(tick, PASTE_MERGE_IDLE_MS);
           });
         }
 
@@ -3842,6 +3958,19 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       promptActive = false;
       notifyStdinClosed = undefined;
       pendingRemoteInject = undefined;
+      if (stdinClosedResolve) {
+        const resolve = stdinClosedResolve;
+        stdinClosedResolve = undefined;
+        resolve("/exit");
+      }
+      if (remoteInjectResolve) {
+        const resolve = remoteInjectResolve;
+        remoteInjectResolve = undefined;
+        resolve({ remote: "" });
+      }
+      clearTimeout(pasteMergeTimer);
+      pasteMergeTimer = undefined;
+      if (!questionSettled && !questionAbort.signal.aborted) questionAbort.abort();
     }
   };
 
@@ -4294,7 +4423,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
    *  "is there input?" predicate shared by clearTypedInput and the Ctrl+C decision. */
   const promptHasContent = (): boolean => {
     const line = (rl as unknown as { line?: string }).line;
-    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || queuedPromptInput.pastedLines.length > 0;
+    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || queuedPromptInput.pastedLines.length > 0 || queuedPromptInput.partial.length > 0;
   };
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
@@ -4302,6 +4431,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
     if (!promptHasContent()) return false;
     invalidateDraftPaste();
+    promptPasteActive = false;
+    pasteLineFired = false;
+    pasteMerge.buf = [];
+    clearTimeout(pasteMergeTimer);
+    pasteMergeTimer = undefined;
+    for (const w of pasteMerge.endWaiters.splice(0)) w();
+    queuedPromptInput.partial = "";
+    queuedPromptInput.inPaste = false;
 
     // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
     if (hadPastedQueue) {
@@ -4340,13 +4477,51 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // `lastCtrlCAt` collapses the duplicate deliveries of one physical press (keypress
   // + SIGINT + raw byte) so a single Ctrl+C can't clear AND then immediately exit.
   let lastCtrlCAt = 0;
+  let turnCtrlCArmedAt = 0;
+  let closeActivePicker: (() => void) | undefined;
+  resetTurnCtrlCArmed = () => {
+    turnCtrlCArmedAt = 0;
+  };
+  handleTurnCtrlC = (onBeforeExit?: () => void) => {
+    const now = Date.now();
+    if (now - lastCtrlCAt < CTRLC_COLLAPSE_MS) return;
+    lastCtrlCAt = now;
+    if (pickerActive) {
+      closeActivePicker?.();
+      return;
+    }
+    if (turnCtrlCArmedAt > 0 && now - turnCtrlCArmedAt <= 1_500) {
+      turnCtrlCArmedAt = 0;
+      onBeforeExit?.();
+      forceExitFromCtrlC();
+      return;
+    }
+    turnCtrlCArmedAt = now;
+    activeTurnAbort?.("Ctrl+C pressed — cancelling current run…");
+    if (activeTui) activeTui.events().onNotice?.("Ctrl+C — cancelling turn (press Ctrl+C again within 1.5s to exit)");
+    else console.log("Ctrl+C — cancelling turn (press Ctrl+C again within 1.5s to exit)");
+  };
   const handleCtrlC = () => {
     const now = Date.now();
+    if (pickerActive) {
+      if (now - lastCtrlCAt < CTRLC_COLLAPSE_MS) return;
+      lastCtrlCAt = now;
+      closeActivePicker?.();
+      return;
+    }
+    if (interactiveTurnActive || activeTurnAbort) {
+      handleTurnCtrlC(() => { if (activeTui) activeTui.finish("Cancelled.", { ok: false }); });
+      return;
+    }
     const action = decideCtrlC(promptHasContent(), now - lastCtrlCAt);
     if (action === "ignore") return; // duplicate delivery of the same press
     lastCtrlCAt = now;
-    if (action === "clear") clearTypedInput(); // had input → wipe it, stay at the prompt
-    else forceExitFromCtrlC(); // empty → hard exit (130)
+    if (action === "clear") {
+      turnCtrlCArmedAt = 0;
+      clearTypedInput(); // had input → wipe it, stay at the prompt
+    } else {
+      forceExitFromCtrlC(); // empty → hard exit (130)
+    }
   };
   const handleCtrlCByte = (chunk: string | Uint8Array) => {
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
@@ -4360,6 +4535,18 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   process.on("SIGINT", handleCtrlC);
   process.stdin.on("data", handleCtrlCByte);
   rl.on("SIGINT", handleCtrlC);
+  promptListenerCleanups.push(() => {
+    process.removeListener("SIGINT", handleCtrlC);
+    process.stdin.off("data", handleCtrlCByte);
+    rl.removeListener("SIGINT", handleCtrlC);
+    clearTimeout(pasteMergeTimer);
+    pasteMergeTimer = undefined;
+    for (const w of pasteMerge.endWaiters.splice(0)) w();
+    if (!gracefulReadlineClose) {
+      gracefulReadlineClose = true;
+      try { rl.close(); } catch { /* best effort */ }
+    }
+  });
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
@@ -4437,14 +4624,28 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     try {
 
       await new Promise<void>(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (closeActivePicker === finish) closeActivePicker = undefined;
+          process.stdin.off("keypress", handler);
+          clear();
+          resolve();
+        };
+        closeActivePicker = finish;
         const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined) => {
           // Same normalization as the footer handler: kitty CSI-u Esc/Ctrl+C must
           // close a picker exactly like their legacy encodings.
-          const done = onKey(ch, normalizeKeypress(key));
+          const normalized = normalizeKeypress(key);
+          if (normalized?.ctrl && normalized.name === "c") {
+            lastCtrlCAt = Date.now();
+            finish();
+            return;
+          }
+          const done = onKey(ch, normalized);
           if (done) {
-            process.stdin.off("keypress", handler);
-            clear();
-            resolve();
+            finish();
             return;
           }
           repaint();
@@ -4452,9 +4653,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         process.stdin.on("keypress", handler);
       });
     } finally {
+      closeActivePicker = undefined;
       process.stdout.off("resize", onPickerResize);
       stopPickerResizeWatch();
-      if (resizeTimer) clearTimeout(resizeTimer);
+      clearTimeout(resizeTimer);
 
       if (process.stdin.setRawMode && !wasRaw) {
         process.stdin.setRawMode(false);
@@ -5266,6 +5468,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       promptHistoryText: message => compactPastes.restore(message),
       requestSessionRestart,
       onSessionCommitted: (id, draft, nextModel) => {
+        compactPastes.clear();
         if (id !== sessionId) void stopLaunchEndpoint();
         sessionId = id;
         if (nextModel !== undefined) sessionModel = initialSessionModel ?? nextModel ?? undefined;
@@ -5741,6 +5944,7 @@ navMatches = [];
       }
       if (input === "/clear") {
         history.length = 1;
+        compactPastes.clear();
         // Back to the initial screen: wipe the conversation, clear the terminal +
         // scrollback, and re-render the welcome banner so /clear looks like a fresh launch.
         if (process.stdout.isTTY) {
@@ -5819,6 +6023,7 @@ navMatches = [];
           promptHistoryText: message => compactPastes.restore(message),
           requestSessionRestart,
           onSessionCommitted: (id, draft, nextModel) => {
+            compactPastes.clear();
             if (id !== sessionId) void stopLaunchEndpoint();
             sessionId = id;
             if (nextModel !== undefined) sessionModel = nextModel ?? undefined;
@@ -6658,16 +6863,17 @@ navMatches = [];
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (!restartSessionId && sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
   await cleanupSession();
-  process.removeListener("SIGINT", handleCtrlC);
-  process.stdin.off("data", handleCtrlCByte);
-  drainPromptListeners();
-  restorePromptRawMode();
   gracefulReadlineClose = true;
   rl.close();
+  drainPromptListeners();
+  restorePromptRawMode();
   if (restartSessionId) {
-    process.off("exit", closeTmuxSession);
     // Start the selected transcript only after the old scope has fully revoked.
     if (process.stdout.isTTY) process.stdout.write(clearScreen());
     return restartSessionId;
+  }
+  } finally {
+    drainPromptListeners();
+    process.off("exit", closeTmuxSession);
   }
 }

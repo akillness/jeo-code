@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { Database } from "bun:sqlite";
 import { openDb } from "./db.ts";
 import { appendEvent } from "./events.ts";
 import { indexDir } from "./indexer.ts";
+import { indexExtDir, resolveExtDbPath } from "./indexer-ext.ts";
 import { isUnsafeDbRoot, runMcpServer } from "./mcp.ts";
-import { impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
+import { multiImpact, multiSearch, multiStats, multiWhatCalls, multiWhereDefined, multiWhoCalls } from "./query-multi.ts";
 
 const HELP = `jeo-mem <build|index|reindex|who-calls|what-calls|where-defined|impact|scope|query|status|stats|mcp> [arg] [--root|--repo DIR] [--db FILE] [-g GLOB] [--limit N] [--depth N] [--strict] [--full] [--json]`;
 
@@ -44,6 +46,7 @@ export async function runCli(argv: string[], out: (s: string) => void = console.
   const explicitRepoOrRoot = flags.repo || flags.root;
   const root = resolve(explicitRepoOrRoot ?? ".");
   const dbPath = resolveDbPath(root, flags.db);
+  const extDbPath = resolveExtDbPath(dbPath);
   const limit = Number(flags.limit ?? 5);
   const strict = flags.strict === "1";
   const depth = Number(flags.depth ?? 3);
@@ -62,63 +65,71 @@ export async function runCli(argv: string[], out: (s: string) => void = console.
     return 1;
   }
 
-  if ((cmd === "status" || cmd === "stats") && !existsSync(dbPath) && dbPath !== ":memory:") {
+  if ((cmd === "status" || cmd === "stats") && !existsSync(dbPath) && !existsSync(extDbPath) && dbPath !== ":memory:") {
     out(JSON.stringify({ repo: root, db: dbPath, exists: false, files: 0, nodes: 0, edges: 0, chunks: 0 }));
     return 0;
   }
 
-  const db = openDb(dbPath);
+  const isBuildCmd = cmd === "build" || cmd === "index" || cmd === "reindex";
+  const db = openDb(dbPath, isBuildCmd ? { readOnly: false } : undefined);
+  let extDb: Database | null = null;
   const j = (o: unknown) => out(JSON.stringify(o));
   const emitRows = <T,>(rows: T[]) => {
     if (flags.json === "1") out(JSON.stringify(rows));
     else rows.forEach(j);
   };
-  const ensureIndexed = () => {
-    try { indexDir(db, root, { wikiRoot: flags["wiki-root"] || undefined }); } catch { /* best-effort incremental refresh */ }
-  };
   try {
+    extDb = isBuildCmd || existsSync(extDbPath) ? openDb(extDbPath, isBuildCmd ? { readOnly: false } : undefined) : null;
+    const dbs = extDb ? [db, extDb] : [db];
+    const ensureIndexed = () => {
+      try { indexDir(db, root, { wikiRoot: flags["wiki-root"] || undefined }); } catch { /* best-effort incremental refresh */ }
+      if (extDb) {
+        try { indexExtDir(extDb, root); } catch { /* best-effort incremental refresh */ }
+      }
+    };
     switch (cmd) {
       case "build":
       case "index":
       case "reindex": {
         const rebuild = cmd === "reindex" || flags.full === "1";
         const s = indexDir(db, root, { rebuild, wikiRoot: flags["wiki-root"] || undefined });
+        const extS = extDb ? indexExtDir(extDb, root, { rebuild }) : undefined;
         const eventsFile = join(root, ".jeo", "events.jsonl");
-        appendEvent(eventsFile, "index_done", root, { ...s, db: dbPath });
-        j({ repo: root, db: dbPath, ...s, ...stats(db) });
+        appendEvent(eventsFile, "index_done", root, { ...s, db: dbPath, ...(extS ? { ext: extS, extDb: extDbPath } : {}) });
+        j({ repo: root, db: dbPath, ...(extDb ? { extDb: extDbPath } : {}), ...s, ...multiStats(db, extDb), ...(extS ? { extIndexed: extS } : {}) });
         return 0;
       }
       case "who-calls":
         ensureIndexed();
-        emitRows(whoCalls(db, arg, { limit, strict }));
+        emitRows(multiWhoCalls(dbs, arg, { limit, strict }));
         return 0;
       case "what-calls":
         ensureIndexed();
-        emitRows(whatCalls(db, arg, { limit, strict }));
+        emitRows(multiWhatCalls(dbs, arg, { limit, strict }));
         return 0;
       case "where-defined":
         ensureIndexed();
-        emitRows(whereDefined(db, arg, limit));
+        emitRows(multiWhereDefined(dbs, arg, limit));
         return 0;
       case "impact":
         ensureIndexed();
-        j(impact(db, arg, depth, limit * 4, strict));
+        j(multiImpact(dbs, arg, depth, limit * 4, strict));
         return 0;
       case "query":
       case "search":
         ensureIndexed();
-        emitRows(search(db, arg, limit, globs.length > 0 ? globs : undefined));
+        emitRows(multiSearch(dbs, arg, limit, globs.length > 0 ? globs : undefined));
         return 0;
       case "scope": {
         ensureIndexed();
-        const hits = search(db, arg, limit, globs.length > 0 ? globs : undefined);
+        const hits = multiSearch(dbs, arg, limit, globs.length > 0 ? globs : undefined);
         j({ meta: { task: arg, hits: hits.length, preview: "none" } });
         hits.forEach(j);
         return 0;
       }
       case "status":
       case "stats":
-        j({ repo: root, db: dbPath, ...stats(db) });
+        j({ repo: root, db: dbPath, ...(extDb ? { extDb: extDbPath } : {}), ...multiStats(db, extDb) });
         return 0;
       default:
         out(HELP);
@@ -126,6 +137,7 @@ export async function runCli(argv: string[], out: (s: string) => void = console.
     }
   } finally {
     db.close();
+    try { extDb?.close(); } catch {}
   }
 }
 

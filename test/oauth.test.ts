@@ -548,3 +548,212 @@ test("refreshOAuthToken: a token with more than 60s left is NOT refreshed", asyn
     await fs.rm(home, { recursive: true, force: true });
   }
 });
+
+test("OAuthCallbackFlow: browser callback settling first aborts onManualCodeInput signal and clears callback timer", async () => {
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevClearTimeout = globalThis.clearTimeout;
+  const activeLongTimers = new Set<unknown>();
+  let scheduledLongTimers = 0;
+
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const handle = prevSetTimeout(fn, delay, ...args);
+    if (typeof delay === "number" && delay >= 60_000) {
+      scheduledLongTimers++;
+      activeLongTimers.add(handle);
+    }
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: NodeJS.Timeout | string | number) => {
+    if (handle !== undefined) activeLongTimers.delete(handle);
+    return prevClearTimeout(handle);
+  }) as typeof clearTimeout;
+
+  try {
+    let ready!: () => void;
+    const readyPromise = new Promise<void>(r => (ready = r));
+    let askCount = 0;
+    let receivedSignal: AbortSignal | undefined;
+    let abortEventFired = false;
+    let initiallyAborted: boolean | undefined;
+
+    const ctrl: OAuthController = {
+      onAuth: () => ready(),
+      onManualCodeInput: (_label?: string, signal?: AbortSignal) => {
+        askCount++;
+        receivedSignal = signal;
+        initiallyAborted = signal?.aborted;
+        return new Promise<string>((_resolve, reject) => {
+          if (!signal) return;
+          if (signal.aborted) {
+            abortEventFired = true;
+            reject(new Error("aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              abortEventFired = true;
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const flow = new TestFlow(ctrl);
+    const loginPromise = flow.login();
+    await readyPromise;
+
+    expect(askCount).toBe(1);
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    expect(initiallyAborted).toBe(false);
+    expect(scheduledLongTimers).toBe(1);
+    expect(activeLongTimers.size).toBe(1);
+
+    const res = await fetch(`${flow.capturedRedirect}?code=browser-wins&state=${flow.capturedState}`);
+    expect(res.status).toBe(200);
+    const creds = await loginPromise;
+    expect(creds.access).toBe("acc-browser-wins");
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(abortEventFired).toBe(true);
+    expect(askCount).toBe(1);
+    expect(activeLongTimers.size).toBe(0);
+  } finally {
+    for (const handle of activeLongTimers) {
+      prevClearTimeout(handle as NodeJS.Timeout);
+    }
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.clearTimeout = prevClearTimeout;
+  }
+});
+
+test("OAuthCallbackFlow: ctrl.signal cancel aborts onManualCodeInput signal with reason and clears callback timer", async () => {
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevClearTimeout = globalThis.clearTimeout;
+  const activeLongTimers = new Set<unknown>();
+  let scheduledLongTimers = 0;
+
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const handle = prevSetTimeout(fn, delay, ...args);
+    if (typeof delay === "number" && delay >= 60_000) {
+      scheduledLongTimers++;
+      activeLongTimers.add(handle);
+    }
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: NodeJS.Timeout | string | number) => {
+    if (handle !== undefined) activeLongTimers.delete(handle);
+    return prevClearTimeout(handle);
+  }) as typeof clearTimeout;
+
+  try {
+    let ready!: () => void;
+    const readyPromise = new Promise<void>(r => (ready = r));
+    const userAc = new AbortController();
+    let askCount = 0;
+    let manualSignal: AbortSignal | undefined;
+    let manualAbortEvents = 0;
+
+    const ctrl: OAuthController = {
+      signal: userAc.signal,
+      onAuth: () => ready(),
+      onManualCodeInput: (_label?: string, signal?: AbortSignal) => {
+        askCount++;
+        manualSignal = signal;
+        return new Promise<string>((_resolve, reject) => {
+          if (!signal) return;
+          if (signal.aborted) {
+            manualAbortEvents++;
+            reject(new Error("aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              manualAbortEvents++;
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const flow = new TestFlow(ctrl);
+    const loginPromise = flow.login();
+    const caught = loginPromise.catch((err: unknown) => err);
+    await readyPromise;
+
+    expect(askCount).toBe(1);
+    expect(manualSignal).toBeInstanceOf(AbortSignal);
+    expect(manualSignal?.aborted).toBe(false);
+    expect(scheduledLongTimers).toBe(1);
+    expect(activeLongTimers.size).toBe(1);
+
+    userAc.abort("user-cancelled");
+    const err = await caught;
+    expect(String(err)).toContain("OAuth callback cancelled: user-cancelled");
+
+    expect(manualSignal?.aborted).toBe(true);
+    expect(manualSignal?.reason).toBe("user-cancelled");
+    expect(manualAbortEvents).toBe(1);
+    expect(askCount).toBe(1);
+    expect(activeLongTimers.size).toBe(0);
+  } finally {
+    for (const handle of activeLongTimers) {
+      prevClearTimeout(handle as NodeJS.Timeout);
+    }
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.clearTimeout = prevClearTimeout;
+  }
+});
+
+test("OAuthCallbackFlow: detaches ctrl.signal abort listener after browser callback settles", async () => {
+  let ready!: () => void;
+  const readyPromise = new Promise<void>(r => (ready = r));
+  const userAc = new AbortController();
+  const attachedAbortListeners = new Set<EventListenerOrEventListenerObject>();
+  let addedCount = 0;
+
+  const origAdd = userAc.signal.addEventListener.bind(userAc.signal);
+  const origRemove = userAc.signal.removeEventListener.bind(userAc.signal);
+  userAc.signal.addEventListener = ((
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) => {
+    if (type === "abort" && listener) {
+      addedCount++;
+      attachedAbortListeners.add(listener);
+    }
+    return origAdd(type, listener, options);
+  }) as AbortSignal["addEventListener"];
+  userAc.signal.removeEventListener = ((
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ) => {
+    if (type === "abort" && listener) {
+      attachedAbortListeners.delete(listener);
+    }
+    return origRemove(type, listener, options);
+  }) as AbortSignal["removeEventListener"];
+
+  const flow = new TestFlow({
+    signal: userAc.signal,
+    onAuth: () => ready(),
+  });
+
+  const loginPromise = flow.login();
+  await readyPromise;
+  expect(addedCount).toBe(1);
+  expect(attachedAbortListeners.size).toBe(1);
+
+  const res = await fetch(`${flow.capturedRedirect}?code=clean-listener&state=${flow.capturedState}`);
+  expect(res.status).toBe(200);
+  const creds = await loginPromise;
+  expect(creds.access).toBe("acc-clean-listener");
+  expect(attachedAbortListeners.size).toBe(0);
+});

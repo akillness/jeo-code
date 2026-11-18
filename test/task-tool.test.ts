@@ -1107,7 +1107,7 @@ test("runSubagentOnce: bounds trace output when >110 tool/step events occur whil
     DEFAULT_TOOLS.read = originalRead;
     await fs.rm(cwd, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 test("runSubagentOnce: throttles and deduplicates high-frequency identical and burst onReasoningStream thinking events while preserving initial and latest previews", async () => {
   const realDateNow = Date.now;

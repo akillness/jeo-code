@@ -17,6 +17,22 @@ const JWT_EXPIRY_SKEW_MS = 5 * 60_000;
 export const PERPLEXITY_NEVER_EXPIRES = 8.64e15;
 
 /**
+ * NextAuth encrypted session tokens (JWE) use 5 dot-separated base64url parts;
+ * `alg: "dir"` JWEs intentionally leave the 2nd encrypted-key part empty (`header..iv.ciphertext.tag`).
+ */
+export function isPerplexityJweToken(token: string): boolean {
+  const parts = token.trim().split(".");
+  if (parts.length !== 5) return false;
+  return (
+    parts[0]!.length > 0 &&
+    parts[2]!.length > 0 &&
+    parts[3]!.length > 0 &&
+    parts[4]!.length > 0 &&
+    parts.every(part => /^[A-Za-z0-9_-]*$/.test(part))
+  );
+}
+
+/**
  * Decode expiry (in epoch ms) from a Perplexity JWT, subtracting a 5-minute skew.
  * Perplexity session JWTs typically omit `exp` (server-side sessions), in which
  * case `8.64e15` is returned so the token is treated as non-expiring.
@@ -87,21 +103,33 @@ export async function verifyPerplexitySessionToken(
   token: string,
   signal?: AbortSignal,
 ): Promise<{ valid: boolean; email?: string }> {
+  const trimmed = token.trim();
+  if (!trimmed) return { valid: false };
   try {
     const timeoutSignal = AbortSignal.timeout(5000);
     const mergedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const res = await fetch(`${PERPLEXITY_AUTH_BASE}/session`, {
-      headers: perplexityAuthHeaders(false, `__Secure-next-auth.session-token=${token}`),
+      headers: perplexityAuthHeaders(false, `__Secure-next-auth.session-token=${trimmed}`),
       signal: mergedSignal,
     });
-    if (!res.ok) return { valid: res.status !== 401 && res.status !== 403 };
+    if (!res.ok) {
+      if (res.status === 401) return { valid: false };
+      if (res.status === 403) {
+        const cfChallenge =
+          res.headers.get("cf-mitigated")?.toLowerCase() === "challenge" ||
+          res.headers.get("content-type")?.toLowerCase().includes("text/html");
+        return { valid: Boolean(cfChallenge) };
+      }
+      return { valid: true };
+    }
     const data = (await res.json().catch(() => null)) as { user?: { email?: unknown } } | null;
     if (!data || typeof data !== "object" || !data.user) {
       return { valid: false };
     }
     const email = typeof data.user.email === "string" && data.user.email.trim() ? data.user.email.trim() : undefined;
     return { valid: true, email };
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw err;
     return { valid: true };
   }
 }
@@ -262,15 +290,26 @@ export async function refreshPerplexityToken(token: string): Promise<OAuthCreden
   }
   const expires = perplexityJwtExpiryMs(trimmed);
   if (expires > Date.now()) {
-    return {
-      access: trimmed,
-      refresh: trimmed,
-      expires,
-    };
+    if (!isPerplexityJweToken(trimmed)) {
+      return {
+        access: trimmed,
+        refresh: trimmed,
+        expires,
+      };
+    }
+    const verified = await verifyPerplexitySessionToken(trimmed);
+    if (verified.valid) {
+      return {
+        access: trimmed,
+        refresh: trimmed,
+        expires,
+        ...(verified.email ? { email: verified.email } : {}),
+      };
+    }
   }
 
   const nativeJwt = await extractPerplexityMacAppToken();
-  if (nativeJwt) {
+  if (nativeJwt && nativeJwt !== trimmed) {
     const nativeExpires = perplexityJwtExpiryMs(nativeJwt);
     if (nativeExpires > Date.now()) {
       const verified = await verifyPerplexitySessionToken(nativeJwt);

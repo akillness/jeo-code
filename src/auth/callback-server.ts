@@ -171,7 +171,20 @@ export abstract class OAuthCallbackFlow {
       this.ctrl.onProgress?.("Exchanging authorization code for tokens...");
       return await this.exchangeToken(code, returnedState || state, redirectUri);
     } finally {
-      server.stop();
+      if (servedCallbackPage) {
+        let flushTimer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            server.stop(false),
+            new Promise<void>(resolve => {
+              flushTimer = setTimeout(resolve, 50);
+            }),
+          ]);
+        } finally {
+          clearTimeout(flushTimer);
+        }
+      }
+      await server.stop(true);
       this.#onPageServed = undefined;
       // Close the leftover callback tab from the OUTSIDE (macOS only; see
       // ./browser-tab.ts). Awaited — a one-shot `jeo auth login` exits as soon as
@@ -246,49 +259,99 @@ export abstract class OAuthCallbackFlow {
     });
   }
 
-  #waitForCallback(expectedState: string): Promise<CallbackResult> {
-    const timeout = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-    const signal = this.ctrl.signal ? AbortSignal.any([this.ctrl.signal, timeout]) : timeout;
-
-    const callbackPromise = new Promise<CallbackResult>((resolve, reject) => {
-      this.#resolve = resolve;
-      this.#reject = reject;
-      signal.addEventListener("abort", () => {
-        this.#resolve = undefined;
-        this.#reject = undefined;
-        reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
-      });
-    });
-
-    if (this.ctrl.onManualCodeInput) {
-      const ask = this.ctrl.onManualCodeInput;
-      const manualPromise = (async (): Promise<CallbackResult> => {
-        while (true) {
-          // Cooperative cancellation: once the controller signal aborts (the
-          // caller finished or failed the login), STOP re-prompting. Without
-          // this guard an aborted `ask()` rejects instantly, the catch maps it
-          // to null, and the loop spins re-asking forever.
-          if (signal.aborted) return callbackPromise;
-          const result = await Promise.race<CallbackResult | null>([
-            callbackPromise,
-            ask()
-              .then(input => {
-                const parsed = parseCallbackInput(input);
-                if (!parsed.code) return null;
-                // A bare pasted code WITHOUT a state is accepted (the provider
-                // may strip it); only an explicitly MISMATCHED state is rejected.
-                if (expectedState && parsed.state && parsed.state !== expectedState) return null;
-                return { code: parsed.code, state: parsed.state ?? "" } as CallbackResult;
-              })
-              .catch(() => null),
-          ]);
-          if (result) return result;
-        }
-      })();
-      return Promise.race([callbackPromise, manualPromise]);
+  async #waitForCallback(expectedState: string): Promise<CallbackResult> {
+    const ctrlSignal = this.ctrl.signal;
+    if (ctrlSignal?.aborted) {
+      throw new Error(`OAuth callback cancelled: ${ctrlSignal.reason}`);
     }
 
-    return callbackPromise;
+    const manualAc = new AbortController();
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    let onCtrlAbort: (() => void) | undefined;
+
+    const callbackPromise = new Promise<CallbackResult>((resolve, reject) => {
+      const settleResolve = (result: CallbackResult) => {
+        if (settled) return;
+        settled = true;
+        this.#resolve = undefined;
+        this.#reject = undefined;
+        resolve(result);
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        this.#resolve = undefined;
+        this.#reject = undefined;
+        reject(err);
+      };
+
+      this.#resolve = settleResolve;
+      this.#reject = settleReject;
+
+      timer = setTimeout(() => {
+        manualAc.abort(new Error("OAuth callback timed out"));
+        settleReject(new Error(`OAuth callback cancelled: timed out after ${DEFAULT_TIMEOUT_MS}ms`));
+      }, DEFAULT_TIMEOUT_MS);
+
+      if (ctrlSignal) {
+        onCtrlAbort = () => {
+          manualAc.abort(ctrlSignal.reason);
+          settleReject(new Error(`OAuth callback cancelled: ${ctrlSignal.reason}`));
+        };
+        ctrlSignal.addEventListener("abort", onCtrlAbort, { once: true });
+      }
+    });
+
+    try {
+      if (this.ctrl.onManualCodeInput) {
+        const ask = this.ctrl.onManualCodeInput as (promptLabel?: string, signal?: AbortSignal) => Promise<string>;
+        const manualPromise = (async (): Promise<CallbackResult> => {
+          while (true) {
+            // Cooperative cancellation: once settled or aborted, stop re-prompting.
+            if (settled || manualAc.signal.aborted || ctrlSignal?.aborted) {
+              return callbackPromise;
+            }
+            const result = await Promise.race<CallbackResult | null>([
+              callbackPromise,
+              ask(undefined, manualAc.signal)
+                .then(input => {
+                  const parsed = parseCallbackInput(input);
+                  if (!parsed.code) return null;
+                  // A bare pasted code WITHOUT a state is accepted (the provider
+                  // may strip it); only an explicitly MISMATCHED state is rejected.
+                  if (expectedState && parsed.state && parsed.state !== expectedState) return null;
+                  return { code: parsed.code, state: parsed.state ?? "" } as CallbackResult;
+                })
+                .catch(() => null),
+            ]);
+            if (result) {
+              settled = true;
+              this.#resolve = undefined;
+              this.#reject = undefined;
+              return result;
+            }
+          }
+        })();
+        return await Promise.race([callbackPromise, manualPromise]);
+      }
+
+      return await callbackPromise;
+    } finally {
+      settled = true;
+      this.#resolve = undefined;
+      this.#reject = undefined;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (ctrlSignal && onCtrlAbort) {
+        ctrlSignal.removeEventListener("abort", onCtrlAbort);
+      }
+      if (!manualAc.signal.aborted) {
+        manualAc.abort();
+      }
+    }
   }
 }
 

@@ -542,3 +542,43 @@ test("Readability: failed tool sub-row stays visible even when tool detail match
     tui.finish("done");
   }
 });
+test("In-place stability: parallel workers keep stable row order and constant box height across start/step/tool updates", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  try {
+    tui.start();
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "s1", index: 1, total: 3, detail: "first task" });
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "s2", index: 2, total: 3, detail: "second task" });
+    tui.onSubagentEvent({ kind: "start", role: "executor", runId: "s3", index: 3, total: 3, detail: "third task" });
+
+    const startPanel = callRenderSubagentPanel(tui, 100).map(strip);
+    expect(startPanel.join("\n")).toMatch(/(?:└─|`-)\s*[▸>]\s*starting/);
+    expect(strip(out.join(""))).toContain("(sub ×3)");
+    out.length = 0;
+
+    // Out-of-order updates (worker 3 -> worker 1 -> worker 2) must not reshuffle rows or emit newlines.
+    tui.onSubagentEvent({ kind: "tool", role: "executor", runId: "s3", index: 3, total: 3, detail: "read c.ts", success: true, summary: "3 lines" });
+    tui.onSubagentEvent({ kind: "tool", role: "executor", runId: "s1", index: 1, total: 3, detail: "read a.ts", success: true });
+    tui.onSubagentEvent({ kind: "step", role: "executor", runId: "s2", index: 2, total: 3, step: 2, maxSteps: 5, detail: "check b.ts" });
+
+    expect(out.join("")).not.toContain("\n");
+    const updatedPanel = callRenderSubagentPanel(tui, 100).map(strip);
+    expect(updatedPanel.length).toBe(startPanel.length);
+    const joined = updatedPanel.join("\n");
+    const i1 = joined.indexOf("EXECUTOR[1/3]");
+    const i2 = joined.indexOf("EXECUTOR[2/3]");
+    const i3 = joined.indexOf("EXECUTOR[3/3]");
+    expect(i1).toBeGreaterThan(-1);
+    expect(i2).toBeGreaterThan(i1);
+    expect(i3).toBeGreaterThan(i2);
+    expect(joined).toContain("subagents · 3 running · 2 tools");
+    expect(joined).toContain("read c.ts — 3 lines");
+  } finally {
+    const timer = Reflect.get(tui, "timer");
+    if (timer) clearInterval(timer as NodeJS.Timeout);
+    tui.finish("done");
+  }
+});

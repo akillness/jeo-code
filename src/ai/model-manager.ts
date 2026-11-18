@@ -735,9 +735,18 @@ function composeAbort(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
   return a ? AbortSignal.any([a, b]) : b;
 }
 
-/** Compose the caller's signal (if any) with a fresh per-attempt timeout. */
-function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  return composeAbort(signal, AbortSignal.timeout(ms));
+/** Compose the caller's signal (if any) with a fresh per-attempt timeout whose
+ *  timer is cleared on `cleanup()` so completed calls do not leak timers. */
+function withTimeoutScope(signal: AbortSignal | undefined, ms: number): { signal: AbortSignal; cleanup: () => void } {
+  if (signal?.aborted) return { signal, cleanup: () => {} };
+  const timeoutCtrl = new AbortController();
+  const timer = setTimeout(() => {
+    timeoutCtrl.abort(new DOMException(`The operation timed out after ${ms} ms`, "TimeoutError"));
+  }, ms);
+  return {
+    signal: composeAbort(signal, timeoutCtrl.signal),
+    cleanup: () => clearTimeout(timer),
+  };
 }
 
 /**
@@ -764,16 +773,17 @@ export interface StreamIdleOptions {
   onIdle?: () => void;
 }
 
-/** Handle returned by {@link idleWatchdog}: the racing promise, its cleanup, and a
- *  `touch()` to call after each successfully received chunk. */
+/** Handle returned by {@link idleWatchdog}: races a single `next()` promise against
+ *  the idle/overall timer without accumulating reaction closures across chunks. */
 export interface StreamWatchdogHandle {
-  promise: Promise<never>;
+  race: <T>(nextPromise: Promise<T>) => Promise<T>;
   cleanup: () => void;
   touch: () => void;
 }
 
 /** One watchdog per stream attempt. Reused across `iter.next()` calls so a busy
- *  stream does not allocate a Promise+timer pair per yielded chunk.
+ *  stream does not allocate a Promise+timer pair per yielded chunk and completed
+ *  chunks retain zero reaction closures on the watchdog.
  *
  *  Idle measurement fallback: when the caller has no `lastActivityAt` (the common
  *  case — most providers never wire reasoning-progress tracking), idle time MUST be
@@ -785,41 +795,93 @@ export interface StreamWatchdogHandle {
  *  takes precedence once it advances past `attemptStartedAt` (preventing a stale
  *  timestamp from a prior failed retry attempt from aborting retry #2 in 0ms). */
 function idleWatchdog(idle: StreamIdleOptions): StreamWatchdogHandle {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: Timer | undefined;
   const attemptStartedAt = Date.now();
   let lastChunkAt = attemptStartedAt;
-  const promise = new Promise<never>((_, reject) => {
-    const arm = () => {
-      const now = Date.now();
-      const overallRemaining = idle.deadlineAt !== undefined ? idle.deadlineAt - now : Infinity;
-      if (overallRemaining <= 0) {
-        idle.onIdle?.();
-        reject(new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`));
-        return;
+  let stopped = false;
+  let idleErr: Error | undefined;
+  let waiter: ((err: Error) => void) | undefined;
+
+  const fail = (err: Error) => {
+    if (stopped || idleErr) return;
+    idleErr = err;
+    timer = undefined;
+    const notify = waiter;
+    waiter = undefined;
+    notify?.(err);
+  };
+
+  const arm = () => {
+    if (stopped || idleErr) return;
+    const now = Date.now();
+    const overallRemaining = idle.deadlineAt !== undefined ? idle.deadlineAt - now : Infinity;
+    if (overallRemaining <= 0) {
+      idle.onIdle?.();
+      fail(new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`));
+      return;
+    }
+    const effectiveIdleMs = idle.resolveIdleMs ? idle.resolveIdleMs() : idle.idleMs;
+    const lastAct = idle.lastActivityAt ? Math.max(attemptStartedAt, idle.lastActivityAt()) : lastChunkAt;
+    const idleRemaining = effectiveIdleMs - (now - lastAct);
+    const wait = Math.min(idleRemaining, overallRemaining);
+    if (wait <= 0) {
+      idle.onIdle?.();
+      fail(new Error(`stream idle for ${effectiveIdleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
+      return;
+    }
+    timer = setTimeout(arm, wait);
+  };
+  arm();
+
+  return {
+    race<T>(nextPromise: Promise<T>): Promise<T> {
+      if (idleErr) {
+        nextPromise.catch(() => {});
+        return Promise.reject(idleErr);
       }
-      const effectiveIdleMs = idle.resolveIdleMs ? idle.resolveIdleMs() : idle.idleMs;
-      const lastAct = idle.lastActivityAt ? Math.max(attemptStartedAt, idle.lastActivityAt()) : lastChunkAt;
-      const idleRemaining = effectiveIdleMs - (now - lastAct);
-      const wait = Math.min(idleRemaining, overallRemaining);
-      if (wait <= 0) {
-        idle.onIdle?.();
-        reject(new Error(`stream idle for ${effectiveIdleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
-        return;
-      }
-      timer = setTimeout(arm, wait);
-    };
-    arm();
-  });
-  return { promise, cleanup: () => clearTimeout(timer), touch: () => { lastChunkAt = Date.now(); } };
+      return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const onIdleError = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          reject(err);
+        };
+        waiter = onIdleError;
+        nextPromise.then(
+          val => {
+            if (settled) return;
+            settled = true;
+            if (waiter === onIdleError) waiter = undefined;
+            resolve(val);
+          },
+          err => {
+            if (settled) return;
+            settled = true;
+            if (waiter === onIdleError) waiter = undefined;
+            reject(err);
+          },
+        );
+      });
+    },
+    cleanup: () => {
+      stopped = true;
+      clearTimeout(timer);
+      timer = undefined;
+      waiter = undefined;
+    },
+    touch: () => {
+      lastChunkAt = Date.now();
+    },
+  };
 }
 
 /** `iter.next()`, racing the stream-attempt watchdog AND (when set) the overall deadline.
  *  The watchdog re-arms while reasoning activity (idle.lastActivityAt) keeps advancing,
  *  so a model that streams thinking tokens for longer than idleMs before emitting visible
  *  text is NOT mistaken for a stalled stream — only a genuinely silent stream aborts. */
-async function nextMaybeIdle(iter: AsyncIterator<string>, watchdog?: Promise<never>): Promise<IteratorResult<string>> {
+async function nextMaybeIdle(iter: AsyncIterator<string>, watchdog?: StreamWatchdogHandle): Promise<IteratorResult<string>> {
   if (!watchdog) return iter.next();
-  return Promise.race([iter.next(), watchdog]);
+  return watchdog.race(iter.next());
 }
 
 /** Overall stream wall-clock from the environment. Defaults to the same hard bound as
@@ -883,17 +945,28 @@ export async function* retryableStream(
 ): AsyncGenerator<string> {
   let cleanupWatchdog = () => {};
   let touchWatchdog = () => {};
+  let iter: AsyncIterator<string> | undefined;
+  let iterDone = false;
   try {
-    const { iter, first, watchdog } = await withRetry(async () => {
+    const init = await withRetry(async () => {
       cleanupWatchdog();
+      if (iter && !iterDone) {
+        await iter.return?.().catch(() => {});
+      }
+      iter = undefined;
+      iterDone = false;
       const it = makeIter();
+      iter = it;
       const w = idle ? idleWatchdog(idle) : undefined;
       cleanupWatchdog = w?.cleanup ?? (() => {});
       touchWatchdog = w?.touch ?? (() => {});
-      const f = await nextMaybeIdle(it, w?.promise);
-      if (!f.done) touchWatchdog();
-      return { iter: it, first: f, watchdog: w?.promise };
+      const f = await nextMaybeIdle(it, w);
+      if (f.done) iterDone = true;
+      else touchWatchdog();
+      return { iter: it, first: f, watchdog: w };
     }, retry);
+    iter = init.iter;
+    const { first, watchdog } = init;
     if (!first.done) {
       yield first.value;
       for (;;) {
@@ -902,17 +975,23 @@ export async function* retryableStream(
           n = await nextMaybeIdle(iter, watchdog);
         } catch (err) {
           if (isStreamIdleError(err) && err && typeof err === "object") {
-            (err as { midStreamIdle?: boolean }).midStreamIdle = true;
+            Object.assign(err, { midStreamIdle: true });
           }
           throw err;
         }
-        if (n.done) break;
+        if (n.done) {
+          iterDone = true;
+          break;
+        }
         touchWatchdog();
         yield n.value;
       }
     }
   } finally {
     cleanupWatchdog();
+    if (!iterDone) {
+      await iter?.return?.().catch(() => {});
+    }
   }
 }
 
@@ -978,9 +1057,11 @@ export function createModelManager(resolve = resolveCall): ModelManager {
         const callAttempt = async () => {
           const scope = currentUsageScope();
           const attempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+          const timeout = withTimeoutScope(callOptions.signal, callTimeoutMs());
           try {
-            return await adapter.call(messages, { ...callOptions, onUsageSnapshot: usage => attempt?.onUsage(usage), onUsage: usage => { attempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential);
+            return await adapter.call(messages, { ...callOptions, onUsageSnapshot: usage => attempt?.onUsage(usage), onUsage: usage => { attempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: timeout.signal }, credential);
           } finally {
+            timeout.cleanup();
             attempt?.finish();
           }
         };
@@ -999,6 +1080,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
         const callAttempt = async () => {
           const scope = currentUsageScope();
           const attempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+          const timeout = withTimeoutScope(callOptions.signal, callTimeoutMs());
           try {
             return await adapter.call(
               messages,
@@ -1009,11 +1091,12 @@ export function createModelManager(resolve = resolveCall): ModelManager {
                   attempt?.onUsage(usage);
                   callOptions.onUsage?.(usage);
                 },
-                signal: withTimeout(callOptions.signal, callTimeoutMs()),
+                signal: timeout.signal,
               },
               activeCredential,
             );
           } finally {
+            timeout.cleanup();
             attempt?.finish();
           }
         };
@@ -1204,13 +1287,15 @@ export function createModelManager(resolve = resolveCall): ModelManager {
           const callAttempt = async () => {
             const scope = currentUsageScope();
             const usageAttempt = scope && createUsageAttempt({ ...scope, provider, model: callOptions.model });
+            const timeout = withTimeoutScope(callOptions.signal, callTimeoutMs());
             try {
               return await adapter.call(
                 messages,
-                { ...callOptions, onUsageSnapshot: usage => usageAttempt?.onUsage(usage), onUsage: usage => { usageAttempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: withTimeout(callOptions.signal, callTimeoutMs()) },
+                { ...callOptions, onUsageSnapshot: usage => usageAttempt?.onUsage(usage), onUsage: usage => { usageAttempt?.onUsage(usage); callOptions.onUsage?.(usage); }, signal: timeout.signal },
                 activeCredential,
               );
             } finally {
+              timeout.cleanup();
               usageAttempt?.finish();
             }
           };

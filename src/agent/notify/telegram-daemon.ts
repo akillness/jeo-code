@@ -191,6 +191,7 @@ interface SessionConnection {
   ws: WebSocket;
   lastRecords: SubagentRecord[];
   verified?: boolean;
+  verifyTimer?: Timer;
   /** Latest identity, once an `identity_header` frame arrives — used to name/
    *  rename the session's forum topic. `undefined` until then (topic still
    *  gets created eagerly with a provisional short-id name). */
@@ -214,6 +215,7 @@ export interface TelegramDaemonOptions {
   isPidAlive?: (pid: number) => boolean;
   scanIntervalMs?: number;
   ackTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   /** Forum-topic thread id (message_thread_id). When set, every push is sent
    *  into this topic and inbound messages/taps from other topics are ignored.
    *  Ignored for a session with its OWN per-session topic when
@@ -260,8 +262,11 @@ export class TelegramDaemon {
   private pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
   private stopped = false;
   private cancelBackoff: (() => void) | undefined;
-  private scanTimer: ReturnType<typeof setInterval> | undefined;
-  private poolTimer: ReturnType<typeof setInterval> | undefined;
+  private scanTimer: Timer | undefined;
+  private poolTimer: Timer | undefined;
+  private scanning = false;
+  private flushInFlight: Promise<void> | undefined;
+  private flushPending = false;
   /** `undefined` when `perSessionTopics` is off — the flat/global `topicId`
    *  path never touches this. */
   private readonly topics: TopicRegistry | undefined;
@@ -338,75 +343,109 @@ export class TelegramDaemon {
    *  tags are present), so nothing this daemon sends can exceed Telegram's
    *  4096-char hard limit regardless of source. */
   private async flushPool(): Promise<void> {
-    const granted = this.pool.drain();
-    for (const item of granted) {
-      const p = item.payload;
-      let delivered = true;
-      let retryChunks: string[] | undefined;
-      if (p.kind === "text") {
-        const chunks = p.retryChunks ?? splitTelegramHtml(p.text);
-        for (let i = 0; i < chunks.length; i++) {
-          try {
-            const result = await this.opts.telegram.sendMessage(p.chatId, chunks[i]!, {
-              messageThreadId: p.topicId,
-              // A reply keyboard belongs on the LAST fragment a split reply ends on.
-              replyMarkup: i === chunks.length - 1 ? p.replyMarkup : undefined,
-              parseMode: p.html ? "HTML" : undefined,
-            });
-            if (!result || result.ok !== true) throw new Error("Telegram sendMessage returned ok:false");
-          } catch {
-            delivered = false;
-            retryChunks = chunks.slice(i);
-            break;
-          }
-        }
-      } else {
-        try {
-          const result = await this.opts.telegram.sendPhoto(p.chatId, p.photo, { messageThreadId: p.topicId, caption: p.caption, replyMarkup: p.replyMarkup });
-          if (!result || result.ok !== true) throw new Error("Telegram sendPhoto returned ok:false");
-        } catch {
-          delivered = false;
-        }
-      }
-      if (!delivered && !this.stopped && (p.retryCount ?? 0) < MAX_OUTBOUND_RETRIES) {
-        this.pool.submit({
-          ...item,
-          payload: { ...p, retryCount: (p.retryCount ?? 0) + 1, ...(retryChunks ? { retryChunks } : {}) },
-        });
-        continue;
-      }
-      p.onDelivered?.(delivered);
-    }
-  }
-  async scanSessions(): Promise<void> {
-    if (this.stopped) return;
-    const readdir = this.opts.readdir ?? (d => fs.readdir(d));
-    let files: string[];
-    try {
-      files = await readdir(notifySessionsDir());
-    } catch {
+    if (this.flushInFlight) {
+      this.flushPending = true;
+      await this.flushInFlight;
       return;
     }
-    const readFile = this.opts.readFile ?? (p => fs.readFile(p, "utf-8"));
-    const unlink = this.opts.unlink ?? (p => fs.unlink(p));
-    const pidAlive = this.opts.isPidAlive ?? isPidAlive;
-    for (const file of files.filter(f => /^[A-Za-z0-9_-]+\.json$/.test(f))) {
-      if (this.stopped) return;
-      const sessionId = path.basename(file, ".json");
-      if (this.sessions.has(sessionId)) continue;
-      const filePath = path.join(notifySessionsDir(), file);
+    const run = (async () => {
       try {
-        const raw = await readFile(filePath);
+        do {
+          this.flushPending = false;
+          const granted = this.pool.drain();
+          for (const item of granted) {
+            const p = item.payload;
+            let delivered = true;
+            let retryChunks: string[] | undefined;
+            if (p.kind === "text") {
+              const chunks = p.retryChunks ?? splitTelegramHtml(p.text);
+              for (let i = 0; i < chunks.length; i++) {
+                try {
+                  const result = await this.opts.telegram.sendMessage(p.chatId, chunks[i]!, {
+                    messageThreadId: p.topicId,
+                    // A reply keyboard belongs on the LAST fragment a split reply ends on.
+                    replyMarkup: i === chunks.length - 1 ? p.replyMarkup : undefined,
+                    parseMode: p.html ? "HTML" : undefined,
+                  });
+                  if (!result || result.ok !== true) throw new Error("Telegram sendMessage returned ok:false");
+                } catch {
+                  delivered = false;
+                  retryChunks = chunks.slice(i);
+                  break;
+                }
+              }
+            } else {
+              try {
+                const result = await this.opts.telegram.sendPhoto(p.chatId, p.photo, { messageThreadId: p.topicId, caption: p.caption, replyMarkup: p.replyMarkup });
+                if (!result || result.ok !== true) throw new Error("Telegram sendPhoto returned ok:false");
+              } catch {
+                delivered = false;
+              }
+            }
+            if (!delivered && !this.stopped && (p.retryCount ?? 0) < MAX_OUTBOUND_RETRIES) {
+              this.pool.submit({
+                ...item,
+                payload: { ...p, retryCount: (p.retryCount ?? 0) + 1, ...(retryChunks ? { retryChunks } : {}) },
+              });
+              continue;
+            }
+            p.onDelivered?.(delivered);
+          }
+        } while (this.flushPending);
+      } finally {
+        this.flushInFlight = undefined;
+      }
+    })();
+    this.flushInFlight = run;
+    await run;
+  }
+  async scanSessions(): Promise<void> {
+    if (this.stopped || this.scanning) return;
+    this.scanning = true;
+    try {
+      const readdir = this.opts.readdir ?? (d => fs.readdir(d));
+      let files: string[];
+      try {
+        files = await readdir(notifySessionsDir());
+      } catch {
+        return;
+      }
+      const readFile = this.opts.readFile ?? (p => fs.readFile(p, "utf-8"));
+      const unlink = this.opts.unlink ?? (p => fs.unlink(p));
+      const pidAlive = this.opts.isPidAlive ?? isPidAlive;
+      for (const file of files.filter(f => /^[A-Za-z0-9_-]+\.json$/.test(f))) {
         if (this.stopped) return;
-        const endpoint = parseSessionEndpoint(raw);
-        if (!endpoint) continue;
-        if (!pidAlive(endpoint.pid)) {
-          await unlink(filePath).catch(() => {});
+        const sessionId = path.basename(file, ".json");
+        if (this.sessions.has(sessionId)) continue;
+        const filePath = path.join(notifySessionsDir(), file);
+        try {
+          const raw = await readFile(filePath);
+          if (this.stopped) return;
+          const endpoint = parseSessionEndpoint(raw);
+          if (!endpoint) continue;
+          if (!pidAlive(endpoint.pid)) {
+            await unlink(filePath).catch(() => {});
+            continue;
+          }
+          this.connectSession(sessionId, endpoint);
+        } catch {
           continue;
         }
-        this.connectSession(sessionId, endpoint);
-      } catch {
-        continue;
+      }
+    } finally {
+      this.scanning = false;
+    }
+  }
+
+  private evictSession(conn: SessionConnection): void {
+    clearTimeout(conn.verifyTimer);
+    conn.verifyTimer = undefined;
+    if (this.sessions.get(conn.sessionId) === conn) this.sessions.delete(conn.sessionId);
+    for (const [reqId, pending] of this.pendingAcks) {
+      if (pending.conn === conn) {
+        clearTimeout(pending.timer);
+        this.pendingAcks.delete(reqId);
+        pending.resolve(false);
       }
     }
   }
@@ -415,11 +454,22 @@ export class TelegramDaemon {
     const ws = new this.WS(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
     const conn: SessionConnection = { sessionId, cwd: endpoint.cwd, pid: endpoint.pid, ws, lastRecords: [] };
     this.sessions.set(sessionId, conn);
+    conn.verifyTimer = setTimeout(() => {
+      conn.verifyTimer = undefined;
+      if (!conn.verified) {
+        this.evictSession(conn);
+        try { ws.close(); } catch {}
+      }
+    }, this.opts.handshakeTimeoutMs ?? 10_000);
     ws.addEventListener("message", (ev: MessageEvent) => {
       void this.handleSessionMessage(conn, String(ev.data));
     });
     ws.addEventListener("close", () => {
-      if (this.sessions.get(sessionId) === conn) this.sessions.delete(sessionId);
+      this.evictSession(conn);
+    });
+    ws.addEventListener("error", () => {
+      this.evictSession(conn);
+      try { ws.close(); } catch {}
     });
   }
 
@@ -530,10 +580,13 @@ export class TelegramDaemon {
     if (msg.type === "snapshot") {
       if (msg.sessionId !== conn.sessionId || msg.pid !== conn.pid || !Array.isArray(msg.subagents)) {
         conn.verified = false;
-        conn.ws.close();
+        this.evictSession(conn);
+        try { conn.ws.close(); } catch {}
         return;
       }
       conn.verified = true;
+      clearTimeout(conn.verifyTimer);
+      conn.verifyTimer = undefined;
     }
     if (!conn.verified || (msg.sessionId !== undefined && msg.sessionId !== conn.sessionId)) return;
     if (msg.type === "snapshot" && Array.isArray(msg.subagents)) {
@@ -857,10 +910,16 @@ export class TelegramDaemon {
       // Callback queries are exempt because their attached message date is not the callback tap time.
       const checkFreshness = this.wasCursorLoadedWithoutOffset;
       let dispatchFailed = false;
+      if (!Array.isArray(res.result)) {
+        process.stderr.write("[jeo notify-daemon] Telegram: getUpdates returned non-array result\n");
+        await this.pollErrorBackoff();
+        continue;
+      }
       for (const update of res.result) {
         if (this.stopped) break;
         if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0 || update.update_id >= Number.MAX_SAFE_INTEGER) {
-          throw new Error("Telegram update has an invalid update_id");
+          process.stderr.write("[jeo notify-daemon] Telegram: skipping malformed update with invalid update_id\n");
+          continue;
         }
         if (this.updateOffset !== undefined && update.update_id < this.updateOffset) continue;
 
@@ -885,6 +944,28 @@ export class TelegramDaemon {
     }
   }
 
+  private scheduleScan(): void {
+    if (this.stopped) return;
+    clearTimeout(this.scanTimer);
+    this.scanTimer = setTimeout(() => {
+      this.scanTimer = undefined;
+      void this.scanSessions().catch(() => {}).finally(() => {
+        if (!this.stopped) this.scheduleScan();
+      });
+    }, this.opts.scanIntervalMs ?? 3_000);
+  }
+
+  private scheduleFlush(): void {
+    if (this.stopped) return;
+    clearTimeout(this.poolTimer);
+    this.poolTimer = setTimeout(() => {
+      this.poolTimer = undefined;
+      void this.flushPool().catch(() => {}).finally(() => {
+        if (!this.stopped) this.scheduleFlush();
+      });
+    }, 250);
+  }
+
   /** Blocks (long-poll loop) until `stop()` is called. */
   async start(): Promise<void> {
     if (this.stopped) return;
@@ -907,8 +988,8 @@ export class TelegramDaemon {
     if (this.stopped) return;
     await this.scanSessions();
     if (this.stopped) return;
-    this.scanTimer = setInterval(() => void this.scanSessions(), this.opts.scanIntervalMs ?? 3_000);
-    this.poolTimer = setInterval(() => void this.flushPool(), 250);
+    this.scheduleScan();
+    this.scheduleFlush();
     try {
       await this.pollTelegramLoop();
     } catch (error) {
@@ -920,16 +1001,20 @@ export class TelegramDaemon {
   stop(): void {
     this.stopped = true;
     this.cancelBackoff?.();
-    clearInterval(this.scanTimer);
+    clearTimeout(this.scanTimer);
+    this.scanTimer = undefined;
     for (const resolve of this.pendingOutbound) resolve(false);
     this.pendingOutbound.clear();
-    clearInterval(this.poolTimer);
+    clearTimeout(this.poolTimer);
+    this.poolTimer = undefined;
     for (const pending of this.pendingAcks.values()) {
       clearTimeout(pending.timer);
       pending.resolve(false);
     }
     this.pendingAcks.clear();
     for (const conn of this.sessions.values()) {
+      clearTimeout(conn.verifyTimer);
+      conn.verifyTimer = undefined;
       try {
         conn.ws.close();
       } catch {}

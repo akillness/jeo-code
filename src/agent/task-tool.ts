@@ -681,6 +681,7 @@ export async function runSubagentOnce(
   // engine bail predicates above are withheld too, so a 429 rides its normal
   // backoff ladder instead of bailing early with nowhere to go).
   for (let attempt = 0; failoverEnabled && attempt < MAX_SUBAGENT_REROUTES; attempt++) {
+    if (signal?.aborted) break;
     // An exhausted completion gate puts the model's own candidate answer in doneReason;
     // its text (e.g. "HTTP 429") is not a provider failure and must never reroute.
     const rateLimited = !result.done && !result.completionRejected && isRateLimitError(new Error(result.doneReason ?? ""));
@@ -754,6 +755,13 @@ export async function runSubagentOnce(
  * Build a `task` ToolHandler bound to a config + (optional) abort signal. The
  * handler accepts `{ role?, task | prompt | assignment, context? }`.
  */
+function composeSignal(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  if (a === b) return a;
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([a, b]) : (a.aborted ? a : b);
+}
+
 export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   const sandbox = opts.sandbox ?? currentSandboxExecution();
   /** Run ONE subagent via the shared execution core, binding this tool instance's
@@ -807,7 +815,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   };
 
 
-  return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+  return async (args: Record<string, any>, cwd: string, _onProgress?: (partialOutput: string) => void, signal?: AbortSignal): Promise<ToolResult> => {
+    const combinedSignal = composeSignal(opts.signal, signal);
     const roleArg = typeof args.role === "string" ? args.role.trim() : "";
     const role = roleArg ? getSubagentRole(roleArg, opts.config) : defaultSubagentRole();
     if (!role) {
@@ -924,7 +933,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           // task runs isolated on its own slice of context; a task that genuinely
           // depends on another's output belongs in a sequential follow-up call.
           try {
-            results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride });
+            results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride, signal: combinedSignal });
           } catch (error: unknown) {
             // Setup and reporting callbacks can throw outside the inner loop's
             // failure handler. Keep that child's failure without dropping siblings.
@@ -989,6 +998,6 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         mutationMayHaveOccurred: role.readOnly ? undefined : true,
       };
     }
-    return runOne(role, taskText, ctx(args.context), cwd, { steer: opts.steer });
+    return runOne(role, taskText, ctx(args.context), cwd, { steer: opts.steer, signal: combinedSignal });
   };
 }

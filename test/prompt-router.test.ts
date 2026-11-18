@@ -12,7 +12,7 @@ import {
   type RouteDecision,
 } from "../src/agent/prompt-router";
 import { resolveSubagentModel } from "../src/agent/subagents";
-import { CODEX_MODELS, recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
+import { CODEX_MODELS, recordLiveProviderModels, resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { Config } from "../src/agent/state";
 
 // `routePrompt` calls the real `callLlm` (src/agent/loop) for LLM escalation. Tests that
@@ -22,6 +22,7 @@ import type { Config } from "../src/agent/state";
 afterEach(() => {
   mock.restore();
   resetLiveProviderModels();
+  resetLiveCodexModels();
 });
 
 function baseConfig(overrides: Partial<Pick<Config, "defaultModel" | "roles" | "routing">> = {}): Pick<

@@ -11,6 +11,7 @@ import {
   ensureBackgroundSweeper,
   isBackgroundReapEnabled,
   killSpec,
+  reapIntervalMs,
   type ReapTarget,
 } from "./process-reaper";
 import type { ShellReader } from "./shell-lease";
@@ -1014,6 +1015,9 @@ export async function bashTool(
     };
   }
   try {
+    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return { success: false, output: "", error: "timeoutMs must be > 0" };
+    }
     if (signal?.aborted) return { success: false, output: "", error: "Command aborted" };
     // The mutation lock is keyed on the PROJECT cwd, not the run subdir.
     await assertBashAllowed(cwd);
@@ -1045,6 +1049,9 @@ export async function bashTool(
       ...(safeEnv && Object.keys(safeEnv).length ? { env: { ...process.env, ...safeEnv } } : {}),
     });
     const reapTarget: ReapTarget = { pid: proc.pid, grouped };
+    if (grouped && reapBackground) {
+      backgroundReaper.register(reapTarget, command);
+    }
     // Signal the whole process group when grouped (so a `cmd &` grandchild dies
     // too), else fall back to the bare shell pid. `force` ⇒ SIGKILL, else SIGTERM.
     const killTree = (force: boolean): void => {
@@ -1063,21 +1070,33 @@ export async function bashTool(
     // grandchild that inherited the pipe (`cmd &`, daemons, `nohup`) keeps it open
     // past it — and that one must not stall the turn.
     const PIPE_LINGER_MS = 500;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    let stdoutReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    let stderrReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let killTimer: Timer | undefined;
+    // Start BOTH drains concurrently so neither pipe can fill its 64KB buffer and
+    // deadlock the child (a child blocks on write() once an unread pipe fills up).
+    // Acquire both readers BEFORE wiring abort/timeout so cancelReaders() always
+    // reaches them even if signal.aborted is already true.
+    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
     // Force EOF on both pipe readers. The drain loops `await r.read()`, which NEVER
     // returns `done` while ANY process holds the write end open — a SIGKILLed shell
     // can leave a backgrounded grandchild clutching the FD, so killing the shell is
     // not enough (proven by scripts/subproc-probe.ts ABANDON mode). cancel() resolves
     // the in-flight read immediately, unwinding the drains so the call returns instead
-    // of hanging forever. Cheap to call repeatedly; harmless before the readers exist.
+    // of hanging forever. Cheap to call repeatedly.
     const cancelReaders = () => {
-      try { stdoutReader?.cancel(); } catch {}
-      try { stderrReader?.cancel(); } catch {}
+      try { void stdoutReader.cancel().catch(() => {}); } catch {}
+      try { void stderrReader.cancel().catch(() => {}); } catch {}
     };
+    const sweepMs = grouped && reapBackground ? reapIntervalMs() : 0;
+    const keepAliveTimer = sweepMs > 0 && TIMEOUT_MS >= sweepMs
+      ? setInterval(() => {
+          if (!aborted && !timedOut) backgroundReaper.register(reapTarget, command);
+        }, Math.max(50, Math.floor(sweepMs / 2)))
+      : undefined;
+    keepAliveTimer?.unref?.();
     const timer = setTimeout(() => {
       timedOut = true;
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
       // Graceful first (SIGTERM), then force-kill (SIGKILL) if it ignores it. At the
       // SIGKILL step ALSO cut the readers: the old code killed the shell but never
       // cancelled the readers, so an orphan-held pipe outlived the deadline and the
@@ -1089,6 +1108,7 @@ export async function bashTool(
     // both pipe readers so the drain loops unwind at once.
     const onAbort = () => {
       aborted = true;
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
       killTree(true);
       cancelReaders();
     };
@@ -1097,12 +1117,6 @@ export async function bashTool(
       else signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    // Start BOTH drains concurrently so neither pipe can fill its 64KB buffer and
-    // deadlock the child (a child blocks on write() once an unread pipe fills up).
-    // cancelReaders() (abort/timeout) unwinds an in-flight read, so no aborted-flag
-    // poll is needed inside the shared drainPipe.
-    stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
-    stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
     let lastEmit = 0;
     const stdoutPromise = drainPipe(
       stdoutReader,
@@ -1133,18 +1147,19 @@ export async function bashTool(
         ]);
       }
     } finally {
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       if (signal) signal.removeEventListener("abort", onAbort);
       // Reap a still-alive shell (abort/timeout) AND any backgrounded grandchild it
       // left behind. A `next dev &` / daemon survives the shell's exit by reparenting
       // to init and would otherwise accumulate every turn (rising next-server RSS);
-      // group-SIGKILL claims the whole subtree. Register first so the periodic sweep
-      // retries if this signal raced the reparent. Skipped when KEEP_BACKGROUND=1.
+      // group-SIGKILL claims the whole subtree. Registered at spawn so watchdog/abort
+      // never orphans the PGID. Skipped when KEEP_BACKGROUND=1.
       if (proc.exitCode === null && proc.signalCode === null) {
         killTree(true);
-      } else if (grouped && reapBackground) {
-        backgroundReaper.register(reapTarget, command);
+      }
+      if (grouped && reapBackground) {
         backgroundReaper.reapOne(proc.pid);
       }
       cancelReaders();
@@ -1467,86 +1482,150 @@ export async function bisectTool(
   invert: boolean = false,
   maxSteps: number = 40,
   stepTimeoutMs: number = 600000,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    if (signal?.aborted) {
+      return { success: false, output: "", error: "Bisect aborted" };
+    }
     if (!good || !good.trim()) {
       return { success: false, output: "", error: 'bisect requires "good" (a known-good commit)' };
     }
     if (!run || !run.trim()) {
       return { success: false, output: "", error: 'bisect requires "run" (a shell command to test)' };
     }
-    if (maxSteps <= 0) {
+    if (!Number.isFinite(maxSteps) || maxSteps <= 0) {
       return { success: false, output: "", error: 'maxSteps must be > 0' };
     }
-    if (stepTimeoutMs <= 0) {
+    if (!Number.isFinite(stepTimeoutMs) || stepTimeoutMs <= 0) {
       return { success: false, output: "", error: 'stepTimeoutMs must be > 0' };
     }
 
-    // Helper to run a command with timeout support and resilient error handling
-    const runCmd = async (args: string[], timeoutMs?: number): Promise<{ code: number; out: string; err: string }> => {
-      const timeout = timeoutMs || stepTimeoutMs;
-      let timeoutOccurred = false;
+    // Helper to run a command with process-group isolation, timeout, and abort support.
+    const runCmd = async (
+      args: string[],
+      timeoutMs?: number,
+      ignoreAbort = false,
+    ): Promise<{ code: number; out: string; err: string; timedOut: boolean; aborted: boolean }> => {
+      const activeSignal = ignoreAbort ? undefined : signal;
+      if (activeSignal?.aborted) {
+        return { code: 130, out: "", err: "Command aborted", timedOut: false, aborted: true };
+      }
+      const timeout = timeoutMs && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : stepTimeoutMs;
+      const reapBackground = isBackgroundReapEnabled();
+      const grouped = process.platform !== "win32";
+      if (grouped && reapBackground) ensureBackgroundSweeper();
+
+      const proc = Bun.spawn(args, {
+        cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        ...(grouped ? { detached: true } : {}),
+      });
+      const reapTarget: ReapTarget = { pid: proc.pid, grouped };
+      if (grouped && reapBackground) {
+        backgroundReaper.register(reapTarget, args.join(" "));
+      }
+
+      const killTree = (force: boolean): void => {
+        const sig = force ? "SIGKILL" : "SIGTERM";
+        if (grouped) {
+          try { process.kill(killSpec(reapTarget), sig); return; } catch { /* fall through */ }
+        }
+        try { force ? proc.kill(9) : proc.kill(); } catch {}
+      };
+
+      let timedOut = false;
+      let aborted = false;
+      let killTimer: Timer | undefined;
+      const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      const cancelReaders = () => {
+        try { void stdoutReader.cancel().catch(() => {}); } catch {}
+        try { void stderrReader.cancel().catch(() => {}); } catch {}
+      };
+      const escalateKill = () => {
+        killTree(false);
+        if (!killTimer) {
+          killTimer = setTimeout(() => {
+            killTree(true);
+            cancelReaders();
+          }, 3_000);
+        }
+      };
+
+      const sweepMs = grouped && reapBackground ? reapIntervalMs() : 0;
+      const keepAliveTimer = sweepMs > 0 && timeout >= sweepMs
+        ? setInterval(() => {
+            if (!aborted && !timedOut) backgroundReaper.register(reapTarget, args.join(" "));
+          }, Math.max(50, Math.floor(sweepMs / 2)))
+        : undefined;
+      keepAliveTimer?.unref?.();
+
       const timeoutHandle = setTimeout(() => {
-        timeoutOccurred = true;
+        timedOut = true;
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
+        escalateKill();
       }, timeout);
+      const onAbort = () => {
+        aborted = true;
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
+        escalateKill();
+      };
+      if (activeSignal) {
+        if (activeSignal.aborted) onAbort();
+        else activeSignal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      const stdoutPromise = drainPipe(stdoutReader).catch(() => "");
+      const stderrPromise = drainPipe(stderrReader).catch(() => "");
 
       try {
-        const proc = Bun.spawn(args, {
-          cwd,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        
-        let out = "";
-        let err = "";
-        
-        const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-        const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
-        
-        // Read stdout with resilience: stream errors don't fail the entire call.
-        // If a reader encounters an error, we continue with partial output, as
-        // git bisect can still function with partial stdout/stderr.
-        try {
-          while (!timeoutOccurred) {
-            const { done, value } = await stdoutReader.read();
-            if (done) break;
-            out += new TextDecoder().decode(value);
-          }
-        } catch (e) {
-          // Stream read error; continue with partial output.
-          // This is acceptable because git bisect may still be usable.
+        await proc.exited;
+        if (!aborted && !timedOut) {
+          const { promise: lingerPromise, resolve: resolveLinger } = Promise.withResolvers<void>();
+          const lingerTimer = setTimeout(resolveLinger, 500);
+          await Promise.race([Promise.all([stdoutPromise, stderrPromise]), lingerPromise]);
+          clearTimeout(lingerTimer);
         }
-        
-        // Read stderr with resilience: same strategy as stdout.
-        try {
-          while (!timeoutOccurred) {
-            const { done, value } = await stderrReader.read();
-            if (done) break;
-            err += new TextDecoder().decode(value);
-          }
-        } catch (e) {
-          // Stream read error; continue with partial output.
-        }
-        
-        if (timeoutOccurred) {
-          return { code: 124, out, err: `Command timeout after ${timeout}ms` };
-        }
-        
-        const code = await proc.exited;
-        return { code: typeof code === 'number' ? code : 0, out, err };
       } finally {
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
         clearTimeout(timeoutHandle);
+        if (killTimer) clearTimeout(killTimer);
+        if (activeSignal) activeSignal.removeEventListener("abort", onAbort);
+        if (proc.exitCode === null && proc.signalCode === null) {
+          killTree(true);
+        }
+        if (grouped && reapBackground) {
+          backgroundReaper.reapOne(proc.pid);
+        }
+        cancelReaders();
       }
+
+      const [out, err] = await Promise.all([stdoutPromise, stderrPromise]);
+      if (aborted) {
+        return { code: 130, out, err: err || "Command aborted", timedOut: false, aborted: true };
+      }
+      if (timedOut) {
+        return { code: 124, out, err: err || `Command timeout after ${timeout}ms`, timedOut: true, aborted: false };
+      }
+      const code = proc.exitCode;
+      return { code: typeof code === "number" ? code : 0, out, err, timedOut: false, aborted: false };
     };
 
     // Validate commits exist (quick validation with shorter timeout)
     const goodRes = await runCmd(["git", "rev-parse", good], 10000);
-    const badRes = await runCmd(["git", "rev-parse", bad], 10000);
-
+    if (goodRes.aborted) return { success: false, output: "", error: "Bisect aborted" };
+    if (goodRes.timedOut) return { success: false, output: "", error: "git rev-parse timed out after 10000ms" };
     if (goodRes.code !== 0) {
       return { success: false, output: "", error: `Invalid or non-existent commit: ${good}` };
     }
+
+    const badRes = await runCmd(["git", "rev-parse", bad], 10000);
+    if (badRes.aborted) return { success: false, output: "", error: "Bisect aborted" };
+    if (badRes.timedOut) return { success: false, output: "", error: "git rev-parse timed out after 10000ms" };
     if (badRes.code !== 0) {
       return { success: false, output: "", error: `Invalid or non-existent commit: ${bad}` };
     }
@@ -1554,21 +1633,52 @@ export async function bisectTool(
     const goodSha = goodRes.out.trim();
     const badSha = badRes.out.trim();
 
-    // Start bisect session
-    const initRes = await runCmd(["sh", "-c", `git bisect start "${badSha}" "${goodSha}"`], 10000);
-    if (initRes.code !== 0) {
-      return { success: false, output: "", error: `Failed to start bisect: ${initRes.err || initRes.out}` };
+    let bisectStarted = false;
+    let runRes: { code: number; out: string; err: string; timedOut: boolean; aborted: boolean };
+    try {
+      // Start bisect session
+      const initRes = await runCmd(["sh", "-c", `git bisect start "${badSha}" "${goodSha}"`], 10000);
+      if (initRes.code === 0 || initRes.aborted || initRes.timedOut) {
+        bisectStarted = true;
+      }
+      if (initRes.aborted) {
+        return { success: false, output: "", error: "Bisect aborted" };
+      }
+      if (initRes.timedOut) {
+        return { success: false, output: "", error: "Failed to start bisect: timed out" };
+      }
+      if (initRes.code !== 0) {
+        return { success: false, output: "", error: `Failed to start bisect: ${initRes.err || initRes.out}` };
+      }
+
+      // Run bisect with the predicate command.
+      // Shell escaping: single quotes in sh -c context need special care.
+      // 'text' -> '\''text'\'' (end quote, escaped quote, start quote, content, end quote, escaped quote, start quote)
+      const escapedRun = run.replace(/'/g, "'\''");
+      const runCmd2 = invert
+        ? `git bisect run sh -c '${escapedRun} && exit 1 || exit 0'`
+        : `git bisect run sh -c '${escapedRun}'`;
+
+      runRes = await runCmd(["sh", "-c", runCmd2]);
+    } finally {
+      // Cleanup: always reset bisect session (even on abort or timeout).
+      if (bisectStarted) {
+        try {
+          await runCmd(["git", "bisect", "reset"], 10000, true);
+        } catch {}
+      }
     }
 
-    // Run bisect with the predicate command.
-    // Shell escaping: single quotes in sh -c context need special care.
-    // 'text' -> '\''text'\'' (end quote, escaped quote, start quote, content, end quote, escaped quote, start quote)
-    const escapedRun = run.replace(/'/g, "'\''");
-    const runCmd2 = invert
-      ? `git bisect run sh -c '${escapedRun} && exit 1 || exit 0'`
-      : `git bisect run sh -c '${escapedRun}'`;
+    if (runRes.aborted || signal?.aborted) {
+      return { success: false, output: runRes.out, error: "Bisect aborted" };
+    }
+    if (runRes.timedOut) {
+      return { success: false, output: runRes.out, error: runRes.err || `Bisect timed out after ${stepTimeoutMs}ms` };
+    }
 
-    const runRes = await runCmd(["sh", "-c", runCmd2]);
+    try {
+      await runCmd(["git", "reset", "--hard"], 10000, true);
+    } catch {}
 
     // Parse result: look for "XXXX is the first bad/good commit"
     const badCommitMatch = runRes.out.match(/^([0-9a-f]{7,40}) is the first (bad|good) commit$/m);
@@ -1581,16 +1691,6 @@ export async function bisectTool(
     } else if (runRes.out.includes("only 'skip'ped commits left")) {
       concluded = false;
     }
-
-    // Cleanup: always attempt to reset bisect and working tree (best-effort).
-    // Errors here are non-critical; if reset fails, the user can manually run
-    // 'git bisect reset' to recover. We don't throw on cleanup errors.
-    try {
-      await runCmd(["git", "bisect", "reset"], 10000);
-    } catch {}
-    try {
-      await runCmd(["git", "reset", "--hard"], 10000);
-    } catch {}
 
     if (!concluded) {
       return {
@@ -1617,8 +1717,8 @@ export async function bisectTool(
     }
 
     return { success: false, output: "Bisect completed but found no culprit.", error: "" };
-  } catch (err: any) {
-    return { success: false, output: "", error: err.message || String(err) };
+  } catch (err: unknown) {
+    return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
   }
 }
 

@@ -1,5 +1,6 @@
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import { openaiAdapter, reasoningDeltaOf, openaiRequest } from "../src/ai/providers/openai";
+import { fetchWithArtifactFailSafe, ProviderHttpError } from "../src/ai/providers/errors";
 
 const cred = { kind: "api_key", provider: "openai", token: "k" } as const;
 
@@ -201,5 +202,240 @@ test("maxTokens default: a custom baseUrl gets a larger budget than cloud OpenAI
   } finally {
     if (savedOpenAiBaseUrl === undefined) delete process.env.OPENAI_BASE_URL;
     else process.env.OPENAI_BASE_URL = savedOpenAiBaseUrl;
+  }
+});
+
+test("openaiAdapter call & stream: 429, 401, AbortError, and connection errors from /responses re-throw directly without chat fallback, while 400/404 fall back", async () => {
+  const nonFallbackCases: Array<{
+    name: string;
+    respond: () => Response | Promise<never>;
+    assertErr: (err: unknown) => void;
+  }> = [
+    {
+      name: "429",
+      respond: () => new Response("rate limited", { status: 429, headers: { "retry-after": "2" } }),
+      assertErr: err => {
+        expect(err).toBeInstanceOf(ProviderHttpError);
+        expect((err as ProviderHttpError).status).toBe(429);
+      },
+    },
+    {
+      name: "401",
+      respond: () => new Response("unauthorized", { status: 401 }),
+      assertErr: err => {
+        expect(err).toBeInstanceOf(ProviderHttpError);
+        expect((err as ProviderHttpError).status).toBe(401);
+      },
+    },
+    {
+      name: "AbortError",
+      respond: () => Promise.reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+      assertErr: err => {
+        expect((err as Error).name).toBe("AbortError");
+      },
+    },
+    {
+      name: "connection error",
+      respond: () =>
+        Promise.reject(
+          Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), {
+            code: "ConnectionRefused",
+          }),
+        ),
+      assertErr: err => {
+        expect((err as { code?: string }).code).toBe("ConnectionRefused");
+      },
+    },
+  ];
+
+  const prevFetch = globalThis.fetch;
+  try {
+    for (const tc of nonFallbackCases) {
+      for (const mode of ["call", "stream"] as const) {
+        let hitResponses = false;
+        let hitChat = false;
+        globalThis.fetch = (async (url: string) => {
+          if (String(url).includes("/responses")) {
+            hitResponses = true;
+            return tc.respond();
+          }
+          hitChat = true;
+          return sse([]);
+        }) as unknown as typeof fetch;
+
+        let caught: unknown;
+        try {
+          if (mode === "call") {
+            await openaiAdapter.call([{ role: "user", content: "x" }], { model: "o3" }, cred);
+          } else {
+            for await (const _ of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "o3" }, cred)) {
+              // drain
+            }
+          }
+        } catch (err) {
+          caught = err;
+        }
+        expect(hitResponses, `${tc.name} (${mode}) hitResponses`).toBe(true);
+        expect(hitChat, `${tc.name} (${mode}) must not fall back to chat`).toBe(false);
+        tc.assertErr(caught);
+      }
+    }
+
+    for (const status of [400, 404]) {
+      let callHitResponses = false;
+      let callHitChat = false;
+      globalThis.fetch = (async (url: string) => {
+        if (String(url).includes("/responses")) {
+          callHitResponses = true;
+          return new Response("unsupported", { status });
+        }
+        callHitChat = true;
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: `chat-${status}` }, finish_reason: "stop" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as unknown as typeof fetch;
+      const callResult = await openaiAdapter.call([{ role: "user", content: "x" }], { model: "o3" }, cred);
+      expect(callHitResponses).toBe(true);
+      expect(callHitChat).toBe(true);
+      expect(callResult).toBe(`chat-${status}`);
+
+      const streamResult = await drainRouted("o3", { responsesStatus: status });
+      expect(streamResult.hitResponses).toBe(true);
+      expect(streamResult.hitChat).toBe(true);
+      expect(streamResult.text).toBe("chat answer");
+    }
+
+    for (const mode of ["call", "stream"] as const) {
+      const ctrl = new AbortController();
+      let hitResponses = false;
+      let hitChat = false;
+      globalThis.fetch = (async (url: string) => {
+        if (String(url).includes("/responses")) {
+          hitResponses = true;
+          ctrl.abort(new Error("user aborted"));
+          return new Response("bad request", { status: 400 });
+        }
+        hitChat = true;
+        return sse([]);
+      }) as unknown as typeof fetch;
+      let caught: unknown;
+      try {
+        if (mode === "call") {
+          await openaiAdapter.call([{ role: "user", content: "x" }], { model: "o3", signal: ctrl.signal }, cred);
+        } else {
+          for await (const _ of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "o3", signal: ctrl.signal }, cred)) {
+            // drain
+          }
+        }
+      } catch (err) {
+        caught = err;
+      }
+      expect(hitResponses).toBe(true);
+      expect(hitChat).toBe(false);
+      expect(caught).toBeInstanceOf(ProviderHttpError);
+    }
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("fetchWithArtifactFailSafe: cancels discarded 400 response body before retrying with stripped artifacts", async () => {
+  const events: string[] = [];
+  const cancelSpy = spyOn(ReadableStream.prototype, "cancel").mockImplementation(async () => {
+    events.push("cancel");
+  });
+  try {
+    const res = await fetchWithArtifactFailSafe(
+      async strip => {
+        events.push(`send-${strip}`);
+        if (!strip) return new Response("bad encrypted_content", { status: 400 });
+        return new Response("ok", { status: 200 });
+      },
+      (status, body) => status === 400 && /encrypted_content/.test(body),
+    );
+    expect(res.status).toBe(200);
+    expect(events).toEqual(["send-false", "cancel", "send-true"]);
+
+    events.length = 0;
+    const nonArtifact = await fetchWithArtifactFailSafe(
+      async strip => {
+        events.push(`send-${strip}`);
+        return new Response("other bad request", { status: 400 });
+      },
+      (status, body) => status === 400 && /encrypted_content/.test(body),
+    );
+    expect(nonArtifact.status).toBe(400);
+    expect(events).toEqual(["send-false"]);
+  } finally {
+    cancelSpy.mockRestore();
+  }
+});
+
+test("openaiAdapter compat retries cancel discarded 400 response bodies before retrying", async () => {
+  const prevFetch = globalThis.fetch;
+  const events: string[] = [];
+  const cancelSpy = spyOn(ReadableStream.prototype, "cancel").mockImplementation(async () => {
+    events.push("cancel");
+  });
+  const tools = [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }];
+  try {
+    // 1. call(): unsupported tools 400 -> cancel -> retry without tools
+    let callFetch = 0;
+    globalThis.fetch = (async () => {
+      callFetch++;
+      events.push(`fetch-${callFetch}`);
+      if (callFetch === 1) return new Response("Error rendering prompt with jinja template", { status: 400 });
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "call-ok" }, finish_reason: "stop" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const callOut = await openaiAdapter.call(
+      [{ role: "user", content: "x" }],
+      { model: "qwen3", baseUrl: "http://localhost:1234/v1", tools },
+      cred,
+    );
+    expect(callOut).toBe("call-ok");
+    expect(events).toEqual(["fetch-1", "cancel", "fetch-2"]);
+
+    // 2. stream(): stream_options 400 -> cancel -> retry without stream_options
+    events.length = 0;
+    let streamOptsFetch = 0;
+    globalThis.fetch = (async () => {
+      streamOptsFetch++;
+      events.push(`fetch-${streamOptsFetch}`);
+      if (streamOptsFetch === 1) return new Response("unknown field stream_options", { status: 400 });
+      return sseResponse([{ choices: [{ delta: { content: "stream-opts-ok" } }] }]);
+    }) as unknown as typeof fetch;
+    let streamOptsOut = "";
+    for await (const d of openaiAdapter.stream!(
+      [{ role: "user", content: "x" }],
+      { model: "qwen3", baseUrl: "http://localhost:1234/v1" },
+      cred,
+    )) streamOptsOut += d;
+    expect(streamOptsOut).toBe("stream-opts-ok");
+    expect(events).toEqual(["fetch-1", "cancel", "fetch-2"]);
+
+    // 3. stream(): unsupported tools 400 -> cancel -> retry without tools
+    events.length = 0;
+    let streamToolsFetch = 0;
+    globalThis.fetch = (async () => {
+      streamToolsFetch++;
+      events.push(`fetch-${streamToolsFetch}`);
+      if (streamToolsFetch === 1) return new Response("jinja template does not support tool calls", { status: 400 });
+      return sseResponse([{ choices: [{ delta: { content: "stream-tools-ok" } }] }]);
+    }) as unknown as typeof fetch;
+    let streamToolsOut = "";
+    for await (const d of openaiAdapter.stream!(
+      [{ role: "user", content: "x" }],
+      { model: "qwen3", baseUrl: "http://localhost:1234/v1", tools },
+      cred,
+    )) streamToolsOut += d;
+    expect(streamToolsOut).toBe("stream-tools-ok");
+    expect(events).toEqual(["fetch-1", "cancel", "fetch-2"]);
+  } finally {
+    cancelSpy.mockRestore();
+    globalThis.fetch = prevFetch;
   }
 });

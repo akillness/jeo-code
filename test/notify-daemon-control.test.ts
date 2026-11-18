@@ -1,5 +1,6 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -18,7 +19,7 @@ import {
   canVerifyProcessStartTime,
   inspectLockOwner,
 } from "../src/agent/notify/daemon-control";
-import { notifyDaemonLockPath } from "../src/agent/notify/paths";
+import { notifyDaemonLockPath, notifyDaemonLogPath } from "../src/agent/notify/paths";
 import { saveConfigPatch } from "../src/agent/state";
 
 // The PID-reuse guard needs the OS to report a process start time. That is a real host
@@ -465,4 +466,39 @@ test("a recent malformed primary lock is preserved rather than mistaken for a cr
   await fs.utimes(lockPath, future, future);
   expect(await acquireDaemonLock()).toBeUndefined();
   expect(await fs.readFile(lockPath, "utf-8")).toBe("{writing");
+});
+
+test("defaultSpawn closes logFd in the parent process after spawning the detached daemon", async () => {
+  await saveConfigPatch(() => ({ notifications: { enabled: true, telegram: { botToken: "t", chatId: "1" } } }));
+  const entry = path.join(dir, "noop-daemon.js");
+  await fs.writeFile(entry, "process.exit(0);\n");
+  const savedArgv1 = process.argv[1];
+  process.argv[1] = entry;
+  const logPath = notifyDaemonLogPath();
+  const openedLogFds: number[] = [];
+  const realOpenSync = fsSync.openSync.bind(fsSync);
+  const openSpy = spyOn(fsSync, "openSync").mockImplementation(((p: fsSync.PathLike, ...rest: unknown[]) => {
+    const fd = (realOpenSync as (...args: unknown[]) => number)(p, ...rest);
+    if (String(p) === logPath) openedLogFds.push(fd);
+    return fd;
+  }) as typeof fsSync.openSync);
+  let fdClosedInParent = false;
+  try {
+    const res = await startDaemon(undefined, async () => {
+      expect(openedLogFds).toHaveLength(1);
+      try {
+        fsSync.fstatSync(openedLogFds[0]!);
+      } catch (error) {
+        fdClosedInParent = (error as NodeJS.ErrnoException).code === "EBADF";
+      }
+      return false;
+    });
+    expect(res.ok).toBe(false);
+    expect(openedLogFds).toHaveLength(1);
+    expect(fdClosedInParent).toBe(true);
+  } finally {
+    openSpy.mockRestore();
+    if (savedArgv1 === undefined) delete process.argv[1];
+    else process.argv[1] = savedArgv1;
+  }
 });

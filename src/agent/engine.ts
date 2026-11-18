@@ -124,7 +124,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   lsp_rename: createLspRenameTool(),
   debug: createDebugTool(),
   browser: createBrowserTool(),
-  bisect: (a, cwd) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd),
+  bisect: (a, cwd, _onProgress, signal) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd, signal),
   calc: a => calcTool(Array.isArray(a.calculations) ? a.calculations : []),
   jeox: createJeoxTool(),
   jev_decide: createJevDecideTool(),

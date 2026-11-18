@@ -2,6 +2,7 @@ import { readGlobalConfig } from "../agent/state";
 import { describeHooks, type HookReport } from "../agent/hooks";
 import { findRetiredPins } from "../ai/model-retirements";
 import { resolveCredential, snapshotProvider, OAUTH_PROVIDERS, type AuthProvider, type Credential } from "../auth";
+import { isPerplexityJweToken, verifyPerplexitySessionToken } from "../auth/flows/perplexity";
 import { resolveProvider, describeProvider } from "../ai";
 import { describeSearchProviders } from "../ai/provider-status";
 
@@ -503,12 +504,31 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
     });
   }
   const searchStatuses = await describeSearchProviders(config);
-  const searchProbes = searchStatuses.map(s => ({
-    name: s.name,
-    credential: s.kind,
-    status: s.ready ? ("ok" as const) : ("skipped" as const),
-    detail: s.label,
-  }));
+  const searchProbes: Array<{ name: string; credential: string; status: "ok" | "fail" | "skipped"; detail: string }> =
+    await Promise.all(
+      searchStatuses.map(async s => {
+        if (s.name === "perplexity" && s.ready && s.kind === "oauth") {
+          const cred = await resolveCredential("perplexity", { preferKind: "oauth" }).catch(() => null);
+          if (cred?.kind === "oauth" && isPerplexityJweToken(cred.token)) {
+            const verified = await verifyPerplexitySessionToken(cred.token);
+            if (!verified.valid) {
+              return {
+                name: s.name,
+                credential: s.kind,
+                status: "fail" as const,
+                detail: "OAuth session expired or logged out — run 'jeo auth login perplexity' to re-authenticate",
+              };
+            }
+          }
+        }
+        return {
+          name: s.name,
+          credential: s.kind,
+          status: s.ready ? ("ok" as const) : ("skipped" as const),
+          detail: s.label,
+        };
+      }),
+    );
 
   const defaultProbe = probes.find(p => p.name === defaultProvider);
   const ready = defaultProvider === "agy"
@@ -611,8 +631,9 @@ export async function runDoctorCommand(args: string[] = [], deps: DoctorDeps = {
   if (searchProbes.length) {
     console.log("Search providers (web_search #1 priority):");
     for (const s of searchProbes) {
-      const rawBadge = (s.status === "ok" ? "ok" : "not configured").padEnd(16);
-      const badge = s.status === "ok" ? chalk.green(rawBadge) : chalk.yellow(rawBadge);
+      const label = s.status === "ok" ? "ok" : s.status === "fail" ? "expired" : "not configured";
+      const rawBadge = label.padEnd(16);
+      const badge = s.status === "ok" ? chalk.green(rawBadge) : s.status === "fail" ? chalk.red(rawBadge) : chalk.yellow(rawBadge);
       console.log(`  ${s.name.padEnd(12)} ${badge} ${s.detail}`);
     }
     console.log("");

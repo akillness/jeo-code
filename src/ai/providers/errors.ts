@@ -134,7 +134,9 @@ export async function fetchWithArtifactFailSafe(
   const res = await send(false);
   if (res.ok) return res;
   const body = await res.clone().text().catch(() => "");
-  return isArtifactError(res.status, body) ? send(true) : res;
+  if (!isArtifactError(res.status, body)) return res;
+  await res.body?.cancel().catch(() => {});
+  return send(true);
 }
 
 export async function providerHttpError(provider: string, response: Response, context?: string): Promise<ProviderHttpError> {

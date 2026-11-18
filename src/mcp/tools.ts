@@ -92,33 +92,58 @@ export const TOOLS: ToolDefinition[] = [
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const { runDoctorCommand } = await import("../commands/doctor");
-      const lines: string[] = [];
-      const originalLog = console.log;
-      console.log = (...args: unknown[]) => {
-        lines.push(args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
-      };
-      try {
-        await runDoctorCommand([]);
-      } finally {
-        console.log = originalLog;
-      }
-      return textResult(lines.join("\n"));
+      const out = await captureCommand(() => runDoctorCommand([]));
+      return textResult(out);
     },
   },
 ];
 
 async function captureCommand(run: () => Promise<void>): Promise<string> {
-  const lines: string[] = [];
+  const chunks: string[] = [];
   const originalLog = console.log;
-  console.log = (...args: unknown[]) => {
-    lines.push(args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  const originalDebug = console.debug;
+  const originalStdoutWrite = process.stdout.write;
+  const captureArgs = (...args: unknown[]) => {
+    const line = args.map(a => {
+      if (typeof a === "string") return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(" ");
+    chunks.push(`${line}\n`);
   };
+  const captureWrite: typeof process.stdout.write = (
+    chunk: string | Uint8Array,
+    encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    cb?: (err?: Error | null) => void,
+  ) => {
+    const encoding = typeof encodingOrCb === "string" ? encodingOrCb : undefined;
+    const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+    if (typeof chunk === "string") {
+      chunks.push(chunk);
+    } else if (Buffer.isBuffer(chunk)) {
+      chunks.push(chunk.toString(encoding ?? "utf8"));
+    } else {
+      chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString(encoding ?? "utf8"));
+    }
+    callback?.(null);
+    return true;
+  };
+  console.log = captureArgs;
+  console.info = captureArgs;
+  console.warn = captureArgs;
+  console.debug = captureArgs;
+  process.stdout.write = captureWrite;
   try {
     await run();
   } finally {
     console.log = originalLog;
+    console.info = originalInfo;
+    console.warn = originalWarn;
+    console.debug = originalDebug;
+    process.stdout.write = originalStdoutWrite;
   }
-  return lines.join("\n");
+  return chunks.join("").replace(/\n$/, "");
 }
 
 const PIPELINE_TOOLS: ToolDefinition[] = [

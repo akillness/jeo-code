@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Database } from "bun:sqlite";
 import { readGlobalConfig, saveConfigPatch, type OAuthEntry } from "../agent/state";
 import { jeoEnv } from "../util/env";
+import { isPerplexityJweToken, verifyPerplexitySessionToken } from "./flows/perplexity";
 
 export interface SharedCooldownRecord {
   blockedUntil: number;
@@ -259,7 +260,7 @@ export async function syncOAuthFromJeopi(opts?: { agentDbPath?: string; dryRun?:
       }
       const access = typeof parsed.access === "string" ? parsed.access.trim() : "";
       const refresh = typeof parsed.refresh === "string" ? parsed.refresh.trim() : "";
-      const email = typeof parsed.email === "string" ? parsed.email.trim() : undefined;
+      let email = typeof parsed.email === "string" ? parsed.email.trim() : undefined;
       const accountId = typeof parsed.accountId === "string" ? parsed.accountId.trim() : undefined;
       const projectId = typeof parsed.projectId === "string" ? parsed.projectId.trim() : undefined;
       const expires = typeof parsed.expires === "number" && Number.isFinite(parsed.expires) ? parsed.expires : undefined;
@@ -271,6 +272,20 @@ export async function syncOAuthFromJeopi(opts?: { agentDbPath?: string; dryRun?:
       if (hasAccount(pool, { email, accountId, refresh, access })) {
         result.skipped++;
         continue;
+      }
+      if (target === "perplexity" && isPerplexityJweToken(access)) {
+        const verified = await verifyPerplexitySessionToken(access);
+        if (!verified.valid) {
+          result.skipped++;
+          continue;
+        }
+        if (!email && verified.email) {
+          email = verified.email;
+          if (hasAccount(pool, { email, accountId, refresh, access })) {
+            result.skipped++;
+            continue;
+          }
+        }
       }
       pool.push({
         access,

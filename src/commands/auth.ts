@@ -7,6 +7,7 @@ import { jeoEnv } from "../util/env";
 import { listProviderModels } from "../ai/model-discovery";
 import { writeModelCache } from "../ai/model-cache";
 import { syncOAuthFromJeopi } from "../auth/shared-pool-bridge";
+import { isPerplexityJweToken, verifyPerplexitySessionToken } from "../auth/flows/perplexity";
 import {
   OAUTH_FLOWS,
   OAUTH_FLOW_REGISTRY,
@@ -192,9 +193,22 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   // Non-interactive paste path (`--token`): store as a manual bearer in the pool.
   if (manualToken) {
     rl.close();
-    const res = await loginOAuth(chosen, manualToken.trim(), { replaceAll });
+    const trimmed = manualToken.trim();
+    let verifiedEmail: string | undefined;
+    if (chosen === "perplexity" && isPerplexityJweToken(trimmed)) {
+      const verified = await verifyPerplexitySessionToken(trimmed);
+      if (!verified.valid) {
+        console.log("[FAILED] Perplexity session token is expired or logged out; run 'jeo auth login perplexity' to authenticate.");
+        process.exitCode = 1;
+        return;
+      }
+      verifiedEmail = verified.email;
+    }
+    const res = verifiedEmail
+      ? await setOauthCredential(chosen, { access: trimmed, email: verifiedEmail }, { replaceAll })
+      : await loginOAuth(chosen, trimmed, { replaceAll });
     console.log(
-      `[SUCCESS] Stored manual OAuth bearer for ${chosen} (no auto-refresh${res.poolSize > 1 ? `; pool: ${res.poolSize} accounts` : ""}).`,
+      `[SUCCESS] Stored manual OAuth bearer for ${chosen}${verifiedEmail ? ` (${verifiedEmail})` : ""} (no auto-refresh${res.poolSize > 1 ? `; pool: ${res.poolSize} accounts` : ""}).`,
     );
     if (LIVE_MODEL_REPORT_PROVIDERS.has(chosen)) await reportLiveModels(chosen);
     return;

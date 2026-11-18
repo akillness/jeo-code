@@ -339,3 +339,73 @@ for (const { name, escape } of [
     expect(next.out).toBe("a");
   });
 }
+
+test("compact paste: evicts oldest entries FIFO when exceeding max entries while retaining newest", () => {
+  const store = new CompactPasteStore(3, 1024);
+  const m1 = store.store("first");
+  const m2 = store.store("second");
+  const m3 = store.store("third");
+  expect(store.has(m1)).toBe(true);
+  expect(store.has(m2)).toBe(true);
+  expect(store.has(m3)).toBe(true);
+
+  const m4 = store.store("fourth");
+  expect(store.has(m1)).toBe(false);
+  expect(store.expand(m1)).toBe(m1);
+  expect(store.expand(`${m2} ${m3} ${m4}`)).toBe("second third fourth");
+
+  const m5 = store.store("fifth");
+  expect(store.has(m2)).toBe(false);
+  expect(store.expand(m2)).toBe(m2);
+  expect(store.expand(`${m3} ${m4} ${m5}`)).toBe("third fourth fifth");
+});
+
+test("compact paste: evicts oldest entries FIFO when exceeding max bytes", () => {
+  const store = new CompactPasteStore(10, 10);
+  const m1 = store.store("aaaa");
+  const m2 = store.store("bbbb");
+  const m3 = store.store("cc");
+  expect(store.expand(`${m1}|${m2}|${m3}`)).toBe("aaaa|bbbb|cc");
+
+  const m4 = store.store("ddddd");
+  expect(store.has(m1)).toBe(false);
+  expect(store.has(m2)).toBe(false);
+  expect(store.expand(m1)).toBe(m1);
+  expect(store.expand(m2)).toBe(m2);
+  expect(store.expand(`${m3}|${m4}`)).toBe("cc|ddddd");
+});
+
+test("compact paste: oversized single paste evicts older entries and retains the newest paste", () => {
+  const store = new CompactPasteStore(10, 5);
+  const small = store.store("abc");
+  const oversized = store.store("0123456789");
+
+  expect(store.has(small)).toBe(false);
+  expect(store.expand(small)).toBe(small);
+  expect(store.has(oversized)).toBe(true);
+  expect(store.expand(oversized)).toBe("0123456789");
+
+  const next = store.store("xy");
+  expect(store.has(oversized)).toBe(false);
+  expect(store.expand(next)).toBe("xy");
+});
+
+test("compact paste: clear() empties all entries and resets byte and id accounting", () => {
+  const store = new CompactPasteStore(10, 10);
+  const m1 = store.store("alpha");
+  const m2 = store.store("beta");
+  expect(store.has(m1)).toBe(true);
+  expect(store.has(m2)).toBe(true);
+
+  store.clear();
+
+  expect(store.has(m1)).toBe(false);
+  expect(store.has(m2)).toBe(false);
+  expect(store.expand(m1)).toBe(m1);
+  expect(store.expand(m2)).toBe(m2);
+
+  const m3 = store.store("gamma");
+  const m4 = store.store("delta");
+  expect(m3).toBe("[Paste #1, 1 lines, 5 cols]");
+  expect(store.expand(`${m3}|${m4}`)).toBe("gamma|delta");
+});

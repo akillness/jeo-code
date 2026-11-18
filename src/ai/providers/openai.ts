@@ -1,7 +1,8 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError, ProviderStreamError } from "./errors";
+import { providerHttpError, ProviderHttpError, ProviderStreamError } from "./errors";
+import { isConnectionError, isTransientStreamDropError } from "../../util/retry";
 import { codexResponsesCall, codexResponsesStream, ResponsesIncompleteError } from "./openai-responses";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
@@ -194,6 +195,28 @@ export function reasoningDeltaOf(delta: OpenAIDelta | undefined): string | undef
   return undefined;
 }
 
+function isNetworkOrConnectionError(e: unknown): boolean {
+  if (isConnectionError(e) || isTransientStreamDropError(e)) return true;
+  if (e instanceof TypeError) return true;
+  if (typeof e === "object" && e !== null && "code" in e && typeof e.code === "string") {
+    if (["ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNABORTED", "ENETUNREACH", "ERR_NETWORK"].includes(e.code)) return true;
+  }
+  const msg = e instanceof Error ? e.message : (typeof e === "string" ? e : "");
+  return /\b(?:fetch failed|failed to fetch|network(?: error)?|econn\w*|etimedout|epipe|socket)\b/i.test(msg);
+}
+
+function shouldNotFallbackResponses(e: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  if (e instanceof ResponsesIncompleteError || e instanceof ProviderStreamError) return true;
+  const errName = e instanceof Error
+    ? e.name
+    : (typeof e === "object" && e !== null && "name" in e && typeof e.name === "string" ? e.name : undefined);
+  if (errName === "AbortError" || errName === "TimeoutError") return true;
+  if (isNetworkOrConnectionError(e)) return true;
+  if (e instanceof ProviderHttpError) return e.status !== 400 && e.status !== 404;
+  return false;
+}
+
 export const openaiAdapter: ProviderAdapter = {
   name: "openai",
   supportsNativeTools: true,
@@ -208,7 +231,7 @@ export const openaiAdapter: ProviderAdapter = {
       try {
         return await codexResponsesCall(messages, options, credential);
       } catch (e) {
-        if (e instanceof ResponsesIncompleteError || e instanceof ProviderStreamError) throw e;
+        if (shouldNotFallbackResponses(e, options.signal)) throw e;
         // /responses unsupported for this model/account — fall through to chat.
       }
     }
@@ -220,6 +243,7 @@ export const openaiAdapter: ProviderAdapter = {
       // model drives tools via the JSON-in-prose protocol jeo always states in the prompt.
       const errBody = await response.clone().text().catch(() => "");
       if (isUnsupportedToolsError(body, errBody)) {
+        await response.body?.cancel().catch(() => {});
         response = await fetch(url, { method: "POST", headers, body: stripNativeTools(body), signal: options.signal });
       }
     }
@@ -256,7 +280,7 @@ export const openaiAdapter: ProviderAdapter = {
         for await (const chunk of codexResponsesStream(messages, options, credential)) { started = true; yield chunk; }
         return;
       } catch (e) {
-        if (started || e instanceof ResponsesIncompleteError || e instanceof ProviderStreamError) throw e;
+        if (started || shouldNotFallbackResponses(e, options.signal)) throw e;
         // else fall through to chat completions below
       }
     }
@@ -268,10 +292,12 @@ export const openaiAdapter: ProviderAdapter = {
       // Retry once without it instead of killing the turn over a nicety.
       const errBody = await response.clone().text().catch(() => "");
       if (/stream_options/i.test(errBody)) {
+        await response.body?.cancel().catch(() => {});
         const stripped = JSON.parse(body) as Record<string, unknown>;
         delete stripped.stream_options;
         response = await fetch(url, { method: "POST", headers, body: JSON.stringify(stripped), signal: options.signal });
       } else if (isUnsupportedToolsError(body, errBody)) {
+        await response.body?.cancel().catch(() => {});
         // A GGUF chat template that can't render the `tools` array (LM Studio jinja error).
         // Drop native tools and retry once — the model drives tools via JSON-in-prose.
         response = await fetch(url, { method: "POST", headers, body: stripNativeTools(body), signal: options.signal });

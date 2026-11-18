@@ -63,6 +63,8 @@ export interface DiscordClock {
 
 export interface DiscordTransportDeps extends MessengerTransportDeps {
 	clock?: DiscordClock;
+	/** Bounded, sanitized sink for isolated delivery and transient REST/Gateway errors. */
+	onError?: (message: string) => void;
 }
 
 const defaultClock: DiscordClock = {
@@ -177,6 +179,7 @@ function connectGateway(
 	clock: DiscordClock,
 	onThreadEvent: (type: "THREAD_UPDATE" | "THREAD_DELETE", value: unknown) => Promise<void>,
 	onEstablished?: () => void,
+	onError?: (message: string) => void,
 ): Promise<void> {
 	if (signal.aborted) return Promise.resolve();
 	const result = Promise.withResolvers<void>();
@@ -322,10 +325,27 @@ function connectGateway(
 			} else if ((established || resuming) && packet.t === "MESSAGE_CREATE") {
 				const message = normalizeMessage(packet.d, accountId);
 				if (message && !signal.aborted) {
+					const handleError = (error: unknown): void => {
+						if (!onError) {
+							finish(new DiscordConfigurationError("Discord message delivery failed"));
+							return;
+						}
+						if (error instanceof DiscordConfigurationError) {
+							finish(error);
+							return;
+						}
+						if (!signal.aborted) {
+							onError(
+								error instanceof MessengerHttpError
+									? `Discord message delivery failed (HTTP ${error.status})`
+									: "Discord message delivery failed",
+							);
+						}
+					};
 					try {
-						void onMessage(message).catch(() => finish(new DiscordConfigurationError("Discord message delivery failed")));
-					} catch {
-						finish(new DiscordConfigurationError("Discord message delivery failed"));
+						void onMessage(message).catch(handleError);
+					} catch (error) {
+						handleError(error);
 					}
 				}
 			}
@@ -378,7 +398,41 @@ export function createDiscordAdapter(
 		return thread;
 	};
 	const normalizationTails = new Map<string, Promise<void>>();
+	const MAX_ACTIVITY_MESSAGES = 10_000;
 	const activityMessages = new Map<string, string>();
+	const setActivityMessage = (key: string, id: string): void => {
+		activityMessages.delete(key);
+		activityMessages.set(key, id);
+		if (activityMessages.size > MAX_ACTIVITY_MESSAGES) {
+			const oldest = activityMessages.keys().next().value;
+			if (oldest !== undefined) activityMessages.delete(oldest);
+		}
+	};
+	const MAX_ERROR_LINE_LENGTH = 300;
+	const MAX_ERROR_REPORTS_PER_WINDOW = 20;
+	const ERROR_REPORT_WINDOW_MS = 60_000;
+	let errorWindowStart = Date.now();
+	let errorWindowCount = 0;
+	const reportError = (text: string): void => {
+		if (!deps.onError) return;
+		const now = Date.now();
+		if (now - errorWindowStart >= ERROR_REPORT_WINDOW_MS) {
+			errorWindowStart = now;
+			errorWindowCount = 0;
+		}
+		if (errorWindowCount > MAX_ERROR_REPORTS_PER_WINDOW) return;
+		errorWindowCount++;
+		let line = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim();
+		if (token) line = line.split(token).join("[REDACTED_TOKEN]");
+		if (line.length > MAX_ERROR_LINE_LENGTH) line = `${line.slice(0, MAX_ERROR_LINE_LENGTH - 1)}…`;
+		const reported = errorWindowCount > MAX_ERROR_REPORTS_PER_WINDOW ? "further Discord error reports suppressed" : line;
+		if (!reported) return;
+		try {
+			deps.onError(reported);
+		} catch {
+			/* The operator error log never affects the adapter. */
+		}
+	};
 	const headers = (): Record<string, string> => {
 		if (!token) throw new DiscordConfigurationError("Discord bot token is missing");
 		return { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
@@ -581,8 +635,27 @@ export function createDiscordAdapter(
 								await forward(message);
 							}
 						} catch (error) {
-							failDispatch("Discord message delivery failed");
-							throw error;
+							if (!deps.onError) {
+								failDispatch("Discord message delivery failed");
+								throw error;
+							}
+							if (signal.aborted) return;
+							if (error instanceof DiscordConfigurationError) {
+								failDispatch(error.message);
+								throw error;
+							}
+							if (error instanceof MessengerHttpError && error.status === 401) {
+								const authError = new DiscordConfigurationError(
+									`Discord authentication failed (HTTP ${error.status})`,
+								);
+								failDispatch(authError.message);
+								throw authError;
+							}
+							reportError(
+								error instanceof MessengerHttpError
+									? `Discord message delivery failed (HTTP ${error.status})`
+									: "Discord message delivery failed",
+							);
 						} finally {
 							lookups.delete(lookup);
 							if (lookups.size === 0) threadLookups.delete(message.channelId);
@@ -607,20 +680,24 @@ export function createDiscordAdapter(
 							establishedThisAttempt = true;
 							delay = 5_000;
 						},
+						deps.onError ? reportError : undefined,
 					);
 				} catch (error) {
 					if (signal.aborted) return;
 					if (error instanceof DiscordConfigurationError) throw error;
 					if (
 						error instanceof MessengerHttpError &&
-						error.status >= 400 &&
-						error.status < 500 &&
-						error.status !== 429
+						(error.status === 401 || error.status === 403)
 					) {
 						throw new DiscordConfigurationError(
 							`Discord authentication or configuration failed (HTTP ${error.status})`,
 						);
 					}
+					reportError(
+						error instanceof MessengerHttpError
+							? `Discord connection failed (HTTP ${error.status})`
+							: "Discord connection failed",
+					);
 					if (error instanceof MessengerHttpError && error.retryAfterMs !== undefined) {
 						retryDelay = Math.max(retryDelay, error.retryAfterMs);
 					}
@@ -731,8 +808,9 @@ export function createDiscordAdapter(
 					);
 				} catch (error) {
 					if (!(error instanceof MessengerHttpError && error.status === 404)) throw error;
+				} finally {
+					activityMessages.delete(key);
 				}
-				activityMessages.delete(key);
 				return;
 			}
 			const content = `⏳ ${text.replace(/[\r\n]+/g, " ")}`;
@@ -743,6 +821,7 @@ export function createDiscordAdapter(
 						{ method: "PATCH", headers: headers(), body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) },
 						signal, deps.fetch,
 					);
+					setActivityMessage(key, statusId);
 					return;
 				} catch (error) {
 					if (!(error instanceof MessengerHttpError && error.status === 404)) throw error;
@@ -756,7 +835,7 @@ export function createDiscordAdapter(
 			);
 			if (!isRecord(created) || typeof created.id !== "string" || !created.id)
 				throw new Error("Discord activity message returned no ID");
-			activityMessages.set(key, created.id);
+			if (!signal?.aborted) setActivityMessage(key, created.id);
 		},
 		async send(message, text, signal) {
 			message = Object.freeze({ ...message });

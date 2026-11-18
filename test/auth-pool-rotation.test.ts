@@ -1198,3 +1198,150 @@ test("ModelManager keeps dedicated antigravity OAuth isolated from gemini fallba
   expect(reply).toBe("ok-from-gem-2");
   expect(seenAuth).toEqual(["Bearer gem-only-1", "Bearer gem-only-2"]);
 });
+
+test("loadedPoolDirs LRU cache caps at 32 directories and evicts least-recently-used entry", async () => {
+  const dirs = Array.from({ length: 33 }, (_, idx) => path.join(tmpHome, `lru-dir-${idx}`));
+  try {
+    // Seed dirs[0] and dirs[1] with rotated/blocked state in memory, then reset their on-disk
+    // auth-pool-state.json so a cache hit (in-memory) is distinguishable from a cache miss (disk reload).
+    for (const [idx, primary, secondary] of [
+      [0, "sk-d0-primary", "sk-d0-secondary"],
+      [1, "sk-d1-primary", "sk-d1-secondary"],
+    ] as const) {
+      process.env.JEO_CONFIG_DIR = dirs[idx];
+      clearConfigReadCache();
+      await addApiKeyToPool("openai", primary);
+      await addApiKeyToPool("openai", secondary);
+      const rot = await rotateCredential(
+        "openai",
+        { kind: "api_key", provider: "openai", token: primary },
+        { status: 429, message: "Rate limit" },
+      );
+      expect(rot.rotated).toBe(true);
+      await fs.writeFile(
+        path.join(dirs[idx], "auth-pool-state.json"),
+        JSON.stringify({ version: 1, pools: {} }),
+        "utf-8",
+      );
+    }
+
+    // Load 30 additional distinct dirs (total 32 in loadedPoolDirs: dirs[0]..dirs[31]).
+    for (let i = 2; i < 32; i++) {
+      process.env.JEO_CONFIG_DIR = dirs[i];
+      clearConfigReadCache();
+      await snapshotProvider("openai");
+    }
+
+    // dirs[0] must still be cached at cap 32; snapshotProvider promotes dirs[0] to MRU
+    // without overwriting auth-pool-state.json on disk, making dirs[1] the LRU entry.
+    process.env.JEO_CONFIG_DIR = dirs[0];
+    clearConfigReadCache();
+    const snap0BeforeEvict = await snapshotProvider("openai");
+    expect(snap0BeforeEvict.accounts?.[0]?.blockedUntil).toBeGreaterThan(Date.now());
+
+    // Loading the 33rd directory evicts the LRU entry (dirs[1]), while keeping MRU dirs[0].
+    process.env.JEO_CONFIG_DIR = dirs[32];
+    clearConfigReadCache();
+    await snapshotProvider("openai");
+
+    process.env.JEO_CONFIG_DIR = dirs[0];
+    clearConfigReadCache();
+    const snap0AfterEvict = await snapshotProvider("openai");
+    expect(snap0AfterEvict.accounts?.[0]?.blockedUntil).toBeGreaterThan(Date.now());
+
+    process.env.JEO_CONFIG_DIR = dirs[1];
+    clearConfigReadCache();
+    const snap1AfterEvict = await snapshotProvider("openai");
+    expect(snap1AfterEvict.accounts?.[0]?.blockedUntil).toBeUndefined();
+    expect(snap1AfterEvict.accounts?.[0]?.active).toBe(true);
+  } finally {
+    for (const dir of dirs) {
+      process.env.JEO_CONFIG_DIR = dir;
+      await resetAuthPoolState();
+    }
+  }
+});
+
+test("persistDirPools prunes expired cooldowns across loaded dirs and drops empty pool entries", async () => {
+  const dirA = path.join(tmpHome, "prune-dir-a");
+  const dirB = path.join(tmpHome, "prune-dir-b");
+  const realNow = Date.now;
+  let fakeNow = realNow();
+  Date.now = () => fakeNow;
+
+  try {
+    // Configure dirA with a short-lived cooldown on openai (both keys blocked -> cursor wraps to 0)
+    // and a longer-lived cooldown on groq that must survive pruning.
+    process.env.JEO_CONFIG_DIR = dirA;
+    clearConfigReadCache();
+    await addApiKeyToPool("openai", "sk-a-1");
+    await addApiKeyToPool("openai", "sk-a-2");
+    await addApiKeyToPool("groq", "grq-a-1");
+    await addApiKeyToPool("groq", "grq-a-2");
+
+    const rotA1 = await rotateCredential(
+      "openai",
+      { kind: "api_key", provider: "openai", token: "sk-a-1" },
+      { status: 429, retryAfterMs: 5_000 },
+    );
+    expect(rotA1.rotated).toBe(true);
+    const rotA2 = await rotateCredential(
+      "openai",
+      { kind: "api_key", provider: "openai", token: "sk-a-2" },
+      { status: 429, retryAfterMs: 5_000 },
+    );
+    expect(rotA2.rotated).toBe(false);
+
+    const rotGroq = await rotateCredential(
+      "groq",
+      { kind: "api_key", provider: "groq", token: "grq-a-1" },
+      { status: 429, retryAfterMs: 60_000 },
+    );
+    expect(rotGroq.rotated).toBe(true);
+
+    const beforeState = JSON.parse(await fs.readFile(path.join(dirA, "auth-pool-state.json"), "utf-8"));
+    expect(Object.keys(beforeState.pools["openai:api_key"].blockedUntil)).toHaveLength(2);
+    expect(Object.keys(beforeState.pools["openai:api_key"].blockedReason)).toHaveLength(2);
+
+    // Configure dirB with a short-lived cooldown in loadedPoolDirs, then remove its disk file
+    // so later snapshotProvider observes the in-memory dirMap directly.
+    process.env.JEO_CONFIG_DIR = dirB;
+    clearConfigReadCache();
+    await addApiKeyToPool("openai", "sk-b-1");
+    await addApiKeyToPool("openai", "sk-b-2");
+    await rotateCredential(
+      "openai",
+      { kind: "api_key", provider: "openai", token: "sk-b-1" },
+      { status: 429, retryAfterMs: 5_000 },
+    );
+    await fs.unlink(path.join(dirB, "auth-pool-state.json"));
+
+    // Advance clock past the 5s cooldowns, but keep the 60s groq cooldown active.
+    fakeNow += 10_000;
+
+    // An unrelated persistDirPools() trigger in dirA prunes expired cooldowns across all loaded dirs.
+    process.env.JEO_CONFIG_DIR = dirA;
+    clearConfigReadCache();
+    await addApiKeyToPool("deepseek", "ds-a-1");
+    await resolveCredential("deepseek");
+
+    const afterState = JSON.parse(await fs.readFile(path.join(dirA, "auth-pool-state.json"), "utf-8"));
+    expect(afterState.pools["openai:api_key"]).toBeUndefined();
+    expect(Object.keys(afterState.pools["groq:api_key"].blockedUntil)).toHaveLength(1);
+    expect(Object.values(afterState.pools["groq:api_key"].blockedReason)).toEqual(["rate_limit"]);
+
+    const snapAOpenai = await snapshotProvider("openai");
+    expect(snapAOpenai.accounts?.every(a => a.blockedUntil === undefined && a.blockedReason === undefined)).toBe(true);
+
+    process.env.JEO_CONFIG_DIR = dirB;
+    clearConfigReadCache();
+    const snapBOpenai = await snapshotProvider("openai");
+    expect(snapBOpenai.accounts?.every(a => a.blockedUntil === undefined && a.blockedReason === undefined)).toBe(true);
+  } finally {
+    Date.now = realNow;
+    for (const dir of [dirA, dirB]) {
+      process.env.JEO_CONFIG_DIR = dir;
+      await resetAuthPoolState();
+    }
+  }
+});

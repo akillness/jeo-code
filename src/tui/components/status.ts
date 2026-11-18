@@ -151,7 +151,8 @@ export interface JeoStatusData {
   costUsd?: number;
   /** True while a delegated subagent turn is in flight — renders the `(sub)` marker. */
   subagentActive?: boolean;
-
+  /** Number of active delegated subagent workers in flight. */
+  subagentCount?: number;
 }
 
 export function progressPercent(step: number | undefined, maxSteps: number | undefined): number {
@@ -332,7 +333,10 @@ export function renderStatusBox(data: StatusBoxData): string[] {
     if (running) counts.push(useColor ? chalk.yellow(`${running} run`) : `${running} run`);
     bits.push(counts.join(" / "));
   }
-  if (data.subagentActive) bits.push("(sub)");
+  if (data.subagentActive) {
+    const count = data.subagentCount ?? 1;
+    bits.push(count > 1 ? `(sub ×${count})` : "(sub)");
+  }
   if (data.mutationGuarded) bits.push(useColor ? chalk.red.bold("mutation locked") : "mutation locked");
   // Width-fit by dropping trailing WHOLE segments (never mid-ANSI cuts): the
   // leading elapsed/timing bits carry the most signal and always survive.

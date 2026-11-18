@@ -436,6 +436,14 @@ test("Security/UTF-16: surrogate-safe slicing in onSubagentEvent & setTurnTitle 
     const liveSec = readMapValues(tui, "subagentLiveSlots").join("\n");
     const recSec = readMapValues(tui, "subagentRecordedSlots").join("\n");
     const recentSec = tui.recentActivity(20).join("\n");
+    tui.onSubagentEvent({
+      kind: "done",
+      role: "executor",
+      runId: "surr-sec-1",
+      detachedId: "det\x1b[31m\uD800Bearer sk-secret-99",
+      detail: "det\x1b[31m\uD800Bearer sk-secret-99",
+      success: true,
+    });
     const ledgerSec = out.join("");
     for (const surface of [liveSec, recSec, recentSec, ledgerSec]) {
       expect(surface).not.toContain("sk-secret-99");

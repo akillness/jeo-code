@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
@@ -145,5 +145,83 @@ test("main `jeo jeox` CLI subcommand manages .jeo/db/jeo.db cleanly", async () =
     expect(parsed.some((r: any) => r.name === "main_fn" && r.path === "src/app.py")).toBe(true);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("openDb backs up corrupt DB plus -wal and -shm sidecars to .corrupt.<timestamp> instead of deleting them", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jm-corrupt-backup-"));
+  try {
+    const dbDir = join(dir, "db");
+    const dbPath = join(dbDir, "jeo.db");
+    mkdirSync(dbDir, { recursive: true });
+    writeFileSync(dbPath, "CORRUPT_DB_BYTES");
+    writeFileSync(`${dbPath}-wal`, "CORRUPT_WAL_BYTES");
+    writeFileSync(`${dbPath}-shm`, "CORRUPT_SHM_BYTES");
+
+    const recovered = openDb(dbPath);
+    writeFileSync(join(dir, "ok.ts"), `export function backedUpSymbol() { return 7; }\n`);
+    const st = indexDir(recovered, dir);
+    expect(st.added).toBeGreaterThanOrEqual(1);
+    expect(whereDefined(recovered, "backedUpSymbol")[0]?.path).toBe("ok.ts");
+    recovered.close();
+
+    const entries = readdirSync(dbDir);
+    const mainBackups = entries.filter((name) => /^jeo\.db\.corrupt\.\d{4}-\d{2}-\d{2}T.+-\d+$/.test(name));
+    expect(mainBackups).toHaveLength(1);
+    const backupMain = mainBackups[0]!;
+    expect(entries).toContain(`${backupMain}-wal`);
+    expect(entries).toContain(`${backupMain}-shm`);
+    expect(readFileSync(join(dbDir, backupMain), "utf-8")).toBe("CORRUPT_DB_BYTES");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("openDb with { readOnly: false } throws descriptive error on read-only path while default falls back to :memory:", () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkdtempSync(join(tmpdir(), "jm-ro-strict-"));
+  const roDir = join(dir, "ro");
+  const roCorruptDir = join(dir, "ro-existing");
+  try {
+    mkdirSync(roDir, { mode: 0o500 });
+    chmodSync(roDir, 0o500);
+
+    const roPath = join(roDir, "corrupt-sub", "jeo.db");
+    const fallbackDb = openDb(roPath);
+    const fallbackName = "filename" in fallbackDb && typeof fallbackDb.filename === "string" ? fallbackDb.filename : "";
+    expect(["", ":memory:"].includes(fallbackName)).toBe(true);
+    fallbackDb.close();
+
+    let thrown: unknown;
+    try {
+      openDb(roPath, { readOnly: false });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    if (thrown instanceof Error) {
+      expect(thrown.message).toContain(`Failed to open writable jeo-mem database at "${roPath}"`);
+      expect(thrown.cause).toBeDefined();
+    }
+
+    mkdirSync(roCorruptDir, { recursive: true });
+    const roCorruptPath = join(roCorruptDir, "jeo.db");
+    writeFileSync(roCorruptPath, "CORRUPT_IN_RO_DIR");
+    chmodSync(roCorruptPath, 0o400);
+    chmodSync(roCorruptDir, 0o500);
+
+    const fallbackCorrupt = openDb(roCorruptPath);
+    const corruptFallbackName =
+      "filename" in fallbackCorrupt && typeof fallbackCorrupt.filename === "string" ? fallbackCorrupt.filename : "";
+    expect(["", ":memory:"].includes(corruptFallbackName)).toBe(true);
+    fallbackCorrupt.close();
+
+    expect(() => openDb(roCorruptPath, { readOnly: false })).toThrow(
+      `Failed to open writable jeo-mem database at "${roCorruptPath}"`,
+    );
+  } finally {
+    chmodSync(roDir, 0o700);
+    chmodSync(roCorruptDir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

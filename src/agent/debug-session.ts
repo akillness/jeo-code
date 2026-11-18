@@ -47,7 +47,7 @@ interface PausedState {
  *  actually exiting, or the script's execution context finishing while Node keeps
  *  the (now idle) process alive waiting for the debugger — see the
  *  `Runtime.executionContextDestroyed` handling in `handleMessage`. */
-type WaitResult = PausedState | { exited: true; code: number | null } | { finished: true };
+type WaitResult = PausedState | { exited: true; code: number | null } | { finished: true } | { exited: false; timedOut: true };
 
 interface BreakpointRecord {
   id: string;
@@ -109,13 +109,24 @@ export class DebugSession {
     }
   }
 
-  private send(method: string, params: Record<string, any> = {}): Promise<any> {
+  private rejectPending(err: Error): void {
+    const entries = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of entries) p.reject(err);
+  }
+
+  private send(method: string, params: Record<string, unknown> = {}): Promise<any> {
     if (!this.ws) return Promise.reject(new Error("No active debug session."));
     const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws!.send(JSON.stringify({ id, method, params }));
-    });
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    this.pending.set(id, { resolve, reject });
+    try {
+      this.ws.send(JSON.stringify({ id, method, params }));
+    } catch (err) {
+      this.pending.delete(id);
+      reject(err);
+    }
+    return promise;
   }
 
   private handleMessage(raw: string): void {
@@ -158,17 +169,21 @@ export class DebugSession {
    *  exited (so a `continue`/`step` after the last breakpoint doesn't hang forever). */
   private waitForPausedOrExit(): Promise<WaitResult> {
     if (this.exitCode !== undefined) return Promise.resolve({ exited: true, code: this.exitCode });
-    return new Promise((resolve) => {
-      let done = false;
-      const settle = (v: WaitResult) => {
-        if (done) return;
-        done = true;
-        resolve(v);
-      };
-      this.pausedWaiters.push(settle);
-      this.proc?.exited.then((code) => settle({ exited: true, code }));
-      setTimeout(() => settle({ exited: true, code: null }), PAUSE_TIMEOUT_MS);
-    });
+    const { promise, resolve } = Promise.withResolvers<WaitResult>();
+    let done = false;
+    let timer: Timer | undefined;
+    const settle = (v: WaitResult) => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
+      const idx = this.pausedWaiters.indexOf(settle);
+      if (idx !== -1) this.pausedWaiters.splice(idx, 1);
+      resolve(v);
+    };
+    this.pausedWaiters.push(settle);
+    void this.proc?.exited.then((code) => settle({ exited: true, code }));
+    timer = setTimeout(() => settle({ exited: false, timedOut: true }), PAUSE_TIMEOUT_MS);
+    return promise;
   }
 
   async launch(program: string, args: string[], cwd: string): Promise<{ success: boolean; output: string; error?: string }> {
@@ -204,20 +219,33 @@ export class DebugSession {
       // straggler event would mutate the singleton's live session state from a dead
       // session's listener closure.
       ws.addEventListener("message", (ev) => { if (this.ws === ws) this.handleMessage(ev.data as string); });
-      await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("close", () => {
+        if (this.ws === ws) this.rejectPending(new Error("Inspector WebSocket closed."));
+      });
+      ws.addEventListener("error", () => {
+        if (this.ws === ws) this.rejectPending(new Error("Inspector WebSocket error."));
+      });
+      {
+        const { promise: opened, resolve, reject } = Promise.withResolvers<void>();
         const t = setTimeout(() => reject(new Error("Timed out connecting to the inspector WebSocket.")), CONNECT_TIMEOUT_MS);
         ws.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
         ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("Inspector WebSocket connection failed.")); }, { once: true });
-      });
+        ws.addEventListener("close", () => { clearTimeout(t); reject(new Error("Inspector WebSocket closed before opening.")); }, { once: true });
+        await opened;
+      }
       await this.send("Debugger.enable");
       await this.send("Runtime.enable");
       await this.send("Runtime.runIfWaitingForDebugger");
-    } catch (err: any) {
+    } catch (err: unknown) {
       await this.terminate();
-      return { success: false, output: "", error: err.message };
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
 
     const settled = await this.waitForPausedOrExit();
+    if ("timedOut" in settled) {
+      await this.terminate();
+      return { success: false, output: "", error: `Timed out waiting for program to pause at start (${PAUSE_TIMEOUT_MS}ms).` };
+    }
     if ("exited" in settled) {
       return { success: false, output: "", error: `Program exited (code ${settled.code}) before an initial breakpoint could be established.` };
     }
@@ -236,13 +264,18 @@ export class DebugSession {
     const decoder = new TextDecoder();
     let buf = "";
     const deadline = Date.now() + CONNECT_TIMEOUT_MS;
-    let pendingRead: ReturnType<typeof reader.read> | undefined;
+    let pendingRead: Promise<{ value?: Uint8Array; done: boolean }> | undefined;
+    let foundUrl: string | undefined;
+    let timedOut = false;
     try {
       while (Date.now() < deadline) {
+        const { promise: pollPromise, resolve: resolvePoll } = Promise.withResolvers<undefined>();
+        const timer = setTimeout(() => resolvePoll(undefined), 200);
         const result = await Promise.race([
           pendingRead ??= reader.read(),
-          new Promise<undefined>((r) => setTimeout(() => r(undefined), 200)),
+          pollPromise,
         ]);
+        clearTimeout(timer);
         if (!result) continue;
         pendingRead = undefined;
         const { value, done } = result;
@@ -252,13 +285,27 @@ export class DebugSession {
           buf += text;
           this.appendOutput(text);
           const m = /ws:\/\/\S+/.exec(buf);
-          if (m) return m[0];
+          if (m) {
+            foundUrl = m[0];
+            return foundUrl;
+          }
         }
       }
+      if (!foundUrl && pendingRead) {
+        timedOut = true;
+      }
     } finally {
-      reader.releaseLock();
-      // Keep draining the rest of stderr into captured output after url discovery.
-      void this.drain(stderr).catch(() => {});
+      if (timedOut || pendingRead) {
+        await reader.cancel().catch(() => {});
+        await pendingRead?.catch(() => {});
+      }
+      try {
+        reader.releaseLock();
+      } catch { /* best-effort */ }
+      if (!timedOut && foundUrl) {
+        // Keep draining the rest of stderr into captured output after url discovery.
+        void this.drain(stderr).catch(() => {});
+      }
     }
     return undefined;
   }
@@ -301,6 +348,9 @@ export class DebugSession {
       return { success: false, output: "", error: err.message };
     }
     const settled = await this.waitForPausedOrExit();
+    if ("timedOut" in settled) {
+      return { success: false, output: "", error: `Timed out waiting for '${label}' to pause or exit (${PAUSE_TIMEOUT_MS}ms).` };
+    }
     if ("exited" in settled) {
       return { success: true, output: `Program exited (code ${settled.code}).` };
     }
@@ -335,6 +385,7 @@ export class DebugSession {
       return { success: false, output: "", error: err.message };
     }
     const settled = await this.waitForPausedOrExit();
+    if ("timedOut" in settled) return { success: false, output: "", error: `Timed out waiting for program to pause (${PAUSE_TIMEOUT_MS}ms).` };
     if ("exited" in settled) return { success: true, output: `Program exited (code ${settled.code}).` };
     if ("finished" in settled) return { success: true, output: "Program finished (execution completed)." };
     return { success: true, output: this.formatPaused(settled) };
@@ -412,6 +463,7 @@ export class DebugSession {
 
   async terminate(): Promise<{ success: boolean; output: string }> {
     const wasActive = this.isActive;
+    this.rejectPending(new Error("Debug session terminated."));
     try {
       this.ws?.close();
     } catch { /* best-effort */ }
@@ -423,7 +475,8 @@ export class DebugSession {
     }
     this.proc = undefined;
     this.paused = undefined;
-    this.pending.clear();
+    this.scriptUrls.clear();
+    this.breakpoints.clear();
     const waiters = this.pausedWaiters.splice(0);
     for (const w of waiters) w({ exited: true, code: this.exitCode ?? null });
     return { success: true, output: wasActive ? "Debug session terminated." : "No active debug session." };

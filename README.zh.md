@@ -33,22 +33,7 @@
 
 - [双向消息网关（Discord、Telegram、Slack）](docs/integrations/messenger.md)
 
-**消息网关** — `jeo messenger` 独立于通知守护进程，支持白名单内的 Discord、Telegram 和 Slack 会话。默认情况下，Discord 无需 Docker，在操作系统自带沙箱（macOS Seatbelt、Linux bubblewrap）中按会话独立运行，沙箱会话结束时该会话启动的所有进程一并终止。参见[消息网关指南](docs/integrations/messenger.md)及下文当前约束。
-
-### Discord 主机模式（显式启用）
-
-如需以机器人 PC 本地 CLI 的信任权限执行，请通过 setup 将目标配置的 `platforms.discord.workerMode` 显式设为 `"host"`。现有运行中配置不会自动切换；默认/native 沙箱及非 Discord 平台的行为不变。setup 可能重启已安装的服务，请确认目标配置后再执行。
-
-```bash
-jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
-jeo messenger run --config ~/.jeo/discord/messenger.json
-```
-
-- **要求与信任：** 必须使用非 root 的 POSIX 账户；拒绝 root 和 Windows。项目必须是位于私有配置/会话目录之外、已有已提交 `HEAD` 的 Git 仓库。非 Git 或尚无首个提交的仓库会失败；setup 不会初始化或复制仓库。主机工具以机器人的 OS 用户及本地 CLI 信任权限运行，**不是 OS 隔离**。仅对可信用户和项目启用。
-- **线程工作区：** 每个线程保留独立历史、固定会话、专属 worker 进程和 cwd，以及首次从已提交 `HEAD` 创建的 Git linked worktree 和分支。原始检出目录的 staged、unstaged、untracked 改动不受影响。保留 worktree，不会自动合并、push 或删除 worktree。
-- **控制：** 白名单内且已认证的用户在原线程中发送不带附件的独立单行消息。`/session status` 查看状态，`/cwd` 查看 cwd，`/cwd /absolute/path/to/project` 选择已有提交的 Git 项目；`/cancel` 仅取消该线程的工作；`/approve <requestId>` 或 `/deny <requestId>` 回应待处理操作请求。切换 cwd 会结束当前工作，选择该项目的线程专属 worktree，而不是原始检出目录。
-- **审批边界：** 普通编辑、测试和构建在现有工具白名单内自动运行。显式删除、安装软件包、Git push、部署、上传和系统变更需要在同一线程中对确切操作进行一次性审批。这不代表能完整分类可信脚本内部的操作，也不会在 OS 层隔离其影响。
-- **生命周期：** 归档或删除仅取消对应线程的工作，保留历史、分支和 worktree；解除归档后，直到下一条获准消息到来才启动 worker。确认清理完成后重启会复用已保存状态，不重放已接收的消息。无法验证旧所有者时会阻止恢复；主机模式不保证能清理所有崩溃场景。
+**Discord 与消息网关** — `jeo discord setup` / `jeo messenger setup` 会创建 `~/.jeo/discord/messenger.json`（`toolNames: []`，无沙箱），默认通过 `/discord live --allow-full-control`（或守护进程方式 `/discord control on --allow-full-control`）连接到正在运行的终端会话。独立网关 `jeo messenger run` 同样采用与 `jeopi` 一致的非隔离主机模型（默认 `toolNames: []`，显式启用后以主机 OS 用户权限运行 `read`、`grep`、`glob`、`bash`、`edit`、`write`）。参见[Discord 指南](docs/integrations/discord.md)与[消息网关指南](docs/integrations/messenger.md)。
 
 
 📖 **[使用指南](docs/usage-guide.md)** — 安装、TUI 操作（↑ 历史、Ctrl+O、`!` shell）、斜杠命令、`/resume`、规格优先工作流，附演示视频。
@@ -58,6 +43,8 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 > 无法内联播放？▶ [播放/下载演示视频](docs/jeo-code-promo.mp4)。
 
 ## 亮点
+
+![jeo-code 架构：智能路由、精确工具循环、验证门禁与异步远程控制](assets/architecture.svg)
 
 - **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，每次模型选择都会持久化为新的默认值，而 prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集，**以账号当前实际提供的为准**(实时发现 — 例如 Gemini 3.6 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6；非对话模型与已弃用的 id 会被过滤掉，列表为空时也不会用静态目录顶替)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行；如果已配置的路由指向尚未就绪的提供商，jeo 会先切换到同层级的等价凭据模型，再退回默认模型。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
@@ -108,9 +95,42 @@ jeo --version
 jeo                      # 在当前仓库启动交互式代理
 jeo "整理 README 并跑测试"   # 单次请求
 jeo doctor               # 配置 + 模型连通性实测
-jeo setup                # API 密钥 / OAuth / 本地模型配置
+jeo setup                # API 密钥 / OAuth / 本地模型 / Perplexity 搜索配置
+jeo auth login perplexity  # 快捷方式：为 web_search 认证 Perplexity 作为首选搜索引擎
 jeo --tmux               # 在独立 tmux 会话中运行
 ```
+
+> [!NOTE]
+> **网页搜索（`web_search`）与 Perplexity 认证说明：** 通过 `jeo setup`（第 9 项 `perplexity`）、`/provider login perplexity`、`/provider key perplexity` 或 `jeo auth login perplexity` 保存 Perplexity 凭证后，`web_search` 会自动将 **Perplexity** 设为第 1 优先级；未配置 Perplexity 凭证时，将回退到当前活动模型的原生搜索（当凭证支持时）与 DuckDuckGo。
+### 网页搜索与 Perplexity 登录方法
+
+当 `JEO_SEARCH_PROVIDER` 未设置（或为 `auto`）时，`web_search` 按以下优先级调用：**Perplexity（已认证时） → 当前活动模型原生搜索 → DuckDuckGo**。
+
+![jeo setup 与 web_search 优先级流程](assets/web-search-flow.svg)
+
+1. **交互式邮箱 OTP / macOS 桌面应用登录（推荐）：**
+   ```bash
+   jeo auth login perplexity
+   # 或在 jeo REPL 输入框中执行：
+   /provider login perplexity   # 别名：/login perplexity
+   ```
+   - **macOS：** `jeo` 会先检查原生 Perplexity 桌面应用（`ai.perplexity.mac`）是否已登录并自动复用其令牌。若桌面应用未登录或仅包含访客令牌，可跳过应用读取并直接走邮箱 OTP：
+     ```bash
+     JEO_AUTH_NO_BORROW=1 jeo auth login perplexity
+     ```
+   - **邮箱 OTP 步骤（全平台通用）：**
+     1. 在 `Perplexity email address:` 提示处输入你的 Perplexity 账号邮箱。
+     2. 查看收件箱中的 6 位一次性验证码，并在 `One-time login code sent to your email:` 处输入（若请求了多次，请使用最新邮件中的验证码）。
+     3. `jeo` 验证 OTP 后会将会话令牌保存到 `~/.jeo/config.json`。
+2. **从 `jeopi` 同步已有认证：**
+   ```bash
+   jeo auth sync
+   ```
+3. **API 密钥或环境变量（无头环境 / CI）：**
+   - 设置 `PERPLEXITY_API_KEY` 或 `PPLX_API_KEY`（或 `PERPLEXITY_OAUTH_TOKEN`），或使用 `jeo auth login perplexity --token <session-token>` 直接写入手动会话令牌。
+4. **验证与指定搜索引擎：**
+   - 运行 `jeo auth status`，确认 `perplexity` 显示 `set (refreshable) <邮箱>`。
+   - 可随时通过 `JEO_SEARCH_PROVIDER=perplexity|anthropic|openai|gemini|duckduckgo|auto` 强制指定搜索后端。
 
 ## 斜杠命令
 
@@ -282,32 +302,12 @@ jeo ultragoal
 
 可选功能: 一个共享守护进程监视本机上所有活跃的 `jeo` 会话，并在每次**子代理状态变化**(启动 → 完成/失败/取消)时推送消息，另附会话身份头、回合开始/结束摘要以及最终的回合文本 — 绝不会重复"仍在运行"之类的通知。allowlist 中的人类可以在聊天里列出、发送、引导和取消；每一条控制都会转发给本地会话，并报告为**已确认(已接受，未必已完成)**或**未确认** — 守护进程绝不声称某条命令已执行。
 
-### Discord 会话与沙箱边界
+![jeo-code 远程监控与双向消息桥接架构](assets/remote-channels.svg)
 
-一个 Discord 线程保留一个持久会话，不因发送者或消息而改变。同线程请求按 FIFO 执行，其他会话可并发。会话共享所选工作区，不创建每会话 Git worktree，因此文件修改可能冲突。
+### Discord 会话与运行中终端连接
 
-**原生沙箱（默认，无需 Docker）。** 未配置 `sandbox` 块时，每个 Discord 会话运行在操作系统自带沙箱中：macOS Seatbelt（`sandbox-exec`）或 Linux bubblewrap（`bwrap`，需要非特权用户命名空间）。每个会话拥有独立的 worker 和沙箱：无网络，仅可写工作区和私有临时目录，主目录及其他私有路径不可读。**会话启动的所有进程随会话一并终止。** 会话被删除或结束、worker 退出、网关停止时，沙箱会终止其全部进程，包括自行脱离（`setsid`、双重 fork）并被 launchd 接管的守护进程。未经清理就被杀死的 worker 或网关所遗留的进程，会在下次启动时回收，不会持续占用内存。在 macOS 上由内核识别会话成员（沙箱跨 fork、exec、setsid 继承）；无法证明这一点的启动会以明确错误失败关闭。限制：原生模式没有 cgroup 内存、CPU、PID 限制；需要已批准根目录之外路径的全局钩子不会在主机上运行，而是在沙箱内失败；全局技能资源仅通过 `~/.jeo/config.json` 中 `sandboxSkillAssets` 的文件白名单暴露；Linux 需要支持非特权用户命名空间的 `bwrap`，且未在 macOS 主机上验证；原生 Windows 没有原生沙箱，仍需使用下面的 Docker 块。
-
-**可选的 Docker 沙箱**（现有配置继续有效）：
-
-在消息网关配置中设置 `sandbox`；在 `~/.jeo/config.json` 中采用相同格式可隔离终端会话：
-
-```json
-{
-  "sandbox": {
-    "image": "oven/bun:1.3.14",
-    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
-  }
-}
-```
-
-这只是沙箱部分，不是完整的消息网关配置；请保留现有 `platforms` 白名单及凭据环境变量名。Linux Bun 镜像必须已存在于本地 Docker 守护进程。后端解析其不可变镜像 ID，使用 `--pull=never`，不会拉取镜像、安装依赖、使用远程 Docker 或回退到主机执行。即使主机是 Mac/Windows，运行的仍是 **Linux 客体 shell**，不是主机原生 shell。网络为 `none`；`/workspace` 可读写，额外路径需要会话级 `ro`/`rw` 授权。整个主目录、私有控制路径及控制 socket 均不可授权。主机操作者和 Docker 守护进程仍属于可信边界。
-
-只有直接提交给父进程的人类控制才能决定授权：`/sandbox status`、`/sandbox approve <requestId>`、`/sandbox deny <requestId>`、`/sandbox revoke`。模型的 `sandbox_request {host, mode:'ro'|'rw'}` 仅能申请，不能自批。决定要求已认证操作者自己的会话及当前请求 revision，过期或跨会话请求会被拒绝。现有终端 Discord 远程控制也必须使用沙箱：本地 `/discord control on --allow-full-control` 开启，`/discord control off` 关闭；远程轮次保留本地输入草稿。
-
-运行时拒绝 `independentSessions`，显式执行 `jeo messenger setup` 迁移才会移除该项。`sessionDir` 必须是工作区外、与之不重叠的私有路径。工作区中的旧 `.jeo/sessions`、`.jeo/messenger-sessions`、`.jeo/memory/raw` 会话与原始记录存储会阻止启动并给出移动指引；重启前须主动迁移，不会自动复制或删除。完整对话历史只留在父进程专用存储，蒸馏后的项目学习共享。复用现有 ECC 技能/工作流安装，未进行全局重装；受保护的全局技能在执行前保存快照，工作区/获准文档通过客体读取。
-
-**验证范围（2026-11-03）：** 实际的 macOS 真实 Docker 验证器（`bun run verify:sandbox`）通过 **20 项行为契约**，源码独立构建也已通过。复制出的独立二进制通过了范围有限的验证，涵盖真实 PTY FIFO、父进程 `sandbox_request` 与真实 Linux 客体工具、完整历史隐私、与父进程生成的 stderr 关闭 nonce 匹配的 ACK、真实 worker 退出（143）以及 Docker 容器不存在。当前源码包装层保留 teardown 清理所有者、有界的关闭等待、人类按会话授权、一个持久线程/FIFO 以及共享工作区。这不是完整测试套件、跨平台或生产环境的验证：完整 `bun test` 超时，**未通过**；通用聚焦套件仍有陈旧 fixture 失败，正在修复。原生 Linux 和 Windows 主机验证暂不可用，也未实际向 Discord 发送消息。macOS 上的 Linux 客体不等于主机认证。`bun run build:hands` 构建 worker；`bun run verify:sandbox` 运行真实 Docker 检查，不安装前置依赖。必须确认 worker/容器已清理，错误或未确认移除不能报告成功。
+- **连接正在运行的终端会话（默认）：** 执行一次 `jeo discord setup` 或 `jeo messenger setup` 后，在运行中的 `jeo` 会话里执行 `/discord live --allow-full-control`（`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` 也无需沙箱即可使用）。两种方式均直接使用当前终端会话的工具、审批策略与工作目录，可通过 `/discord status`、`/discord relay <channel-id|off>`、`/discord stop`、`/discord control off` 查看或撤销访问。
+- **独立网关（`jeo messenger run`）：** 在主机上为每个线程或 DM 运行一个持久会话（默认 `toolNames: []`，无沙箱）。启用 `--tools read,grep,glob,bash,edit,write` 会向白名单用户授予本地机器权限，`cwd` 并非 chroot 或文件系统隔离。常规 `jeo` 会话的可选 `~/.jeo/config.json` `sandbox` 隔离（`/sandbox status|approve|deny|revoke`）仍然保留。
 
 各平台详细独立指南：
 - 📖 [渠道集成概览与架构](docs/integrations/README.md) — 功能对比矩阵与架构图
@@ -338,7 +338,7 @@ jeo daemon start|stop|status|reload   # the shared daemon has no provider select
 - **Setup** 会通过官方 API 验证机器人身份和目标访问权限(Telegram `getMe`，Discord 机器人 + 频道查询，Slack `auth.test`/`bots.info`/`conversations.info` 以及一个 Socket Mode URL)，并把结果存入 `~/.jeo/config.json` 的 `notifications.<provider>` 下 — **明文**；请保持该文件私有。它不会发送消息，也不会打开 socket。
 - **`initialized`**(`jeo daemon status`)表示守护进程已持有自己的锁并启动了各传输层；它并不证明 Telegram 轮询、Discord Gateway 握手或 Slack Socket Mode 连接已经成功。要验证这些请使用 `notify health` / `notify test`。
 - **更改 token 或目标**会重置 Discord 和 Slack 的 allowlist(你必须再次传入 `--allowed-user-ids`)以及 Telegram 的每会话主题映射；用完全相同的凭证和目标重新运行 setup 则会保留它们。
-- **远程命令是字面文本**(`/subagents` 等)，仅对配置的聊天/频道及白名单授权；Slack 也接受同名注册斜杠命令。Discord 终端控制默认关闭，须在沙箱会话中本地提交 `/discord control on --allow-full-control` 开启，`/discord control off` 撤销。遵守上文沙箱和人类授权边界，不要在聊天中放入凭据。
+- **远程命令是字面文本**(`/subagents` 等)，仅对配置的聊天/频道及白名单授权；Slack 也接受同名注册斜杠命令。Discord 终端控制默认关闭，在本地提交 `/discord control on --allow-full-control` 或 `/discord live --allow-full-control` 即可开启（无需沙箱），使用 `/discord control off` 或 `/discord stop` 撤销。不要在聊天中放入凭据。
 - **重试按提供商有界**: Telegram 遵守 429 的 `retry_after` 冷却(限制在 1 秒–1 小时之间)并使用独立的轮询退避；Discord 和 Slack 在 429 时按服务器的 `Retry-After` 最多重试 3 次，且绝不重发结果未知的 POST(平台可能已经收到了它)。
 - **孤儿恢复**: 守护进程崩溃后，其锁会变为 `stale`；下一次 `jeo daemon start` 会回收它。当宿主机能够报告进程启动时间时，`jeo daemon stop` 会拒绝向已被复用的 PID 发送信号；无法报告时也会明确说明。
 - **目前已验证**: Telegram 端到端(真实发送、轮询、干净关闭)。Discord 和 Slack 基于同一个守护进程实现，配有离线的传输/接线测试以及代码、安全和类型审查；尚未用真实的机器人/应用凭证进行实际连通性验证。
@@ -379,15 +379,15 @@ jeo daemon status
 为 Discord Bot 启用 Message Content Intent，并配置 View Channel、Send Messages、Read Message History、Add Reactions、Attach Files、Create Public Threads、Send Messages in Threads 权限。明确设置人类用户和频道 allowlist。
 
 ```bash
-# macOS/Linux：安装并启动用户服务，同时探测 Gateway。
-jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
-  --tools read,find,search
+# 默认配置（为连接运行中的终端会话创建 ~/.jeo/discord/messenger.json）
+jeo discord setup
+# 在终端会话内连接：/discord live --allow-full-control
+# 独立网关（可选）：
+jeo messenger setup --config ~/.jeo/discord/messenger.json --tools read,grep,glob
 jeo messenger check --config ~/.jeo/discord/messenger.json
 ```
 
-`check` 只验证本地配置，不访问网络。通过向 Bot 发送 DM，或在指定请求频道提及 Bot 来验证实际对话。Windows 上省略 `--service` 并使用生成的 `.cmd` 启动器。Discord 默认使用 macOS/Linux 原生 sandbox；Windows 需要文档所述的 Docker sandbox。同一个 Bot 不要启动第二个 Gateway。线程 session 共享工作区，启用写入或 shell 工具前请阅读 [sandbox 与 session 规则](docs/integrations/messenger.md)。Setup 会将 Bot Token 保存在私有 sidecar，而不是 JSON 配置中。
-
-若省略 `toolNames`，Discord setup 可能授予较宽的默认工具列表；请明确指定 `--tools`。`read,find,search` 为只读工具；仅在确实需要远程改代码时添加 `edit,write`。`bash` 提供命令执行能力，只应授予可信用户。工具 allowlist 不能替代 sandbox。
+`check` 只验证本地配置，不访问网络。默认 `toolNames` 为 `[]`（无工具）；`read,grep,glob` 为只读，`edit,write,bash` 会以主机 OS 用户权限执行文件修改与命令。Setup 会将 Bot Token 保存在私有 sidecar 文件中，而不是 JSON 配置中。
 
 #### 仅重跑需要新证据的门禁
 
@@ -581,11 +581,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.60]** (2026-11-18) — Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete.
 - **[0.12.59]** (2026-11-17) — Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`.
 - **[0.12.58]** (2026-11-17) — Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`.
 - **[0.12.57]** (2026-11-17) — Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models.
 - **[0.12.56]** (2026-11-17) — Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions.
-- **[0.12.55]** (2026-11-17) — Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

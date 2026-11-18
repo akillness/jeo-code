@@ -1,23 +1,20 @@
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
-import { DEFAULT_MESSENGER_TOOLS, loadMessengerConfig, messengerProfilePrivatePaths, parseMessengerSandbox, resolveMessengerToken, validateMessengerEnvironment } from "./config";
+import { loadMessengerConfig, resolveMessengerToken, validateMessengerEnvironment } from "./config";
 import { DISCORD_API, DISCORD_GATEWAY_INTENTS, discordGatewayUrl, type DiscordClock } from "./discord";
 import { MessengerHttpError, messengerFetchJson } from "./http";
 import { installMessengerService, messengerServicePlan, restartMessengerService } from "./service";
 import { MESSENGER_RUN_SCRIPT_POSIX, MESSENGER_RUN_SCRIPT_WINDOWS, MESSENGER_TOKEN_FILE, messengerExecutablePath, messengerLauncherContent, writePrivateFile } from "./launcher";
 import { MESSENGER_PACKAGE, messengerRuntimeCommand, messengerRuntimePlan, messengerRuntimeRoot, provisionMessengerRuntime, pruneMessengerRuntimes, readMessengerProfiles, registerMessengerProfile, type MessengerRuntime, type MessengerRuntimeDeps } from "./runtime";
 import { isEnoent, isRecord } from "./types";
-import type { DiscordReadAccess, DiscordWorkerMode } from "./types";
-import { jeoHomeDir, notifyDir, notifySessionsDir } from "../agent/notify/paths";
-import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "../agent/sandbox/policy";
-import type { SandboxConfig } from "../agent/sandbox/types";
+import { jeoHomeDir } from "../agent/notify/paths";
 
 export const DISCORD_TOKEN_ENV = "JEO_DISCORD_BOT_TOKEN";
 const TOKEN_FILE = MESSENGER_TOKEN_FILE;
-/** Fresh-setup workspace: a jeo-owned directory in the user's home, outside every sandbox-private root. */
-const WORKSPACE_DIR = "jeo-discord-workspace";
-const WORKSPACE_MARKER = ".jeo-workspace";
+
+export function defaultDiscordConfigPath(): string {
+	return path.join(jeoHomeDir(), "discord", "messenger.json");
+}
 const MESSAGE_CONTENT = 1 << 18;
 const MESSAGE_CONTENT_LIMITED = 1 << 19;
 /** The only application flags a bot token may change: the limited presence, member, and message intents. */
@@ -71,12 +68,9 @@ export interface DiscordSetupIO {
 }
 
 export interface DiscordSetupOptions {
-	/** messenger.json to create or update; its directory becomes the private profile directory. */
-	configPath: string;
-	workerMode?: DiscordWorkerMode;
-	readAccess?: DiscordReadAccess;
-	readRoots?: string[];
-	/** Existing project to use; relative paths resolve from the setup invocation directory. */
+	/** messenger.json to create or update; defaults to ~/.jeo/discord/messenger.json. */
+	configPath?: string;
+	/** Optional workspace path to store as cwd; defaults to ./workspace relative to configPath. */
 	projectPath?: string;
 	channelIds?: string[];
 	userIds?: string[];
@@ -558,91 +552,6 @@ async function readExistingConfig(configPath: string): Promise<Record<string, un
 	throw new Error(`${configPath} exists but is not a JSON object; fix or move it before setup`);
 }
 
-/**
- * The policy admission `messenger run` performs before starting the sandbox worker (commands/launch.ts), with the same
- * private roots: the authority state directory, the session directory, the jeo home, the notify sessions directory and
- * the profile paths from messengerProfilePrivatePaths, which also refuses a workspace that overlaps the profile. The authority state
- * directory is a fresh random temp directory at launch, so a representative path under os.tmpdir() stands in for it.
- * Throws on any refusal, so setup cannot succeed for a workspace that launch would reject.
- */
-async function admitSandboxWorkspace(sandbox: SandboxConfig, profileDir: string, sessionDir: string, cwd: string): Promise<void> {
-	const profilePaths = await messengerProfilePrivatePaths(profileDir, cwd);
-	await createSandboxPolicy({
-		sessionKey: "setup",
-		revision: 0,
-		cwd,
-		config: sandbox,
-		privatePaths: [path.join(os.tmpdir(), "jeo-sandbox-authority-setup"), sessionDir, jeoHomeDir(), notifySessionsDir(), ...profilePaths],
-	});
-}
-
-async function admitHostWorkspace(requested: unknown, baseDir: string, profileDir: string, sessionDir: string, signal?: AbortSignal): Promise<string> {
-	if (typeof requested !== "string" || !requested || requested.trim() !== requested || /[\u0000-\u001f\u007f]/u.test(requested))
-		throw new Error("Discord host mode requires an existing Git project; pass --project <path>");
-	let cwd: string;
-	let gitRoots: string[];
-	try {
-		cwd = await canonicalSandboxPath(path.resolve(baseDir, requested));
-		if (!(await fs.stat(cwd)).isDirectory()) throw new Error("Not a directory");
-		const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !key.startsWith("GIT_"))) as Record<string, string>;
-		throwIfAborted(signal);
-		const child = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", cwd, "rev-parse", "--is-inside-work-tree", "--show-toplevel", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir", "HEAD^{commit}"], { env, signal, timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 65_536, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-		const [output, error, code] = await Promise.allSettled([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-		throwIfAborted(signal);
-		if (output.status !== "fulfilled" || error.status !== "fulfilled" || code.status !== "fulfilled" || code.value !== 0)
-			throw new Error("Git project admission failed");
-		const rows = output.value.trim().split(/\r?\n/u);
-		if (rows.length !== 5 || rows[0] !== "true" || !/^[a-f0-9]{40,64}$/u.test(rows[4]!)) throw new Error("A committed HEAD is required");
-		gitRoots = await Promise.all(rows.slice(1, 4).map(root => canonicalSandboxPath(root)));
-	} catch {
-		throwIfAborted(signal);
-		throw new Error("Discord host mode requires an existing Git project with a committed HEAD; pass --project <path>. Setup does not initialize or copy a repository.");
-	}
-	const [profile, sessions] = await Promise.all([canonicalSandboxPath(profileDir, false), canonicalSandboxPath(sessionDir, false)]);
-	for (const privateRoot of [profile, sessions]) {
-		if ([cwd, ...gitRoots].some(root => sandboxPathContains(root, privateRoot) || sandboxPathContains(privateRoot, root)))
-			throw new Error("Discord host project must be outside and disjoint from the messenger profile directory and private sessionDir");
-	}
-	return cwd;
-}
-
-/**
- * Create the default workspace (or reuse one that carries the marker an earlier setup run left), then prove `admit`
- * accepts it. The marker is a re-run convention, not proof of ownership; reuse is still gated by `admit`, and an
- * unmarked existing directory is never adopted. Failure cleanup is non-recursive and best-effort: it can only remove
- * the marker this call wrote and the then-empty directory, so concurrently added data survives.
- */
-async function createDefaultWorkspace(admit: (workspace: string) => Promise<void>): Promise<string> {
-	const workspace = path.join(os.homedir(), WORKSPACE_DIR);
-	const marker = path.join(workspace, WORKSPACE_MARKER);
-	let created = false;
-	let wroteMarker = false;
-	try {
-		await fs.mkdir(workspace, { mode: 0o700 });
-		created = true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-	}
-	try {
-		if (created) {
-			await fs.writeFile(marker, "", { flag: "wx", mode: 0o600 });
-			wroteMarker = true;
-		} else {
-			const [stat, tag] = await Promise.all([fs.lstat(workspace), fs.lstat(marker).catch(() => undefined)]);
-			if (!stat.isDirectory() || !tag?.isFile()) {
-				throw new Error(`${workspace} already exists without the jeo setup marker`);
-			}
-		}
-		await admit(workspace);
-	} catch (error) {
-		if (wroteMarker) await fs.unlink(marker).catch(() => undefined);
-		// rmdir refuses a non-empty directory, so anything added meanwhile is preserved.
-		if (created) await fs.rmdir(workspace).catch(() => undefined);
-		throw new Error(`Default workspace ${workspace} is unusable (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
-	}
-	return workspace;
-}
-
 /** Create or repair a Discord messenger profile with as few manual steps as Discord allows. */
 export async function setupDiscordMessenger(
 	options: DiscordSetupOptions,
@@ -650,7 +559,7 @@ export async function setupDiscordMessenger(
 	deps: DiscordSetupDeps = {},
 ): Promise<DiscordSetupResult> {
 	const env = deps.env ?? process.env;
-	const configPath = path.resolve(options.configPath);
+	const configPath = path.resolve(options.configPath ?? defaultDiscordConfigPath());
 	const directory = path.dirname(configPath);
 	const tokenPath = path.join(directory, TOKEN_FILE);
 	const platform = deps.platform ?? process.platform;
@@ -666,25 +575,17 @@ export async function setupDiscordMessenger(
 	const existing = await readExistingConfig(configPath);
 	const platforms = isRecord(existing?.platforms) ? existing.platforms : {};
 	const previous = isRecord(platforms.discord) ? platforms.discord : {};
-	// New profiles use CLI-trusted host sessions; never silently migrate an existing sandbox profile.
-	const workerMode = options.workerMode ?? previous.workerMode ?? (existing ? undefined : "host");
-	if (workerMode !== undefined && workerMode !== "sandbox" && workerMode !== "host")
-		throw new Error('Discord worker mode must be "sandbox" or "host"');
 	if (options.projectPath !== undefined && (typeof options.projectPath !== "string" || !options.projectPath || options.projectPath.trim() !== options.projectPath || /[\u0000-\u001f\u007f]/u.test(options.projectPath)))
-		throw new Error("--project must name an existing project directory");
-	const sandbox = existing?.sandbox !== undefined ? parseMessengerSandbox(existing.sandbox) : workerMode === "host" ? undefined : { backend: "native" as const };
-	const sessionDir = str(existing?.sessionDir) ?? path.join(notifyDir(), "messenger-sessions");
-	let hostCwd: string | undefined;
-	if (workerMode === "host") {
-		const requested = options.projectPath !== undefined ? options.projectPath : existing && Object.hasOwn(existing, "cwd") ? existing.cwd : process.cwd();
-		hostCwd = await admitHostWorkspace(requested, options.projectPath !== undefined ? process.cwd() : directory, directory, path.resolve(directory, sessionDir), deps.signal);
-		io.say("Discord host mode uses the bot PC's same OS account and CLI trust, not OS isolation. Normal edits, tests and builds run automatically; deletion, package installation, Git push, deployment, upload and system changes require one-use exact-action approval in the same thread.");
-		io.say("Thread worktrees preserve the source checkout's uncommitted changes. No automatic merge, push or worktree deletion is performed.");
-	}
+		throw new Error("--project must name an existing directory");
+	const sessionDir = str(existing?.sessionDir) ?? "./sessions";
 	if (existing && Object.hasOwn(existing, "independentSessions")) {
 		delete existing.independentSessions;
 		io.say("Removed obsolete independentSessions setting. Discord threads now keep one persistent session.");
 	}
+	if (existing && Object.hasOwn(existing, "sandbox")) delete existing.sandbox;
+	if (existing && Object.hasOwn(existing, "readRoots")) delete existing.readRoots;
+	if (Object.hasOwn(previous, "workerMode")) delete previous.workerMode;
+	if (Object.hasOwn(previous, "readAccess")) delete previous.readAccess;
 	messengerLauncherContent(command, path.basename(configPath), DISCORD_TOKEN_ENV, envPath, platform);
 
 	const token = await resolveToken(env, tokenPath, io);
@@ -730,37 +631,20 @@ export async function setupDiscordMessenger(
 	throwIfAborted(deps.signal);
 	const allowedChannelIds = [...new Set([...channelIds, ...(dmChannel ? [dmChannel] : [])])];
 	const tokenEnv = str(previous.tokenEnv) ?? DISCORD_TOKEN_ENV;
-	messengerLauncherContent(command, path.basename(configPath), tokenEnv, envPath, platform);
+	const launcherContent = messengerLauncherContent(command, path.basename(configPath), tokenEnv, envPath, platform);
 
 	const discord: Record<string, unknown> = { ...previous, tokenEnv, allowedUserIds: userIds, allowedChannelIds };
-	if (workerMode !== undefined) discord.workerMode = workerMode;
-	const readAccess = options.readAccess ?? (previous.readAccess === "workspace" || previous.readAccess === "global" ? previous.readAccess : undefined);
-	if (readAccess !== undefined) discord.readAccess = readAccess;
 	if (options.artifacts) discord.artifactDir = "./artifacts";
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
 	throwIfAborted(deps.signal);
-	let cwd: unknown;
-	if (hostCwd !== undefined) {
-		cwd = hostCwd;
-	} else if (options.projectPath !== undefined) {
-		cwd = path.resolve(options.projectPath);
-	} else if (existing && Object.hasOwn(existing, "cwd")) {
-		// An explicit value is never replaced; an unusable one fails the loader below before the config is touched.
-		cwd = existing.cwd;
-	} else {
-		cwd = await createDefaultWorkspace(workspace => admitSandboxWorkspace(sandbox!, directory, path.resolve(directory, sessionDir), workspace));
-		if (existing) io.say(`The existing config had no "cwd"; its sandbox workspace is now ${cwd}. No existing files were moved or deleted.`);
-	}
-	throwIfAborted(deps.signal);
-	const existingReadRoots = Array.isArray(existing?.readRoots) ? existing.readRoots.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0) : undefined;
-	const readRoots = options.readRoots !== undefined ? options.readRoots.map(r => path.resolve(r === "~" ? os.homedir() : r.startsWith("~/") ? path.join(os.homedir(), r.slice(2)) : r)) : existingReadRoots;
+	const cwd = options.projectPath !== undefined
+		? path.resolve(options.projectPath)
+		: (existing && Object.hasOwn(existing, "cwd") ? existing.cwd : "./workspace");
 	const config = {
 		...existing,
 		cwd,
 		sessionDir,
-		...(readRoots?.length ? { readRoots } : {}),
-		...(sandbox ? { sandbox } : {}),
-		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : [...DEFAULT_MESSENGER_TOOLS]),
+		toolNames: options.toolNames ?? (Array.isArray(existing?.toolNames) ? existing.toolNames : []),
 		platforms: { ...platforms, discord },
 	};
 	for (const relative of [config.cwd, config.sessionDir, discord.artifactDir]) {
@@ -768,17 +652,9 @@ export async function setupDiscordMessenger(
 			await fs.mkdir(path.resolve(directory, relative), { recursive: true, mode: 0o700 });
 		throwIfAborted(deps.signal);
 	}
-	// The loader `messenger run` uses, then the policy admission it performs, must accept the staged file before it replaces a working config.
 	await writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600, async staged => {
 		const loaded = await loadMessengerConfig(staged);
 		validateMessengerEnvironment({ ...loaded, platforms: { discord: loaded.platforms.discord } }, { [tokenEnv]: token });
-		if (workerMode !== "host") {
-			try {
-				await admitSandboxWorkspace(sandbox!, loaded.profileDir ?? directory, loaded.sessionDir, loaded.cwd);
-			} catch (error) {
-				throw new Error(`Sandbox workspace ${loaded.cwd} would be refused at launch (${error instanceof Error ? error.message : String(error)}); set "cwd" in the config to a directory outside private jeo and config roots`, { cause: error });
-			}
-		}
 		throwIfAborted(deps.signal);
 		await writePrivate(tokenPath, `${token}\n`, 0o600);
 	});
@@ -789,7 +665,7 @@ export async function setupDiscordMessenger(
 		await provisionMessengerRuntime(directory, runtime.version, deps.runtimeDeps);
 		throwIfAborted(deps.signal);
 	}
-	await writePrivate(runScript, messengerLauncherContent(command, path.basename(configPath), tokenEnv, envPath, platform), 0o700);
+	await writePrivate(runScript, launcherContent, 0o700);
 	throwIfAborted(deps.signal);
 	io.say(runtime.kind === "managed"
 		? `The launcher runs the pinned runtime ${MESSENGER_PACKAGE}@${runtime.version}; \`jeo update\` installs new versions here and restarts the service.`

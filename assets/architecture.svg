@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="270" viewBox="0 0 1120 270" role="img" aria-labelledby="title desc">
+  <title id="title">jeo-code architecture overview</title>
+  <desc id="desc">Four core pillars: Smart Routing, Surgical Tool Loop, Verification Gates, and Async and Remote Ops, backed by local-first state under .jeo.</desc>
+  <rect width="1120" height="270" rx="20" fill="#0b1224"/>
+  <text x="560" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" letter-spacing="0.4" fill="#8da7c7">JEO-CODE ARCHITECTURE · ZERO NATIVE DEPS · BUN RUNTIME</text>
+
+  <g fill="none" stroke="#57759d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M275 112h16m259 0h16m259 0h16"/>
+    <path d="m286 107 6 5-6 5m269-10 6 5-6 5m269-10 6 5-6 5"/>
+  </g>
+
+  <g stroke-width="1.5">
+    <rect x="20" y="46" width="255" height="132" rx="14" fill="#14233b" stroke="#47d7e8"/>
+    <rect x="295" y="46" width="255" height="132" rx="14" fill="#18223e" stroke="#7a9df5"/>
+    <rect x="570" y="46" width="255" height="132" rx="14" fill="#211e3c" stroke="#aa86ee"/>
+    <rect x="845" y="46" width="255" height="132" rx="14" fill="#172e39" stroke="#69d4ba"/>
+    <rect x="20" y="196" width="1080" height="54" rx="12" fill="#101a30" stroke="#364c72"/>
+  </g>
+
+  <g text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">
+    <g fill="#edf5ff" font-size="16" font-weight="700">
+      <text x="147" y="76">1. Smart Routing</text>
+      <text x="422" y="76">2. Surgical Tool Loop</text>
+      <text x="697" y="76">3. Verification Gates</text>
+      <text x="972" y="76">4. Async &amp; Remote Ops</text>
+    </g>
+    <g fill="#aebfd6" font-size="12.5">
+      <text x="147" y="102">Anthropic · OpenAI · Gemini</text>
+      <text x="147" y="121">Antigravity · Ollama · 20+ Clouds</text>
+
+      <text x="422" y="102">Anchored edits (42ab|) · lsp</text>
+      <text x="422" y="121">ast_grep · Playwright browser</text>
+
+      <text x="697" y="102">post-turn hooks (tsc / tests)</text>
+      <text x="697" y="121">ralplan critic [OKAY] · approve</text>
+
+      <text x="972" y="102">task · eval · job · monitor</text>
+      <text x="972" y="121">Seatbelt / bwrap / Docker</text>
+    </g>
+    <g font-size="12" font-weight="600">
+      <text x="147" y="156" fill="#47d7e8">/route · 429 &amp; safety failover</text>
+      <text x="422" y="156" fill="#7a9df5">computer use · web_search</text>
+      <text x="697" y="156" fill="#aa86ee">done mutation &amp; test gate</text>
+      <text x="972" y="156" fill="#69d4ba">Telegram · Discord · Slack</text>
+    </g>
+    <text x="560" y="218" fill="#dce9fb" font-size="13.5" font-weight="700">Local-First State &amp; Inline TUI (.jeo/)</text>
+    <text x="560" y="238" fill="#9ab2d1" font-size="12.5">state/ (spec receipts)  ·  memory/ (OKF bundle)  ·  skills/ (lessons)  ·  hooks.json  ·  scrollback-friendly TUI</text>
+  </g>
+</svg>

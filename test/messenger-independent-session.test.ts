@@ -10,10 +10,6 @@ import { createMessengerSessionPool } from "../src/messenger/session-pool";
 import { selectDiscordModel } from "../src/messenger/model-selection";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
 import type { MessengerAdapter, MessengerConfig, MessengerMessage } from "../src/messenger/types";
-import { SessionNotifyEndpoint } from "../src/agent/notify/session-endpoint";
-import { createGrantAuthority } from "../src/agent/sandbox/authority";
-import { handleSandboxControl } from "../src/agent/sandbox/control";
-import type { SandboxSupervisor } from "../src/agent/sandbox/types";
 
 const baseMessage: MessengerMessage = {
 	platform: "discord",
@@ -40,7 +36,6 @@ function threadMessage(threadId: string, messageId: string, text: string, sender
 function sessionConfig(root: string): MessengerConfig {
 	return parseMessengerConfig({
 		cwd: path.join(root, "workspace"), sessionDir: path.join(root, "private-sessions"), toolNames: [],
-		sandbox: { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } },
 		platforms: { discord: { allowedUserIds: ["user-1", "user-2"], allowedChannelIds: ["channel-1"] } },
 	}, root);
 }
@@ -182,62 +177,6 @@ test("gateway serializes authorized authors into one shared thread history", asy
 	} finally { workers.completeAll(); await reply.close(); await Promise.allSettled(pending); await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("authenticated thread controls reach the live session endpoint while its model reply is busy", async () => {
-	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-live-control-")));
-	const cwd = path.join(root, "workspace");
-	const resource = path.join(root, "approved-resource");
-	await Promise.all([fs.mkdir(cwd), fs.mkdir(resource)]);
-	const previousConfig = process.env.JEO_CONFIG_DIR;
-	process.env.JEO_CONFIG_DIR = path.join(root, "configuration");
-	const config = sessionConfig(root);
-	const message = threadMessage("thread-a", "busy", "held prompt");
-	const digest = messengerSessionRoute(cwd, message);
-	const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-	const endpoint = new SessionNotifyEndpoint(cwd, id);
-	let replacements = 0;
-	let revocations = 0;
-	const supervisor: SandboxSupervisor = {
-		toolMap() { return {}; }, async call() { throw new Error("Unexpected effect"); }, async exec() { throw new Error("Unexpected exec"); },
-		async replacePolicy() { replacements++; }, async revoke() { revocations++; return { gone: true, residual: [] }; }, async close() {},
-	};
-	const authority = await createGrantAuthority({ sessionKey: id, cwd, config: config.sandbox!, supervisor, allowedUserIds: ["user-1", "user-2"], stateDirectory: path.join(root, "private-state") });
-	endpoint.onSandboxControl = (text, actor) => handleSandboxControl(text, actor, authority);
-	const workers = controlledWorkers(["held prompt"]);
-	const reply = createMessengerCliReply(config, workers.spawn, selectModel);
-	const delivered: Array<[string, string]> = [];
-	const gateway = createMessengerGateway(config, [recordingAdapter(delivered)], reply, { concurrency: 1, sandboxControl: reply.sandboxControl });
-	const pending: Promise<void>[] = [];
-	try {
-		await endpoint.start();
-		endpoint.setDiscordControlEnabled(false);
-		const request = await authority.requestAccess(resource, "rw");
-		pending.push(gateway.handle(message));
-		const held = await workers.started("held prompt");
-		pending.push(gateway.handle(threadMessage("thread-a", "follow-up", "queued prompt")));
-		await gateway.handle(threadMessage("thread-a", "intruder", `/sandbox approve ${request.id}`, "outsider"));
-		expect(authority.snapshot().requests[0]?.status).toBe("pending");
-		await gateway.handle(threadMessage("thread-a", "disabled", `/sandbox approve ${request.id}`, "user-2"));
-		expect(authority.snapshot().requests[0]?.status).toBe("pending");
-		expect(replacements).toBe(0);
-		expect(delivered).toEqual([["disabled", "Discord sandbox control is disabled"]]);
-		endpoint.setDiscordControlEnabled(true);
-		await gateway.handle(threadMessage("thread-a", "approve", `/sandbox approve ${request.id}`, "user-2"));
-		expect(authority.snapshot().grants.map(mount => ({ host: mount.host, mode: mount.mode }))).toEqual([{ host: resource, mode: "rw" }]);
-		expect(replacements).toBe(1);
-		expect(delivered.map(([messageId]) => messageId)).toEqual(["disabled", "approve"]);
-		await gateway.handle(threadMessage("thread-a", "revoke", "/sandbox revoke"));
-		expect(authority.snapshot().grants).toEqual([]);
-		expect(revocations).toBe(1);
-		expect(delivered.map(([messageId]) => messageId)).toEqual(["disabled", "approve", "revoke"]);
-		held.complete();
-		await Promise.all(pending);
-		expect(delivered.slice(3)).toEqual([["busy", "worker 0: held prompt"], ["follow-up", "worker 0: held prompt -> queued prompt"]]);
-	} finally {
-		workers.completeAll(); await reply.close(); await Promise.allSettled(pending); await endpoint.stop();
-		if (previousConfig === undefined) delete process.env.JEO_CONFIG_DIR; else process.env.JEO_CONFIG_DIR = previousConfig;
-		await fs.rm(root, { recursive: true, force: true });
-	}
-});
 
 for (const outcome of ["failure", "abort"] as const) test(`gateway runs distinct threads simultaneously and isolates worker ${outcome}`, async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-thread-isolation-"));

@@ -21,45 +21,19 @@ function config(): MessengerConfig {
 
 describe("messenger security and configuration", () => {
 	test("requires exact explicit allowlists and rejects unknown or unsafe configuration", () => {
-		const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } };
-		const layout = { cwd: "ws", sessionDir: "private", sandbox };
-		expect(parseMessengerConfig({ cwd: "ws", sessionDir: "private", platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").sandbox).toBeUndefined();
+		const layout = { cwd: "ws", sessionDir: "private" };
+		expect(() => parseMessengerConfig({ ...layout, sandbox: { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow("unknown setting");
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: [] } } }, "/tmp")).toThrow();
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["*"] } } }, "/tmp")).toThrow();
 		expect(() => parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["1"], surprise: true } } }, "/tmp")).toThrow("unknown setting");
 		expect(() => parseMessengerConfig({ ...layout, toolNames: ["delete"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp")).toThrow();
+		expect(parseMessengerConfig({ ...layout, platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual([]);
 		const parsed = parseMessengerConfig({ ...layout, toolNames: ["read"], platforms: { discord: { allowedUserIds: ["1"], allowedChannelIds: ["2"] } } }, "/profile");
-		expect(parseMessengerConfig({ ...layout, toolNames: ["read", "find", "search", "edit", "write", "computer"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual(["read", "find", "search", "edit", "write", "computer"]);
+		expect(parseMessengerConfig({ ...layout, toolNames: ["read", "grep", "glob", "edit", "write", "bash"], platforms: { discord: { allowedUserIds: ["1"] } } }, "/tmp").toolNames).toEqual(["read", "grep", "glob", "edit", "write", "bash"]);
 		expect(parsed.cwd).toBe("/profile/ws");
-		expect(parsed.sandbox).toEqual(sandbox);
 		expect(parsed.sessionDir).toBe("/profile/private");
 		expect(() => validateMessengerEnvironment(parsed, {})).toThrow();
 		validateMessengerEnvironment(parsed, { JEO_DISCORD_BOT_TOKEN: "token" });
-	});
-
-	test("Discord profile, its ancestors and descendants cannot be sandbox workspaces, including symlink aliases", async () => {
-		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-profile-workspace-"))); roots.push(root);
-		const sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-profile-session-"))); roots.push(sessionRoot);
-		const profile = path.join(root, "profile");
-		const workspace = path.join(root, "workspace");
-		const alias = path.join(root, "profile-alias");
-		await Promise.all([fs.mkdir(profile), fs.mkdir(workspace)]);
-		const nested = path.join(profile, "workspace");
-		const nestedAlias = path.join(root, "nested-alias");
-		await fs.mkdir(nested);
-		await fs.symlink(nested, nestedAlias, process.platform === "win32" ? "junction" : "dir");
-		await fs.writeFile(path.join(profile, "credentials.json"), "sentinel credential");
-		await fs.writeFile(path.join(profile, "launch.sh"), "sentinel launcher");
-		await fs.symlink(profile, alias, process.platform === "win32" ? "junction" : "dir");
-		const file = path.join(profile, "messenger.json");
-		const common = { sessionDir: path.join(sessionRoot, "sessions"), sandbox: { image: "test-local-image", limits: { memoryBytes: 134217728, pids: 32, cpus: 1 } }, platforms: { discord: { allowedUserIds: ["owner"] } } };
-		for (const cwd of [undefined, profile, root, alias, nested, nestedAlias]) {
-			await fs.writeFile(file, JSON.stringify({ ...common, ...(cwd === undefined ? {} : { cwd }) }));
-			await expect(loadMessengerConfig(file)).rejects.toThrow("messenger profile directory");
-		}
-		await fs.writeFile(file, JSON.stringify({ ...common, cwd: workspace }));
-		expect((await loadMessengerConfig(file)).cwd).toBe(workspace);
-		expect(await fs.readFile(path.join(profile, "credentials.json"), "utf8")).toBe("sentinel credential");
 	});
 
 	test("supports JEO and JEOPI default credential aliases without exposing values", () => {

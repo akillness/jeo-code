@@ -68,13 +68,13 @@ import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
 import { handleSandboxControl } from "../agent/sandbox/control";
 import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
-import { acceptDiscordHostDecision, closeDiscordHostRuntime, createDiscordHostRuntime, currentDiscordHostExecution, readDiscordHostBootstrap, runDiscordHostTurn, writeDiscordHostCleanupReceipt, type DiscordHostRuntime } from "../agent/discord-host";
-import { isDiscordHostTurn } from "../messenger/host-protocol";
+import { loadAndCreateLiveDiscordBridge, type LiveDiscordBridge } from "../messenger/live-session";
+import { defaultDiscordConfigPath } from "../messenger/discord-setup";
 import { runAgySessionTurn } from "./launch/agy-turn";
 import { listProviderModels } from "../ai/model-discovery";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { resolveStartupDefaultModel } from "../agent/session-model";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable } from "../ai";
+import { describeModel, describeAllProviders, describeSearchProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable } from "../ai";
 import { modelServableWithDiscovery } from "../ai/model-manager";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
@@ -84,7 +84,6 @@ import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
 import { messengerUsageFallback } from "../messenger/model-policy";
-import { messengerProfilePrivatePaths } from "../messenger/config";
 
 
 import { listAliases } from "../ai/model-registry";
@@ -433,7 +432,6 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   const shutdownNonce = process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
   delete process.env.JEO_MESSENGER_SHUTDOWN_NONCE;
   let supervisor: SandboxSupervisor | undefined;
-  let hostRuntime: DiscordHostRuntime | undefined;
   let stateDirectory: string | undefined;
   let stopEndpoint: (() => Promise<void>) | undefined;
   const setup = Promise.withResolvers<void>();
@@ -442,7 +440,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   const acknowledge = async (gone: boolean): Promise<void> => {
     if (!shutdownNonce) return;
     const written = Promise.withResolvers<void>();
-    process.stderr.write(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce: shutdownNonce, ...(hostRuntime ? { epoch: hostRuntime.bootstrap.scope.epoch } : {}), gone })}\n`, error => error ? written.reject(error) : written.resolve());
+    process.stderr.write(`JEO_MESSENGER_SHUTDOWN_ACK ${JSON.stringify({ nonce: shutdownNonce, gone })}\n`, error => error ? written.reject(error) : written.resolve());
     await written.promise;
   };
   const close = (): Promise<void> => closing ??= (async () => {
@@ -451,19 +449,13 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
         await setup.promise;
         await endpointStartup;
         await stopEndpoint?.();
-        if (hostRuntime) {
-          await closeDiscordHostRuntime(hostRuntime);
-          await writeDiscordHostCleanupReceipt(hostRuntime);
-        }
-        // Sandbox ownership stays with its supervisor; host ownership was settled above.
         await supervisor?.close();
         if (stateDirectory) fs.rmSync(stateDirectory, { recursive: true, force: true });
         await acknowledge(true);
         return;
       } catch (error) {
         console.error(`REVOKE_INCOMPLETE: ${error instanceof Error ? error.message : String(error)}`);
-		await acknowledge(false).catch(() => { /* A broken parent pipe must not destroy the cleanup owner. */ });
-        // Keep the sole cleanup owner and its private state alive until removal succeeds.
+        await acknowledge(false).catch(() => { /* A broken parent pipe must not destroy the cleanup owner. */ });
         const retry = Promise.withResolvers<void>();
         setTimeout(retry.resolve, 1_000);
         await retry.promise;
@@ -472,17 +464,12 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   })();
   const handleTermination = (): void => { void close().then(() => process.exit(143)); };
   process.on("SIGTERM", handleTermination);
-  // Private cross-platform control: the pool's IPC channel (not a signal, not stdin) carries the shutdown
-  // request. Installed before any await so no setup phase can miss it; accepts only the exact nonce message.
   const handleControlMessage = (message: unknown): void => {
-    if (hostRuntime && acceptDiscordHostDecision(hostRuntime, message)) return;
     if (!shutdownNonce || typeof message !== "object" || message === null || Array.isArray(message)) return;
     const keys = Object.keys(message);
-    const expectedKeys = hostRuntime ? ["type", "nonce", "epoch"] : ["type", "nonce"];
-    if (keys.length !== expectedKeys.length || expectedKeys.some(key => !keys.includes(key))) return;
-    const control = message as { type?: unknown; nonce?: unknown; epoch?: unknown };
+    if (keys.length !== 2 || !keys.includes("type") || !keys.includes("nonce")) return;
+    const control = message as { type?: unknown; nonce?: unknown };
     if (control.type !== "jeo_messenger_shutdown" || control.nonce !== shutdownNonce) return;
-    if (hostRuntime && control.epoch !== hostRuntime.bootstrap.scope.epoch) return;
     handleTermination();
   };
   if (shutdownNonce) process.on("message", handleControlMessage);
@@ -491,96 +478,34 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     const ready = Promise.withResolvers<void>();
     endpointStartup = ready.promise;
     setup.resolve();
-    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId, hostRuntime ? { runtime: hostRuntime, stop: handleTermination } : undefined).finally(ready.resolve);
+    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId).finally(ready.resolve);
   };
   try {
     const flags = parseFlags(args, process.cwd());
-    const bootstrap = readDiscordHostBootstrap(process.env, { literalWorker: flags.literalWorker === true, ipcAvailable: typeof process.send === "function" });
-    if (bootstrap) {
-      if (!shutdownNonce || bootstrap.nonce !== shutdownNonce || !flags.resume || flags.resumeId !== bootstrap.scope.sessionId || flags.noSession || flags.worktree ||
-          ((process.platform === "win32" ? fs.realpathSync(process.cwd()).toLowerCase() !== bootstrap.cwd.toLowerCase() : fs.realpathSync(process.cwd()) !== bootstrap.cwd)) ||
-          ((process.platform === "win32" ? fs.realpathSync(bootstrap.workspaceRoot).toLowerCase() !== bootstrap.workspaceRoot.toLowerCase() : fs.realpathSync(bootstrap.workspaceRoot) !== bootstrap.workspaceRoot)) ||
-          ((process.platform === "win32" ? fs.realpathSync(bootstrap.sourceRoot).toLowerCase() !== bootstrap.sourceRoot.toLowerCase() : fs.realpathSync(bootstrap.sourceRoot) !== bootstrap.sourceRoot)) ||
-          !previousSessionDirectory ||
-          ((process.platform === "win32" ? fs.realpathSync(previousSessionDirectory).toLowerCase() !== bootstrap.sessionDir.toLowerCase() : fs.realpathSync(previousSessionDirectory) !== bootstrap.sessionDir))) {
-        throw new Error("Discord host worker identity or workspace mismatch");
-      }
-      hostRuntime = createDiscordHostRuntime(bootstrap, request => {
-        if (typeof process.send !== "function" || process.connected === false) throw new Error("Discord host parent IPC unavailable");
-        process.send(request);
-      });
-      process.on("disconnect", handleTermination);
-      process.on("SIGINT", handleTermination);
-    }
     const config = await readGlobalConfig({ requireValid: true });
     if (closing) throw new Error("Messenger worker stopping");
-    if (hostRuntime) return await runSession();
     const remoteConfig = process.env.JEO_MESSENGER_SANDBOX;
     const sandboxConfig: SandboxConfig | undefined = remoteConfig === undefined ? config.sandbox : JSON.parse(remoteConfig);
-    if ((flags.literalPrompt || process.env.JEO_MESSENGER_SESSION_KEY) && !sandboxConfig) throw new Error("SANDBOX_REQUIRED: remote execution requires sandbox configuration");
     if (!sandboxConfig) return await runSession();
     const cwd = flags.worktree ? resolveWorktree(process.cwd(), flags.worktree) : process.cwd();
     const sessionKey = process.env.JEO_MESSENGER_SESSION_KEY || crypto.randomUUID();
     for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
       if (fs.existsSync(legacy)) throw new Error("SANDBOX_PRIVATE_STATE: legacy transcripts are inside the workspace; relocate them before granting workspace access");
     }
-    // The messenger profile (config, token file, run script) is private control state wherever it lives, not only under ~/.jeo.
-    const profileDirectory = process.env.JEO_MESSENGER_PROFILE_DIR;
-    if (profileDirectory !== undefined && !path.isAbsolute(profileDirectory)) throw new Error("SANDBOX_PRIVATE_STATE: invalid messenger profile directory");
-    const profilePaths = profileDirectory === undefined ? [] : await messengerProfilePrivatePaths(profileDirectory, cwd);
-    if (closing) throw new Error("Messenger worker stopping");
-    // Publish the candidate before creating it so close() removes it even if owner-only creation or ACL verification fails midway.
     const candidateStateDirectory = path.join(tmpdir(), `jeo-sandbox-authority-${crypto.randomUUID()}`);
     stateDirectory = candidateStateDirectory;
     stateDirectory = await ensurePrivateSandboxDirectory(candidateStateDirectory);
     if (closing) throw new Error("Messenger worker stopping");
     const sessionDirectory = previousSessionDirectory || path.join(jeoHomeDir(), "sandbox-sessions", createHash("sha256").update(path.resolve(cwd)).digest("hex"));
-    const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir(), ...profilePaths];
-    const extraReadRoots: string[] = [];
-    const tryAddExtraReadRoot = async (candidate: string): Promise<void> => {
-      try {
-        const canonical = await canonicalSandboxPath(candidate);
-        const stat = await fs.promises.stat(canonical);
-        if (!stat.isDirectory()) return;
-        if (canonical === path.parse(canonical).root) return;
-        const homeCanonical = await canonicalSandboxPath(homedir());
-        if (sandboxPathContains(canonical, homeCanonical)) return;
-        if (privateRoots.some(priv => {
-          try { return sandboxPathContains(canonical, path.resolve(priv)); } catch { return false; }
-        })) return;
-        if (!extraReadRoots.includes(canonical)) extraReadRoots.push(canonical);
-      } catch {
-        // Skip missing or non-canonical candidate roots.
-      }
-    };
-    if (process.env.JEO_MESSENGER_READ_ROOTS) {
-      try {
-        const parsed: unknown = JSON.parse(process.env.JEO_MESSENGER_READ_ROOTS);
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) if (typeof item === "string" && item.trim()) await tryAddExtraReadRoot(item);
-        }
-      } catch { /* ignore malformed env */ }
-    }
-    if (process.env.JEO_MESSENGER_READ_ACCESS === "global") {
-      await tryAddExtraReadRoot(path.dirname(cwd));
-      for (const globalCandidate of ["/opt/homebrew", "/usr/local", path.join(homedir(), ".bun", "install", "global")]) {
-        await tryAddExtraReadRoot(globalCandidate);
-      }
-    }
-    const dockerGrants = sandboxConfig.backend === "native"
-      ? undefined
-      : extraReadRoots
-          .filter(root => !sandboxPathContains(root, path.resolve(cwd)) && !sandboxPathContains(path.resolve(cwd), root))
-          .map(host => ({ host, mode: "ro" as const }));
-    const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, ...(dockerGrants?.length ? { grants: dockerGrants } : {}), privatePaths: privateRoots });
+    const privateRoots = [stateDirectory, sessionDirectory, jeoHomeDir(), notifySessionsDir()];
+    const policy = await createSandboxPolicy({ sessionKey, revision: 0, cwd, config: sandboxConfig, privatePaths: privateRoots });
     if (closing) throw new Error("Messenger worker stopping");
-    // A host that was killed left its sandbox processes running: end them before starting this session.
     if (policy.config.backend === "native") await reapOrphanedNativeProcesses().catch(() => undefined);
     if (policy.config.backend !== "native" && config.sandboxSkillAssets?.length) {
       throw new Error("SANDBOX_SKILLS: the selected backend cannot transport authorized skill assets");
     }
     const snapshot = policy.config.backend === "native" ? await snapshotSandboxSkillAssets(cwd, path.join(stateDirectory, "skill-assets"), policy.mounts.filter(mount => mount.mode === "rw").map(mount => mount.host), config.sandboxSkillAssets ?? []) : undefined;
-    const readOnlyRoots = policy.config.backend === "native" ? [...(snapshot ? [snapshot.root] : []), ...extraReadRoots] : [];
+    const readOnlyRoots = policy.config.backend === "native" ? (snapshot ? [snapshot.root] : []) : [];
     const sessionSupervisor = createSandboxSupervisor({ policy, readOnlyRoots });
     supervisor = sessionSupervisor;
     process.env.JEO_SESSION_DIR = sessionDirectory;
@@ -601,15 +526,12 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     await close();
     process.removeListener("SIGTERM", handleTermination);
     process.removeListener("message", handleControlMessage);
-    process.removeListener("disconnect", handleTermination);
     process.removeListener("SIGINT", handleTermination);
     if (previousSessionDirectory === undefined) delete process.env.JEO_SESSION_DIR;
     else process.env.JEO_SESSION_DIR = previousSessionDirectory;
   }
 }
-
-async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string, hostExecution?: { runtime: DiscordHostRuntime; stop(): void }): Promise<string | void> {
-  const hostRuntime = hostExecution?.runtime;
+async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string): Promise<string | void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
   if (resumeId) {
@@ -1281,7 +1203,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       sessionId = (await createSession(cwd, undefined, sessionModel)).id;
     }
   }
-  if (hostRuntime && sessionId !== hostRuntime.bootstrap.scope.sessionId) throw new Error("Discord host transcript identity mismatch");
 
   // Remote subagent visibility/control AND main-session mirroring over Telegram
   // (one thread per session, see `src/agent/notify/`): best-effort, a
@@ -1298,11 +1219,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   const endpointSessionId = sessionId;
   let endpointRetired = false;
   let endpointStopPromise: Promise<void> | undefined;
-  const endpointMatchesCurrentSession = (): boolean => !!sessionNotifyEndpoint && !endpointRetired && sessionId === endpointSessionId;
+  const sessionStillActive = (): boolean => !endpointRetired && sessionId === endpointSessionId;
+  const endpointMatchesCurrentSession = (): boolean => !!sessionNotifyEndpoint && sessionStillActive();
+  let liveDiscordBridge: LiveDiscordBridge | undefined;
+  let liveDiscordStarting = false;
   const stopLaunchEndpoint = (): Promise<void> => {
     endpointRetired = true;
     sessionNotifyEndpoint?.detachRegistry();
-    return endpointStopPromise ??= sessionNotifyEndpoint?.stop() ?? Promise.resolve();
+    return endpointStopPromise ??= Promise.all([
+      liveDiscordBridge?.close().catch(() => undefined),
+      sessionNotifyEndpoint?.stop().catch(() => undefined),
+    ]).then(() => undefined);
   };
   try {
     if (sessionNotifyEndpoint && sandboxAuthority) {
@@ -1317,7 +1244,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }
     }
   } finally {
-    if (!hostRuntime) registerEndpointCleanup?.(sessionNotifyEndpoint ? stopLaunchEndpoint : undefined);
+    registerEndpointCleanup?.(stopLaunchEndpoint);
   }
   const sandboxTranscriptId = sessionId;
   if (sessionNotifyEndpoint) {
@@ -1357,31 +1284,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
 
   let cleanedUp = false;
-  let hostCleanup: Promise<void> | undefined;
+  let activeTurnAbort: ((reason?: string) => void) | undefined;
   const cleanupSession = async (): Promise<void> => {
     if (cleanedUp) return;
-    if (hostRuntime) {
-      return hostCleanup ??= (async () => {
-        activeAgyController?.abort();
-        subagentRegistry.cancelAll();
-        jobRegistry.cancelAll();
-        monitorRegistry.cancelAll();
-        await Promise.all([
-          activeAgyTurn?.catch(() => undefined),
-          closeDiscordHostRuntime(hostRuntime),
-          subagentRegistry.awaitIds(subagentRegistry.list().map(record => record.id)),
-          jobRegistry.awaitIds(jobRegistry.list().map(record => record.id)),
-          monitorRegistry.awaitIds(monitorRegistry.list().map(record => record.id)),
-        ]);
-        if (subagentRegistry.pending().length || jobRegistry.cancellable().length || monitorRegistry.cancellable().length) {
-          throw new Error("REVOKE_INCOMPLETE: Discord host descendants have not settled");
-        }
-        await stopLaunchEndpoint();
-        await stopSessionNotifyEndpoint(subagentRegistry);
-        await turnSandboxScope?.supervisor.close();
-        cleanedUp = true;
-      })().catch(error => { hostCleanup = undefined; throw error; });
-    }
     cleanedUp = true;
     activeAgyController?.abort();
     await activeAgyTurn?.catch(() => undefined);
@@ -1392,7 +1297,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     await stopSessionNotifyEndpoint(subagentRegistry);
     await turnSandboxScope?.supervisor.close();
   };
-  if (hostRuntime) registerEndpointCleanup?.(cleanupSession);
 
   // Persist the active per-session model into the session header so `/resume` restores
   // it (each session can carry its own model independent of the global default).
@@ -1517,10 +1421,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // state — the interactive REPL wraps it below (`forceExitFromCtrlC = …`) with the
   // prompt/raw-mode restore that only exists once the REPL has been set up.
   const hardExitCore = (): void => {
-    if (hostExecution) { hostExecution.stop(); return; }
     subagentRegistry.cancelAll();
     jobRegistry.cancelAll();
     monitorRegistry.cancelAll();
+    void liveDiscordBridge?.close();
     void stopLaunchEndpoint();
     void stopSessionNotifyEndpoint(subagentRegistry);
     if (turnSandboxScope) {
@@ -1570,17 +1474,25 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
         return { captured, submittedEnter, handled: true };
       }
-      if (submittedEnter && /^\/discord\s+control\s+off$/.test(draft.trim())) {
+      if (submittedEnter && /^\/discord\s+(?:control\s+off|stop)$/.test(draft.trim())) {
+        const trimmed = draft.trim();
+        const isStop = trimmed === "/discord stop";
         const endpoint = sessionNotifyEndpoint;
-        if (!busyDraftHasPaste && endpoint && endpointMatchesCurrentSession()) {
-          endpoint.setDiscordControlEnabled(false);
+        if (!busyDraftHasPaste && (endpointMatchesCurrentSession() || (isStop && liveDiscordBridge?.active))) {
+          if (isStop && liveDiscordBridge?.active) {
+            const bridge = liveDiscordBridge;
+            liveDiscordBridge = undefined;
+            void bridge.close().catch(() => undefined);
+          }
+          if (endpoint && endpointMatchesCurrentSession()) endpoint.setDiscordControlEnabled(false);
           queueBusyClear?.();
           view?.setLivePromptInput("");
           view?.setLivePromptHint([]);
           view?.setLivePromptHighlight(undefined);
           busyDraftHasPaste = false;
-          if (view) view.events().onNotice?.("Discord control revoked for this session.");
-          else console.log("Discord control revoked for this session.");
+          const noticeText = isStop ? "Discord bridge stopped; access revoked." : "Discord control revoked for this session.";
+          if (view) view.events().onNotice?.(noticeText);
+          else console.log(noticeText);
         } else if (view) view.events().onNotice?.("Discord control requires a directly submitted local prompt.");
         else console.log("Discord control requires a directly submitted local prompt.");
         return { captured, submittedEnter, handled: true };
@@ -1601,10 +1513,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (!emergencyInput.partial && !paste && !emergencyInput.inPaste) emergencyPaste = false;
       if (!submitted) return;
       const endpoint = sessionNotifyEndpoint;
-      if (!emergencyPaste && /^\/discord\s+control\s+off$/.test(emergencyInput.partial.trim()) && endpoint && endpointMatchesCurrentSession()) {
-        endpoint.setDiscordControlEnabled(false);
-        if (view) view.events().onNotice?.("Discord control revoked for this session.");
-        else console.log("Discord control revoked for this session.");
+      if (!emergencyPaste && /^\/discord\s+(?:control\s+off|stop)$/.test(emergencyInput.partial.trim())) {
+        const isStop = emergencyInput.partial.trim() === "/discord stop";
+        if (isStop && liveDiscordBridge?.active) {
+          const bridge = liveDiscordBridge;
+          liveDiscordBridge = undefined;
+          void bridge.close().catch(() => undefined);
+        }
+        if (endpoint && endpointMatchesCurrentSession()) endpoint.setDiscordControlEnabled(false);
+        const noticeText = isStop ? "Discord bridge stopped; access revoked." : "Discord control revoked for this session.";
+        if (view) view.events().onNotice?.(noticeText);
+        else console.log(noticeText);
       }
       emergencyInput.partial = "";
       emergencyInput.pastedLines.length = 0;
@@ -1626,7 +1545,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       };
       let hardExit = false;
       const harness = createInFlightAbortHarness({
-        captureEsc: !!cliTui || (!!sessionNotifyEndpoint && !!process.stdin.isTTY),
+        captureEsc: !!cliTui || ((!!sessionNotifyEndpoint || !!liveDiscordBridge?.active) && !!process.stdin.isTTY),
         onAbortNotice: notice,
         onNoise: () => cliTui?.repaint(),
         pasteActive: () => queueBusyPasteActive?.() ?? false,
@@ -1642,9 +1561,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const abortRemote = () => harness.controller.abort();
       opts?.signal?.addEventListener("abort", abortRemote, { once: true });
       if (opts?.signal?.aborted) abortRemote();
+      activeTurnAbort = abortRemote;
       activeAgyController = harness.controller;
       activeTui = cliTui;
-      interactiveTurnActive = !!cliTui || (!!sessionNotifyEndpoint && !!process.stdin.isTTY);
+      interactiveTurnActive = !!cliTui || ((!!sessionNotifyEndpoint || !!liveDiscordBridge?.active) && !!process.stdin.isTTY);
       lastUserInput = userInput;
       lastTurnReasoning = "";
       lastTurnArtifacts = [];
@@ -1699,6 +1619,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         throw error;
       } finally {
         opts?.signal?.removeEventListener("abort", abortRemote);
+        activeTurnAbort = undefined;
         harness.dispose();
         activeAgyTurn = undefined;
         activeAgyController = undefined;
@@ -1710,7 +1631,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
       }
     }
-    let preflightHarness = sessionNotifyEndpoint && process.stdin.isTTY && !flags.print && flags.message.length === 0 ? createInFlightAbortHarness({
+    let preflightHarness = (sessionNotifyEndpoint || liveDiscordBridge?.active) && process.stdin.isTTY && !flags.print && flags.message.length === 0 ? createInFlightAbortHarness({
       captureEsc: true,
       pasteActive: () => queueBusyPasteActive?.() ?? false,
       onBufferedInput: chunk => { captureLiveInput(chunk, null); },
@@ -2082,7 +2003,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       // mid-turn steering machinery this early (which needs turn-scoped vars not
       // constructed until after compaction/history mutation settles).
       const compactHarness = createInFlightAbortHarness({
-        captureEsc: !!tui || (!!sessionNotifyEndpoint && !!process.stdin.isTTY),
+        captureEsc: !!tui || ((!!sessionNotifyEndpoint || !!liveDiscordBridge?.active) && !!process.stdin.isTTY),
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
           else console.log(msg);
@@ -2107,6 +2028,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         : undefined;
       opts?.signal?.addEventListener("abort", abortRemoteCompaction, { once: true });
       if (opts?.signal?.aborted) abortRemoteCompaction();
+      activeTurnAbort = abortRemoteCompaction;
       let compRes: Awaited<ReturnType<typeof maybeCompact>>;
       try {
         compRes = await maybeCompact(history, {
@@ -2116,6 +2038,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         });
       } finally {
         opts?.signal?.removeEventListener("abort", abortRemoteCompaction);
+        activeTurnAbort = undefined;
         compactHarness.dispose();
       }
       opts?.signal?.throwIfAborted();
@@ -2172,7 +2095,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const steeringEnabled = !!tui && jeoEnv("NO_STEER") !== "1";
       const drainSteer = () => steerInbox.splice(0, steerInbox.length);
       const harness = createInFlightAbortHarness({
-        captureEsc: !!tui || (!!sessionNotifyEndpoint && !!process.stdin.isTTY),
+        captureEsc: !!tui || ((!!sessionNotifyEndpoint || !!liveDiscordBridge?.active) && !!process.stdin.isTTY),
         onNoise: () => tui?.repaint(),
         pasteActive: () => queueBusyPasteActive?.() ?? false,
         // Ctrl+O mid-turn: flush the detail view into the TUI panel. Always
@@ -2271,6 +2194,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const abortRemote = () => harness.controller.abort();
       opts?.signal?.addEventListener("abort", abortRemote, { once: true });
       if (opts?.signal?.aborted) abortRemote();
+      activeTurnAbort = abortRemote;
       const ac = harness.controller;
       currentTurnSteer = { push: line => steerInbox.push(line), flushCard: line => tui?.flushSteerCard(line) };
       if (sessionNotifyEndpoint && !notifyRedact) {
@@ -2752,6 +2676,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         await opik.endTurn({ done: result.done, steps: result.steps, output: result.doneReason });
       } finally {
         opts?.signal?.removeEventListener("abort", abortRemote);
+        activeTurnAbort = undefined;
         harness.dispose();
         originatingTurnOpen = false;
         activeTui = null;
@@ -2940,43 +2865,23 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     try {
       if (flags.literalWorker) {
         const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-        const lifetime = new AbortController();
-        const closeInput = () => lifetime.abort();
-        if (hostRuntime) input.once("close", closeInput);
         try {
           for await (const line of input) {
             try {
               const frame: unknown = JSON.parse(line);
-              const result = hostRuntime
-                ? await (async () => {
-                    if (!isDiscordHostTurn(frame)) throw new Error("Invalid Discord host request");
-                    return runDiscordHostTurn(hostRuntime, frame.runId, lifetime.signal, async () => {
-                      const execution = currentDiscordHostExecution();
-                      if (!execution) throw new Error("Discord host execution scope unavailable");
-                      return runTurn(frame.text, false, undefined, { signal: execution.signal });
-                    });
-                  })()
-                : await (async () => {
-                    if (typeof frame !== "string" || !frame.trim()) throw new Error("Invalid messenger request");
-                    return runTurn(frame, false);
-                  })();
+              if (typeof frame !== "string" || !frame.trim()) throw new Error("Invalid messenger request");
+              const result = await runTurn(frame, false);
               const { done, reply, unverified } = result;
               if (done) console.log(`JEO_MESSENGER_RESULT ${JSON.stringify(reply)}`);
-              // The turn ended in a controlled state with an UNVERIFIED-marked answer:
-              // deliver it as a failure and keep serving this conversation's follow-ups.
               else if (unverified && reply.trim()) console.log(`JEO_MESSENGER_UNVERIFIED ${JSON.stringify(reply)}`);
               else throw new Error("Messenger agent turn did not complete");
             } catch {
-              if (!hostRuntime || !lifetime.signal.aborted) console.log("JEO_MESSENGER_ERROR");
+              console.log("JEO_MESSENGER_ERROR");
               break;
             }
-
-
           }
         } finally {
-          input.removeListener("close", closeInput);
           input.close();
-          if (hostRuntime) { lifetime.abort(); await cleanupSession(); }
         }
         return;
       }
@@ -3239,7 +3144,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       await maybeDistillOneShot();
       return;
     } finally {
-      if (hostRuntime) await cleanupSession();
       await stopLaunchEndpoint().catch(() => {});
       // The in-flight abort harness `resume()`s a TTY stdin (and `dispose()` only
       // reverts raw mode). A flowing TTY read handle keeps Bun's event loop alive, so
@@ -3784,9 +3688,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   /** `rl.question` that resolves "/exit" on stdin EOF instead of hanging forever. */
   let promptServedFromPaste = false;
   let promptWasRemote = false;
-  let exclusiveRemote: { text: string; finish: (text?: string, artifactsAllowed?: boolean) => void; signal: AbortSignal; epoch: number; stage?: { output: string; input?: string }; images?: ImageAttachment[]; origin: "discord" | "telegram" } | undefined;
-  let pendingRemote: NonNullable<typeof exclusiveRemote> | undefined;
-  const pendingTelegram: NonNullable<typeof exclusiveRemote>[] = [];
+  type PendingRemoteRequest = { text: string; finish: (text?: string, artifactsAllowed?: boolean) => void; signal: AbortSignal; epoch: number; stage?: { output: string; input?: string }; images?: ImageAttachment[]; origin: "discord" | "telegram" };
+  let exclusiveRemote: PendingRemoteRequest | undefined;
+  let pendingRemote: PendingRemoteRequest | undefined;
+  const pendingTelegram: PendingRemoteRequest[] = [];
   let admitPendingRemote: () => void = () => {};
   const promptInput = async (prompt: string): Promise<string> => {
     promptServedFromPaste = false;
@@ -4802,18 +4707,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // subscription/plan products (token-keyed)
     const oauthList = statuses.filter(s => cloud.has(s.name));
     if (!oauthList.some(s => (s.name as string) === "perplexity")) {
-      const { snapshotProvider } = await import("../auth");
-      const snap = await snapshotProvider("perplexity");
-      oauthList.push({
-        name: "perplexity" as ProviderName,
-        kind: snap.oauth ? "oauth" : "none",
-        label: snap.oauth ? "OAuth" : "none (run 'jeo auth login perplexity')",
-        ready: !!snap.oauth,
-        loggedIn: !!snap.oauth,
-        oauthEmail: snap.oauthEmail,
-        oauthExpires: snap.oauthExpires,
-        poolSize: snap.poolSize,
-      });
+      oauthList.push(await describeProvider("perplexity"));
     }
     const list = subscriptionLoginPicker(
       oauthList,
@@ -4912,9 +4806,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // TTY only — the caller prints scriptable guidance otherwise.
   const pickApiKeyProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
     const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // surfaced under OAuth/subscription login instead
-    // kimi is dual-credential (moonshot API key OR Kimi Code OAuth) — keep it key-settable.
-    const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi"]);
-    const list = apiKeyPicker(statuses.filter(s => keyed.has(s.name) && !subs.has(s.name)), true);
+    // kimi & perplexity are dual-credential (OAuth OR API key) — keep both key-settable.
+    const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi", "perplexity"]);
+    const withSearch = statuses.some(s => (s.name as string) === "perplexity")
+      ? statuses
+      : [...statuses, ...(await describeSearchProviders())];
+    const list = apiKeyPicker(withSearch.filter(s => keyed.has(s.name) && !subs.has(s.name)), true);
     let chosen: ProviderName | undefined;
     await runSelectPicker(
       (cols, rows) =>
@@ -5358,21 +5255,49 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // right before the REPL loop starts, since it needs `pendingImages`,
   // `rl`/`promptInput`'s `pendingRemoteInject`, and `pendingStdinLines`, all
   // established by now. See the Tier 2 contract's "Session-side routing".
+  admitPendingRemote = (): void => {
+    if ((!pendingRemote && !pendingTelegram.length) || exclusiveRemote || interactiveTurnActive || remoteInputPending || promptPasteActive || pasteLineFired || pasteInFlight || draftHasPaste || Reflect.get(rl, "line") !== "" || !pendingRemoteInject ||
+        pendingImages.length || pendingStdinLines.length || pendingMidTurnCommands.length || queuedPromptInput.partial || queuedPromptInput.pastedLines.length || !sessionStillActive()) return;
+    pendingRemote ??= pendingTelegram.shift();
+    const request = pendingRemote!;
+    if (request.signal.aborted) { pendingRemote = undefined; request.finish(); return; }
+    request.epoch = ++relayInputEpoch;
+    exclusiveRemote = request;
+    if (pendingRemoteInject(request.text)) pendingRemote = undefined;
+    else exclusiveRemote = undefined;
+  };
+  const enqueueLiveDiscordTurn = (promptText: string, signal: AbortSignal): Promise<{ ok: boolean; text?: string }> => {
+    if (!sessionStillActive() || pendingRemote || exclusiveRemote || interactiveTurnActive || signal.aborted) {
+      return Promise.resolve({ ok: false });
+    }
+    const deferred = Promise.withResolvers<{ ok: boolean; text?: string }>();
+    let settled = false;
+    const settle = (value: { ok: boolean; text?: string }): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      deferred.resolve(value);
+    };
+    const request: PendingRemoteRequest = {
+      text: promptText,
+      finish: (text?: string) => settle(typeof text === "string" && !!text.trim() ? { ok: true, text } : { ok: false }),
+      signal,
+      epoch: 0,
+      origin: "discord",
+    };
+    const onAbort = (): void => {
+      if (pendingRemote === request) pendingRemote = undefined;
+      settle({ ok: false });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    pendingRemote = request;
+    admitPendingRemote();
+    return deferred.promise;
+  };
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.onRegistryMutation = () => { relayInputEpoch++; };
-    admitPendingRemote = (): void => {
-      if ((!pendingRemote && !pendingTelegram.length) || exclusiveRemote || interactiveTurnActive || remoteInputPending || promptPasteActive || pasteLineFired || pasteInFlight || draftHasPaste || Reflect.get(rl, "line") !== "" || !pendingRemoteInject ||
-          pendingImages.length || pendingStdinLines.length || pendingMidTurnCommands.length || queuedPromptInput.partial || queuedPromptInput.pastedLines.length || !endpointMatchesCurrentSession()) return;
-      pendingRemote ??= pendingTelegram.shift();
-      const request = pendingRemote!;
-      if (request.signal.aborted) { pendingRemote = undefined; request.finish(); return; }
-      request.epoch = ++relayInputEpoch;
-      exclusiveRemote = request;
-      if (pendingRemoteInject(request.text)) pendingRemote = undefined;
-      else exclusiveRemote = undefined;
-    };
     sessionNotifyEndpoint.onRemoteRequest = (text, finish, signal, stage, actor): boolean => {
-      if (!sandboxAuthority || !endpointMatchesCurrentSession() || actor?.origin !== "discord" || actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
+      if (!endpointMatchesCurrentSession() || actor?.origin !== "discord" || actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
           !cfg.notifications?.discord?.allowedUserIds?.includes(actor.userId ?? "") || pendingRemote || signal.aborted) return false;
       if (stage && ((sessionModel || defaultModel).startsWith("agy/") || history[0]?.role !== "system")) return false;
       const request = { text, finish, signal, stage, epoch: 0, origin: "discord" as const };
@@ -5384,17 +5309,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return true;
     };
     sessionNotifyEndpoint.onUserMessage = async (msg): Promise<void | boolean | "queue_full"> => {
-      if (!sandboxAuthority || !endpointMatchesCurrentSession()) return false;
+      if (!endpointMatchesCurrentSession()) return false;
       if (msg.actor && (msg.actor.origin !== "discord" || msg.actor.sessionKey !== sessionNotifyEndpoint.sessionId ||
           !cfg.notifications?.discord?.allowedUserIds?.includes(msg.actor.userId ?? ""))) return false;
       relayInputEpoch++;
       remoteInputPending++;
       try {
-      // The endpoint validates image bytes; never interpret remote text as a path.
       const images = msg.images ?? [];
       const cleanedText = msg.text;
-      // Attachment normalization must not expose a remote slash command that
-      // bypasses the local approval prompt or changes local execution policy.
       if (cleanedText.trimStart().startsWith("/") || cleanedText.trimStart().startsWith("!")) return false;
       if (!endpointMatchesCurrentSession()) return false;
       if (!images.length && interactiveTurnActive && currentTurnSteer) {
@@ -5503,9 +5425,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         const request = exclusiveRemote;
         if (!promptWasRemote || rawText !== request.text || request.signal.aborted || relayInputEpoch !== request.epoch || remoteInputPending ||
             pendingImages.length || pendingStdinLines.length || pendingMidTurnCommands.length || queuedPromptInput.partial || queuedPromptInput.pastedLines.length ||
-            promptPasteActive || pasteInFlight || pastedDraft || Reflect.get(rl, "line") !== "" || !endpointMatchesCurrentSession()) {
+            promptPasteActive || pasteInFlight || pastedDraft || Reflect.get(rl, "line") !== "" || !sessionStillActive()) {
           exclusiveRemote = undefined;
-          if (request.origin === "telegram" && !request.signal.aborted && endpointMatchesCurrentSession()) pendingTelegram.unshift(request);
+          if (request.origin === "telegram" && !request.signal.aborted && sessionStillActive()) pendingTelegram.unshift(request);
           else request.finish();
           if (promptWasRemote) continue;
         } else {
@@ -5522,7 +5444,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             const normalizedReply = reply.replace(/\\\//g, "/");
             const leaksStagePath = !!stagePath && (normalizedReply.includes(stagePath) || normalizedReply.toLowerCase().includes(encodeURIComponent(stagePath).toLowerCase()));
             const eligible = !request.signal.aborted && done && reply !== "Cancelled." && !!reply.trim() && relayInputEpoch === request.epoch &&
-              remoteInputPending === 0 && endpointMatchesCurrentSession();
+              remoteInputPending === 0 && sessionStillActive();
             const output = !eligible ? undefined : notifyRedact ? "[redacted]" : leaksStagePath
               ? "Response omitted because it contained a private staging path; generated files follow if available."
               : reply;
@@ -5575,15 +5497,96 @@ navMatches = [];
         continue;
       }
       if (input === "/discord" || input.startsWith("/discord ")) {
-        const parts = input.split(/\s+/);
-        const isControlOn = parts.length === 4 && parts[1] === "control" && parts[2] === "on" && parts[3] === "--allow-full-control";
-        const isControlOff = parts.length === 3 && parts[1] === "control" && parts[2] === "off";
-        if (isControlOn || isControlOff) {
-          if (!directLocalPrompt || explicitPastedDraft || promptServedFromPaste || remoteInputPending !== 0 ||
-              relayInputEpoch - relayEpoch !== ambiguousPasteEpoch - ambiguousEpoch) {
+        const parts = input.split(/\s+/).filter(Boolean);
+        const verb = parts[1];
+        const rest = parts.slice(2).join(" ");
+        const isControlOn = parts.length === 4 && verb === "control" && parts[2] === "on" && parts[3] === "--allow-full-control";
+        const isControlOff = parts.length === 3 && verb === "control" && parts[2] === "off";
+        const isDirectPrompt = directLocalPrompt && !explicitPastedDraft && !promptServedFromPaste && remoteInputPending === 0 &&
+          relayInputEpoch - relayEpoch === ambiguousPasteEpoch - ambiguousEpoch;
+        if (verb === "status" && parts.length === 2) {
+          const activeTools = [...allowedTools];
+          const liveSummary = liveDiscordBridge?.active
+            ? `active (channels=${liveDiscordBridge.config.platforms.discord?.allowedChannelIds?.join(",") ?? ""}; relay=${liveDiscordBridge.relayDestination ?? "off"})`
+            : "off";
+          const daemonSummary = sessionNotifyEndpoint && endpointMatchesCurrentSession()
+            ? (sessionNotifyEndpoint.isDiscordControlEnabled() ? "enabled" : "off")
+            : "unavailable";
+          console.log(`Discord live bridge: ${liveSummary}; daemon control: ${daemonSummary}; cwd: ${cwd}; active tools: ${activeTools.length ? activeTools.join(", ") : "none"}.`);
+          continue;
+        }
+        if (verb === "stop" && parts.length === 2) {
+          if (!isDirectPrompt) {
             console.log("Discord control requires a directly submitted local prompt.");
-          } else if (isControlOn && !sandboxAuthority) {
-            console.log("SANDBOX_REQUIRED: configure a sandbox and start a new launch before enabling Discord control.");
+          } else {
+            let stoppedSomething = false;
+            if (liveDiscordBridge?.active) {
+              const bridge = liveDiscordBridge;
+              liveDiscordBridge = undefined;
+              await bridge.close().catch(() => undefined);
+              stoppedSomething = true;
+            }
+            if (sessionNotifyEndpoint && endpointMatchesCurrentSession() && sessionNotifyEndpoint.isDiscordControlEnabled()) {
+              sessionNotifyEndpoint.setDiscordControlEnabled(false);
+              stoppedSomething = true;
+            }
+            console.log(stoppedSomething ? "Discord live bridge and remote control stopped; access revoked." : "Discord live bridge is not active.");
+          }
+          continue;
+        }
+        if (verb === "live") {
+          const liveTokens = parts.slice(2);
+          const hasAck = liveTokens.at(-1) === "--allow-full-control";
+          const configArg = hasAck ? liveTokens.slice(0, -1).join(" ").trim() : "";
+          if (!hasAck) {
+            console.log("Usage: /discord live [<messenger.json>] --allow-full-control");
+          } else if (!isDirectPrompt) {
+            console.log("Discord live bridge requires a directly submitted local prompt.");
+          } else if (!sessionId) {
+            console.log("Discord live bridge requires a persisted session identity (cannot run with --no-session).");
+          } else if (liveDiscordBridge?.active || liveDiscordStarting) {
+            console.log("Discord live bridge is already active or starting (/discord stop first).");
+          } else {
+            const confirmationEpoch = relayInputEpoch;
+            const confirmed = !pastedDraft || await confirmLocalControl({ input: process.stdin, output: process.stdout });
+            if (!confirmed || remoteInputPending !== 0 || relayInputEpoch !== confirmationEpoch || !sessionStillActive()) {
+              console.log("Discord live bridge not started.");
+            } else {
+              const resolvedPath = configArg ? path.resolve(cwd, configArg) : defaultDiscordConfigPath();
+              liveDiscordStarting = true;
+              try {
+                const bridge = await loadAndCreateLiveDiscordBridge({
+                  sessionId,
+                  cwd,
+                  isAlive: () => sessionStillActive(),
+                  isBusy: () => interactiveTurnActive || !!pendingRemote || !!exclusiveRemote || pendingImages.length > 0 || pendingStdinLines.length > 0 || draftHasPaste || promptPasteActive || pasteInFlight || queuedPromptInput.inPaste || !!queuedPromptInput.partial || queuedPromptInput.pastedLines.length > 0 || Reflect.get(rl, "line") !== "",
+                  runTurn: (promptText, signal) => enqueueLiveDiscordTurn(promptText, signal),
+                  abortTurn: async reason => { activeTurnAbort?.(reason); },
+                  onStatus: msg => { if (activeTui) activeTui.events().onNotice?.(msg); else console.log(msg); },
+                  onWarning: msg => { if (activeTui) activeTui.events().onNotice?.(msg); else console.log(msg); },
+                  onError: msg => { if (activeTui) activeTui.events().onNotice?.(msg); else console.error(msg); },
+                  onDetached: () => { if (liveDiscordBridge === bridge) liveDiscordBridge = undefined; },
+                }, resolvedPath, {}, { acknowledgeFullControl: true });
+                liveDiscordBridge = bridge;
+                void bridge.run().catch(error => {
+                  if (liveDiscordBridge !== bridge) return;
+                  liveDiscordBridge = undefined;
+                  console.error(`Discord live bridge stopped: ${error instanceof Error ? error.message : String(error)}`);
+                });
+                const activeTools = [...allowedTools];
+                console.log(`Discord live bridge active (${resolvedPath}) with full host control acknowledged. Active tools: ${activeTools.length ? activeTools.join(", ") : "none"}. /discord stop revokes access.`);
+              } catch (error) {
+                console.log(`Failed to start Discord live bridge: ${error instanceof Error ? error.message : String(error)}`);
+              } finally {
+                liveDiscordStarting = false;
+              }
+            }
+          }
+          continue;
+        }
+        if (isControlOn || isControlOff) {
+          if (!isDirectPrompt) {
+            console.log("Discord control requires a directly submitted local prompt.");
           } else if (!sessionNotifyEndpoint || !endpointMatchesCurrentSession()) {
             console.log("Discord control unavailable: notification session endpoint unavailable.");
           } else {
@@ -5594,17 +5597,36 @@ navMatches = [];
             } else {
               sessionNotifyEndpoint.setDiscordControlEnabled(isControlOn);
               console.log(isControlOn
-                ? "Discord control enabled for this sandbox session. Only authenticated allowlisted users can submit turns or explicit /sandbox controls. Run /discord control off to revoke remote control."
+                ? sandboxAuthority
+                  ? "Discord control enabled for this sandbox session. Only authenticated allowlisted users can submit turns or explicit /sandbox controls. Run /discord control off to revoke remote control."
+                  : "Discord control enabled for this host session. Authorized allowlisted users can submit turns using this session's tools and approval policy. Run /discord control off to revoke remote control."
                 : "Discord control revoked for this session.");
             }
           }
           continue;
         }
-        if (parts.length !== 3 || parts[1] !== "relay" || !(parts[2] === "off" || /^\d{1,20}$/.test(parts[2]!))) {
-          console.log("Usage: /discord relay <allowed-channel-id|off>");
-        } else if (!directLocalPrompt || explicitPastedDraft || promptServedFromPaste || remoteInputPending !== 0 ||
-                   relayInputEpoch - relayEpoch !== ambiguousPasteEpoch - ambiguousEpoch) {
+        if (parts.length !== 3 || verb !== "relay" || !(parts[2] === "off" || /^\d{1,20}$/.test(parts[2]!))) {
+          console.log("Usage: /discord live [<messenger.json>] --allow-full-control | stop | status | relay <allowed-channel-id|off> | control on --allow-full-control | control off");
+        } else if (!isDirectPrompt) {
           console.log("Discord relay control requires a directly submitted local prompt.");
+        } else if (liveDiscordBridge?.active) {
+          const confirmationEpoch = relayInputEpoch;
+          const confirmed = parts[2] === "off" || !pastedDraft || await confirmLocalControl({
+            input: process.stdin,
+            output: process.stdout,
+            warning: "Discord relay shares eligible local responses with viewers of the selected Discord channel.",
+            prompt: "Confirm Discord relay: press y to allow, any other key to cancel.",
+          });
+          if (!confirmed || remoteInputPending !== 0 || relayInputEpoch !== confirmationEpoch || !sessionStillActive()) {
+            console.log("Discord relay request not sent.");
+          } else {
+            try {
+              liveDiscordBridge.setRelayDestination(parts[2] === "off" ? undefined : parts[2]!);
+              console.log(parts[2] === "off" ? "Discord local response relay is off." : `Discord local responses will be sent to channel ${parts[2]}; /discord relay off revokes relay.`);
+            } catch (error) {
+              console.log(`Failed to configure Discord relay: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
         } else if (!sessionNotifyEndpoint || !endpointMatchesCurrentSession()) {
           console.log("Discord relay request not sent: notification session endpoint unavailable.");
         } else {
@@ -6020,9 +6042,9 @@ navMatches = [];
         // or an API-compatible endpoint. Switching the active provider/model lives in /model.
         const providerOnboardingUsage = (): string[] => [
           "Provider onboarding — set up credentials or an API-compatible endpoint:",
-          "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity|<subscription>]   (alias: /login)",
+          "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity|kimi|perplexity|<subscription>]   (alias: /login)",
           "                         subscriptions (token): alibaba-coding-plan, qwen-portal, xiaomi-token-plan-*, minimax-code*",
-          "  API key (cloud)      : /provider key [provider] [key]   (groq, deepseek, mistral, openrouter, …)",
+          "  API key (cloud)      : /provider key [provider] [key]   (groq, deepseek, mistral, openrouter, perplexity, …)",
           "  API-compatible       : /provider add --id <id> --base-url <url> [--compat openai|anthropic] [--model a,b]",
           "                         presets: /provider add --preset <id> [--base-url <url>]   ·   list: /provider presets",
           "                         manage: /provider list   ·   /provider remove <id>",
@@ -6048,22 +6070,22 @@ navMatches = [];
           // action === undefined (cancelled) → fall through to the readiness panel.
         }
         // `/provider key [name] [key]` → store an API key for an API-key-only provider
-        // (groq/deepseek/mistral/…). Interactive: pick the provider, then paste the key.
+        // (groq/deepseek/mistral/…) or dual-auth search provider (perplexity).
         if (name === "key") {
           const replaceAll = tokens.includes("--replace");
           const nonFlag = tokens.slice(1).filter(t => t !== "--replace");
-          // kimi is dual-credential (moonshot API key OR Kimi Code OAuth) — keep it key-settable.
-          const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi"]);
+          // kimi & perplexity are dual-credential (OAuth OR API key) — keep both key-settable.
+          const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi", "perplexity"]);
           let target = nonFlag.map(t => t.toLowerCase()).find(t => keyed.has(t)) as AuthProvider | undefined;
           // A trailing token after the provider name is treated as the key itself.
           const inlineKey = target ? nonFlag.filter(t => t.toLowerCase() !== target).pop() : undefined;
           if (!target) {
-            const statuses = await describeAllProviders();
+            const statuses = [...(await describeAllProviders()), ...(await describeSearchProviders())];
             if (process.stdin.isTTY && process.stdout.isTTY) {
               target = await pickApiKeyProvider(statuses);
             } else {
               console.log("Set an API key for which provider?");
-              console.log(`  ${API_KEY_ONLY_PROVIDERS.filter(p => !(SUBSCRIPTION_PROVIDER_NAMES as readonly string[]).includes(p)).join(", ")}`);
+              console.log(`  ${[...API_KEY_ONLY_PROVIDERS.filter(p => !(SUBSCRIPTION_PROVIDER_NAMES as readonly string[]).includes(p)), "perplexity"].join(", ")}`);
               console.log("  Subscription / plan products use /provider login (token).");
               console.log("  Usage: /provider key <provider> <api-key> [--replace]   (or set <PROVIDER>_API_KEY)");
             }
@@ -6092,18 +6114,24 @@ navMatches = [];
               : "";
             console.log(`[SUCCESS] ${keyRes.added ? "Stored" : "Kept"} ${target} API key in ~/.jeo/config.json${poolNote} (also reads ${envVar}).`);
           }
-          const live = await refreshLiveModelsCache();
-          const after = (await describeAllProviders()).find(s => s.name === target);
-          if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
-          const forProvider = live.filter(r => r.provider === target);
-          if (forProvider.some(r => r.ok && r.models.length > 0)) {
-            lastPickIndex = flattenModels(forProvider);
-            const viaCatalog = forProvider.some(r => r.fallback);
-            console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint unavailable; showing known models)" : ""}`);
-            logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+          if (target === "perplexity") {
+            const after = await describeProvider("perplexity");
+            console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+            console.log("  web_search will prioritize Perplexity automatically.");
           } else {
-            const failed = forProvider.find(r => !r.ok);
-            if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+            const live = await refreshLiveModelsCache();
+            const after = (await describeAllProviders()).find(s => s.name === target);
+            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+            const forProvider = live.filter(r => r.provider === target);
+            if (forProvider.some(r => r.ok && r.models.length > 0)) {
+              lastPickIndex = flattenModels(forProvider);
+              const viaCatalog = forProvider.some(r => r.fallback);
+              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint unavailable; showing known models)" : ""}`);
+              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+            } else {
+              const failed = forProvider.find(r => !r.ok);
+              if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+            }
           }
           continue;
         }
@@ -6191,18 +6219,24 @@ navMatches = [];
             const { email, poolSize } = await interactiveOAuthLogin(target as AuthProvider, rl, console.log, { replaceAll });
             const poolSuffix = poolSize > 1 ? ` (pool: ${poolSize} accounts, circular failover active)` : "";
             console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}${poolSuffix}. Tokens saved to ~/.jeo/config.json.`);
-            const live = await refreshLiveModelsCache();
-            const after = (await describeAllProviders()).find(s => s.name === target);
-            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
-            const forProvider = live.filter(r => r.provider === target);
-            if (forProvider.some(r => r.ok && r.models.length > 0)) {
-              lastPickIndex = flattenModels(forProvider);
-              const viaCatalog = forProvider.some(r => r.fallback);
-              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
-              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+            if (target === "perplexity") {
+              const after = await describeProvider("perplexity");
+              console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+              console.log("  web_search will prioritize Perplexity automatically.");
             } else {
-              const failed = forProvider.find(r => !r.ok);
-              if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+              const live = await refreshLiveModelsCache();
+              const after = (await describeAllProviders()).find(s => s.name === target);
+              if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+              const forProvider = live.filter(r => r.provider === target);
+              if (forProvider.some(r => r.ok && r.models.length > 0)) {
+                lastPickIndex = flattenModels(forProvider);
+                const viaCatalog = forProvider.some(r => r.fallback);
+                console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
+                logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+              } else {
+                const failed = forProvider.find(r => !r.ok);
+                if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+              }
             }
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
@@ -6297,9 +6331,14 @@ navMatches = [];
         // Bare `/provider` (or `help`): show readiness + the onboarding usage. No switching.
         if (!name || name === "help") {
           const cfgNow = await readGlobalConfig();
-          const statuses = await describeAllProviders(cfgNow);
+          const [statuses, searchStatuses] = await Promise.all([
+            describeAllProviders(cfgNow),
+            describeSearchProviders(cfgNow),
+          ]);
           console.log("Providers (credential · base URL):");
           logLines(formatProviderPanel(statuses));
+          console.log("Search providers (web_search #1 priority when ready):");
+          logLines(formatProviderPanel(searchStatuses));
           for (const line of providerOnboardingUsage()) console.log(line);
           continue;
         }
@@ -6316,12 +6355,12 @@ navMatches = [];
         continue;
       }
       if (input.startsWith("/logout") && (input === "/logout" || input[7] === " ")) {
-        const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
+        const cloud: readonly string[] = OAUTH_PROVIDERS;
         const parts = input.substring(7).trim().split(/\s+/).filter(Boolean);
         const target = parts.map(t => t.toLowerCase()).find(t => cloud.includes(t));
         const selector = target ? parts.find(t => t.toLowerCase() !== target) : undefined;
         if (!target) {
-          console.log("Usage: /logout <anthropic|openai|gemini|antigravity|kimi> [index|email]");
+          console.log(`Usage: /logout <${OAUTH_PROVIDERS.join("|")}> [index|email]`);
           continue;
         }
         const removed = await logoutOAuth(target as AuthProvider, selector);
@@ -6518,10 +6557,16 @@ navMatches = [];
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages, { displayInput: inputDisplay });
         lastReply = reply;
         const endpoint = sessionNotifyEndpoint;
-        if (relayGeneration !== undefined && directLocalPrompt && !explicitPastedDraft && !promptServedFromPaste && !pasteLineFired &&
-            remoteInputPending === 0 && relayInputEpoch - relayEpoch === ambiguousPasteEpoch - ambiguousEpoch && endpoint && endpointMatchesCurrentSession() &&
-            done && reply !== "Cancelled." && reply.trim()) {
-          endpoint.sendLocalFinal(notifyRedact ? "[redacted]" : reply, relayGeneration);
+        const eligibleLocalRelay = directLocalPrompt && !explicitPastedDraft && !promptServedFromPaste && !pasteLineFired &&
+            remoteInputPending === 0 && relayInputEpoch - relayEpoch === ambiguousPasteEpoch - ambiguousEpoch &&
+            done && reply !== "Cancelled." && reply.trim();
+        if (eligibleLocalRelay) {
+          if (relayGeneration !== undefined && endpoint && endpointMatchesCurrentSession()) {
+            endpoint.sendLocalFinal(notifyRedact ? "[redacted]" : reply, relayGeneration);
+          }
+          if (liveDiscordBridge?.active && liveDiscordBridge.relayDestination && sessionStillActive()) {
+            void liveDiscordBridge.relayLocalOutput(notifyRedact ? "[redacted]" : reply);
+          }
         }
         // A cancelled turn (ESC / Ctrl-C) must also cancel the pasted batch —
         // continuing to auto-run the rest of a paste after an abort is hostile.

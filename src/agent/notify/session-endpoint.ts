@@ -241,6 +241,10 @@ export class SessionNotifyEndpoint {
     }
   }
 
+  isDiscordControlEnabled(): boolean {
+    return this.discordControlEnabled;
+  }
+
   private async handleMessage(ws: ServerWebSocket<undefined>, raw: string | Buffer): Promise<void> {
     if (Buffer.byteLength(raw) > MAX_INBOUND_BYTES) return;
     let msg: Record<string, unknown>;

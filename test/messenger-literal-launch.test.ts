@@ -6,9 +6,6 @@ import * as path from "node:path";
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts");
 
-// Every literal/remote launch requires an explicit OS sandbox; there is no host fallback.
-const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 256 * 1024 * 1024, pids: 64, cpus: 1 } };
-
 /** Disjoint workspace, private config and session directories. */
 async function layout(prefix: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -26,7 +23,6 @@ function launchEnv(dirs: { configDir: string; sessionDir: string }, port: number
     HOME: process.env.HOME ?? "",
     JEO_CONFIG_DIR: dirs.configDir,
     JEO_SESSION_DIR: dirs.sessionDir,
-    JEO_MESSENGER_SANDBOX: JSON.stringify(sandbox),
     OPENAI_API_KEY: "local-test-key",
     OPENAI_BASE_URL: `http://127.0.0.1:${port}/v1`,
     ...extra,
@@ -195,7 +191,7 @@ test("literal worker uses its explicit fallback only on a persistent quota failu
 test("literal worker can use explicitly enabled computer and file tools", async () => {
   const dirs = await layout("jeo-worker-tools-");
   const { root, workspace, configDir } = dirs;
-  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini", computer: { enabled: false } }));
+  await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify({ providers: {}, defaultModel: "openai/gpt-4o-mini", computer: { enabled: true } }));
   await fs.writeFile(path.join(workspace, "dummy.test.ts"), "import { test, expect } from 'bun:test'; test('ok', () => { expect(1).toBe(1); });\n");
   const requests: string[] = [];
   const replies = [
@@ -217,7 +213,7 @@ test("literal worker can use explicitly enabled computer and file tools", async 
   } });
   try {
     const child = Bun.spawn([process.execPath, cli, "launch", "--print", "--no-tui", "--no-skills", "--tools", "computer,write,bash", "--literal-worker", "--model", "openai/gpt-4o-mini", "--", "worker"], {
-      cwd: workspace, env: launchEnv(dirs, server.port!, { ...workerEnv(), JEO_MESSENGER_COMPUTER_ENABLED: "1" }), stdin: "pipe", stdout: "pipe", stderr: "pipe",
+      cwd: workspace, env: launchEnv(dirs, server.port!, workerEnv()), stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     child.stdin.write('"use tools"\n'); child.stdin.end();
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

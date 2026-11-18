@@ -26,7 +26,6 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root
 async function directory(): Promise<string> { const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-messenger-runtime-")); roots.push(root); return root; }
 
 const bun = "/opt/bun/bin/bun";
-const sandbox = { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } };
 const posix = process.platform !== "win32";
 const cliOf = (profileDir: string, version: string): string => path.join(profileDir, "runtime", version, "node_modules", MESSENGER_PACKAGE, "src", "cli.ts");
 const exists = (file: string): Promise<boolean> => fs.stat(file).then(() => true, () => false);
@@ -56,7 +55,7 @@ async function profile(root: string, name: string): Promise<{ configPath: string
 	const sessionDir = path.join(root, `${name}-sessions`);
 	await Promise.all([dir, cwd, sessionDir].map(item => fs.mkdir(item, { recursive: true, mode: 0o700 })));
 	const configPath = path.join(dir, "messenger.json");
-	await fs.writeFile(configPath, JSON.stringify({ cwd, sessionDir, sandbox, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } }));
+	await fs.writeFile(configPath, JSON.stringify({ cwd, sessionDir, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } }));
 	return { configPath, directory: dir, runScript: path.join(dir, MESSENGER_RUN_SCRIPT_POSIX) };
 }
 

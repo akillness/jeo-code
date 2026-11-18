@@ -1,8 +1,4 @@
-import { mkdir, readFile, lstat, chmod, realpath } from "node:fs/promises";
-import { join } from "node:path";
-import { hostBootTimeMs, processStartTimeMs } from "../agent/notify/daemon-control";
-import { discordHostActionDigest, isDiscordActionRequest, isDiscordHostBootstrap } from "./host-protocol";
-import type { DiscordActionDecision, DiscordHostAction, DiscordHostBootstrap, DiscordRunRef, DiscordWorkerOwner, DiscordWorkerScope, MessengerActivityReporter } from "./types";
+import type { MessengerActivityReporter } from "./types";
 import { isRecord, MessengerUnverifiedReplyError } from "./types";
 
 interface WorkerProcess {
@@ -24,8 +20,6 @@ interface Pending {
 	/** The result is an UNVERIFIED-marked answer: the turn rejects with it while the worker keeps serving. */
 	unverified?: boolean;
 	written?: boolean;
-	hostRun?: DiscordRunRef;
-	actions?: AbortController;
 }
 
 interface Worker {
@@ -41,11 +35,6 @@ interface Worker {
 	cleanupNonce?: string;
 	cleanupGone?: boolean;
 	cleanupError?: Error;
-	host?: DiscordHostBootstrap;
-	owner?: DiscordWorkerOwner;
-	requests?: Set<string>;
-	activeRequests?: Set<AbortController>;
-	startup?: AbortController;
 	idleTimer?: ReturnType<typeof setTimeout>;
 	exitTimer?: ReturnType<typeof setTimeout>;
 	/** Diagnostic lines already forwarded for this worker. */
@@ -60,7 +49,7 @@ export const MESSENGER_WORKER_DIAGNOSTIC_LINES = 20;
 const MAX_DIAGNOSTIC_LINE_LENGTH = 300;
 
 export interface MessengerSessionPool {
-	turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string, hostRun?: DiscordRunRef): Promise<string>;
+	turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string>;
 	stop(key: string): Promise<void>;
 	close(): Promise<void>;
 }
@@ -72,16 +61,8 @@ export interface MessengerSessionPoolOptions {
 	 * environments carry no platform tokens, and the conversation key is a route digest, never message text.
 	 */
 	onDiagnostic?: (key: string, line: string) => void;
-	/**
-	 * Kills the sandbox processes a worker left behind when it exited without acknowledging shutdown (the worker's
-	 * own environment says which sandbox it used). Resolves true only when nothing is left; false or a rejection
-	 * keeps the worker's cleanup unproven.
-	 */
+	/** Optional orphan reaper callback for worker cleanup verification. */
 	reapOrphans?: (workerEnv: Readonly<Record<string, string>>) => Promise<boolean>;
-	/** Parent-bound authorization; a child never supplies an actor or conversation identity. */
-	onActionRequest?: (run: DiscordRunRef, action: DiscordHostAction, signal: AbortSignal) => Promise<void>;
-	/** Publish ownership durably before the first host stdin frame is written. */
-	onWorkerStarted?: (scope: DiscordWorkerScope, owner: DiscordWorkerOwner) => Promise<void>;
 }
 
 /** One printable, bounded line: control characters collapse to spaces. */
@@ -108,9 +89,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 	const closedSignal = new AbortController();
 
 	let tick = 0;
-
-	// Admission: at most `limit` turns hold a worker at once. Later turns wait here in arrival order until a
-	// running turn settles, so a busy pool is backpressure on the waiting request, never a failure of it.
 	let admitted = 0;
 	const waiting: Array<() => void> = [];
 
@@ -130,22 +108,17 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		});
 	}
 
-	/** Hand the finished turn's slot straight to the oldest waiter, or free it. */
 	function release() {
 		const next = waiting.shift();
 		if (next) next(); else admitted--;
 	}
 
 	function forceKill(worker: Worker) {
-		if (worker.cleanupNonce) return;
 		if (worker.forceSent) return;
 		try { worker.child.kill("SIGKILL"); worker.forceSent = true; } catch { /* Retry on shutdown if termination failed. */ }
 	}
 
 	function retire(key: string, worker: Worker, preservePending = false) {
-		worker.pending?.actions?.abort();
-		worker.startup?.abort();
-		for (const request of worker.activeRequests ?? []) request.abort();
 		if (!preservePending) {
 			worker.pending?.reject(new Error("Messenger worker stopped"));
 			worker.pending = undefined;
@@ -166,14 +139,12 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		worker.idleTimer = undefined;
 		if (!worker.exited) {
 			if (worker.cleanupNonce) {
-				// Protected workers never receive a kill signal: Windows cannot deliver a catchable SIGTERM.
-				// Shutdown is a private IPC message; a missing or failing channel is visible, never success.
 				const channel = worker.child.send;
 				if (typeof channel !== "function") {
 					worker.cleanupError = incomplete("worker shutdown channel unavailable");
 				} else {
 					try {
-						const sent = channel.call(worker.child, { type: "jeo_messenger_shutdown", nonce: worker.cleanupNonce, ...(worker.host ? { epoch: worker.host.scope.epoch } : {}) });
+						const sent = channel.call(worker.child, { type: "jeo_messenger_shutdown", nonce: worker.cleanupNonce });
 						if (sent && typeof (sent as PromiseLike<unknown>).then === "function") {
 							void (sent as PromiseLike<unknown>).then(undefined, error => { worker.cleanupError = incomplete(`worker shutdown request failed: ${String(error)}`); });
 						}
@@ -193,7 +164,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 
 	function finishTurn(key: string, worker: Worker, pending: Pending) {
 		if (worker.pending !== pending || !pending.written || pending.result === undefined) return;
-		pending.actions?.abort();
 		clearTimeout(worker.exitTimer);
 		worker.exitTimer = undefined;
 		worker.pending = undefined;
@@ -238,80 +208,13 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		});
 	}
 
-	function receiveAction(worker: Worker, message: unknown): void {
-		const pending = worker.pending;
-		const host = worker.host;
-		if (!host || worker.dead || !pending?.hostRun || pending.actions?.signal.aborted || !isDiscordActionRequest(message) || message.nonce !== host.nonce || message.epoch !== host.scope.epoch || message.runId !== pending.hostRun.runId || worker.requests?.has(message.requestId)) return;
-		// Keep both concurrent authorization and replay bookkeeping bounded for a resident worker.
-		if (!worker.requests || !worker.activeRequests || worker.requests.size >= 4096 || worker.activeRequests.size >= MESSENGER_SESSION_LIMIT) { retire(worker.key, worker); return; }
-		worker.requests.add(message.requestId);
-		let action: DiscordHostAction;
-		let actionDigest: string;
-		try { action = structuredClone(message.action); actionDigest = discordHostActionDigest(action); }
-		catch { retire(worker.key, worker); return; }
-		const request = new AbortController();
-		worker.activeRequests.add(request);
-		const abort = () => request.abort();
-		pending.actions?.signal.addEventListener("abort", abort, { once: true });
-		const timer = setTimeout(abort, 5 * 60_000);
-		timer.unref();
-		void (async () => {
-			let decision: DiscordActionDecision["decision"] = "deny";
-			let abortWait: (() => void) | undefined;
-			try {
-				if (!options.onActionRequest) throw new Error("Host action authority unavailable");
-				await Promise.race([
-					options.onActionRequest(pending.hostRun!, action, request.signal),
-					new Promise<never>((_, reject) => { abortWait = () => reject(new Error("Host action request aborted")); request.signal.addEventListener("abort", abortWait, { once: true }); if (request.signal.aborted) abortWait(); }),
-				]);
-				if (!request.signal.aborted) decision = "allow";
-			} catch { /* Authorization failure is a one-use denial, never an implicit permission. */ }
-			finally {
-				clearTimeout(timer);
-				if (abortWait) request.signal.removeEventListener("abort", abortWait);
-				pending.actions?.signal.removeEventListener("abort", abort);
-				worker.activeRequests?.delete(request);
-			}
-			if (worker.dead || worker.pending !== pending || pending.actions?.signal.aborted) return;
-			const response: DiscordActionDecision = { type: "action_decision", nonce: host.nonce, epoch: host.scope.epoch, runId: pending.hostRun!.runId, requestId: message.requestId, actionDigest, decision };
-			try {
-				if (!worker.child.send) throw new Error("Host action IPC unavailable");
-				await worker.child.send(response);
-			} catch { retire(worker.key, worker); }
-		})();
-	}
-
-	async function start(key: string, command: string[], cwd: string, env: Record<string, string>, signal: AbortSignal, policyKey?: string, hostRun?: DiscordRunRef): Promise<Worker> {
+	async function start(key: string, command: string[], cwd: string, env: Record<string, string>, signal: AbortSignal, policyKey?: string): Promise<Worker> {
 		const workerEnv = { ...env };
-		delete workerEnv.JEO_MESSENGER_HOST_BOOTSTRAP;
 		delete workerEnv.JEO_MESSENGER_SHUTDOWN_NONCE;
-		const cleanupNonce = requireSandboxCleanup || hostRun ? crypto.randomUUID() : undefined;
-		let host: DiscordHostBootstrap | undefined;
-		if (hostRun) {
-			if (!options.onWorkerStarted || hostRun.sessionId !== key || !/^[a-zA-Z0-9_-]+$/.test(key) || !Number.isSafeInteger(hostRun.generation) || hostRun.generation < 0 || !hostRun.runId || !hostRun.conversationKey) throw new Error("Invalid host worker admission");
-			let context: unknown;
-			try { context = JSON.parse(env.JEO_MESSENGER_HOST_BOOTSTRAP ?? ""); } catch { throw new Error("Host worker bootstrap unavailable"); }
-			if (!isRecord(context) || context.sessionDir !== env.JEO_SESSION_DIR || context.cwd !== cwd || typeof context.sessionDir !== "string") throw new Error("Host worker bootstrap mismatch");
-			const sessionDir = await realpath(context.sessionDir);
-			workerEnv.JEO_SESSION_DIR = sessionDir;
-			const scope: DiscordWorkerScope = { sessionId: key, generation: hostRun.generation, epoch: crypto.randomUUID() };
-			const runtimeDir = join(sessionDir, "host-runtime");
-			const receiptDir = join(runtimeDir, key);
-			for (const directory of [runtimeDir, receiptDir]) {
-				await mkdir(directory, { recursive: true, mode: 0o700 });
-				const stat = await lstat(directory);
-				if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(directory) !== directory) throw new Error("Host runtime directory is not private");
-				await chmod(directory, 0o700);
-			}
-			const candidate = { ...context, sessionDir, scope, nonce: cleanupNonce, cleanupReceipt: join(receiptDir, `${scope.epoch}.json`), bootStartedAt: await hostBootTimeMs() };
-			if (!isDiscordHostBootstrap(candidate)) throw new Error("Invalid host worker bootstrap");
-			host = candidate;
-			workerEnv.JEO_MESSENGER_HOST_BOOTSTRAP = JSON.stringify(host);
-		}
-		// Protected retiring processes still occupy capacity; unprotected legacy accounting stays unchanged.
+		const cleanupNonce = requireSandboxCleanup ? crypto.randomUUID() : undefined;
 		while (workers.size + [...allWorkers.keys()].filter(worker => worker.cleanupNonce && workers.get(worker.key) !== worker).length >= limit) {
 			if (closed || signal.aborted) throw new Error("Messenger request aborted");
-			const idle = [...workers.entries()].filter(([, worker]) => !worker.pending && !worker.startup).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+			const idle = [...workers.entries()].filter(([, worker]) => !worker.pending).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
 			if (!idle) {
 				const retiringWorker = [...allWorkers.keys()].find(worker => worker.dead && worker.cleanupNonce);
 				if (!retiringWorker) throw new Error("Messenger worker capacity reached");
@@ -323,14 +226,10 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		}
 		if (closed || signal.aborted) throw new Error("Messenger request aborted");
 		if (cleanupNonce) workerEnv.JEO_MESSENGER_SHUTDOWN_NONCE = cleanupNonce;
-		let spawnedWorker: Worker | undefined;
-		const spawnOptions = { cwd, env: workerEnv, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cleanupNonce ? { ipc(message: unknown) { if (spawnedWorker) receiveAction(spawnedWorker, message); }, serialization: "json" } : {}) };
+		const spawnOptions = { cwd, env: workerEnv, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cleanupNonce ? { ipc() {}, serialization: "json" } : {}) };
 		const child = spawn(command, spawnOptions as never) as unknown as WorkerProcess;
 		const cleanup = Promise.withResolvers<number>();
-		// A stopped bootstrap cannot finish a durable owner write after this key is admitted again.
-		const publication = Promise.withResolvers<void>();
-		const worker: Worker = { key, child, exit: host ? Promise.all([cleanup.promise, publication.promise]).then(([code]) => code) : cleanupNonce ? cleanup.promise : child.exited, cleanupNonce, policyKey, host, ...(host ? { requests: new Set<string>(), activeRequests: new Set<AbortController>(), startup: new AbortController() } : {}), lastUsed: ++tick, dead: false, diagnostics: 0 };
-		spawnedWorker = worker;
+		const worker: Worker = { key, child, exit: cleanupNonce ? cleanup.promise : child.exited, cleanupNonce, policyKey, lastUsed: ++tick, dead: false, diagnostics: 0 };
 		const diagnose = (text: string): void => {
 			if (!onDiagnostic || worker.diagnostics > MESSENGER_WORKER_DIAGNOSTIC_LINES) return;
 			const line = diagnosticLine(text);
@@ -339,7 +238,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			try { onDiagnostic(key, worker.diagnostics > MESSENGER_WORKER_DIAGNOSTIC_LINES ? "further worker output suppressed" : line); }
 			catch { /* The operator log never affects the turn. */ }
 		};
-		// An exit during a turn, or a non-zero exit, explains the user-visible failure; a clean idle exit is routine.
 		void child.exited.then(code => { if (code !== 0 || worker.pending) diagnose(`worker exited with code ${code}${worker.pending ? " during a turn" : ""}`); }, () => {});
 		exits.set(worker.exit, worker);
 		void worker.exit.then(() => {
@@ -352,7 +250,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			const pending = worker.pending;
 			if (!pending) return;
 			if (line === "JEO_MESSENGER_ERROR") { retire(key, worker); return; }
-			// An exhausted completion gate is a controlled turn end: deliver the marked answer, keep the worker.
 			if (line.startsWith("JEO_MESSENGER_UNVERIFIED ")) {
 				try {
 					const text: unknown = JSON.parse(line.slice("JEO_MESSENGER_UNVERIFIED ".length));
@@ -375,24 +272,9 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			if (cleanupNonce && line.startsWith("JEO_MESSENGER_SHUTDOWN_ACK ")) {
 				try {
 					const ack: unknown = JSON.parse(line.slice("JEO_MESSENGER_SHUTDOWN_ACK ".length));
-					if (isRecord(ack) && ack.nonce === cleanupNonce && typeof ack.gone === "boolean" && (!host || ack.epoch === host.scope.epoch)) {
+					if (isRecord(ack) && ack.nonce === cleanupNonce && typeof ack.gone === "boolean") {
 						worker.cleanupGone = ack.gone === true;
 						worker.cleanupError = worker.cleanupGone ? undefined : incomplete("worker supervisor cleanup failed");
-						// EOF/disconnect can finish cleanup before parent retirement; fence further input immediately.
-						if (host && !worker.dead) {
-							// stdout/stderr are independent: an already-buffered final result must drain first.
-							retire(key, worker, true);
-							void stdoutDone.then(() => {
-								const pending = worker.pending;
-								if (!pending) return;
-								if (pending.result === undefined) { retire(key, worker); return; }
-								finishTurn(key, worker, pending);
-								if (worker.pending === pending) {
-									worker.exitTimer = setTimeout(() => retire(key, worker), shutdownTimeoutMs);
-									worker.exitTimer.unref();
-								}
-							});
-						}
 					}
 				} catch { /* Unauthenticated or malformed output is never cleanup proof. */ }
 				return;
@@ -406,18 +288,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		}).catch(() => retire(key, worker));
 		if (cleanupNonce) {
 			void Promise.all([child.exited, stderrDone, stdoutDone]).then(async ([code]) => {
-				// A worker that died before acknowledging (killed, crashed) never ran its supervisor close, so the
-				// processes of its sandbox are orphans: reap them, and only a complete reap counts as cleanup proof.
-				if (host) {
-					try {
-						const stat = await lstat(host.cleanupReceipt);
-						if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096 || (stat.mode & 0o077) !== 0 || await realpath(host.cleanupReceipt) !== host.cleanupReceipt) throw new Error("Invalid host cleanup receipt file");
-						const receipt: unknown = JSON.parse(await readFile(host.cleanupReceipt, "utf8"));
-						if (!worker.cleanupGone || !isRecord(receipt) || receipt.version !== 1 || receipt.sessionId !== host.scope.sessionId || receipt.generation !== host.scope.generation || receipt.epoch !== host.scope.epoch || receipt.pid !== child.pid || receipt.nonce !== host.nonce || receipt.gone !== true) throw new Error("Host cleanup receipt does not match worker");
-						cleanup.resolve(code);
-					} catch { cleanup.reject(incomplete("host worker exited without authenticated cleanup receipt and acknowledgement")); }
-					return;
-				}
 				const reaped = worker.cleanupGone || !reapOrphans ? false : await reapOrphans(env).catch(() => false);
 				if (worker.cleanupGone || reaped) cleanup.resolve(code);
 				else cleanup.reject(worker.cleanupError ?? incomplete("worker exited without supervisor cleanup acknowledgement"));
@@ -433,47 +303,17 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 				if (!worker.pending?.result || worker.pending.written) retire(key, worker);
 			});
 		}, () => retire(key, worker));
-		if (host) {
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			let abortStart: (() => void) | undefined;
-			const startupSignal = AbortSignal.any([signal, closedSignal.signal, worker.startup!.signal]);
-			try {
-				await Promise.race([
-					(async () => {
-						if (!Number.isSafeInteger(child.pid) || child.pid! <= 0) throw new Error("Host worker process identity unavailable");
-						const startedAt = await processStartTimeMs(child.pid!);
-						if (startedAt === undefined) throw new Error("Host worker process ownership cannot be verified");
-						const owner: DiscordWorkerOwner = { ...host.scope, pid: child.pid!, startedAt, cleanupReceipt: host.cleanupReceipt, ...(host.bootStartedAt ? { bootStartedAt: host.bootStartedAt } : {}) };
-						worker.owner = owner;
-						if (signal.aborted || closed || worker.dead) throw new Error("Messenger worker stopped");
-						await options.onWorkerStarted!(host.scope, owner);
-					})().finally(() => publication.resolve()),
-					new Promise<never>((_, reject) => {
-						abortStart = () => reject(new Error("Messenger worker stopped during startup"));
-						startupSignal.addEventListener("abort", abortStart, { once: true });
-						timer = setTimeout(() => reject(incomplete("host worker ownership publication timed out")), Math.max(5_000, shutdownTimeoutMs));
-						if (signal.aborted || closed || worker.dead) abortStart();
-					}),
-				]);
-			} catch (error) { retire(key, worker); throw error; }
-			finally {
-				clearTimeout(timer);
-				if (abortStart) startupSignal.removeEventListener("abort", abortStart);
-				worker.startup = undefined;
-			}
-		}
 		return worker;
 	}
 
-	function turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string, hostRun?: DiscordRunRef): Promise<string> {
+	function turn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string> {
 		const blocked = quarantined.get(key);
 		if (blocked) return Promise.reject(blocked);
 		if (closed || signal.aborted || stops.has(key)) return Promise.reject(new Error("Messenger request aborted"));
-		if (hostRun) hostRun = { ...hostRun };
 		let keySignal = keySignals.get(key);
 		if (!keySignal) { keySignal = new AbortController(); keySignals.set(key, keySignal); }
 		signal = AbortSignal.any([signal, keySignal.signal]);
-		const run = () => runTurn(key, command, cwd, env, text, signal, report, policyKey, hostRun).finally(release);
+		const run = () => runTurn(key, command, cwd, env, text, signal, report, policyKey).finally(release);
 		const admitRun = () => {
 			if (closed || signal.aborted) return Promise.reject(new Error("Messenger request aborted"));
 			if (admitted < limit && waiting.length === 0) {
@@ -482,12 +322,9 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			}
 			return admit(signal).then(run);
 		};
-		// Same-key turns run strictly in arrival order. Queued turns hold no admission slot while they wait,
-		// so they never block other sessions; different keys are fully independent.
 		const previous = keyTails.get(key);
 		const result = previous ? waitForTurn(previous, signal).then(admitRun) : admitRun();
 		const settled = result.then(() => undefined, () => undefined);
-		// The tail also covers the predecessor, so an aborted queued turn never lets its successor overtake it.
 		const tail: Promise<void> = previous ? Promise.all([previous, settled]).then(() => undefined) : settled;
 		keyTails.set(key, tail);
 		void tail.then(() => { if (keyTails.get(key) === tail) { keyTails.delete(key); if (keySignals.get(key) === keySignal) keySignals.delete(key); } });
@@ -505,11 +342,11 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		});
 	}
 
-	async function runTurn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string, hostRun?: DiscordRunRef): Promise<string> {
+	async function runTurn(key: string, command: string[], cwd: string, env: Record<string, string>, text: string, signal: AbortSignal, report?: MessengerActivityReporter, policyKey?: string): Promise<string> {
 		if (closed || signal.aborted) throw new Error("Messenger request aborted");
 		for (;;) {
 			const existing = workers.get(key);
-			if (existing && (existing.policyKey !== policyKey || Boolean(existing.host) !== Boolean(hostRun) || hostRun && (existing.host?.scope.generation !== hostRun.generation || existing.host.scope.sessionId !== hostRun.sessionId))) {
+			if (existing && existing.policyKey !== policyKey) {
 				if (existing.pending) throw new Error("Messenger conversation is already active");
 				retire(key, existing);
 			}
@@ -521,7 +358,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		if ([...allWorkers].some(([worker, workerKey]) => workerKey === key && worker.pending)) {
 			throw new Error("Messenger conversation is already active");
 		}
-		const worker = workers.get(key) ?? await start(key, command, cwd, env, signal, policyKey, hostRun);
+		const worker = workers.get(key) ?? await start(key, command, cwd, env, signal, policyKey);
 		if (closed || signal.aborted || worker.dead) {
 			retire(key, worker);
 			throw new Error("Messenger worker stopped");
@@ -532,12 +369,12 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		return await new Promise<string>((resolve, reject) => {
 			const abort = () => retire(key, worker);
 			const cleanup = () => signal.removeEventListener("abort", abort);
-			const pending: Pending = { resolve: value => { cleanup(); resolve(value); }, reject: error => { cleanup(); reject(error); }, report, hostRun, ...(hostRun ? { actions: new AbortController() } : {}) };
+			const pending: Pending = { resolve: value => { cleanup(); resolve(value); }, reject: error => { cleanup(); reject(error); }, report };
 			worker.pending = pending;
 			signal.addEventListener("abort", abort, { once: true });
 			if (signal.aborted) { abort(); return; }
 			void (async () => {
-				await worker.child.stdin.write(`${JSON.stringify(hostRun ? { type: "host_turn", runId: hostRun.runId, text } : text)}\n`);
+				await worker.child.stdin.write(`${JSON.stringify(text)}\n`);
 				if (!worker.dead) await worker.child.stdin.flush();
 				pending.written = true;
 				finishTurn(key, worker, pending);
@@ -545,7 +382,6 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 		});
 	}
 
-	/** Fence this key's queued turns, then require owned cleanup and observed exit before reuse. */
 	function stop(key: string): Promise<void> {
 		const previous = stops.get(key);
 		if (previous) return previous;
@@ -567,7 +403,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			} finally { clearTimeout(timer); }
 		})();
 		stops.set(key, stopping);
-		void stopping.then(() => { stops.delete(key); keySignals.delete(key); }, () => { /* Failed cleanup retains the quarantine and its rejected stop proof. */ });
+		void stopping.then(() => { stops.delete(key); keySignals.delete(key); }, () => {});
 		return stopping;
 	}
 
@@ -581,7 +417,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 				return await Promise.race([
 					Promise.allSettled([...exits.keys()]).then(results => {
 						const failure = results.find(result => result.status === "rejected");
-						if (failure?.status === "rejected" && (requireSandboxCleanup || [...exits.values()].some(worker => worker.host))) throw incomplete(`worker cleanup failed: ${String(failure.reason)}`);
+						if (failure?.status === "rejected" && requireSandboxCleanup) throw incomplete(`worker cleanup failed: ${String(failure.reason)}`);
 						return true;
 					}),
 					new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), shutdownTimeoutMs); }),
@@ -589,7 +425,7 @@ export function createMessengerSessionPool(spawn: typeof Bun.spawn = Bun.spawn, 
 			} finally { if (timer) clearTimeout(timer); }
 		};
 		if (await waitForExits()) return;
-		if (requireSandboxCleanup || [...exits.values()].some(worker => worker.host)) throw incomplete("worker cleanup is still pending; cleanup owner retained");
+		if (requireSandboxCleanup) throw incomplete("worker cleanup is still pending; cleanup owner retained");
 		for (const worker of exits.values()) forceKill(worker);
 		if (!(await waitForExits())) throw new Error("Messenger workers did not exit after forced termination");
 	}

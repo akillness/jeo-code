@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="270" viewBox="0 0 1120 270" role="img" aria-labelledby="title desc">
+  <title id="title">jeo-code setup and web_search resolution chain</title>
+  <desc id="desc">Configure LLM and Perplexity providers via jeo setup, /provider, or jeo auth login perplexity, then web_search prioritizes Perplexity ahead of active model native search and DuckDuckGo.</desc>
+  <rect width="1120" height="270" rx="20" fill="#0b1224"/>
+  <text x="560" y="26" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" letter-spacing="0.4" fill="#8da7c7">ONBOARDING &amp; WEB_SEARCH PRIORITY</text>
+
+  <g fill="none" stroke="#57759d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M510 83h96"/>
+    <path d="m600 78 6 5-6 5"/>
+    <path d="M358 204h30m340 0h30"/>
+    <path d="m382 199 6 5-6 5m364-10 6 5-6 5"/>
+  </g>
+
+  <g stroke-width="1.5">
+    <rect x="24" y="40" width="480" height="86" rx="14" fill="#14233b" stroke="#47d7e8"/>
+    <rect x="616" y="40" width="480" height="86" rx="14" fill="#211e3c" stroke="#aa86ee"/>
+
+    <rect x="24" y="160" width="332" height="88" rx="14" fill="#172e39" stroke="#69d4ba"/>
+    <rect x="394" y="160" width="332" height="88" rx="14" fill="#18223e" stroke="#7a9df5"/>
+    <rect x="764" y="160" width="332" height="88" rx="14" fill="#291e3a" stroke="#dc78be"/>
+  </g>
+
+  <g text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">
+    <text x="560" y="72" fill="#8da7c7" font-size="11.5" font-weight="600">Or in REPL</text>
+
+    <text x="264" y="65" fill="#edf5ff" font-size="15.5" font-weight="700">Option 1 · jeo setup (CLI)</text>
+    <text x="264" y="88" fill="#aebfd6" font-size="12.5">LLM providers (1–8) + option 9) perplexity (OAuth / API key)</text>
+    <text x="264" y="109" fill="#47d7e8" font-size="12" font-weight="600">Shortcut: jeo auth login perplexity · jeo auth sync</text>
+
+    <text x="856" y="65" fill="#edf5ff" font-size="15.5" font-weight="700">Option 2 · /provider (REPL) or Env</text>
+    <text x="856" y="88" fill="#aebfd6" font-size="12.5">/provider login perplexity · /provider key perplexity</text>
+    <text x="856" y="109" fill="#aa86ee" font-size="12" font-weight="600">Or set PERPLEXITY_API_KEY / PPLX_API_KEY</text>
+
+    <text x="560" y="148" fill="#8da7c7" font-size="12" font-weight="600">web_search Resolution Chain (JEO_SEARCH_PROVIDER=auto)</text>
+
+    <text x="190" y="187" fill="#edf5ff" font-size="15" font-weight="700">1. Perplexity (Primary)</text>
+    <text x="190" y="210" fill="#aebfd6" font-size="12.5">Used first when OAuth or API key is configured</text>
+    <text x="190" y="231" fill="#69d4ba" font-size="11.5" font-weight="600">Verify with: jeo auth status</text>
+
+    <text x="560" y="187" fill="#edf5ff" font-size="15" font-weight="700">2. Active Model Native Search</text>
+    <text x="560" y="210" fill="#aebfd6" font-size="12.5">Anthropic · OpenAI · Gemini built-in search</text>
+    <text x="560" y="231" fill="#7a9df5" font-size="11.5" font-weight="600">When active credentials qualify</text>
+
+    <text x="930" y="187" fill="#edf5ff" font-size="15" font-weight="700">3. DuckDuckGo (Fallback)</text>
+    <text x="930" y="210" fill="#aebfd6" font-size="12.5">Zero-config search built into jeo-code</text>
+    <text x="930" y="231" fill="#dc78be" font-size="11.5" font-weight="600">Works even without Perplexity login</text>
+  </g>
+</svg>

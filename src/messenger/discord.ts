@@ -63,8 +63,6 @@ export interface DiscordClock {
 
 export interface DiscordTransportDeps extends MessengerTransportDeps {
 	clock?: DiscordClock;
-	/** Authorize the exact already-loaded project files; response.txt is ordinary response text. */
-	authorizeArtifacts?: (message: MessengerMessage, files: readonly { name: string; data: Uint8Array }[], signal: AbortSignal) => Promise<void>;
 }
 
 const defaultClock: DiscordClock = {
@@ -839,17 +837,7 @@ export function createDiscordAdapter(
 					}
 				}
 			}
-			// Pin upload bytes before asking the parent. Never reread a path after an approval.
-			const uploads = files.map(file => ({ name: file.name, blob: new Blob([file.data.slice()]),
-				digest: new Bun.CryptoHasher("sha256").update(file.data).digest("hex") }));
-			if (files.length > 0) {
-				signal?.throwIfAborted();
-				if (config.workerMode === "host" && !deps.authorizeArtifacts) throw new Error("Discord host artifact delivery requires parent authorization");
-				await deps.authorizeArtifacts?.(message, Object.freeze(files.map(file => Object.freeze(file))), signal ?? new AbortController().signal);
-				signal?.throwIfAborted();
-				if (files.some((file, index) => file.name !== uploads[index]!.name ||
-					new Bun.CryptoHasher("sha256").update(file.data).digest("hex") !== uploads[index]!.digest)) throw new Error("Discord artifact bytes changed during authorization");
-			}
+			const uploads = files.map(file => ({ name: file.name, blob: new Blob([file.data.slice()]) }));
 			for (const file of uploads) {
 				signal?.throwIfAborted();
 				const requestHeaders = headers();

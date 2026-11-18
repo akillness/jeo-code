@@ -14,7 +14,7 @@ import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 const base: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "thread", parentChannelId: "channel", threadId: "thread", senderId: "owner", messageId: "one", text: "hello", direct: false, mentioned: false };
-const config: MessengerConfig = { cwd: "/repo", sessionDir: "/sessions", sandbox: { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } };
+const config: MessengerConfig = { cwd: "/repo", sessionDir: "/sessions", toolNames: [], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } };
 const attachment = { url: "https://cdn.discordapp.com/attachments/1/2/input", filename: "../../input.txt", size: 2 };
 async function directory(): Promise<string> { const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-messenger-contract-")); roots.push(root); return root; }
 const selectModel: typeof selectDiscordModel = (explicit, opts) => selectDiscordModel(explicit, {
@@ -69,7 +69,6 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
   await fs.mkdir(path.dirname(configPath));
   const expected = {
     cwd: "../shared-workspace", sessionDir: "./private-history", toolNames: ["read", "write"],
-    sandbox: config.sandbox,
     platforms: {
       discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner", "collaborator"], allowedChannelIds: ["channel"], model: "openai/gpt-6.1-terra", artifactDir: "./artifacts" },
       telegram: { tokenEnv: "MY_TELEGRAM_TOKEN", allowedUserIds: ["telegram-owner"], allowedChannelIds: ["telegram-room"] },
@@ -106,7 +105,7 @@ for (const independentSessions of [true, false]) test(`Discord setup migrates ob
 test("invalid Discord setup tools leave the existing config unchanged", async () => {
   const root = await directory();
   const configPath = path.join(root, "messenger.json");
-  const original = JSON.stringify({ cwd: "./workspace", sessionDir: "./sessions", sandbox: config.sandbox, toolNames: ["read"], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } }, null, 2);
+  const original = JSON.stringify({ cwd: "./workspace", sessionDir: "./sessions", toolNames: ["read"], platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } }, null, 2);
   await fs.writeFile(configPath, original);
   const responses: Record<string, unknown> = {
     "/users/@me": { id: "bot", username: "test-bot", bot: true },
@@ -130,91 +129,31 @@ test("invalid Discord setup tools leave the existing config unchanged", async ()
   expect((await fs.readdir(root)).filter(name => name.endsWith(".tmp"))).toEqual([]);
 });
 
-test("Discord setup rejects an invalid explicit Docker sandbox without prompting or changing configuration", async () => {
+test("fresh Discord setup defaults to toolNames: [], ./workspace, ./sessions, and strips legacy sandbox keys", async () => {
   const root = await directory();
-  const configPath = path.join(root, "messenger.json");
-  const original = JSON.stringify({ sandbox: { image: "invalid image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, platforms: { discord: { allowedUserIds: ["owner"] } } });
-  await fs.writeFile(configPath, original);
-  await expect(setupDiscordMessenger({ configPath, dmTest: false }, {
-    interactive: true, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
-  }, { fetch: async () => { throw new Error("Unexpected network"); } })).rejects.toThrow("SANDBOX_CONFIG");
-  expect(await fs.readFile(configPath, "utf8")).toBe(original);
-});
-
-for (const scenario of ["fresh", "migration", "private"] as const) test({ fresh: "explicit sandbox Discord setup creates a workspace accepted by sandbox policy", migration: "Discord setup reports missing-cwd migration to a sandbox-eligible workspace", private: "Discord setup refuses a private configured workspace without replacing the config" }[scenario], async () => {
-  const root = await directory();
-  const script = path.join(root, "setup-check.ts");
-  const setupModule = path.resolve(import.meta.dir, "../src/messenger/discord-setup.ts");
-  const configModule = path.resolve(import.meta.dir, "../src/messenger/config.ts");
-  const policyModule = path.resolve(import.meta.dir, "../src/agent/sandbox/policy.ts");
-  await fs.writeFile(script, `
-    import { setupDiscordMessenger } from ${JSON.stringify(setupModule)};
-    import { loadMessengerConfig } from ${JSON.stringify(configModule)};
-    import { createSandboxPolicy } from ${JSON.stringify(policyModule)};
-    import * as path from "node:path";
-    import * as fs from "node:fs/promises";
-    const configPath = path.join(process.env.JEO_CONFIG_DIR!, "notifications", "messenger.json");
-    let original = "";
-    if (${scenario !== "fresh"}) {
-      await fs.mkdir(path.dirname(configPath), { recursive: true });
-      original = JSON.stringify({ ...(${scenario === "private"} ? { cwd: path.join(process.env.JEO_CONFIG_DIR!, "private-workspace") } : {}), sandbox: { image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } }, platforms: { discord: { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["channel"] } } });
-      await fs.writeFile(configPath, original);
-    }
-    const notices: string[] = [];
-    const answers: string[] = [];
-    const responses: Record<string, unknown> = {
-      "/users/@me": { id: "bot", username: "test-bot", bot: true },
-      "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
-      "/users/@me/guilds": [{ id: "guild" }],
-      "/channels/channel": { id: "channel", guild_id: "guild", name: "requests", type: 0 },
-      "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
-      "/guilds/guild/members/bot": { roles: [] },
-      "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
-      "/gateway/bot": { url: "wss://gateway.discord.gg" },
-    };
-    const fakeFetch = async (input: string | URL | Request) => {
-      const route = new URL(typeof input === "string" || input instanceof URL ? input : input.url).pathname.replace("/api/v10", "");
-      if (!Object.hasOwn(responses, route)) throw new Error("Unexpected setup request: " + route);
-      return Response.json(responses[route]);
-    };
-    class ReadySocket extends EventTarget {
-      constructor() { super(); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 10, d: { heartbeat_interval: 60000 } }) }))); }
-      send(data: string) { if (JSON.parse(data).op === 2) queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "session", user: { id: "bot" }, resume_gateway_url: "wss://gateway.discord.gg" } }) }))); }
-      close() {}
-    }
-    const setup = () => setupDiscordMessenger({ configPath, dmTest: false, ...(${scenario === "fresh"} ? { workerMode: "sandbox" as const } : {}) }, {
-      interactive: true, say(message: string) { notices.push(message); }, ask: async () => { const answer = answers.shift(); if (!answer) throw new Error("Unexpected prompt"); return answer; },
-      askSecret: async () => { throw new Error("Unexpected credential prompt"); },
-    }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fakeFetch as typeof fetch, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"] });
-    if (${scenario === "private"}) {
-      let error: unknown;
-      try { await setup(); } catch (caught) { error = caught; }
-      if (!(error instanceof Error) || !error.message.includes("would be refused at launch")) throw new Error("Private workspace was not refused at launch admission");
-      if (await fs.readFile(configPath, "utf8") !== original) throw new Error("Existing configuration changed after admission failure");
-      if ((await fs.readdir(path.dirname(configPath))).some(name => name.endsWith(".tmp"))) throw new Error("Staged file was not cleaned up");
-    } else {
-      await setup();
-      const config = await loadMessengerConfig(configPath);
-      if (${scenario === "fresh"} && JSON.stringify(config.sandbox) !== JSON.stringify({ backend: "native" })) throw new Error("Fresh setup did not select native sandbox");
-      if (${scenario === "migration"} && JSON.stringify(config.sandbox) !== JSON.stringify({ image: "local-test-image", limits: { memoryBytes: 268435456, pids: 32, cpus: 1 } })) throw new Error("Existing Docker sandbox was not preserved");
-      await createSandboxPolicy({ sessionKey: "setup-test", revision: 1, cwd: config.cwd, config: config.sandbox! });
-      if (${scenario === "migration"} && !notices.some(message => message.includes('had no "cwd"') && message.includes(config.cwd))) throw new Error("Missing workspace migration notice");
-    }
-  `);
-  const drive = process.platform === "win32" ? path.parse(root).root.slice(0, 2) : "";
-  const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "", HOME: root, USERPROFILE: root,
-    HOMEDRIVE: drive, HOMEPATH: drive ? root.slice(drive.length) : root,
-    TMPDIR: root, TEMP: root, TMP: root, JEO_CONFIG_DIR: path.join(root, ".jeo"),
+  const configPath = path.join(root, "profile", "messenger.json");
+  const responses: Record<string, unknown> = {
+    "/users/@me": { id: "bot", username: "test-bot", bot: true },
+    "/applications/@me": { id: "application", owner: { id: "owner" }, flags: 1 << 18 },
+    "/users/@me/guilds": [{ id: "guild" }],
+    "/channels/channel": { id: "channel", guild_id: "guild", name: "requests", type: 0 },
+    "/guilds/guild": { id: "guild", roles: [{ id: "guild", permissions: "8" }] },
+    "/guilds/guild/members/bot": { roles: [] },
+    "/guilds/guild/channels": [{ id: "channel", name: "requests", type: 0 }],
+    "/gateway/bot": { url: "wss://gateway.discord.gg" },
   };
-  if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
-  if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
-  const child = Bun.spawn([process.execPath, script], {
-    env,
-    stdout: "pipe", stderr: "pipe",
-  });
-  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const route = new URL(typeof input === "string" || input instanceof URL ? input : input.url).pathname.replace("/api/v10", "");
+    if (!Object.hasOwn(responses, route)) throw new Error(`Unexpected setup request: ${route}`);
+    return Response.json(responses[route]);
+  }) as typeof fetch;
+  await setupDiscordMessenger({ configPath, dmTest: false }, {
+    interactive: false, say() {}, ask: async () => { throw new Error("Unexpected prompt"); }, askSecret: async () => { throw new Error("Unexpected credential prompt"); },
+  }, { env: { JEO_DISCORD_BOT_TOKEN: "test-token" }, fetch: fetchImpl, WebSocket: ReadySocket as unknown as typeof WebSocket, jeoCommand: ["/opt/jeo"], profilesPath: path.join(root, "messenger-profiles.json") });
+  const loaded = await loadMessengerConfig(configPath);
+  expect(loaded.toolNames).toEqual([]);
+  expect(loaded.cwd).toBe(path.join(root, "profile", "workspace"));
+  expect(loaded.sessionDir).toBe(path.join(root, "profile", "sessions"));
 });
 
 test("thread authorization requires both the user and allowed parent channel", () => {
@@ -328,8 +267,7 @@ test("messenger launches isolated sessions with explicit tool authority and no b
     expect(await reply({ ...base, messageId: "later" }, new AbortController().signal)).toBe("hello -> hello");
     expect(await reply({ ...base, senderId: "different" }, new AbortController().signal)).toBe("hello -> hello -> hello");
     expect(await reply({ ...base, accountId: "other-bot" }, new AbortController().signal)).toBe("hello");
-    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash", "computer"] }, fakeSpawn, selectModel);
-
+    const permittedReply = createMessengerCliReply({ ...safe, toolNames: ["read", "bash", "grep"] }, fakeSpawn, selectModel);
     replies.push(permittedReply);
     await permittedReply(base, new AbortController().signal);
     await reply({ ...base, messageId: "options", text: "--tools=bash" }, new AbortController().signal);
@@ -343,9 +281,7 @@ test("messenger launches isolated sessions with explicit tool authority and no b
     expect((await fs.readdir(safe.sessionDir)).sort()).toEqual(captured.slice(0, 2).map(item => `${sessionId(item.argv)}.jsonl`).sort());
     expect(captured.every(item => item.env.JEO_SESSION_DIR === safe.sessionDir)).toBe(true);
     expect(permitted).not.toContain("--no-tools");
-    expect(permitted[permitted.indexOf("--tools") + 1]).toBe("read,bash,computer");
-    expect(captured[0]!.env.JEO_MESSENGER_COMPUTER_ENABLED).toBe("0");
-    expect(captured[2]!.env.JEO_MESSENGER_COMPUTER_ENABLED).toBe("1");
+    expect(permitted[permitted.indexOf("--tools") + 1]).toBe("read,bash,search");
     expect(captured[0]!.requests).toEqual(["hello", "hello", "hello", "--tools=bash", "--list"]);
     expect(captured[0]!.argv).not.toContain("--tools=bash");
     expect(captured[0]!.argv).not.toContain("--list");
@@ -360,24 +296,6 @@ test("messenger launches isolated sessions with explicit tool authority and no b
   }
 });
 
-for (const legacyName of ["sessions", "messenger-sessions"]) test(`workspace transcripts in .jeo/${legacyName} block launch without copying or changing private history`, async () => {
-  const cwd = await directory();
-  const safe = { ...config, cwd, sessionDir: await directory() };
-  const legacyDir = path.join(cwd, ".jeo", legacyName);
-  await fs.mkdir(legacyDir, { recursive: true });
-  const legacy = path.join(legacyDir, "prior-session.jsonl");
-  const history = '{"type":"legacy-history","content":"private transcript"}\n';
-  await fs.writeFile(legacy, history);
-  let spawned = false;
-  const fakeSpawn = ((_argv: string[], options: SpawnOptions) => { spawned = true; return fakeWorker("must not run", [], options); }) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(safe, fakeSpawn, selectModel);
-  try {
-    await expect(reply(base, new AbortController().signal)).rejects.toThrow("Legacy session transcripts");
-    expect(spawned).toBe(false);
-    expect(await fs.readFile(legacy, "utf8")).toBe(history);
-    expect(await fs.readdir(safe.sessionDir)).toEqual([]);
-  } finally { await reply.close(); }
-});
 
 test("resuming a private transcript does not overwrite its history across follow-up messages", async () => {
   const cwd = await directory();

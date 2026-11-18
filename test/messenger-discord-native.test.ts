@@ -3,8 +3,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createMessengerCliReply } from "../src/commands/messenger";
-import { parseMessengerConfig } from "../src/messenger/config";
-import { createMessengerGateway } from "../src/messenger/gateway";
 import { createMessengerSessionPool } from "../src/messenger/session-pool";
 import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
@@ -28,27 +26,25 @@ async function workspaceRoot(label: string): Promise<{ root: string; workspace: 
   return { root, workspace };
 }
 
-for (const sandbox of [undefined, { backend: "native" as const }]) {
-  test(`Discord with ${sandbox ? "an explicit" : "no"} sandbox block runs its worker in the native sandbox, no Docker`, async () => {
-    const { root, workspace } = await workspaceRoot("native-default");
-    const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), sandbox, toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"] } } };
-    const launches: Launch[] = [];
-    const reply = createMessengerCliReply(config, recordingSpawn(launches), async () => "fixture-model");
-    try {
-      await expect(reply(message, new AbortController().signal)).rejects.toThrow("fixture launch stopped");
-      expect(launches).toHaveLength(1);
-      expect(JSON.parse(launches[0]!.sandbox!)).toEqual({ backend: "native" });
-      // The worker follows the globally installed skill catalog instead of running with none.
-      expect(launches[0]!.argv).not.toContain("--no-skills");
-      expect(launches[0]!.argv).toContain("--literal-worker");
-    } finally {
-      await reply.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-}
+test("Discord runs its worker directly on the host without imposing a sandbox", async () => {
+  const { root, workspace } = await workspaceRoot("host-default");
+  const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"] } } };
+  const launches: Launch[] = [];
+  const reply = createMessengerCliReply(config, recordingSpawn(launches), async () => "fixture-model");
+  try {
+    await expect(reply(message, new AbortController().signal)).rejects.toThrow("fixture launch stopped");
+    expect(launches).toHaveLength(1);
+    expect(launches[0]!.sandbox).toBeUndefined();
+    expect(launches[0]!.argv).not.toContain("--no-skills");
+    expect(launches[0]!.argv).toContain("--literal-worker");
+    expect(launches[0]!.argv).toContain("--no-tools");
+  } finally {
+    await reply.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
-test("every Discord conversation gets its own worker session and its own sandbox key", async () => {
+test("every Discord conversation gets its own deterministic session resume ID", async () => {
   const { root, workspace } = await workspaceRoot("independent");
   const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"] } } };
   const launches: Launch[] = [];
@@ -58,76 +54,10 @@ test("every Discord conversation gets its own worker session and its own sandbox
     for (const conversation of [thread("t1"), thread("t2"), thread("t1")]) {
       await expect(reply(conversation, new AbortController().signal)).rejects.toThrow("fixture launch stopped");
     }
-    const keys = launches.map(launch => launch.sessionKey);
-    expect(keys.every(key => typeof key === "string" && key.length > 0)).toBe(true);
-    expect(keys[0]).not.toBe(keys[1]);
-    // The same thread routes to the same session; a different thread never shares one.
-    expect(keys[2]).toBe(keys[0]);
     const resumeIds = launches.map(launch => String(launch.argv[launch.argv.indexOf("--resume") + 1]));
-    expect(resumeIds).toEqual(keys.map(String));
-  } finally {
-    await reply.close();
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test("Discord Docker configuration reaches worker launch with sandbox configuration intact", async () => {
-  const { root, workspace } = await workspaceRoot("docker-path");
-  const sandbox = { backend: "docker" as const, image: "local-fixture", limits: { memoryBytes: 268435456, pids: 64, cpus: 1 } };
-  const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), sandbox, toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"] } } };
-  const launches: Launch[] = [];
-  const reply = createMessengerCliReply(config, recordingSpawn(launches), async () => "fixture-model");
-  try {
-    await expect(reply(message, new AbortController().signal)).rejects.toThrow();
-    expect(JSON.parse(launches[0]!.sandbox!)).toEqual({ image: sandbox.image, limits: sandbox.limits });
-  } finally {
-    await reply.close();
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test("Discord's native default is not imposed on Telegram or Slack", async () => {
-  const { root, workspace } = await workspaceRoot("mixed");
-  const config = parseMessengerConfig({ cwd: workspace, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: {
-    discord: { tokenEnv: "DISCORD_TOKEN", allowedUserIds: ["owner"] },
-    telegram: { tokenEnv: "TELEGRAM_TOKEN", allowedUserIds: ["owner"] },
-    slack: { tokenEnv: "SLACK_TOKEN", allowedUserIds: ["owner"] },
-  } }, root);
-  const launches: Launch[] = [];
-  const reply = createMessengerCliReply(config, recordingSpawn(launches), async () => "fixture-model");
-  try {
-    await expect(reply(message, new AbortController().signal)).rejects.toThrow("fixture launch stopped");
-    for (const platform of ["telegram", "slack"] as const) {
-      await expect(reply({ ...message, platform, accountId: platform }, new AbortController().signal)).rejects.toThrow();
-    }
-    expect(launches.map(launch => launch.sandbox === undefined ? undefined : JSON.parse(launch.sandbox))).toEqual([{ backend: "native" }, undefined, undefined]);
-  } finally {
-    await reply.close();
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test("a malformed sandbox block fails closed before any worker starts", () => {
-  expect(() => parseMessengerConfig({ cwd: "/tmp", sessionDir: "/tmp/sessions", toolNames: [], sandbox: { backend: "native", image: "extra" }, platforms: { discord: { tokenEnv: "T", allowedUserIds: ["owner"] } } }, "/tmp")).toThrow();
-});
-
-test("a /sandbox control still requires an allowed Discord operator", async () => {
-  const { root, workspace } = await workspaceRoot("control");
-  const config = parseMessengerConfig({ cwd: workspace, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { allowedUserIds: ["owner"] } } }, root);
-  const launches: Launch[] = [];
-  const reply = createMessengerCliReply(config, recordingSpawn(launches), async () => "fixture-model");
-  const sent: string[] = [];
-  const gateway = createMessengerGateway(config, [{ platform: "discord", start: async () => {}, send: async (_message, text) => { sent.push(text); } }], reply, { sandboxControl: reply.sandboxControl });
-  try {
-    // An unlisted sender never reaches the control path or a worker.
-    await gateway.handle({ ...message, senderId: "stranger", messageId: "2", text: "/sandbox status" });
-    expect(sent).toEqual([]);
-    expect(launches).toEqual([]);
-    // The listed operator gets a real answer from the control path, not a blanket refusal of native sandboxes.
-    await gateway.handle({ ...message, messageId: "3", text: "/sandbox status" });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).not.toContain("disabled pending verified isolation");
-    expect(launches).toEqual([]);
+    expect(resumeIds.every(id => typeof id === "string" && id.length > 0)).toBe(true);
+    expect(resumeIds[0]).not.toBe(resumeIds[1]);
+    expect(resumeIds[2]).toBe(resumeIds[0]);
   } finally {
     await reply.close();
     await fs.rm(root, { recursive: true, force: true });

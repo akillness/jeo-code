@@ -14,13 +14,6 @@ import {
 
 const io = { interactive: true, say() {}, ask: async () => "", askSecret: async () => "" };
 
-/** Preconfigure a valid finite sandbox (already-local image, nothing pulled) so setup reaches the secret prompt. */
-async function writeSandboxProfile(root: string): Promise<void> {
-  await fs.writeFile(path.join(root, "messenger.json"), JSON.stringify({
-    sessionDir: path.join(root, "sessions"),
-    sandbox: { image: "oven/bun:1.3.14", limits: { memoryBytes: 536870912, pids: 128, cpus: 1 } },
-  }), { mode: 0o600 });
-}
 
 test("Windows launcher keeps credentials in the sidecar and inherits PATH", () => {
 	const executablePath = messengerExecutablePath("C:\\Program Files\\Bun\\bun.exe", "C:\\Program Files\\Bun;D:\\tools", ";", "win32");
@@ -98,7 +91,6 @@ test("abortable polling is measurably faster than the former non-abortable sleep
 
 test("PTY Ctrl+C interrupts Discord setup while readline is waiting for a secret", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-messenger-setup-pty-"));
-  await writeSandboxProfile(root);
   const cli = path.resolve(import.meta.dir, "../src/cli.ts");
   let output = "";
   const ready = Promise.withResolvers<void>();
@@ -157,7 +149,6 @@ test("Windows batch generation escapes percent and disables exclamation expansio
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   test(`${signal} interrupts Discord setup while a secret prompt is pending`, async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-signal-"));
-    await writeSandboxProfile(root);
     let output = "";
     const ready = Promise.withResolvers<void>();
     const terminal = new Bun.Terminal({ cols: 100, rows: 30, data(_terminal, bytes) {
@@ -182,7 +173,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 test.skipIf(process.platform === "win32")("PTY Ctrl+C interrupts Discord invite polling", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-poll-pty-"));
-  await writeSandboxProfile(root);
   const preload = path.join(root, "discord-mock.ts");
   await fs.writeFile(preload, `
     globalThis.fetch = async (input) => {
@@ -217,7 +207,6 @@ test.skipIf(process.platform === "win32")("PTY Ctrl+C interrupts Discord invite 
 
 test.skipIf(process.platform === "win32")("PTY secret cannot be recalled at the channel prompt", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-history-"));
-  await writeSandboxProfile(root);
   const preload = path.join(root, "discord-mock.ts");
   await fs.writeFile(preload, `
     globalThis.fetch = async (input) => {
@@ -257,58 +246,3 @@ test.skipIf(process.platform === "win32")("PTY secret cannot be recalled at the 
   }
 }, 8000);
 
-test("Discord host bootstrap and shell termination support Windows platform", async () => {
-  const { readDiscordHostBootstrap, stopDiscordHostShell } = await import("../src/agent/discord-host");
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-win-host-")));
-  try {
-    const sessionDir = path.join(root, "sessions");
-    const workspaceRoot = path.join(root, "worktree");
-    const sourceRoot = path.join(root, "source");
-    const cleanupReceipt = path.join(sessionDir, "host-runtime", "sess-1", "receipt.json");
-    await fs.mkdir(sessionDir, { recursive: true });
-    await fs.mkdir(workspaceRoot, { recursive: true });
-    await fs.mkdir(sourceRoot, { recursive: true });
-    await fs.mkdir(path.dirname(cleanupReceipt), { recursive: true });
-
-    const bootstrap = {
-      version: 1 as const,
-      mode: "host" as const,
-      cwd: workspaceRoot,
-      workspaceRoot,
-      sourceRoot,
-      sessionDir,
-      cleanupReceipt,
-      nonce: "test-nonce",
-      scope: { sessionId: "sess-1", generation: 0, epoch: "1" },
-    };
-
-    const env = {
-      JEO_MESSENGER_HOST_BOOTSTRAP: JSON.stringify(bootstrap),
-    };
-    const read = readDiscordHostBootstrap(env, { literalWorker: true, ipcAvailable: true });
-    expect(read).toBeDefined();
-    expect(read?.workspaceRoot).toBe(workspaceRoot);
-
-    let directKilled = false;
-    const mockShell = {
-      stdout: { read: async () => ({ done: true }), cancel: async () => {} },
-      stderr: { read: async () => ({ done: true }), cancel: async () => {} },
-      exit: Promise.resolve(0),
-      reaped: Promise.resolve(),
-      killGroup: () => "unsupported" as const,
-      killDirect: () => { directKilled = true; },
-      release: () => {},
-      dispose: () => {},
-    };
-    const origPlatform = process.platform;
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    try {
-      await stopDiscordHostShell(mockShell);
-      expect(directKilled).toBe(true);
-    } finally {
-      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
-    }
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});

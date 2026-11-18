@@ -26,9 +26,9 @@ function reportModelChoice(r: { warning?: string; suggestions: string[] }): void
   if (r.suggestions.length) console.log(`  Did you mean: ${r.suggestions.join(", ")}?`);
 }
 
-type ProviderChoice = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi" | "ollama" | "lmstudio" | "openai-compatible";
+type ProviderChoice = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi" | "ollama" | "lmstudio" | "openai-compatible" | "perplexity";
 
-const DEFAULT_MODELS: Record<ProviderChoice, string> = {
+const DEFAULT_MODELS: Record<Exclude<ProviderChoice, "perplexity">, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
@@ -76,8 +76,8 @@ export async function runSetupCommand(): Promise<void> {
   if (!process.stdin.isTTY) {
     console.log(
       "jeo setup needs an interactive terminal (TTY).\n" +
-      "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, JEO_DEFAULT_MODEL, OLLAMA_HOST),\n" +
-      "run 'jeo auth login <anthropic|openai|gemini|antigravity>' for OAuth, or edit ~/.jeo/config.json directly. Verify with 'jeo doctor'.",
+      "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / PERPLEXITY_API_KEY, JEO_DEFAULT_MODEL, OLLAMA_HOST),\n" +
+      "run 'jeo auth login <anthropic|openai|gemini|antigravity|kimi|perplexity>' for OAuth, or edit ~/.jeo/config.json directly. Verify with 'jeo doctor'.",
     );
     return;
   }
@@ -96,14 +96,16 @@ export async function runSetupCommand(): Promise<void> {
   console.log("  6) ollama              — local Ollama (no auth)");
   console.log("  7) lmstudio            — local LM Studio (OpenAI-compatible)");
   console.log("  8) openai-compatible   — custom OpenAI-compatible (vLLM, llama-cpp-server, ...)");
-  console.log("  9) skip                — keep existing values, just change defaults\n");
+  console.log("  9) perplexity          — Perplexity Pro/Max or API key (web_search #1 priority)");
+  console.log(" 10) skip                — keep existing values, just change defaults\n");
 
-  const sel = (await rl.question("Configure which provider? [1-9]: ")).trim();
+  const sel = (await rl.question("Configure which provider? [1-10]: ")).trim();
   const map: Record<string, ProviderChoice | "skip"> = {
     "1": "anthropic", "2": "openai", "3": "gemini",
     "4": "antigravity", "5": "kimi",
     "6": "ollama",    "7": "lmstudio", "8": "openai-compatible",
-    "9": "skip",
+    "9": "perplexity",
+    "10": "skip",
   };
   const choice = map[sel] ?? "skip";
 
@@ -115,10 +117,11 @@ export async function runSetupCommand(): Promise<void> {
   next.providers = next.providers || {};
   next.oauth = next.oauth || {};
 
-  if (choice === "anthropic" || choice === "openai" || choice === "gemini" || choice === "antigravity" || choice === "kimi") {
-    const authMode = (
-      await rl.question("Auth mode: (b)rowser OAuth login, (t)oken paste, or api (k)ey? [b]: ")
-    ).trim().toLowerCase();
+  if (choice === "anthropic" || choice === "openai" || choice === "gemini" || choice === "antigravity" || choice === "kimi" || choice === "perplexity") {
+    const authPrompt = choice === "perplexity"
+      ? "Auth mode: (o)auth (macOS app / email OTP), (t)oken paste, or api (k)ey? [o]: "
+      : "Auth mode: (b)rowser OAuth login, (t)oken paste, or api (k)ey? [b]: ";
+    const authMode = (await rl.question(authPrompt)).trim().toLowerCase();
     if (authMode === "t") {
       const tok = await rl.question(`${choice} OAuth bearer token: `);
       if (tok.trim()) {
@@ -189,17 +192,21 @@ export async function runSetupCommand(): Promise<void> {
         }
       }
     }
-    const openAiCodexOnly = choice === "openai" && hasOAuthConfigured(next.oauth.openai) && !next.providers.openai;
-    const recommended = recommendedModelsFor(choice, 5, { codex: openAiCodexOnly });
-    const fallbackModel = recommended[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice];
-    console.log(`\nRecommended ${choice}${openAiCodexOnly ? " Codex OAuth" : ""} models:`);
-    for (const m of recommended) console.log(`  - ${m}`);
-    const dm = await rl.question(`Default model for ${choice} [${fallbackModel}]: `);
-    const rawInput = dm.trim();
-    const qualified = rawInput ? qualifyModelId(rawInput, choice as ProviderName) : fallbackModel;
-    const picked = chooseDefaultModel(qualified, choice as ProviderName);
-    reportModelChoice(picked);
-    next.defaultModel = picked.model || fallbackModel;
+    if (choice === "perplexity") {
+      console.log("\nPerplexity configured — web_search will prioritize Perplexity automatically.");
+    } else {
+      const openAiCodexOnly = choice === "openai" && hasOAuthConfigured(next.oauth.openai) && !next.providers.openai;
+      const recommended = recommendedModelsFor(choice, 5, { codex: openAiCodexOnly });
+      const fallbackModel = recommended[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice];
+      console.log(`\nRecommended ${choice}${openAiCodexOnly ? " Codex OAuth" : ""} models:`);
+      for (const m of recommended) console.log(`  - ${m}`);
+      const dm = await rl.question(`Default model for ${choice} [${fallbackModel}]: `);
+      const rawInput = dm.trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, choice as ProviderName) : fallbackModel;
+      const picked = chooseDefaultModel(qualified, choice as ProviderName);
+      reportModelChoice(picked);
+      next.defaultModel = picked.model || fallbackModel;
+    }
   } else if (choice === "ollama") {
     const url = await rl.question(`Ollama base URL [${current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama}]: `);
     next.ollamaBaseUrl = normalizeBaseUrl(url, current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama!);

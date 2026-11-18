@@ -7,11 +7,8 @@ import * as loop from "../src/agent/loop";
 import { readTool } from "../src/agent/tools";
 import { distillInvocation, spawnDetachedDistill } from "../src/agent/memory";
 import { buildToolProtocol } from "../src/commands/launch/flags";
-import { createDiscordHostAuthority } from "../src/messenger/host-actions";
-import { messengerConversationKey } from "../src/messenger/gateway";
 import { summarizeForgeInvocation } from "../src/tui/components/forge";
 import { isBrokenPipeError } from "../src/util/broken-pipe";
-import type { MessengerConfig, MessengerMessage } from "../src/messenger/types";
 
 test("launch.ts KNOWN_TOOLS includes jeox, buildToolProtocol advertises jeox, and forge renders jeox cards", async () => {
   const src = await Bun.file(path.join(import.meta.dir, "..", "src", "commands", "launch.ts")).text();
@@ -26,57 +23,6 @@ test("launch.ts KNOWN_TOOLS includes jeox, buildToolProtocol advertises jeox, an
   const card = summarizeForgeInvocation("jeox", { action: "who-calls", name: "openDb" });
   expect(card.title).toBe("Jeox: who-calls openDb");
   expect(card.lines).toEqual(["action: who-calls", "target: openDb"]);
-});
-
-test("Discord host authority allows read-only jeox within workspace without approval, blocks privateRoots", async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "jeo-host-jeox-")));
-  try {
-    const config: MessengerConfig = {
-      cwd: root,
-      sessionDir: path.join(root, "sessions"),
-      toolNames: ["read", "jeox"],
-      platforms: {
-        discord: {
-          tokenEnv: "DISCORD_TEST_TOKEN",
-          workerMode: "host",
-          allowedUserIds: ["owner"],
-          allowedChannelIds: ["channel"],
-        },
-      },
-    };
-    const notices: string[] = [];
-    const authority = createDiscordHostAuthority(config, async (_run, text) => { notices.push(text); });
-    const msg: MessengerMessage = {
-      platform: "discord",
-      accountId: "bot",
-      guildId: "guild",
-      channelId: "thread-1",
-      parentChannelId: "channel",
-      threadId: "thread-1",
-      senderId: "owner",
-      messageId: "m-1",
-      text: "check",
-      direct: false,
-      mentioned: false,
-    };
-    const run = {
-      conversationKey: messengerConversationKey(msg),
-      sessionId: "sess-1",
-      generation: 1,
-      runId: "run-1",
-    };
-    authority.bind(run, msg, root);
-    const ac = new AbortController();
-    await authority.authorize(run, { kind: "tool", tool: "jeox", cwd: root, args: { action: "search", query: "openDb" } }, ac.signal);
-    expect(notices.length).toBe(0);
-
-    await expect(
-      authority.authorize(run, { kind: "tool", tool: "jeox", cwd: path.join(root, "sessions"), args: { action: "status" } }, ac.signal),
-    ).rejects.toThrow("Private host configuration");
-    authority.close();
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("readTool fails fast on FIFO/named pipes, binary NUL files, and files exceeding JEO_MAX_READ_BYTES", async () => {

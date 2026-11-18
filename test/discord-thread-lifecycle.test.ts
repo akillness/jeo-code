@@ -190,44 +190,6 @@ test("trusted Discord lifecycle dispatch preserves full identity, ignores forged
   } finally { stop.abort(); await running; }
 });
 
-for (const outcome of ["allow", "deny", "abort"] as const) test(`host artifact ${outcome} gates upload of the exact bytes loaded before approval`, async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-discord-lifecycle-artifact-"));
-  const artifactDir = await fs.realpath(root);
-  const message = thread("A", "artifact");
-  const directory = await prepareMessengerArtifactDirectory(artifactDir, message);
-  const source = path.join(directory, "report.txt");
-  await fs.writeFile(source, "approved bytes");
-  const requested = Promise.withResolvers<readonly { name: string; data: Uint8Array }[]>();
-  const decision = Promise.withResolvers<void>();
-  const uploaded: Array<{ name: string; bytes: string }> = [];
-  const adapter = createDiscordAdapter({ ...config.platforms.discord!, artifactDir }, { TOKEN: "fixture" }, {
-    async authorizeArtifacts(_message, files, signal) {
-      requested.resolve(files);
-      await decision.promise;
-      signal.throwIfAborted();
-    },
-    fetch: Object.assign(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      if (init?.body instanceof FormData) {
-        const file = init.body.get("files[0]") as File;
-        uploaded.push({ name: file.name, bytes: await file.text() });
-      }
-      return Response.json({ id: "sent" });
-    }, { preconnect() {} }),
-  });
-  const stop = new AbortController();
-  const sending = adapter.send(message, "[artifact:report.txt]", stop.signal);
-  const result = sending.then(() => "sent", () => "rejected");
-  try {
-    const files = await requested.promise;
-    expect(files.map(file => ({ name: file.name, bytes: new TextDecoder().decode(file.data) }))).toEqual([{ name: "report.txt", bytes: "approved bytes" }]);
-    expect(uploaded).toEqual([]);
-    await fs.writeFile(source, "changed after approval request");
-    if (outcome === "deny") decision.reject(new Error("operator denied"));
-    else { if (outcome === "abort") stop.abort(); decision.resolve(); }
-    expect(await result).toBe(outcome === "allow" ? "sent" : "rejected");
-    expect(uploaded).toEqual(outcome === "allow" ? [{ name: "report.txt", bytes: "approved bytes" }] : []);
-  } finally { stop.abort(); decision.resolve(); await result; await fs.rm(root, { recursive: true, force: true }); }
-});
 
 for (const scenario of [
   { name: "known archive", known: true, kind: "archive" },

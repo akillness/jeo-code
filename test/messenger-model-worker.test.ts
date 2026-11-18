@@ -49,10 +49,9 @@ test("Discord retains session identity but replaces workers when selected model 
     };
     return { stdout, stderr, exited: exit.promise, kill, send, stdin: { write(chunk: string) { if (worker.killed) throw new Error("worker stopped"); const prompt = JSON.parse(chunk); syncFs.appendFileSync(session, `${JSON.stringify({ prompt })}\n`); out.enqueue(encoder.encode('JEO_MESSENGER_RESULT "ok"\n')); }, flush() {}, end() {} } };
   }) as typeof Bun.spawn;
-  const sandbox = { image: "oven/bun:1.3.14", limits: { memoryBytes: 256 * 1024 * 1024, pids: 64, cpus: 1 } };
   const workspace = path.join(root, "workspace");
   await fs.mkdir(workspace);
-  const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), sandbox, toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"], usageFallbackModel: "unavailable" } } };
+  const config: MessengerConfig = { cwd: workspace, sessionDir: path.join(root, "sessions"), toolNames: [], platforms: { discord: { tokenEnv: "TOKEN", allowedUserIds: ["owner"], usageFallbackModel: "unavailable" } } };
   const reply = createMessengerCliReply(config, spawn, selectModel);
   const message: MessengerMessage = { platform: "discord", accountId: "bot", channelId: "channel", senderId: "owner", messageId: "1", text: "hello", direct: true, mentioned: false };
   try {
@@ -72,6 +71,6 @@ test("Discord retains session identity but replaces workers when selected model 
     expect(workers.every(worker => typeof worker.ipc === "function" && worker.serialization === "json")).toBe(true);
     for (const retired of workers.slice(0, 2)) expect(retired.frames).toEqual([{ type: "jeo_messenger_shutdown", nonce: retired.env.JEO_MESSENGER_SHUTDOWN_NONCE }]);
     expect(workers.every(worker => worker.signals.length === 0)).toBe(true);
-    expect(workers.every(worker => JSON.parse(worker.env.JEO_MESSENGER_SANDBOX!).image === "oven/bun:1.3.14")).toBe(true);
+    expect(workers.every(worker => worker.env.JEO_MESSENGER_SANDBOX === undefined)).toBe(true);
   } finally { await reply.close(); await fs.rm(root, { recursive: true, force: true }); }
 });

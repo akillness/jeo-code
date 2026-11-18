@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.60] - 2026-11-18
+_Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete._
+
+### Changed
+- **Terminal-first Discord setup & `jeopi`-aligned messenger (`src/messenger/live-session.ts`, `src/messenger/config.ts`, `src/messenger/discord-setup.ts`, `src/messenger/session-pool.ts`, `src/commands/messenger.ts`, `src/commands/launch.ts`, `src/cli/runner.ts`, `src/tui/components/slash.ts`):** Add `jeo discord [setup|check|run|update]` and optional `--config` defaulting to `~/.jeo/discord/messenger.json` (`toolNames: []`, `./workspace`, `./sessions`, no forced sandbox or Git worktree isolation); add `/discord live [<messenger.json>] --allow-full-control`, `/discord stop`, `/discord status`, and `/discord relay` to attach directly to a running terminal session; lift the `SANDBOX_REQUIRED` restriction on `/discord control on --allow-full-control` and `SessionNotifyEndpoint`; remove obsolete `discord-host` / `host-actions` / `thread-registry` / `host-protocol` isolation layers.
+- **Perplexity onboarding & autocomplete (`src/ai/provider-status.ts`, `src/commands/setup.ts`, `src/commands/setup-helpers.ts`, `src/tui/components/autocomplete.ts`):** Surface Perplexity as a dedicated search provider in `jeo setup`, `/provider`, `/auth`, `/login`, and `/logout`.
+
+
 ## [0.12.59] - 2026-11-17
 _Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`._
 

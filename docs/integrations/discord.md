@@ -4,18 +4,23 @@ Connect `jeo` and AI coding agents to **Discord** channels for real-time build n
 
 ---
 
-## Bidirectional messenger gateway
+## Default setup & connecting a running terminal session
 
-For a separate Discord conversation gateway, use the guided setup:
+The default Discord setup (`jeo discord setup` or `jeo messenger setup`) creates `~/.jeo/discord/messenger.json` (`toolNames: []`, no sandbox) and is designed to connect directly to a running `jeo` terminal session:
 
 ```sh
-jeo messenger setup --config ~/.jeo/discord/messenger.json --service
+jeo discord setup
 ```
 
-The setup validates the bot, discovers or checks request channels, writes a private token file and platform-native launcher (`run-discord.sh` on macOS/Linux, `run-discord.cmd` on Windows), and probes the Gateway. `--service` optionally installs a macOS/Linux user service; omit it on Windows and run the generated `.cmd` under your process manager. Ctrl+C cancels prompts, invite polling, and the Gateway probe. Use `--channel ID`, `--user ID`, `--tools read,grep`, `--artifacts`, or `--no-dm` to select settings. `jeo messenger check --config <file>` checks configuration and credentials locally without network calls; `jeo messenger run --config <file>` starts the gateway. The generated launcher reads the saved token sidecar at runtime; it does not embed the token in its command line.
+Then inside any running `jeo` session in your terminal:
 
-Messenger conversations use separate persisted sessions scoped to workspace, bot account, channel or thread, and sender; a Discord reply thread is one shared session for all allowed participants. Server requests mention the bot and receive replies in threads visible to channel readers. Remote tool execution always runs inside the messenger sandbox, which Discord requires in the messenger file itself; `toolNames` selects tools within that sandbox and is not host authority. Attachments require opt-in. See the [messenger guide](messenger.md) for permissions and file limits. This gateway is separate from the notification daemon and its session-control commands below.
+```text
+/discord live --allow-full-control
+```
 
+`/discord live [<messenger.json>] --allow-full-control` attaches the Discord gateway directly to that running terminal session (`toolNames` in `messenger.json` is ignored; Discord requests use the live terminal session's active tools, approval policy, and working directory). Use `/discord status`, `/discord relay <allowed-channel-id|off>`, and `/discord stop` to inspect, relay local replies, or disconnect.
+
+For a standalone background gateway instead of an interactive terminal session, run `jeo messenger run [--config <file>]` (or pass `--service` during setup). In standalone mode, `toolNames` defaults to `[]` (chat-only) and enabled tools run directly as the host OS user (not a sandbox). See the [messenger guide](messenger.md) for details.
 ### Discord session identity contract
 
 The canonical remote identity is the ordered tuple `(schema version, platform, bot account, guild, channel, thread, conversation, user)`. The workspace path is hashed together with the serialized tuple to produce the persisted session route. For a Discord thread, `channel` is its parent channel and `thread` is the thread snowflake; otherwise `channel` is the message channel. `guild` is absent for DMs. `conversation` is reserved for adapters whose platform has a non-thread conversation primitive. `thread` and `conversation` are mutually exclusive alternatives: setting both is invalid.
@@ -36,7 +41,7 @@ jeo daemon start
 
 Setup stores the token in plaintext in `~/.jeo/config.json` (or under `JEO_CONFIG_DIR`); protect that file. Setup verifies and saves configuration but deliberately does not start a background process: `daemon=stopped (configuration is saved; run 'jeo daemon start')` is therefore actionable lifecycle state, not a failed Discord setup. Existing jeo provider authentication is reused by the host session: Discord does not need a separate model-provider login. Never put bot tokens, provider keys, passwords, or other credentials in Discord messages, prompts, or output files. There is no guarantee that secrets in messages or files will be redacted.
 
-Discord control is **off by default** for each interactive session. From the host's directly submitted local session prompt, explicitly enable it with:
+Discord control is **off by default** for each interactive session. From the host's directly submitted local session prompt (no sandbox required), explicitly enable it with:
 
 ```text
 /discord control on --allow-full-control
@@ -44,8 +49,7 @@ Discord control is **off by default** for each interactive session. From the hos
 
 Type the command at an idle local prompt and press Enter. If terminal input arrives in an ambiguous grouped chunk, jeo asks `Confirm Discord control: press y to allow, any other key to cancel.` Press a fresh `y` without Enter to confirm. Explicit bracketed paste or Ctrl-V is rejected; unbracketed paste cannot always be distinguished from grouped typing. Neither control command can be sent through Discord. An available notification session endpoint is required.
 
-Use `/discord control off` at the same local prompt to revoke it. Authorized Discord users can operate with that session's host tool permissions and approval policy, including reading and editing files and running commands. **This is not a sandbox.** Revocation rejects subsequent work and attempts to interrupt in-flight work; it cannot undo actions already taken or recall messages and files already sent.
-
+Use `/discord control off` (or `/discord stop`) at the same local prompt to revoke it. Authorized Discord users operate with that session's host tool permissions and approval policy, including reading and editing files and running commands. **This is not a sandbox.** Revocation rejects subsequent work and attempts to interrupt in-flight work; it cannot undo actions already taken or recall messages and files already sent.
 In Discord, send literal text commands `/sessions`, `/subagents`, `/send <unique-session> <text>`, `/steer <unique-session> <subagent-id> <text>`, `/cancel <unique-session> <subagent-id>`, or `/help`. Alternatively, reply to a session notification within 24 hours to send text to that session; reply mappings are in memory and do not survive daemon restart. `/send`, replies, `/steer`, and `/cancel` require control to be enabled. Acknowledgement means accepted, not completed. These are not registered Discord slash commands, and other slash commands are not executed.
 
 For separately relaying eligible local-session answers, submit `/discord relay <configured-channel-id>` locally; use `/discord relay off` to stop that relay. Ambiguously grouped input may prompt `Confirm Discord relay: press y to allow, any other key to cancel.`; press a fresh `y` without Enter to confirm. Once enabled, successful eligible direct local answers are forwarded automatically, including when typing is delivered in coalesced chunks. Explicit bracketed or Ctrl-V pasted prompts and remotely mixed turns are excluded; unbracketed paste cannot always be distinguished from grouped typing. A local request being sent does not confirm daemon acceptance or delivery. Threads created for guild-channel replies are visible to everyone who can read the channel, not just the allowed sender. Sender-to-thread bindings are in memory; after a daemon restart, continuation in a bot-created thread fails closed.

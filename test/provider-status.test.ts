@@ -5,9 +5,11 @@ import * as path from "node:path";
 import {
   describeProvider,
   describeAllProviders,
+  describeSearchProviders,
   providerEnvVar,
   credentialLabel,
   PROVIDER_NAMES,
+  SEARCH_PROVIDER_NAMES,
 } from "../src/ai/provider-status";
 
 let dir: string;
@@ -289,4 +291,44 @@ test("describeProvider: gemini oauth+key prefers the API-key path (OAuth alone c
   expect(s.ready).toBe(true);
   expect(s.kind).toBe("api_key");
   expect(s.label).toBe("API key");
+});
+test("describeSearchProviders returns perplexity without polluting LLM PROVIDER_NAMES", async () => {
+  expect(SEARCH_PROVIDER_NAMES).toEqual(["perplexity"]);
+  expect(PROVIDER_NAMES).not.toContain("perplexity");
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: {}, defaultModel: "claude-3-5-sonnet" }),
+  );
+  const search = await describeSearchProviders();
+  expect(search.map(s => s.name)).toEqual(["perplexity"]);
+  expect(search[0]!.ready).toBe(false);
+  expect(search[0]!.envVar).toBe("PERPLEXITY_API_KEY");
+});
+
+test("describeProvider: perplexity OAuth and API key both mark ready with web_search #1 priority", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { perplexity: { access: "pplx-oauth", email: "user@example.com" } },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const oauthStatus = await describeProvider("perplexity");
+  expect(oauthStatus.ready).toBe(true);
+  expect(oauthStatus.kind).toBe("oauth");
+  expect(oauthStatus.label).toContain("web_search #1 priority");
+  expect(oauthStatus.oauthEmail).toBe("user@example.com");
+
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { perplexity: "pplx-api-key" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const keyStatus = await describeProvider("perplexity");
+  expect(keyStatus.ready).toBe(true);
+  expect(keyStatus.kind).toBe("api_key");
+  expect(keyStatus.label).toContain("web_search #1 priority");
 });

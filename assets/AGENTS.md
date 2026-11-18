@@ -13,6 +13,9 @@ Static images and vector diagrams used for project branding, documentation, and 
 | `character.gif` | Animated README mascot generated via the god-tibo-imagen skill (`gti` CLI, Codex/ChatGPT image backend): 4-frame narrative loop showing the mascot performing smart prompt routing — evaluating provider paths on a holographic dispatch panel, selecting the cheapest/most-efficient path (highlighted green), gold coins streaming in as savings, settling into a satisfied glow. Same crimson-shell/cyan-magenta-glasses/purple-DNA-robe identity as `character.png`, same dark-navy/cyan-grid backdrop |
 | `hero.png` | README banner: the red crayfish wizard and plush companions in a cyan-magenta fantasy landscape, with visual tone inspired by jeopi's hero |
 | `workflow.svg` | Accessible spec-first workflow diagram shared by the four READMEs |
+| `architecture.svg` | Accessible 4-pillar architecture and `.jeo/` state diagram shared by the four READMEs |
+| `web-search-flow.svg` | Accessible `jeo setup` + `jeo auth login perplexity` & `web_search` resolution chain diagram shared by the four READMEs |
+| `remote-channels.svg` | Accessible remote monitoring (`jeo daemon`) and bidirectional messenger (`jeo messenger`) bridge diagram shared by the four READMEs |
 | `icon.png` | Project icon (mascot face, 1024×1024) shown in README headers |
 | `icon-master.png` | Full-resolution source for the generated project icon |
 | `apple-touch-icon.png` | 180×180 touch icon derived from `icon.png` |

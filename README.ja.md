@@ -33,22 +33,7 @@
 
 - [双方向メッセンジャーゲートウェイ (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**メッセンジャーゲートウェイ** — `jeo messenger` は通知デーモンとは別に、許可された Discord・Telegram・Slack の会話を扱います。既定では Discord は Docker なしで OS 標準のサンドボックス（macOS Seatbelt・Linux bubblewrap）上で会話ごとに独立したセッションとして動作し、サンドボックスのセッション終了時にそのセッションが起動した全プロセスも終了します。[ガイド](docs/integrations/messenger.md)と以下の現行制約を参照してください。
-
-### Discord ホストモード（明示的な選択）
-
-ボット PC のローカル CLI と同じ信頼権限で実行するには、setup で対象プロファイルの `platforms.discord.workerMode` を `"host"` に明示的に設定します。稼働中の既存プロファイルは自動切替されず、既定/native サンドボックスと Discord 以外の動作は変わりません。setup はインストール済みサービスを再起動する場合があるため、対象を確認して実行してください。
-
-```bash
-jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
-jeo messenger run --config ~/.jeo/discord/messenger.json
-```
-
-- **要件と信頼:** root 以外の POSIX アカウントが必要です。root・Windows は拒否します。プロジェクトは非公開プロファイル/セッションディレクトリの外にある、コミット済み `HEAD` を持つ既存の Git リポジトリに限ります。非 Git・初回コミット前のリポジトリは失敗し、setup は初期化もコピーもしません。ホストのツールはボットの OS ユーザーとローカル CLI の信頼権限で動作し、**OS による隔離ではありません**。信頼できるユーザーとプロジェクトだけに許可してください。
-- **スレッドの作業領域:** 各スレッドは独立した履歴、固定セッション、専用ワーカープロセス・cwd と、コミット済み `HEAD` から初回作成する Git linked worktree・ブランチを保持します。元のチェックアウトの staged・unstaged・untracked 変更には触れません。worktree は保持し、自動マージ・push・worktree 削除は行いません。
-- **制御:** 許可・認証されたユーザーが、元のスレッドに添付なしの独立した1行メッセージを送ります。`/session status` は状態、`/cwd` は cwd を表示し、`/cwd /absolute/path/to/project` はコミット済みの既存 Git プロジェクトを選択します。`/cancel` はそのスレッドの作業だけを取り消し、`/approve <requestId>`・`/deny <requestId>` は保留中の操作要求に回答します。cwd の変更は現在の作業を終了し、元のチェックアウトではなく、そのプロジェクトのスレッド専用 worktree を選択します。
-- **承認の境界:** 通常の編集・テスト・ビルドは既存のツール許可リスト内で自動実行します。明示的な削除・パッケージ導入・Git push・デプロイ・アップロード・システム変更には、同じスレッドでその操作だけに使える1回限りの承認が必要です。信頼したスクリプト内部の全操作を分類したり、その影響を OS レベルで隔離したりはしません。
-- **ライフサイクル:** アーカイブ・削除は対象スレッドの作業だけを中止し、履歴・ブランチ・worktree を保持します。アーカイブ解除でも、次の許可されたメッセージまではワーカーを起動しません。クリーンアップ確認後の再起動は保存状態を再利用し、受付済みメッセージを再実行しません。以前の所有者を検証できなければ復旧を拒否し、あらゆるクラッシュの後処理を保証するものではありません。
+**Discord / メッセンジャーゲートウェイ** — `jeo discord setup` / `jeo messenger setup` は `~/.jeo/discord/messenger.json`(`toolNames: []`、サンドボックスなし)を作成し、実行中のターミナルセッションへ `/discord live --allow-full-control`(またはデーモン経由の `/discord control on --allow-full-control`)で接続する流れを既定としています。単独ゲートウェイ `jeo messenger run` も `jeopi` と同じ非隔離ホストモデル(`toolNames: []` が既定、明示有効化時はホスト OS ユーザー権限で `read`, `grep`, `glob`, `bash`, `edit`, `write` を実行)に従います。[Discord ガイド](docs/integrations/discord.md)および[メッセンジャーガイド](docs/integrations/messenger.md)を参照してください。
 
 
 📖 **[使い方ガイド](docs/usage-guide.md)** — インストール、TUI操作（↑履歴、Ctrl+O、`!`シェル）、スラッシュコマンド、`/resume`、スペックファーストワークフローをデモ動画付きで解説。
@@ -58,6 +43,8 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 > インライン再生されない場合は ▶ [デモ動画を再生/ダウンロード](docs/jeo-code-promo.mp4)。
 
 ## ハイライト
+
+![jeo-code アーキテクチャ: スマートルーティング、精密ツールループ、検証ゲート、非同期・リモート制御](assets/architecture.svg)
 
 - **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio に加え、OpenAI・Anthropic 互換クラウド20以上(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai など)を均一な JSON ツールループで — **さらに自分で登録したエンドポイントも**: `jeo provider add --id my-proxy --base-url https://…`(または `--preset litellm|vllm|sglang|azure-openai|…`)で、LiteLLM プロキシ・自前ホストの vLLM・社内 Anthropic ゲートウェイが、組み込みの `openai` プロバイダを乗っ取ることなく独自のルーティング接頭辞・モデル一覧・認証情報を持てます。入力欄から OAuth ログイン(`/provider login`)、モデル選択は毎回新しいデフォルトとして永続化。プロンプトルーティングは実際に使える認証済み経路だけを自動選択します: Gemini OAuth は provider-qualified な `antigravity/*` エージェントセットへ、**アカウントが現在提供している構成のまま**向かい(ライブ検出 — 例: Gemini 3.6 Flash 各ティア、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6; チャット以外や非推奨の ID は除外され、一覧が空でも静的カタログで代用しません)、`GEMINI_API_KEY` が必要な public `google/gemini-*` 行は決して選びません。設定済みルートが未準備のプロバイダを指している場合、jeo はデフォルトへフォールバックする前に同等ティアの認証済みモデルへ切り替えます。
 - **編集の完全性** — read 出力にコンテンツアンカー(`42ab|`)が付き、アンカー付き編集は現在のファイルと照合・行移動時は自動再マッピング・不一致時は最新内容と共に拒否されます。
@@ -108,9 +95,42 @@ jeo --version
 jeo                      # 現在のリポジトリで対話エージェント
 jeo "README を整えてテストを実行して"   # ワンショット要求
 jeo doctor               # 設定 + ライブモデル接続チェック
-jeo setup                # API キー / OAuth / ローカルモデル設定
+jeo setup                # API キー / OAuth / ローカルモデル / Perplexity 検索設定
+jeo auth login perplexity  # 短縮コマンド: web_search の最優先プロバイダとして Perplexity を認証
 jeo --tmux               # 独立した tmux セッションで実行
 ```
+
+> [!NOTE]
+> **Web 検索 (`web_search`) と Perplexity 認証について:** `jeo setup`（9番 `perplexity`）、`/provider login perplexity`、`/provider key perplexity`、または `jeo auth login perplexity` で Perplexity 認証を保存すると、`web_search` が自動で **Perplexity を最優先（第1候補）** として使用します。未認証の場合はアクティブモデルのネイティブ検索（対応時）と DuckDuckGo にフォールバックします。
+### Web 検索と Perplexity ログイン手順
+
+`JEO_SEARCH_PROVIDER` が未設定（または `auto`）のとき、`web_search` は **Perplexity（認証済みの場合） → アクティブモデルのネイティブ検索 → DuckDuckGo** の順で実行されます。
+
+![jeo setup と web_search 優先順位フロー](assets/web-search-flow.svg)
+
+1. **対話型メール OTP / macOS アプリログイン（推奨）:**
+   ```bash
+   jeo auth login perplexity
+   # または jeo REPL の入力欄で:
+   /provider login perplexity   # 別名: /login perplexity
+   ```
+   - **macOS:** `jeo` はまずネイティブ Perplexity デスクトップアプリ（`ai.perplexity.mac`）のトークンを確認し、サインイン済みなら自動で再利用します。デスクトップアプリが未ログインまたはゲストトークンのみの場合は、アプリ取得をスキップして直接メール OTP に進みます:
+     ```bash
+     JEO_AUTH_NO_BORROW=1 jeo auth login perplexity
+     ```
+   - **メール OTP 手順（全 OS 共通）:**
+     1. `Perplexity email address:` プロンプトに Perplexity アカウントのメールアドレスを入力します。
+     2. 受信トレイに届いた 6 桁のワンタイムコードを `One-time login code sent to your email:` に入力します（複数回送信した場合は最新のメールのコードを使用）。
+     3. `jeo` が OTP を検証し、セッショントークンを `~/.jeo/config.json` に保存します。
+2. **`jeopi` から既存認証を取り込む:**
+   ```bash
+   jeo auth sync
+   ```
+3. **API キー / トークン環境変数（ヘッドレス / CI）:**
+   - `PERPLEXITY_API_KEY` または `PPLX_API_KEY`（あるいは `PERPLEXITY_OAUTH_TOKEN`）を設定するか、`jeo auth login perplexity --token <session-token>` でセッショントークンを直接登録します。
+4. **確認と検索エンジンの明示指定:**
+   - `jeo auth status` を実行し、`perplexity` に `set (refreshable) <メールアドレス>` が表示されれば完了です。
+   - `JEO_SEARCH_PROVIDER=perplexity|anthropic|openai|gemini|duckduckgo|auto` で検索バックエンドをいつでも切り替えられます。
 
 ## スラッシュコマンド
 
@@ -282,32 +302,12 @@ jeo ultragoal
 
 オプトイン: 共有デーモン 1 つがマシン上の稼働中の `jeo` セッションをすべて監視し、**サブエージェントの状態遷移**(開始 → 完了/失敗/キャンセル)ごとにメッセージを送ります。加えてセッション識別ヘッダー、ターンの開始/終了サマリー、確定したターンのテキストも送りますが、「まだ実行中」という繰り返しの ping は決して送りません。allowlist に登録された人間はチャットから一覧・送信・ステア・キャンセルができ、すべての制御はローカルセッションへ中継されて **確認応答済み(受理であって完了ではない)** または **未確認応答** として報告されます — デーモンがコマンドの実行完了を主張することはありません。
 
-### Discord セッションとサンドボックス境界
+![jeo-code リモート監視および双方向メッセンジャーブリッジ](assets/remote-channels.svg)
 
-Discord の1スレッドは送信者・メッセージに関係なく1つの永続セッションを保持します。同じスレッドは FIFO、別セッションは並行実行できます。選択したワークスペースを共有し、セッション別の Git worktree は作らないため、ファイル変更は競合し得ます。
+### Discord セッションと実行中ターミナル接続
 
-**ネイティブサンドボックス（既定、Docker 不要）。** `sandbox` ブロックがない場合、Discord の会話は OS 標準のサンドボックス（macOS Seatbelt `sandbox-exec`、または非特権ユーザー名前空間が使える Linux bubblewrap `bwrap`）で動作します。会話ごとに専用のワーカーとサンドボックスを持ち、ネットワークなし、書き込みはワークスペースと非公開スクラッチのみ、ホームやその他の非公開パスは読めません。**セッションが起動した全プロセスはセッションとともに終了します。** セッションの削除・終了、ワーカー終了、ゲートウェイ停止のいずれでも、自ら切り離され（`setsid`、二重 fork）launchd に付け替えられたデーモンを含め、サンドボックスが全プロセスを終了します。後始末なしに終了したワーカーやゲートウェイの残存プロセスは次回起動時に回収されるため、メモリを使い続けません。macOS ではカーネルがセッションの構成員を特定し（サンドボックスは fork・exec・setsid を越えて継承）、これを証明できない起動は明示的なエラーで失敗します。制約: ネイティブの cgroup によるメモリ・CPU・PID 制限なし、承認済みルート外のパスが必要なグローバルフックはホストでは実行されずサンドボックス内で失敗、グローバルスキル資産は `~/.jeo/config.json` の `sandboxSkillAssets` ファイル許可リストでのみ公開、Linux は非特権ユーザー名前空間が使える `bwrap` が必要で macOS ホストでは未検証、ネイティブ Windows にはネイティブサンドボックスがなく下記の Docker ブロックが必要です。
-
-**任意の Docker サンドボックス**（既存の設定は引き続き動作）:
-
-メッセンジャー設定に `sandbox` を指定します。`~/.jeo/config.json` にも同じ形式で設定すると、ターミナルセッションを隔離します:
-
-```json
-{
-  "sandbox": {
-    "image": "oven/bun:1.3.14",
-    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
-  }
-}
-```
-
-これは完全なメッセンジャープロファイルではなくサンドボックス部分です。既存の `platforms` 許可リストと認証情報の環境変数名は保持してください。Linux Bun イメージはローカル Docker デーモンに既に存在する必要があります。不変のイメージ ID を確認して `--pull=never` で起動し、pull・依存関係インストール・リモート Docker・ホスト実行へのフォールバックは行いません。Mac/Windows でもホストシェルではなく **Linux ゲストシェル**です。ネットワークは `none`、`/workspace` は読み書き可能、追加パスにはセッション別 `ro`/`rw` 許可が必要です。ホーム全体・非公開制御パス・制御ソケットは許可できません。ホスト運用者と Docker デーモンは信頼対象です。
-
-アクセスを決定できるのは親に直接提出された人間の `/sandbox status`、`/sandbox approve <requestId>`、`/sandbox deny <requestId>`、`/sandbox revoke` のみです。モデルの `sandbox_request {host, mode:'ro'|'rw'}` は要求専用で、自己承認できません。認証済み主体自身のセッションと現在の要求 revision が必要で、古い要求や別セッションの要求は拒否します。既存ターミナルの Discord 制御にもサンドボックスが必要です。ローカル `/discord control on --allow-full-control` で有効、`/discord control off` で無効にし、リモートターンはローカル入力の下書きを保持します。
-
-`independentSessions` は実行時に拒否し、明示的な `jeo messenger setup` 移行で削除します。`sessionDir` はワークスペースと重ならない外部の非公開パスに置いてください。旧 `.jeo/sessions`・`.jeo/messenger-sessions`・`.jeo/memory/raw` の記録がワークスペースにある場合は移動案内とともに起動を拒否します。再起動前に意図的に移動し、自動コピー・削除は行いません。完全な会話履歴は親専用ストアに保持し、蒸留済みプロジェクト学習は共有します。既存 ECC スキル/ワークフロー導入を再利用し、グローバル再インストールは行っていません。保護されたグローバルスキルは実行前にスナップショット化し、ワークスペース/許可済み文書はゲスト経由で読みます。
-
-**検証範囲(2026-11-03):** 実際の macOS 実 Docker 検証(`bun run verify:sandbox`)が **20動作契約**に成功し、ソースのスタンドアロンビルドも成功しました。コピーしたスタンドアロンバイナリは、実 PTY FIFO、親の `sandbox_request` と実 Linux ゲストツール、全履歴の非公開、親が生成した stderr シャットダウン nonce と一致する ACK、実ワーカー終了(143)、Docker コンテナ不在を対象とする限定的な検証に成功しました。現在のソースラッパーは teardown のクリーンアップ所有者、有界なシャットダウン待機、人間によるセッション別許可、永続スレッド/FIFO 1 つ、共有ワークスペースを維持します。これは全スイート・クロスプラットフォーム・本番の検証ではありません。全体の `bun test` はタイムアウトし**成功ではなく**、一般の集中スイートには古いフィクスチャの失敗が残り修正中です。ネイティブ Linux・Windows ホストの検証は利用できず、実 Discord 送信も行っていません。macOS 上の Linux ゲストはホスト認定ではありません。`bun run build:hands` はワーカーをビルドし、`bun run verify:sandbox` は前提条件をインストールせず実 Docker を検査します。ワーカー/コンテナの除去確認が必要で、エラーや未確認の除去を成功と報告しません。
+- **実行中のターミナルセッション接続（既定）:** `jeo discord setup` または `jeo messenger setup` を一度実行し、稼働中の `jeo` セッションで `/discord live --allow-full-control` を実行します(`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` もサンドボックス不要で動作します)。どちらもアクティブなセッションのツール・承認ポリシー・作業ディレクトリをそのまま使用し、`/discord status`・`/discord relay <channel-id|off>`・`/discord stop`・`/discord control off` で確認・解除できます。
+- **単独ゲートウェイ (`jeo messenger run`):** スレッド/DM ごとに 1 つの永続セッションをホスト上で実行します(`toolNames: []` が既定、サンドボックスなし)。`--tools read,grep,glob,bash,edit,write` を有効にすると許可ユーザーにローカルマシン権限が付与され、`cwd` は chroot やファイルシステム隔離ではありません。通常の `jeo` セッション向けの任意 `~/.jeo/config.json` `sandbox` 隔離(`/sandbox status|approve|deny|revoke`)は引き続き利用できます。
 
 プラットフォーム別詳細ガイド:
 - 📖 [チャネル連携概要 & アーキテクチャ](docs/integrations/README.md) — 機能マトリクスと全体構成
@@ -338,7 +338,7 @@ jeo daemon start|stop|status|reload   # 共有デーモンにプロバイダ選�
 - **セットアップ**は公式 API(Telegram `getMe`、Discord のボット + チャネル検索、Slack `auth.test`/`bots.info`/`conversations.info` と Socket Mode URL)でボット ID と宛先アクセスを検証し、結果を `~/.jeo/config.json` の `notifications.<provider>` 配下に **平文** で保存します — このファイルは非公開に保ってください。メッセージは送信せず、ソケットも開きません。
 - **`initialized`**(`jeo daemon status`)はデーモンプロセスがロックを所有しトランスポートを起動したことを意味し、Telegram ポール、Discord Gateway ハンドシェイク、Slack Socket Mode 接続が成功した証明ではありません。それには `notify health` / `notify test` を使ってください。
 - **トークンや宛先を変更する**と、Discord と Slack では allowlist が(`--allowed-user-ids` を再度渡す必要があります)、Telegram ではセッション単位トピックのマップがリセットされます。まったく同じ認証情報と宛先でセットアップを再実行した場合は保持されます。
-- **リモートコマンドはリテラルテキスト**(`/subagents` など)で、設定済みチャット/チャネルと allowlist に対して認可されます。Slack は同名の登録済みスラッシュコマンドも受け付けます。Discord ターミナル制御は既定で無効です。サンドボックスセッションでローカル `/discord control on --allow-full-control` により有効化し、`/discord control off` で解除します。上記の隔離・人間の承認境界に従い、認証情報をチャットに書かないでください。
+- **リモートコマンドはリテラルテキスト**(`/subagents` など)で、設定済みチャット/チャネルと allowlist に対して認可されます。Slack は同名の登録済みスラッシュコマンドも受け付けます。Discord ターミナル制御は既定で無効です。ローカルの `/discord control on --allow-full-control` または `/discord live --allow-full-control` で有効化し(サンドボックス不要)、`/discord control off` または `/discord stop` で解除します。認証情報をチャットに書かないでください。
 - **再試行はプロバイダごとに上限あり**: Telegram は 429 の `retry_after` クールダウン(1 秒〜1 時間にクランプ)を尊重し、ポールのバックオフは別途管理します。Discord と Slack は 429 時にサーバーの `Retry-After` を使って最大 3 回まで再試行し、結果が不明な POST を再送することはありません(プラットフォーム側がすでに受理している可能性があるため)。
 - **オーファン復旧**: デーモンがクラッシュするとロックは `stale` になり、次の `jeo daemon start` が回収します。`jeo daemon stop` は、ホストがプロセス起動時刻を報告できる場合は再利用された PID へのシグナル送信を拒否し、報告できない場合はその旨を伝えます。
 - **これまでの検証状況**: Telegram はエンドツーエンドで検証済み(実送信、ポーリング、クリーンシャットダウン)。Discord と Slack は同じデーモンの背後に実装され、オフラインのトランスポート/配線テストとコード・セキュリティ・型レビューを経ていますが、実際のボット/アプリ認証情報を使ったライブ接続はまだ行っていません。
@@ -379,15 +379,15 @@ jeo daemon status
 Discord Bot に Message Content Intent と View Channel、Send Messages、Read Message History、Add Reactions、Attach Files、Create Public Threads、Send Messages in Threads の権限を設定します。人間ユーザーとチャネルの許可リストを明示してください。
 
 ```bash
-# macOS/Linux: ユーザーサービスをインストール・起動し、Gateway を確認
-jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
-  --tools read,find,search
+# 既定セットアップ（実行中のターミナルセッション接続用に ~/.jeo/discord/messenger.json を作成）
+jeo discord setup
+# ターミナルセッション内で接続: /discord live --allow-full-control
+# 単独ゲートウェイ（任意）:
+jeo messenger setup --config ~/.jeo/discord/messenger.json --tools read,grep,glob
 jeo messenger check --config ~/.jeo/discord/messenger.json
 ```
 
-`check` はネットワーク接続を行わずローカルプロファイルを検証します。実際の会話は Bot への DM、または設定済みリクエストチャネルでのメンションで確認します。Windows では `--service` を省略し、生成された `.cmd` ランチャーを使います。Discord の既定サンドボックスは macOS/Linux のネイティブ機能で、Windows では文書化された Docker サンドボックスが必要です。同じ Bot に対してゲートウェイを二重起動しないでください。スレッド間でワークスペースを共有するため、書き込み/シェルツールを有効にする前に[サンドボックスとセッションの規則](docs/integrations/messenger.md)を確認してください。Setup は Bot Token を JSON 設定ではなく非公開の別ファイルに保存します。
-
-`toolNames` がない場合、Discord setup は広い既定ツール一覧を付与することがあります。`--tools` を明示してください。`read,find,search` は読み取り専用で、リモート編集が必要な場合にだけ `edit,write` を追加します。`bash` はコマンド実行権限のため、信頼できるユーザーに限定してください。ツール許可リストはサンドボックスの代わりにはなりません。
+`check` はネットワーク接続を行わずローカル設定を検証します。既定では `toolNames` は `[]`(ツールなし)で、`read,grep,glob` は読み取り専用、`edit,write,bash` はホスト OS ユーザー権限でのファイル編集・コマンド実行を許可します。Setup は Bot Token を JSON ではなく非公開の別ファイルに保存します。
 
 #### 必要な証拠に対応するゲートを再実行
 
@@ -583,11 +583,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.60]** (2026-11-18) — Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete.
 - **[0.12.59]** (2026-11-17) — Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`.
 - **[0.12.58]** (2026-11-17) — Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`.
 - **[0.12.57]** (2026-11-17) — Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models.
 - **[0.12.56]** (2026-11-17) — Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions.
-- **[0.12.55]** (2026-11-17) — Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

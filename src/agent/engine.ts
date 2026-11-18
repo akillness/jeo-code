@@ -29,7 +29,6 @@ import { isRateLimitError, isTransientStreamDropError, isStreamIdleError, isMidS
 import { logOpsEvent } from "../util/ops-log";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
-import { currentDiscordHostExecution, withDiscordHostExecution } from "./discord-host";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, toolTarget, type StepBudgetConfig } from "./step-budget";
@@ -200,7 +199,7 @@ export const TOOL_PROTOCOL = [
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
   "8. mkdir  {dirPath}                   — create a directory (parents included; idempotent)",
   "9. delete {path, recursive?}          — remove a file (or directory with recursive:true)",
-  "10. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
+  "10. web_search {query, recency?, limit?} — search the web (Perplexity when authenticated -> model-native -> DuckDuckGo: synthesized answer + sources + citations)",
   "11. computer {action, x?, y?, text?, key?, deltaX?, deltaY?, duration?, actions?} — execute desktop automation actions (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch)",
   "12. ast_grep {pattern, paths} — structural TypeScript/JavaScript search: $NAME captures one node (repeats must match identical code), $_ is a wildcard node, $$$NAME/$$$ capture/ignore zero-or-more sibling nodes in a list (call args, statements, class members, ...)",
   "13. ast_edit {pattern, replacement, paths} — structural TypeScript/JavaScript rewrite; same pattern metavariables, 'replacement' substitutes $NAME/$$$NAME with captured text (empty replacement deletes matches)",
@@ -1560,23 +1559,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               const sandboxedHandler = sandbox && !Object.hasOwn(parentTools, tool) && !SANDBOX_MEDIATED_TOOLS.has(handler)
                 ? (input: Record<string, any>, _cwd: string, progress?: (text: string) => void, signal?: AbortSignal) => sandbox.supervisor.call(tool, input, { cwd, signal: signal ? composeAbortSignal(sandbox.signal, signal) : sandbox.signal, onProgress: progress })
                 : handler;
-              const host = currentDiscordHostExecution();
-              // This mandatory gate is independent of optional pre-tool hooks and plan approval.
-              const hostSignal = host && (opts.signal ? AbortSignal.any([host.signal, opts.signal]) : host.signal);
-              const executionArgs = host ? structuredClone(args ?? {}) : args ?? {};
-              if (host && hostSignal) {
-                hostSignal.throwIfAborted();
-                if (tool === "bash" && !SANDBOX_MEDIATED_TOOLS.has(handler)) throw new Error("Discord host bash requires the effective-command tool boundary");
-                if (tool !== "bash") await host.authorizeTool(cwd, tool, executionArgs, hostSignal);
-                hostSignal.throwIfAborted();
-              }
-              const watchdogMs = toolWatchdogMs(tool, executionArgs);
-              const runToolCall = async (callSig: AbortSignal | undefined) => host
-                ? withDiscordHostExecution({ ...host, signal: callSig! }, () => sandboxedHandler(executionArgs, cwd, onProgress, callSig))
-                : sandbox
-                  ? withSandboxExecution({ ...sandbox, signal: callSig }, () => sandboxedHandler(executionArgs, cwd, onProgress, callSig))
-                  : sandboxedHandler(executionArgs, cwd, onProgress, callSig);
-              const baseCallSignal = host && hostSignal ? hostSignal : opts.signal;
+              const watchdogMs = toolWatchdogMs(tool, args ?? {});
+              const runToolCall = async (callSig: AbortSignal | undefined) => sandbox
+                ? withSandboxExecution({ ...sandbox, signal: callSig }, () => sandboxedHandler(args ?? {}, cwd, onProgress, callSig))
+                : sandboxedHandler(args ?? {}, cwd, onProgress, callSig);
+              const baseCallSignal = opts.signal;
               let res: ToolResult;
               if (watchdogMs > 0) {
                 const toolTimeoutCtrl = new AbortController();

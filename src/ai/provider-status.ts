@@ -21,10 +21,12 @@ import type { ProviderName } from "./types";
 import { OPENAI_COMPAT_NAMES, openaiCompatDef } from "./providers/openai-compatible-catalog";
 import { customProviderDef, customProviderNames, credentialSourceOf, resolveCustomApiKey } from "./providers/custom-providers";
 
-/** Compiled-in providers, in declaration order. Custom providers are NOT here — they
+/** Compiled-in LLM providers, in declaration order. Custom providers are NOT here — they
  *  are discovered at runtime, so use {@link allProviderNames} for anything the user sees. */
 export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "agy", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
 
+/** Dedicated search-only providers (not LLM model discovery targets, surfaced in `/provider` & `jeo setup`). */
+export const SEARCH_PROVIDER_NAMES: readonly ProviderName[] = ["perplexity"];
 /** Built-in providers PLUS the user's registered custom providers. Every user-facing
  *  surface (pickers, `/provider`, autocomplete, doctor) should list from here so a
  *  custom endpoint is never invisible in the UI that is supposed to expose it. */
@@ -224,6 +226,21 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
         : ownDead
           ? "OAuth expired, no refresh token — run 'jeo auth login antigravity' to re-authenticate"
           : "none (run 'jeo auth login antigravity')";
+  } else if (name === "perplexity") {
+    const cookies = !!process.env.PERPLEXITY_COOKIES?.trim();
+    if (kind === "oauth" && oauthPoolDead(cfg.oauth?.perplexity)) {
+      ready = false;
+      label = "OAuth expired, no refresh token — run 'jeo auth login perplexity' to re-authenticate";
+    } else if (kind === "oauth") {
+      label = `OAuth${oauthPool.length > 1 ? ` (${oauthPool.length} accounts)` : ""} · web_search #1 priority`;
+    } else if (kind === "api_key") {
+      label = `API key${keyPool.length > 1 ? ` (${keyPool.length} keys)` : ""} · web_search #1 priority`;
+    } else if (cookies) {
+      ready = true;
+      label = "Cookies (PERPLEXITY_COOKIES) · web_search #1 priority";
+    } else {
+      label = "none (run 'jeo setup', '/provider login perplexity', or set PERPLEXITY_API_KEY)";
+    }
   } else if (name === "gemini" && kind === "oauth") {
     ready = false;
     label = "OAuth catalog only; set GEMINI_API_KEY, or use antigravity/* models (Cloud Code Assist)";
@@ -253,8 +270,14 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   };
 }
 
-/** Resolve the status of every provider (single config read), custom providers included. */
+/** Resolve the status of every LLM provider (single config read), custom providers included. */
 export async function describeAllProviders(config?: Config): Promise<ProviderStatus[]> {
   const cfg = config ?? (await readGlobalConfig());
   return Promise.all(allProviderNames().map(name => describeProvider(name, cfg)));
+}
+
+/** Resolve the status of dedicated search providers (e.g. Perplexity). */
+export async function describeSearchProviders(config?: Config): Promise<ProviderStatus[]> {
+  const cfg = config ?? (await readGlobalConfig());
+  return Promise.all(SEARCH_PROVIDER_NAMES.map(name => describeProvider(name, cfg)));
 }

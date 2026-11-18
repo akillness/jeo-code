@@ -51,7 +51,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/subagent", usage: "/subagent [role]", description: "Show the current subagent composition (per-role model · thinking · steps); alias of /agents", group: "subagents" },
   { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
   { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
-  { command: "/discord", usage: "/discord relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Control Discord session access or local response relay", group: "session" },
+  { command: "/discord", usage: "/discord live [<messenger.json>] --allow-full-control | stop | status | relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Connect Discord to this terminal session or control relay", group: "session" },
   { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
 

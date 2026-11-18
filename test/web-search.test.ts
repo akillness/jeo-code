@@ -932,5 +932,39 @@ test("webSearchTool: Perplexity ask sign-up wall with zero sources fails over to
   });
 });
 
+test("resolveSearchChain: stored config.json perplexity credentials (OAuth or API key) take #1 priority ahead of active model native search", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-web-search-pplx-cfg-"));
+  const hadCfgDir = "JEO_CONFIG_DIR" in process.env;
+  const savedCfgDir = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = cfgDir;
+  try {
+    await fs.writeFile(
+      path.join(cfgDir, "config.json"),
+      JSON.stringify({ providers: { perplexity: "pplx-stored-key" }, defaultModel: "claude-sonnet-4-6" }),
+    );
+    await withSearchEnv({ JEO_SEARCH_API_KEY: "sk-ant-test" }, async () => {
+      const chain = await resolveSearchChain({ modelProvider: "anthropic" });
+      expect(chain.map(p => p.id)).toEqual(["perplexity", "anthropic", "duckduckgo"]);
+    });
+
+    await fs.writeFile(
+      path.join(cfgDir, "config.json"),
+      JSON.stringify({
+        providers: {},
+        oauth: { perplexity: { access: makeJwt({ sub: "u1" }), email: "user@example.com" } },
+        defaultModel: "claude-sonnet-4-6",
+      }),
+    );
+    await withSearchEnv({ JEO_SEARCH_API_KEY: "sk-ant-test" }, async () => {
+      const chain = await resolveSearchChain({ modelProvider: "anthropic" });
+      expect(chain.map(p => p.id)).toEqual(["perplexity", "anthropic", "duckduckgo"]);
+    });
+  } finally {
+    if (!hadCfgDir) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfgDir;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});
+
 // Restore module-level model hint for other tests.
 setWebSearchActiveModel(undefined);

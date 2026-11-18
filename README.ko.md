@@ -41,22 +41,7 @@
 
 - [양방향 메신저 게이트웨이 (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**메신저 게이트웨이** — `jeo messenger`는 알림 데몬과 별도로 허용된 Discord·Telegram·Slack 대화를 지원합니다. 기본적으로 Discord는 Docker 없이 운영체제 자체 샌드박스(macOS Seatbelt·Linux bubblewrap)에서 대화마다 독립된 세션으로 실행되며, 샌드박스 세션이 끝나면 그 세션이 띄운 모든 프로세스도 함께 종료됩니다. [메신저 가이드](docs/integrations/messenger.md)와 아래의 현재 제약을 참고하세요.
-
-### Discord 호스트 모드 (명시적 선택)
-
-봇 PC의 로컬 CLI 신뢰 권한으로 실행하려면 setup으로 대상 프로필의 `platforms.discord.workerMode`를 `"host"`로 명시적으로 설정하세요. 기존 실행 중인 프로필은 자동 전환되지 않으며 기본/native 샌드박스와 Discord 이외 플랫폼의 동작은 그대로입니다. setup은 이미 설치된 서비스를 재시작할 수 있으므로 의도한 프로필에만 실행하세요.
-
-```bash
-jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
-jeo messenger run --config ~/.jeo/discord/messenger.json
-```
-
-- **요건과 신뢰:** root가 아닌 POSIX 계정이 필요하며 root·Windows는 거부합니다. 프로젝트는 비공개 프로필/세션 디렉터리 밖에 있는, 커밋된 `HEAD`가 있는 기존 Git 저장소여야 합니다. 비 Git·첫 커밋 전 저장소는 실패하며 setup은 저장소를 초기화하거나 복사하지 않습니다. 호스트 도구는 봇의 OS 사용자와 로컬 CLI 신뢰 권한으로 실행되며 **OS 격리가 아닙니다**. 신뢰하는 사용자·프로젝트에만 허용하세요.
-- **스레드 작업 공간:** 스레드마다 독립된 이력, 고정 세션, 워커 프로세스·cwd와 커밋된 `HEAD`에서 처음 만드는 Git 연결 worktree·브랜치를 유지합니다. 원본 체크아웃의 staged·unstaged·untracked 변경은 건드리지 않습니다. worktree는 보존하며 자동 병합·push·worktree 삭제는 없습니다.
-- **제어:** 허용·인증된 사용자가 원래 스레드에서 첨부 없는 한 줄의 독립 메시지로 보냅니다. `/session status`는 상태, `/cwd`는 cwd를 조회하고, `/cwd /absolute/path/to/project`는 커밋된 기존 Git 프로젝트를 선택합니다. `/cancel`은 해당 스레드 작업만 취소하며 `/approve <requestId>`·`/deny <requestId>`는 대기 중인 동작 요청에 응답합니다. cwd 변경은 현재 작업을 종료하고 원본 체크아웃 대신 해당 프로젝트의 스레드 전용 worktree를 선택합니다.
-- **승인 경계:** 일반 편집·테스트·빌드는 기존 도구 허용 목록 안에서 자동 실행합니다. 명시적 삭제·패키지 설치·Git push·배포·업로드·시스템 변경은 같은 스레드에서 정확히 그 동작에 대한 일회성 승인이 필요합니다. 신뢰한 스크립트 내부 동작을 모두 분류하거나 OS 수준에서 효과를 격리하는 것은 아닙니다.
-- **수명 주기:** 보관·삭제는 해당 스레드 작업만 취소하고 이력·브랜치·worktree를 보존합니다. 보관 해제 후에도 다음 허용 메시지 전에는 워커를 시작하지 않습니다. 정리가 확인된 뒤 재시작하면 저장 상태를 재사용하고 이미 접수한 메시지는 재실행하지 않습니다. 이전 소유자를 검증할 수 없으면 복구를 차단하며 모든 비정상 종료의 정리를 보장하지 않습니다.
+**Discord 및 메신저 게이트웨이** — `jeo discord setup` / `jeo messenger setup`은 `~/.jeo/discord/messenger.json`(`toolNames: []`, 샌드박스 없음)을 생성하며 기본적으로 실행 중인 터미널 세션에 `/discord live --allow-full-control`(또는 데몬 기반 `/discord control on --allow-full-control`)로 연결합니다. 단독 게이트웨이 `jeo messenger run`도 `jeopi`와 동일한 비격리 호스트 모델(`toolNames: []` 기본값, 명시적 활성화 시 호스트 OS 사용자 권한으로 `read`, `grep`, `glob`, `bash`, `edit`, `write` 실행)을 따릅니다. [Discord 가이드](docs/integrations/discord.md)와 [메신저 가이드](docs/integrations/messenger.md)를 참고하세요.
 
 
 📖 **[사용 가이드](docs/usage-guide.md)** — 설치, TUI 조작(↑ 이전 쿼리, Ctrl+O, `!` 셸), 슬래시 명령, `/resume`, 스펙 우선 워크플로를 데모 영상과 함께 설명합니다.
@@ -68,6 +53,8 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 ## 주요 기능 (Overview)
 
 jeo-code는 단순한 코드 완성을 넘어 실제 엔지니어링 사이클(인터뷰 → 계획 → 승인 → 서브에이전트 병렬/직렬 실행 → 자체 검증)을 안전하게 오케스트레이션하는 **로컬 우선 AI 코딩 에이전트 CLI**입니다.
+
+![jeo-code 아키텍처: 스마트 라우팅, 정밀 도구 루프, 검증 게이트, 비동기 및 원격 제어](assets/architecture.svg)
 
 ### 1. 지능형 멀티 프로바이더 & 프롬프트 라우팅
 - **통합 모델 게이트웨이**: Anthropic, OpenAI(+Codex), Gemini, Antigravity, Ollama, LM Studio 및 20여 종의 OpenAI/Anthropic 호환 클라우드 지원
@@ -144,9 +131,42 @@ jeo --version
 jeo                      # 현재 저장소에서 대화형 에이전트
 jeo "README 정리하고 테스트 돌려줘"   # 원샷 요청
 jeo doctor               # 설정 + 라이브 모델 연결 점검
-jeo setup                # API 키 / OAuth / 로컬 모델 설정
+jeo setup                # API 키 / OAuth / 로컬 모델 / Perplexity 검색 설정
+jeo auth login perplexity  # 단축 명령: web_search 최우선 프로바이더로 Perplexity 인증
 jeo --tmux               # 독립 tmux 세션에서 실행
 ```
+
+> [!NOTE]
+> **웹 검색(`web_search`) 및 Perplexity 인증 안내:** `jeo setup`(9번 `perplexity`), `/provider login perplexity`, `/provider key perplexity`, 또는 `jeo auth login perplexity`로 Perplexity 인증을 저장하면 `web_search`가 별도 설정 없이 **Perplexity를 최우선(1순위)** 으로 사용합니다. Perplexity 인증이 없을 때는 활성 모델의 네이티브 검색(지원 시)과 DuckDuckGo로 자동 동작합니다.
+### 웹 검색 및 Perplexity 로그인 방법
+
+`JEO_SEARCH_PROVIDER`가 미설정(또는 `auto`)일 때 `web_search`는 **Perplexity(인증 시) → 활성 모델 네이티브 검색 → DuckDuckGo** 순으로 동작합니다.
+
+![jeo setup 및 web_search 우선순위 흐름](assets/web-search-flow.svg)
+
+1. **대화형 이메일 OTP / macOS 앱 로그인 (권장):**
+   ```bash
+   jeo auth login perplexity
+   # 또는 jeo REPL 입력창에서:
+   /provider login perplexity   # 별칭: /login perplexity
+   ```
+   - **macOS:** `jeo`가 먼저 네이티브 Perplexity 데스크톱 앱(`ai.perplexity.mac`)의 로그인 토큰을 확인해 자동 재사용합니다. 데스크톱 앱이 비로그인 상태이거나 게스트 토큰만 들어 있다면 아래 명령으로 앱 토큰 가져오기를 건너뛰고 바로 이메일 OTP로 진행하세요:
+     ```bash
+     JEO_AUTH_NO_BORROW=1 jeo auth login perplexity
+     ```
+   - **이메일 OTP 절차 (모든 OS 공통):**
+     1. `Perplexity email address:` 프롬프트에 Perplexity 계정 이메일을 입력합니다.
+     2. 메일함으로 발송된 6자리 일회용 인증 코드를 확인해 `One-time login code sent to your email:`에 입력합니다(여러 번 요청했다면 가장 최근 메일의 코드를 입력).
+     3. `jeo`가 OTP를 검증한 뒤 세션 토큰을 `~/.jeo/config.json`에 저장합니다.
+2. **`jeopi`에서 기존 인증 가져오기:**
+   ```bash
+   jeo auth sync
+   ```
+3. **API 키 / 토큰 환경 변수 (헤드리스 · CI):**
+   - `PERPLEXITY_API_KEY` 또는 `PPLX_API_KEY`(또는 `PERPLEXITY_OAUTH_TOKEN`) 환경 변수를 설정하거나, `jeo auth login perplexity --token <session-token>`으로 세션 토큰을 직접 등록할 수 있습니다.
+4. **확인 및 검색 엔진 강제 지정:**
+   - `jeo auth status` 실행 시 `perplexity` 항목에 `set (refreshable) <이메일>`이 표시되면 완료입니다.
+   - `JEO_SEARCH_PROVIDER=perplexity|anthropic|openai|gemini|duckduckgo|auto`로 특정 검색 백엔드를 강제할 수 있습니다.
 
 ## 슬래시 명령
 
@@ -336,32 +356,12 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 
 옵트인: 공유 데몬 하나가 머신의 모든 활성 `jeo` 세션을 지켜보다가 **서브에이전트 상태 전환**(시작 → 완료/실패/취소)마다 메시지를 보내고, 세션 식별 헤더, 턴 시작/종료 요약, 확정된 턴 텍스트도 함께 전송합니다 — "여전히 실행 중" 반복 핑은 절대 보내지 않습니다. allowlist에 등록된 사람은 채팅에서 목록 조회·전송·조종·취소를 할 수 있고, 모든 제어는 로컬 세션으로 중계되어 **확인 응답됨(수락됨, 완료 아님)** 또는 **확인 응답 안 됨**으로 보고됩니다 — 데몬은 명령이 실행됐다고 절대 주장하지 않습니다.
 
-### Discord 세션과 샌드박스 경계
+![jeo-code 원격 모니터링 및 양방향 메신저 브리지](assets/remote-channels.svg)
 
-Discord 스레드 하나는 발신자·메시지와 무관하게 하나의 영속 세션을 유지합니다. 같은 스레드는 FIFO로 처리하고 다른 세션은 동시에 실행할 수 있습니다. 선택한 워크스페이스를 공유하며 세션별 Git worktree를 만들지 않으므로 파일 수정은 충돌할 수 있습니다.
+### Discord 세션과 실행 중인 터미널 연결
 
-**네이티브 샌드박스(기본, Docker 불필요).** `sandbox` 블록이 없으면 Discord 대화는 운영체제 자체 샌드박스(macOS Seatbelt `sandbox-exec` 또는 Linux bubblewrap `bwrap`, 비특권 사용자 네임스페이스 필요)에서 실행됩니다. 대화마다 별도의 워커와 샌드박스를 갖습니다: 네트워크 없음, 워크스페이스와 비공개 스크래치 디렉터리에만 쓰기, 홈과 기타 비공개 경로는 읽을 수 없습니다. **세션이 시작한 모든 프로세스는 세션과 함께 종료됩니다.** 세션이 삭제·종료되거나 워커가 끝나거나 게이트웨이가 멈추면, 스스로 분리(`setsid`, 이중 fork)되어 launchd로 재부모화된 데몬까지 포함해 샌드박스가 모든 프로세스를 종료합니다. 정리 없이 종료된 워커·게이트웨이의 잔여 프로세스는 다음 시작 때 정리되어 메모리를 계속 쓰지 않습니다. macOS에서는 커널이 세션 구성원을 식별하며(샌드박스는 fork·exec·setsid를 넘어 상속됨), 이를 증명하지 못하는 실행은 명시적 오류로 닫힙니다. 제한: 네이티브 cgroup 메모리·CPU·PID 제한 없음, 승인된 루트 밖 경로가 필요한 전역 훅은 호스트에서 실행되지 않고 샌드박스 안에서 실패, 전역 스킬 자산은 `~/.jeo/config.json`의 `sandboxSkillAssets` 파일 허용 목록으로만 노출, Linux는 비특권 사용자 네임스페이스가 되는 `bwrap`이 필요하며 macOS 호스트에서는 검증하지 못함, 네이티브 Windows는 네이티브 샌드박스가 없어 아래 Docker 블록이 필요합니다.
-
-**선택 사항인 Docker 샌드박스**(기존 설정은 계속 동작):
-
-메신저 설정에 `sandbox`를 지정하세요. `~/.jeo/config.json`에도 같은 형식으로 설정하면 터미널 세션을 격리합니다:
-
-```json
-{
-  "sandbox": {
-    "image": "oven/bun:1.3.14",
-    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
-  }
-}
-```
-
-전체 메신저 프로필이 아닌 샌드박스 부분 예시입니다. 기존 `platforms` 허용 목록과 자격증명 환경변수 이름은 유지하세요. Linux Bun 이미지는 로컬 Docker 데몬에 이미 있어야 합니다. 백엔드는 불변 이미지 ID를 확인하고 `--pull=never`로 실행하며 이미지 pull·의존성 설치·원격 Docker·호스트 실행 폴백을 하지 않습니다. Mac/Windows에서도 호스트 셸이 아닌 **Linux 게스트 셸**입니다. 네트워크는 `none`, `/workspace`는 읽기/쓰기이며 추가 경로는 세션별 `ro`/`rw` 승인이 필요합니다. 전체 홈·비공개 제어 경로·제어 소켓은 허용할 수 없습니다. 호스트 운영자와 Docker 데몬은 신뢰 대상입니다.
-
-접근 결정은 부모에 직접 제출한 사람의 `/sandbox status`, `/sandbox approve <requestId>`, `/sandbox deny <requestId>`, `/sandbox revoke`만 처리합니다. 모델의 `sandbox_request {host, mode:'ro'|'rw'}`는 요청 전용이며 자체 승인할 수 없습니다. 인증된 행위자 자신의 세션과 현재 요청 revision이 필요하며, 오래되거나 다른 세션의 요청은 거부합니다. 기존 터미널 Discord 제어도 샌드박스가 필수입니다. 로컬 `/discord control on --allow-full-control`로 켜고 `/discord control off`로 끄며, 원격 턴은 로컬 입력 초안을 보존합니다.
-
-`independentSessions`는 런타임에서 거부하며 명시적인 `jeo messenger setup` 마이그레이션이 제거합니다. `sessionDir`는 워크스페이스 밖의 서로 겹치지 않는 비공개 경로여야 합니다. 워크스페이스 안의 구형 `.jeo/sessions`·`.jeo/messenger-sessions`·`.jeo/memory/raw` 기록 저장소는 이동 안내와 함께 시작을 차단합니다. 재시작 전 직접 옮겨야 하며 자동 복사·삭제하지 않습니다. 전체 대화 이력은 부모 전용 저장소에만 두고 증류된 프로젝트 학습은 공유합니다. 기존 ECC 스킬/워크플로 설치를 재사용하며 전역 재설치는 하지 않았습니다. 보호된 전역 스킬 내용은 실행 전 스냅샷으로 고정하고 워크스페이스/승인 문서는 게스트를 통해 읽습니다.
-
-**검증 범위(2026-11-03):** 실제 macOS 실제 Docker 검증기(`bun run verify:sandbox`)가 **행동 계약 20개**를 통과했고 소스 단독 빌드도 통과했습니다. 복사한 단독 바이너리는 실제 PTY FIFO, 부모 `sandbox_request`와 실제 Linux 게스트 도구, 전체 이력 비공개, 부모가 생성한 stderr 종료 nonce와 일치하는 ACK, 실제 워커 종료(143), Docker 컨테이너 부재를 다루는 제한된 범위의 검증을 통과했습니다. 현재 소스 래퍼는 teardown 정리 소유자, 제한된 종료 대기, 사람의 세션별 승인, 영속 스레드/FIFO 하나, 공유 워크스페이스를 유지합니다. 이는 전체 테스트 스위트·크로스 플랫폼·프로덕션 검증이 아닙니다. 전체 `bun test`는 시간 초과로 **통과가 아니며**, 일반 집중 스위트에는 낡은 픽스처 실패가 남아 수정 중입니다. 네이티브 Linux·Windows 호스트 검증은 불가능한 상태이며 실제 Discord 전송은 하지 않았습니다. macOS의 Linux 게스트는 호스트 검증이 아닙니다. `bun run build:hands`는 워커 빌드, `bun run verify:sandbox`는 사전 조건을 설치하지 않는 실제 Docker 검사입니다. 워커/컨테이너 정리는 확인되어야 하며 오류·제거 미확인을 성공으로 보고하지 않습니다.
+- **실행 중인 터미널 세션 연결(기본):** `jeo discord setup` 또는 `jeo messenger setup`으로 설정한 뒤, 실행 중인 `jeo` 세션에서 `/discord live --allow-full-control`을 실행하세요(`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` 방식도 샌드박스 없이 동작합니다). 두 방식 모두 활성 세션의 도구·승인 정책·작업 디렉터리를 그대로 사용하며 `/discord status`, `/discord relay <channel-id|off>`, `/discord stop`, `/discord control off`로 상태를 확인하거나 제어를 해제할 수 있습니다.
+- **단독 게이트웨이(`jeo messenger run`):** 스레드/DM당 영속 세션 하나를 호스트에서 실행합니다(`toolNames: []` 기본값, 샌드박스 없음). `--tools read,grep,glob,bash,edit,write`를 켜면 허용된 사용자에게 로컬 머신 권한이 부여되며 `cwd`는 chroot/파일시스템 격리가 아닙니다. 일반 `jeo` 세션용 선택적 `~/.jeo/config.json` `sandbox` 격리(`/sandbox status|approve|deny|revoke`)는 계속 유지됩니다.
 
 플랫폼별 상세 단독 가이드:
 - 📖 [채널 연동 개요 & 아키텍처](docs/integrations/README.md) — 기능 매트릭스 및 구조 개요
@@ -392,7 +392,7 @@ jeo daemon start|stop|status|reload   # 공유 데몬에는 프로바이더 선�
 - **Setup**은 공식 API로 봇 신원과 목적지 접근을 검증하고(Telegram `getMe`, Discord 봇 + 채널 조회, Slack `auth.test`/`bots.info`/`conversations.info`와 Socket Mode URL) 결과를 `~/.jeo/config.json`의 `notifications.<provider>` 아래에 저장합니다 — **평문**이므로 그 파일은 비공개로 유지하세요. 메시지를 보내지도, 소켓을 열지도 않습니다.
 - **`initialized`**(`jeo daemon status`)는 데몬 프로세스가 락을 소유하고 전송 계층을 시작했다는 뜻이지, Telegram poll·Discord Gateway 핸드셰이크·Slack Socket Mode 연결이 성공했다는 증거가 아닙니다. 그 확인에는 `notify health` / `notify test`를 사용하세요.
 - **토큰이나 목적지를 바꾸면** Discord와 Slack은 allowlist가 초기화되고(`--allowed-user-ids`를 다시 넘겨야 함), Telegram은 세션별 토픽 맵이 초기화됩니다. 정확히 같은 자격증명과 목적지로 setup을 다시 실행하면 그대로 유지됩니다.
-- **원격 명령은 리터럴 텍스트**(`/subagents`, …)이며 설정된 채팅/채널과 allowlist에만 인가됩니다. Slack은 같은 이름의 등록된 슬래시 명령도 받습니다. Discord 터미널 제어는 기본 꺼짐이며 샌드박스 세션에서 로컬 `/discord control on --allow-full-control`로 켜고 `/discord control off`로 해제합니다. 위의 샌드박스·사람 승인 경계를 따르며 채팅에 자격증명을 넣지 마세요.
+- **원격 명령은 리터럴 텍스트**(`/subagents`, …)이며 설정된 채팅/채널과 allowlist에만 인가됩니다. Slack은 같은 이름의 등록된 슬래시 명령도 받습니다. Discord 터미널 제어는 기본 꺼짐이며 로컬 `/discord control on --allow-full-control` 또는 `/discord live --allow-full-control`로 켜고(샌드박스 불필요), `/discord control off` 또는 `/discord stop`으로 해제합니다. 채팅에 자격증명을 넣지 마세요.
 - **재시도는 프로바이더별로 상한이 있습니다**: Telegram은 429의 `retry_after` 쿨다운(1초–1시간으로 클램프)을 poll 백오프와 별도로 지키고, Discord와 Slack은 429에 대해 서버의 `Retry-After`를 따라 최대 3회만 재시도하며, 결과를 알 수 없는 POST는 절대 재전송하지 않습니다(플랫폼이 이미 받았을 수 있음).
 - **고아 복구**: 데몬이 크래시하면 락이 `stale`이 되고, 다음 `jeo daemon start`가 회수합니다. `jeo daemon stop`은 호스트가 프로세스 시작 시각을 보고할 수 있으면 재활용된 PID에 시그널을 보내기를 거부하고, 보고할 수 없으면 그 사실을 알립니다.
 - **지금까지 검증된 범위**: Telegram은 엔드투엔드(실제 전송, 폴링, 깔끔한 종료). Discord와 Slack은 같은 데몬 뒤에 오프라인 전송/배선 테스트와 코드·보안·타입 리뷰로 구현되어 있으며, 실제 봇/앱 자격증명으로 라이브 연결은 아직 실행하지 않았습니다.
@@ -434,15 +434,15 @@ jeo daemon status
 Discord Bot에 Message Content Intent와 View Channel, Send Messages, Read Message History, Add Reactions, Attach Files, Create Public Threads, Send Messages in Threads 권한을 설정하세요. 사람 사용자와 채널 허용 목록은 구체적으로 지정해야 합니다.
 
 ```bash
-# macOS/Linux: 사용자 서비스를 설치·시작하고 Gateway를 확인
-jeo messenger setup --config ~/.jeo/discord/messenger.json --service \
-  --tools read,find,search
+# 기본 설정(실행 중인 터미널 세션 연결용 ~/.jeo/discord/messenger.json 생성)
+jeo discord setup
+# 터미널 세션 안에서 연결: /discord live --allow-full-control
+# 단독 게이트웨이(선택):
+jeo messenger setup --config ~/.jeo/discord/messenger.json --tools read,grep,glob
 jeo messenger check --config ~/.jeo/discord/messenger.json
 ```
 
-`check`는 네트워크 연결 없이 로컬 프로필을 검사합니다. 실제 대화는 봇 DM 또는 설정된 요청 채널에서 멘션하여 확인하세요. Windows에서는 `--service`를 생략하고 생성된 `.cmd` 실행기를 사용합니다. Discord 기본 샌드박스는 macOS/Linux 네이티브이며 Windows에는 문서화된 Docker 샌드박스가 필요합니다. 같은 Bot으로 두 게이트웨이를 동시에 실행하지 마세요. 스레드별 세션은 워크스페이스를 공유하므로 쓰기/셸 도구를 켜기 전에 [샌드박스와 세션 규칙](docs/integrations/messenger.md)을 확인하세요. Setup은 Bot 토큰을 JSON 설정이 아니라 비공개 별도 파일에 저장합니다.
-
-`toolNames`가 없으면 Discord setup은 넓은 기본 도구 목록을 부여할 수 있습니다. `--tools`를 의도적으로 지정하세요. `read,find,search`는 읽기 전용이고, 원격 수정이 꼭 필요할 때만 `edit,write`를 더합니다. `bash`는 명령 실행 권한이므로 신뢰 가능한 사용자와 필요성이 확인된 경우에만 허용하세요. 도구 허용 목록은 샌드박스를 대체하지 않습니다.
+`check`는 네트워크 연결 없이 로컬 프로필을 검사합니다. 기본적으로 `toolNames`는 `[]`(도구 0개)이며, `read,grep,glob`는 읽기 전용, `edit,write,bash`는 호스트 OS 사용자 권한으로 파일 편집 및 명령 실행을 허용합니다. Setup은 Bot 토큰을 JSON 설정이 아니라 비공개 별도 파일에 저장합니다.
 
 #### 새 증거가 필요한 게이트만 재실행
 
@@ -638,11 +638,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.60]** (2026-11-18) — Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete.
 - **[0.12.59]** (2026-11-17) — Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`.
 - **[0.12.58]** (2026-11-17) — Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`.
 - **[0.12.57]** (2026-11-17) — Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models.
 - **[0.12.56]** (2026-11-17) — Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions.
-- **[0.12.55]** (2026-11-17) — Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

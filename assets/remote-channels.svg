@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="230" viewBox="0 0 1120 230" role="img" aria-labelledby="title desc">
+  <title id="title">jeo-code remote monitoring and messenger gateway</title>
+  <desc id="desc">Local jeo sessions connect via loopback WebSocket or OS sandbox to jeo daemon and jeo messenger, bridging allowlisted commands and updates to Telegram, Discord, and Slack.</desc>
+  <rect width="1120" height="230" rx="20" fill="#0b1224"/>
+  <text x="560" y="27" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" letter-spacing="0.4" fill="#8da7c7">REMOTE MONITORING &amp; BIDIRECTIONAL MESSENGER BRIDGE</text>
+
+  <g fill="none" stroke="#57759d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M348 125h44"/>
+    <path d="m354 120-6 5 6 5m32-10 6 5-6 5"/>
+    <path d="M726 125h22V68h24M748 125h24M748 125v57h24"/>
+    <path d="m766 63 6 5-6 5m0 47 6 5-6 5m0 52 6 5-6 5"/>
+  </g>
+
+  <g stroke-width="1.5">
+    <rect x="24" y="44" width="320" height="162" rx="14" fill="#14233b" stroke="#47d7e8"/>
+    <rect x="396" y="44" width="328" height="162" rx="14" fill="#211e3c" stroke="#aa86ee"/>
+
+    <rect x="776" y="44" width="320" height="48" rx="12" fill="#172e39" stroke="#69d4ba"/>
+    <rect x="776" y="101" width="320" height="48" rx="12" fill="#18223e" stroke="#7a9df5"/>
+    <rect x="776" y="158" width="320" height="48" rx="12" fill="#291e3a" stroke="#dc78be"/>
+  </g>
+
+  <g text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">
+    <text x="184" y="78" fill="#edf5ff" font-size="16" font-weight="700">Local jeo Sessions</text>
+    <text x="184" y="106" fill="#aebfd6" font-size="12.5">127.0.0.1 loopback WS mirror</text>
+    <text x="184" y="128" fill="#aebfd6" font-size="12.5">Seatbelt / bwrap / Docker sandbox</text>
+    <text x="184" y="150" fill="#aebfd6" font-size="12.5">Per-thread Git worktree option</text>
+    <text x="184" y="182" fill="#47d7e8" font-size="12" font-weight="600">Subagent edges · turn stream · images</text>
+
+    <text x="560" y="78" fill="#edf5ff" font-size="16" font-weight="700">Daemon &amp; Messenger</text>
+    <text x="560" y="106" fill="#aebfd6" font-size="12.5">jeo daemon (edge notifications)</text>
+    <text x="560" y="128" fill="#aebfd6" font-size="12.5">jeo messenger (chat sessions)</text>
+    <text x="560" y="150" fill="#aebfd6" font-size="12.5">Human allowlist &amp; rate-limit pool</text>
+    <text x="560" y="182" fill="#aa86ee" font-size="12" font-weight="600">/steer · /cancel · /approve · /send</text>
+
+    <text x="936" y="73" fill="#edf5ff" font-size="14.5" font-weight="700">Telegram · Forum Topics &amp; Keyboards</text>
+    <text x="936" y="130" fill="#edf5ff" font-size="14.5" font-weight="700">Discord · REST + Gateway WS</text>
+    <text x="936" y="187" fill="#edf5ff" font-size="14.5" font-weight="700">Slack · Web API + Socket Mode</text>
+  </g>
+</svg>

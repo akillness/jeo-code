@@ -62,23 +62,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - [Bidirectional messenger gateway (Discord, Telegram, Slack)](docs/integrations/messenger.md)
 
-**Messenger gateway** — `jeo messenger` supports allowlisted Discord, Telegram, and Slack conversations separately from the notification daemon. By default, Discord runs without Docker in the operating system's own sandbox (macOS Seatbelt, Linux bubblewrap), one independent session per conversation; when a sandboxed session ends, every process it started ends with it. See the [messenger guide](docs/integrations/messenger.md) and the current constraints below.
-
-### Discord host mode (explicit opt-in)
-
-For local CLI trust on the bot PC, explicitly set `platforms.discord.workerMode: "host"` in the intended profile through setup. Existing live profiles are not switched automatically; default/native sandbox behavior and non-Discord platforms are unchanged. Run deliberately: setup can restart an already installed service.
-
-```bash
-jeo messenger setup --config ~/.jeo/discord/messenger.json --worker-mode host --project /absolute/path/to/project
-jeo messenger run --config ~/.jeo/discord/messenger.json
-```
-
-- **Requirements and trust:** use a non-root POSIX account; root and Windows are rejected. The project must already be a Git repository with a committed `HEAD`, outside the private profile/session directories. Non-Git and unborn repositories fail; setup never initializes or copies a repository. Host tools run as the bot's OS user with local CLI trust, **not OS isolation**. Only opt in for trusted users and projects.
-- **Thread workspaces:** each thread keeps independent history, a stable session, its own worker process and cwd, and a linked Git worktree/branch initially created from committed `HEAD`. The original checkout's staged, unstaged and untracked changes stay untouched. Worktrees are retained; there is no automatic merge, push or worktree deletion.
-- **Controls:** allowed, authenticated users send a standalone, single-line message without attachments in the originating thread: `/session status` inspects state; `/cwd` inspects the cwd; `/cwd /absolute/path/to/project` selects an existing committed Git project; `/cancel` cancels only that thread's work; `/approve <requestId>` or `/deny <requestId>` answers its pending action request. A cwd change retires current work and selects the thread-owned worktree for that project, not the original checkout.
-- **Approval boundary:** ordinary edits, tests and builds run automatically within the existing tool allowlist. Explicit deletion, package installation, Git push, deployment, upload and system changes require one-use approval for the exact action in the same thread. This does not fully classify trusted scripts' internals or contain their effects at the OS level.
-- **Lifecycle:** archive/delete cancels only the affected thread's work and retains history, branch and worktree; unarchive starts no worker until the next allowed message. After confirmed cleanup, restart reuses saved state without replaying admitted messages. An unverified previous owner blocks recovery; host mode does not promise universal crash cleanup.
-
+**Discord & Messenger gateway** — `jeo discord setup` / `jeo messenger setup` creates `~/.jeo/discord/messenger.json` (`toolNames: []`, no sandbox) and defaults to connecting Discord to your running terminal session via `/discord live --allow-full-control` (or daemon-backed `/discord control on --allow-full-control`). Standalone `jeo messenger run` matches `jeopi`'s non-isolated host model: `toolNames` defaults to `[]` (no tools), and explicitly enabled tools (`read`, `grep`, `glob`, `bash`, `edit`, `write`) execute as the host OS user. See the [Discord guide](docs/integrations/discord.md) and [messenger guide](docs/integrations/messenger.md).
 
 📖 **[Usage guide](docs/usage-guide.md)** — install, TUI controls (↑ recall, Ctrl+O, `!` shell), slash commands, `/resume`, and the spec-first workflow, with a demo video.
 
@@ -89,6 +73,8 @@ jeo messenger run --config ~/.jeo/discord/messenger.json
 ## Key Features (Overview)
 
 jeo-code is a **local-first AI coding agent CLI** designed to safely drive entire software engineering lifecycles — from ambiguity-resolving interviews and reviewed plans to concurrent subagent execution and self-healing verification loops.
+
+![jeo-code architecture: smart routing, surgical tool loop, verification gates, and async/remote ops](assets/architecture.svg)
 
 ### 1. Intelligent Multi-Provider & Cost-Aware Routing
 - **Unified Model Loop**: Seamless JSON tool-calling across Anthropic, OpenAI (+Codex), Gemini, Antigravity, Ollama, LM Studio, and 20+ OpenAI/Anthropic-compatible clouds.
@@ -149,9 +135,42 @@ jeo-code is a **local-first AI coding agent CLI** designed to safely drive entir
 jeo                      # interactive agent in the current repo
 jeo "Tidy the README and run the tests"   # one-shot request
 jeo doctor               # config + live model connectivity check
-jeo setup                # API keys / OAuth / local models
+jeo setup                # API keys / OAuth / local models / Perplexity search
+jeo auth login perplexity  # shortcut: authenticate Perplexity for #1 web_search
 jeo --tmux               # run inside an isolated tmux session
 ```
+
+> [!NOTE]
+> **Web Search (`web_search`) & Perplexity setup:** In `jeo setup` (option `9) perplexity`), `/provider login perplexity`, `/provider key perplexity`, or `jeo auth login perplexity`, once Perplexity credentials are saved, `web_search` automatically prioritizes **Perplexity** first. Without Perplexity auth, `web_search` falls back to your active model's native search (when its credentials qualify) and DuckDuckGo.
+### Web Search & Perplexity Login
+
+When `JEO_SEARCH_PROVIDER` is unset (or `auto`), `web_search` resolves in priority order: **Perplexity (when configured) → active model's native search → DuckDuckGo**.
+
+![jeo setup and web_search priority order](assets/web-search-flow.svg)
+
+1. **Interactive Email OTP / macOS App (recommended):**
+   ```bash
+   jeo auth login perplexity
+   # Or inside the jeo REPL:
+   /provider login perplexity   # alias: /login perplexity
+   ```
+   - **macOS:** `jeo` first checks whether the native Perplexity desktop app (`ai.perplexity.mac`) is signed in and reuses its token automatically. If the desktop app is signed out or holds a guest token, bypass it and go straight to Email OTP:
+     ```bash
+     JEO_AUTH_NO_BORROW=1 jeo auth login perplexity
+     ```
+   - **Email OTP steps (all platforms):**
+     1. At `Perplexity email address:`, enter your Perplexity account email.
+     2. Check your inbox for the 6-digit one-time login code and enter it at `One-time login code sent to your email:` (if multiple codes were requested, use the latest email).
+     3. `jeo` verifies the OTP and stores the session token in `~/.jeo/config.json`.
+2. **Import from `jeopi` (if already signed in there):**
+   ```bash
+   jeo auth sync
+   ```
+3. **API key or token (headless / CI):**
+   - Set `PERPLEXITY_API_KEY` or `PPLX_API_KEY` (or `PERPLEXITY_OAUTH_TOKEN`), or store a manual session token with `jeo auth login perplexity --token <session-token>`.
+4. **Verify & override:**
+   - Run `jeo auth status` — `perplexity` should show `set (refreshable) <email>`.
+   - Override the search backend anytime with `JEO_SEARCH_PROVIDER=perplexity|anthropic|openai|gemini|duckduckgo|auto`.
 
 ## Slash commands
 
@@ -339,32 +358,12 @@ Both are advisory: a non-zero exit, timeout or abort prints a notice and never b
 
 Opt-in: one shared daemon watches every live `jeo` session on the machine and pushes a message on each **subagent state edge** (started → completed/failed/cancelled), plus the session identity header, turn start/finish summaries, and the finalized turn text — never repeated "still running" pings. Allowlisted humans can list, send, steer, and cancel from the chat; every control is relayed to the local session and reported as **acknowledged (accepted, not completed)** or **not acknowledged** — the daemon never claims a command ran.
 
-### Discord sessions and sandbox boundaries
+![jeo-code remote monitoring and bidirectional messenger bridge](assets/remote-channels.svg)
 
-One Discord thread keeps one persistent session, irrespective of sender or message. Same-thread requests run FIFO; other sessions can run concurrently. Sessions share the selected workspace: no per-session Git worktree is created, so filesystem edits can conflict.
+### Discord sessions & live terminal connection
 
-**Native sandbox (default, no Docker).** With no `sandbox` block, each Discord conversation runs in the operating system's own sandbox: macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap` with unprivileged user namespaces). Every conversation gets its own worker and its own sandbox: no network, writes only to the workspace and a private scratch directory, and the home directory and other private paths are unreadable. **Every process a session starts dies with it.** When the session is deleted or ended, its worker exits, or the gateway stops, the sandbox kills all of its processes, including daemons that detached themselves (`setsid`, double fork) and were re-parented to launchd. A worker or gateway killed without cleanup is reaped at the next start, so nothing keeps consuming memory. On macOS the kernel names a session's members (a sandbox is inherited across fork, exec and setsid); a launch that cannot prove this fails closed with an explicit error. Limits: no native cgroup memory, CPU or PID limits; global hooks that need paths outside the approved roots fail inside the sandbox instead of running on the host; global skill assets are exposed only through an explicit `sandboxSkillAssets` allowlist of files in `~/.jeo/config.json`; Linux needs `bwrap` with unprivileged user namespaces and was not verified on a macOS host; native Windows has no native sandbox and still needs the Docker block below.
-
-**Optional Docker sandbox** (existing configurations keep working):
-
-Set `sandbox` in the messenger config; the same shape in `~/.jeo/config.json` enables terminal session isolation:
-
-```json
-{
-  "sandbox": {
-    "image": "oven/bun:1.3.14",
-    "limits": { "memoryBytes": 268435456, "pids": 64, "cpus": 1 }
-  }
-}
-```
-
-This is the sandbox portion, not a complete messenger profile; keep the existing `platforms` allowlists and credential environment-variable names. The Linux Bun image must already exist in the local Docker daemon. The backend resolves its immutable image ID and uses `--pull=never`: no image pull, dependency installation, remote Docker endpoint, or host-execution fallback. macOS and Windows hosts still run a **Linux guest shell**, not native host shell commands. Network is `none`; `/workspace` is read-write and extra paths require session grants (`ro` or `rw`). Whole-home/private control paths and control sockets cannot be granted. The host operator and Docker daemon remain trusted.
-
-Only directly submitted parent-human controls can decide access: `/sandbox status`, `/sandbox approve <requestId>`, `/sandbox deny <requestId>`, `/sandbox revoke`. The model's `sandbox_request {host, mode:'ro'|'rw'}` is request-only, never self-approval. Decisions require the authenticated actor's own session and current request revision; stale/cross-session requests fail closed. Existing terminal Discord control also requires a sandbox: enable locally with `/discord control on --allow-full-control`, disable with `/discord control off`; remote turns preserve the local input draft.
-
-`independentSessions` is rejected at runtime; explicit `jeo messenger setup` migration removes it. Keep `sessionDir` private, outside and disjoint from the workspace. Old workspace `.jeo/sessions`, `.jeo/messenger-sessions`, or `.jeo/memory/raw` transcript and raw-history storage fails closed with relocation guidance: move it deliberately before restarting; no automatic copy or deletion occurs. Full conversation history stays in the parent-only store; derived project learning remains shared. Existing ECC skills/workflow installation is reused, not globally reinstalled; protected global skill bytes are snapshotted before execution, while workspace/granted documents are read through the guest.
-
-**Verification scope (2026-11-03):** the actual macOS real-Docker verifier (`bun run verify:sandbox`) passed **20 behavior contracts**, and a source standalone build passed. A copied standalone binary passed a narrow qualification covering the actual PTY FIFO, a parent `sandbox_request` with a real Linux guest tool, full-history privacy, a matching parent-generated stderr shutdown nonce ACK, a real worker exit (143), and Docker container absence. Source wrappers preserve the teardown cleanup owner, bounded shutdown waits, human per-session grants, one persistent thread/FIFO, and the shared workspace. This is not a full-suite, cross-platform, or production verification: the full `bun test` run timed out and is **not a pass**, and the general focused suite still has stale-fixture failures being fixed. Native Linux and Windows host verification is unavailable, and no live Discord sends were made. A Linux guest on macOS is not host qualification. `bun run build:hands` builds the worker; `bun run verify:sandbox` runs the real-Docker check without installing prerequisites. Worker/container cleanup must be confirmed; cleanup errors or unconfirmed removal are not success.
+- **Running terminal session (default):** run `jeo discord setup` (or `jeo messenger setup`) once, then run `/discord live --allow-full-control` inside any running `jeo` terminal session (or use `jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` — no sandbox required). Both modes expose the live session's active tools, approval policy, and working directory; use `/discord status`, `/discord relay <channel-id|off>`, `/discord stop`, or `/discord control off` to inspect or revoke access.
+- **Standalone gateway (`jeo messenger run`):** runs one persistent session per Discord thread or DM (`toolNames: []` by default, no sandbox). Enabling tools (`--tools read,grep,glob,bash,edit,write`) grants local machine authority to allowlisted users (`cwd` is a starting directory, not a chroot or filesystem jail). Optional `~/.jeo/config.json` `sandbox` isolation remains supported for general `jeo` sessions (`/sandbox status|approve|deny|revoke`).
 
 Detailed standalone guides:
 - 📖 [Channel Integrations Overview](docs/integrations/README.md) — Feature matrix and architecture overview
@@ -627,11 +626,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.60]** (2026-11-18) — Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete.
 - **[0.12.59]** (2026-11-17) — Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`.
 - **[0.12.58]** (2026-11-17) — Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`.
 - **[0.12.57]** (2026-11-17) — Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models.
 - **[0.12.56]** (2026-11-17) — Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions.
-- **[0.12.55]** (2026-11-17) — Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

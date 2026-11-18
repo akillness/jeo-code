@@ -71,3 +71,7 @@ test("buildSetupSummary reports the resolved provider + catalog metadata", () =>
   expect(lines[0]).toContain("ctx");
   expect(lines[1]).toContain("openai");
 });
+test("buildEnabledProviders detects perplexity API key and OAuth", () => {
+  expect(buildEnabledProviders(cfg({ providers: { perplexity: "pplx-key" } }))).toContain("perplexity");
+  expect(buildEnabledProviders(cfg({ oauth: { perplexity: { access: "pplx-jwt" } } as Config["oauth"] }))).toContain("perplexity");
+});

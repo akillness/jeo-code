@@ -16,12 +16,20 @@
 import { SLASH_COMMANDS, SLASH_COMMAND_DESCRIPTIONS } from "./slash";
 import { catalogIds } from "../../ai/model-catalog-compat";
 import { PROVIDER_NAMES, allProviderNames } from "../../ai/provider-status";
+import { OPENAI_COMPAT_PROVIDERS } from "../../ai/providers/openai-compatible-catalog";
 import { PROVIDER_PRESET_IDS } from "../../ai/providers/provider-presets";
 import { customProviderNames } from "../../ai/providers/custom-providers";
 import { SUBAGENT_ROLES } from "../../agent/subagents";
 import { skillNames } from "../../skills/catalog";
 import { listThemes } from "./themes";
 
+const OAUTH_CLOUD_PROVIDERS = ["anthropic", "openai", "gemini", "antigravity", "kimi", "perplexity"];
+const KEYED_CLOUD_PROVIDERS = [
+  "xai",
+  "kimi",
+  "perplexity",
+  ...OPENAI_COMPAT_PROVIDERS.filter(p => !p.subscription).map(p => p.name),
+];
 export interface CompletionContext {
   slashCommands: string[];
   /** Flattened live model ids discovered from logged-in providers (cache). */
@@ -283,13 +291,13 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/provider": {
       // /provider is onboarding-only: login, key, and the custom-provider
       // registry (add/list/remove/presets). Model switching completes under /model.
-      const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
       if (argIndex === 0) return finish(["login", "key", "pool", "add", "list", "remove", "presets", "help"], "subcommand");
       const sub = tokens[1]?.toLowerCase();
-      if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
+      if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(OAUTH_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
+      if (sub === "key") return argIndex === 1 ? finish(KEYED_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
       if (sub === "pool") {
         if (argIndex === 1) return finish(["list", "next", "use", "add", "remove", "reset"], "subcommand");
-        if (argIndex === 2) return finish(cloud, "provider");
+        if (argIndex === 2) return finish(OAUTH_CLOUD_PROVIDERS, "provider");
         return { completions: [], token, kind: "none" };
       }
       // Removal only ever targets a CUSTOM provider, so completing built-ins here would
@@ -308,13 +316,12 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return { completions: [], token, kind: "none" };
     }
     case "/logout":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity", "kimi"], "provider") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(OAUTH_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
     case "/auth": {
-      const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
       if (argIndex === 0) return finish(["status", "pool", "next", "rotate", "use", "reset", "login"], "subcommand");
       const sub = tokens[1]?.toLowerCase();
       if (sub === "next" || sub === "rotate" || sub === "use" || sub === "reset" || sub === "login" || sub === "pool") {
-        return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
+        return argIndex === 1 ? finish(OAUTH_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
       }
       return { completions: [], token, kind: "none" };
     }
@@ -339,7 +346,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/theme":
       return argIndex === 0 ? finish(listThemes().map(t => t.name), "subcommand") : { completions: [], token, kind: "none" };
     case "/login":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity", "kimi"], "provider") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(OAUTH_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
     case "/export":
       return argIndex <= 1 ? finish(["json", "markdown"], "subcommand") : { completions: [], token, kind: "none" };
     default:

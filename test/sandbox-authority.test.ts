@@ -3,7 +3,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../src/agent/sandbox/authority";
-import { loadMessengerConfig, messengerProfilePrivatePaths } from "../src/messenger/config";
 import type { SandboxPolicy, SandboxTermination } from "../src/agent/sandbox/types";
 
 const config = { image: "test-local-image", limits: { memoryBytes: 128 * 1024 * 1024, pids: 32, cpus: 1 } };
@@ -299,11 +298,8 @@ test("profile credentials stay outside approved grants through ancestors and sym
 			else throw error;
 		}
 		await fs.symlink(profile, alias, process.platform === "win32" ? "junction" : "dir");
-		const file = path.join(profile, "messenger.json");
-		await fs.writeFile(file, JSON.stringify({ cwd: f.cwd, sessionDir: path.join(f.root, "messenger-sessions"), sandbox: config, platforms: { discord: { allowedUserIds: ["operator"] } } }));
-		const loaded = await loadMessengerConfig(file);
-		const privateRoots = await messengerProfilePrivatePaths(loaded.profileDir!, loaded.cwd);
-		const authority = await createGrantAuthority({ sessionKey: "profile-session", cwd: loaded.cwd, config, supervisor: f.supervisor, allowedUserIds: ["operator"], stateDirectory: path.join(f.root, "profile-authority"), privateRoots });
+		const privateRoots = [profile, ...(linked ? [linkedSecret] : [])];
+		const authority = await createGrantAuthority({ sessionKey: "profile-session", cwd: f.cwd, config, supervisor: f.supervisor, allowedUserIds: ["operator"], stateDirectory: path.join(f.root, "profile-authority"), privateRoots });
 		const restrictedTargets = [profile, path.join(profile, "credentials.json"), profileParent, alias, ...(linked ? [linkedSecret] : [])];
 		for (const target of restrictedTargets) {
 			for (const mode of ["ro", "rw"] as const) {

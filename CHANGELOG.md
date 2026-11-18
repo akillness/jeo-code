@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.1] - 2026-11-18
+_Fix `jeo evolve-core` isolated git worktree probe dependency resolution by symlinking `node_modules` from the source repo, and release `1.0.1` cleanly to npm._
+
+### Fixed
+- **Isolated worktree probe dependency resolution (`src/agent/dev/evolution-bridge.ts`, `test/harness2-evolution.test.ts`):** Symlink `node_modules` from the repository into `/tmp/jeo-evolve-probe-*` worktrees created by `createGitWorktree()` so `bun run typecheck` and test probes resolve workspace dependencies inside isolated probes.
+
 ## [1.0.0] - 2026-11-18
 _Release jeo-code 1.0.0 with always-on Karpathy prompt discipline + budget caps, Harness² Propose–Probe–Compose self-evolution in `jeo evolve-core`, and aligned spec-first workflow skills._
 

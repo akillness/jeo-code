@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
-## [1.0.3] - 2026-11-18
+## [1.0.4] - 2026-11-18
 _Harden Discord session allowlist/guardrail enforcement across gateway, live bridge, and daemon control; eliminate false 50k snapshot cap rejections on large repos and markerless directories._
 
 ### Fixed
-- **Discord session guardrails (`src/messenger/discord.ts`, `src/messenger/gateway.ts`, `src/messenger/live-session.ts`, `src/agent/notify/discord-daemon.ts`, `src/commands/launch.ts`):** Drop non-allowlisted users and self-echoes at the Discord adapter boundary before queueing or REST lookup, require recovered `Request <id>` thread originators to remain in `allowedUserIds`, reject DM+guild mismatches and `\u0003`/slash/bang/dollar remote command injection in `/discord live`, enforce live on-disk `allowedUserIds` checks in `launch.ts` (`onSandboxControl`, `onRemoteRequest`, `onUserMessage`), inject host-provided `trustedContext` guardrails on remote Discord turns, and redact bot tokens from outbound Discord replies.
+- **Discord session guardrails (`src/messenger/discord.ts`, `src/messenger/gateway.ts`, `src/messenger/live-session.ts`, `src/agent/notify/discord-daemon.ts`, `src/commands/launch.ts`):** Reject non-allowlisted users before REST channel/thread lookups, require recovered `Request <id>` thread originators to remain in `allowedUserIds`, reject DM+guild mismatches and `\u0003`/slash/bang/dollar remote command injection in `/discord live`, enforce live on-disk `allowedUserIds` checks in `launch.ts` (`onSandboxControl`, `onRemoteRequest`, `onUserMessage`), inject host-provided `trustedContext` guardrails on remote Discord turns, and redact bot tokens from outbound Discord replies.
 - **Workspace snapshot & verification gate (`src/agent/workspace-snapshot.ts`, `src/agent/snapshot-target.ts`, `src/agent/engine.ts`, `src/agent/loop-guards.ts`):** Expand `WORKSPACE_SNAPSHOT_EXCLUDED_DIRS` (Python/Rust/JS/mobile/Unity caches), add `snapshotGitWorkspace` fallback when FS walks hit the 50k entry cap, fail open for markerless capped container directories while still bracketing nested projects, and recognize multiline/additional language verifiers (`swift`, `flutter`/`dart`, `mix`, `zig`, `ctest`, `pyright`, `biome`, `oxlint`, `turbo`, `dotnet build`).
 
 ## [1.0.2] - 2026-11-18

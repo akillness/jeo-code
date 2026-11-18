@@ -108,3 +108,49 @@ test("parseSkillMarkdown: preferMetaName is opt-in and rejects unsafe names", ()
   const unsafe = "---\nname: not a single token\n---\n\nbody";
   expect(parseSkillMarkdown("dir-name", unsafe, { preferMetaName: true }).name).toBe("dir-name");
 });
+
+test("skillDirs and loadSkills exclude .claude/skills when skills.includeForeignDirs is false", async () => {
+  const isoHome = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-iso-home-"));
+  const isoCwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-iso-cwd-"));
+  const oldHome = process.env.HOME;
+  const oldCfg = process.env.JEO_CONFIG_DIR;
+  process.env.HOME = isoHome;
+  process.env.JEO_CONFIG_DIR = path.join(isoHome, ".jeo");
+  try {
+    await fs.mkdir(path.join(isoHome, ".jeo"), { recursive: true });
+    await fs.writeFile(
+      path.join(isoHome, ".jeo", "config.json"),
+      JSON.stringify({ defaultModel: "openai/gpt-5.4", skills: { includeForeignDirs: false } }),
+    );
+    await fs.mkdir(path.join(isoHome, ".claude", "skills", "claude-only"), { recursive: true });
+    await fs.writeFile(
+      path.join(isoHome, ".claude", "skills", "claude-only", "SKILL.md"),
+      "---\nname: claude-only\ndescription: Claude-only skill\n---\n\nClaude body.",
+    );
+    await fs.mkdir(path.join(isoCwd, ".claude", "skills", "claude-proj"), { recursive: true });
+    await fs.writeFile(
+      path.join(isoCwd, ".claude", "skills", "claude-proj", "SKILL.md"),
+      "---\nname: claude-proj\ndescription: Claude project skill\n---\n\nClaude proj body.",
+    );
+    await fs.mkdir(path.join(isoHome, ".agents", "skills", "shared-only"), { recursive: true });
+    await fs.writeFile(
+      path.join(isoHome, ".agents", "skills", "shared-only", "SKILL.md"),
+      "---\nname: shared-only\ndescription: Shared skill\n---\n\nShared body.",
+    );
+    const dirs = skillDirs(isoCwd);
+    expect(dirs).not.toContain(path.join(isoHome, ".claude", "skills"));
+    expect(dirs).not.toContain(path.join(isoCwd, ".claude", "skills"));
+    expect(dirs).toContain(path.join(isoHome, ".agents", "skills"));
+    const loaded = await loadSkills(isoCwd);
+    expect(getSkillFrom(loaded, "shared-only")).toBeDefined();
+    expect(getSkillFrom(loaded, "claude-only")).toBeUndefined();
+    expect(getSkillFrom(loaded, "claude-proj")).toBeUndefined();
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    if (oldCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = oldCfg;
+    await fs.rm(isoHome, { recursive: true, force: true });
+    await fs.rm(isoCwd, { recursive: true, force: true });
+  }
+});

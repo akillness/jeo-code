@@ -232,7 +232,7 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS, currentTask?: s
 }
 
 import * as fs from "node:fs/promises";
-import { constants as fsConstants, closeSync, fstatSync, lstatSync, readSync, realpathSync } from "node:fs";
+import { constants as fsConstants, closeSync, fstatSync, lstatSync, readFileSync, readSync, realpathSync } from "node:fs";
 import type { Dirent, Stats } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -331,28 +331,49 @@ export function userSkillsDir(): string {
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files).
  *  Ordered lowest → highest precedence (a later dir's skill overrides an earlier
  *  one with the same name): foreign-ecosystem roots first, jeo-native last.
+ *  When `skills.includeForeignDirs: false` (or `skills.enableClaude: false` in
+ *  `<config>/config.json`, or env `JEO_ISOLATE_SKILLS=1` /
+ *  `JEO_INCLUDE_FOREIGN_SKILLS=false`), `.claude/skills` roots are excluded so
+ *  `jeo` does not redundantly scan or load Claude Code skills.
  *  Covered install layouts:
  *  - Vercel `npx skills add [-g]` canonical store: `.agents/skills/` (project + ~)
  *  - Vercel agent-targeted installs (`-a claude-code`): `.claude/skills/` (project + ~)
  *  - jeo agent skills (self-contained `.jeo` namespace):
  *    `<config>/agent/skills/` (+ project `<cwd>/.jeo/agent/skills/`)
  *  - jeo-native flat: `<config>/skills/`, `<cwd>/.jeo/skills/`, then `JEO_SKILLS_DIR`. */
-export function skillDirs(cwd: string = process.cwd()): string[] {
+function includeForeignSkillDirs(configHome: string): boolean {
+  const isolate = (jeoEnv("ISOLATE_SKILLS") ?? "").trim().toLowerCase();
+  if (isolate === "1" || isolate === "true" || isolate === "yes") return false;
+  const includeEnv = (jeoEnv("INCLUDE_FOREIGN_SKILLS") ?? "").trim().toLowerCase();
+  if (includeEnv === "0" || includeEnv === "false" || includeEnv === "no") return false;
+  if (includeEnv === "1" || includeEnv === "true" || includeEnv === "yes") return true;
+  try {
+    const raw = readFileSync(path.join(configHome, "config.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { skills?: { includeForeignDirs?: unknown; enableClaude?: unknown } };
+    if (parsed?.skills?.includeForeignDirs === false || parsed?.skills?.enableClaude === false) {
+      return false;
+    }
+  } catch { /* missing or unreadable config.json keeps backward-compatible default */ }
+  return true;
+}
+
+export function skillDirs(cwd: string = process.cwd(), includeForeignOverride?: boolean): string[] {
   // $HOME wins over os.homedir(): Bun caches the system home, so tests (and
   // sandboxed runs) that re-point HOME would otherwise still scan the real one.
   const userHome = process.env.HOME || os.homedir();
   const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
+  const includeForeign = includeForeignOverride ?? includeForeignSkillDirs(home);
   const configured = (jeoEnv("SKILLS_DIR") ?? "")
     .split(path.delimiter)
     .map(s => s.trim())
     .filter(Boolean);
   return [
-    path.join(userHome, ".claude", "skills"),
+    ...(includeForeign ? [path.join(userHome, ".claude", "skills")] : []),
     path.join(home, "agent", "skills"),
     path.join(userHome, ".agents", "skills"),
     path.join(userHome, ".agent-skills"),
     userSkillsDir(),
-    path.join(cwd, ".claude", "skills"),
+    ...(includeForeign ? [path.join(cwd, ".claude", "skills")] : []),
     path.join(cwd, ".agents", "skills"),
     path.join(cwd, ".agent-skills"),
     path.join(cwd, ".jeo", "skills"),
@@ -366,15 +387,19 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
  * to the sandbox's normal path restrictions. */
 export async function nativeSandboxSkillRoots(cwd: string): Promise<string[]> {
   const home = await canonicalSandboxPath(await nativeSandboxHome());
+  const configHome = jeoEnv("CONFIG_DIR") || path.join(home, ".jeo");
+  const includeForeign = includeForeignSkillDirs(configHome);
   const allowed = new Set([
-    path.join(home, ".claude", "skills"),
+    ...(includeForeign ? [path.join(home, ".claude", "skills")] : []),
     path.join(home, ".agents", "skills"),
     path.join(home, ".agent-skills"),
     path.join(home, ".jeo", "agent", "skills"),
     path.join(home, ".jeo", "skills"),
   ]);
   const roots: string[] = [];
-  for (const dir of skillDirs(cwd).slice(0, 5)) {
+  const globalCount = includeForeign ? 5 : 4;
+  for (const dir of skillDirs(cwd, includeForeign).slice(0, globalCount)) {
+
     const expected = path.resolve(dir);
     if (!allowed.has(expected)) continue;
     try {
@@ -463,7 +488,10 @@ export async function snapshotSandboxSkillAssets(cwd: string, destination: strin
     const relative = path.relative(store, source);
     const { data, mode } = readAuthorizedSkillFile(source, 256 * 1024 * 1024 - bytes);
     bytes += data.length;
-    const index = skillDirs(cwd).slice(0, 5).findIndex(dir => path.resolve(dir) === store);
+    const userHome = process.env.HOME || os.homedir();
+    const configHome = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
+    const globalCount = includeForeignSkillDirs(configHome) ? 5 : 4;
+    const index = skillDirs(cwd).slice(0, globalCount).findIndex(dir => path.resolve(dir) === store);
     const target = path.join(root, String(index), relative);
     await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await fs.writeFile(target, data, { flag: "wx", mode: 0o600 | (mode & 0o100) });
@@ -636,7 +664,7 @@ const SKILL_ENTRY_LOAD_BATCH = 32;
 interface CatalogPath { path: string; traversal: string[]; visited?: string[]; guestPath?: string }
 interface CatalogEntry { location: CatalogPath; skillName: string; doc?: SkillDoc }
 interface CatalogDirectory { location: CatalogPath; entries: CatalogEntry[] }
-interface SandboxSkillCatalog { cwd: string; roots: string[]; readableRoots: string[]; directories: CatalogDirectory[] }
+interface SandboxSkillCatalog { cwd: string; includeForeign: boolean; roots: string[]; readableRoots: string[]; directories: CatalogDirectory[] }
 const sandboxSkillCatalogs = new WeakMap<SandboxSupervisor, SandboxSkillCatalog>();
 
 function withinCatalogRoot(file: string, root: string): boolean {
@@ -704,8 +732,11 @@ export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, 
   const nativeRoots = [".agents", ".agent-skills", ".claude", ".jeo", ".jeopi"].map(name => path.join(nativeHome, name));
   const protectedRoots = [...new Set([...nativeRoots, ...await Promise.all(nativeRoots.map(root => canonicalSandboxPath(root, false)))])];
   const authorizedRoots = [...new Set([path.resolve(cwd), await fs.realpath(cwd), ...readableRoots.map(root => path.resolve(root))])];
+  const configHome = jeoEnv("CONFIG_DIR") || path.join(process.env.HOME || os.homedir(), ".jeo");
+  const includeForeign = includeForeignSkillDirs(configHome);
+  const globalCount = includeForeign ? 5 : 4;
   const directories: CatalogDirectory[] = [];
-  for (const [index, dir] of skillDirs(cwd).entries()) {
+  for (const [index, dir] of skillDirs(cwd, includeForeign).entries()) {
     let location: CatalogPath;
     try { location = await traceCatalogPath(dir, roots, protectedRoots); }
     catch {
@@ -715,7 +746,7 @@ export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, 
     const directory: CatalogDirectory = { location, entries: [] };
     directories.push(directory);
     if (guestCatalogPath(location, roots)) continue;
-    if (index < 5) {
+    if (index < globalCount) {
       if (!snapshot) continue;
       for (const [source, frozen] of snapshot.paths) {
         const relative = path.relative(dir, source);
@@ -736,7 +767,7 @@ export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, 
       continue;
     }
   }
-  sandboxSkillCatalogs.set(supervisor, { cwd: path.resolve(cwd), roots, readableRoots: authorizedRoots, directories });
+  sandboxSkillCatalogs.set(supervisor, { cwd: path.resolve(cwd), includeForeign, roots, readableRoots: authorizedRoots, directories });
 }
 
 /** Grant revisions may taint formerly trusted paths. Reclassify captured path
@@ -757,10 +788,14 @@ async function loadSandboxSkills(cwd: string): Promise<SkillDoc[]> {
   for (const name of await sandboxSkillCatalog<string[]>("lock", cwd)) ALLOWED_SKILL_NAMES.add(name.toLowerCase());
   // A subagent may use another approved cwd: reuse only trusted global bytes,
   // and derive its project directories without touching host filesystem state.
+  const includeForeign = catalog.includeForeign;
+  const globalCount = includeForeign ? 5 : 4;
+  const projectEnd = globalCount + (includeForeign ? 5 : 4);
+  const dirsForCwd = skillDirs(cwd, includeForeign);
   const directories = path.resolve(cwd) === catalog.cwd
     ? catalog.directories
-    : catalog.directories.map((directory, index) => index >= 5 && index < 10
-      ? { location: { path: skillDirs(cwd)[index]!, traversal: [skillDirs(cwd)[index]!] }, entries: [] }
+    : catalog.directories.map((directory, index) => index >= globalCount && index < projectEnd
+      ? { location: { path: dirsForCwd[index]!, traversal: [dirsForCwd[index]!] }, entries: [] }
       : directory);
   for (const directory of directories) {
     const guestDir = guestCatalogPath(directory.location, catalog.roots)
@@ -833,6 +868,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
     }
   } catch {}
   const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name.toLowerCase(), s]));
+  const seenRealPaths = new Map<string, string>();
   // Directories are walked in their documented lowest→highest precedence order
   // (a later dir's skill overrides an earlier one with the same name) — that
   // cross-directory override MUST stay sequential. Entries WITHIN one directory
@@ -846,7 +882,15 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
       const batch = entries.slice(i, i + SKILL_ENTRY_LOAD_BATCH);
       const resolved = await Promise.all(batch.map(entry => resolveSkillEntry(dir, entry)));
       for (const parsed of resolved) {
-        if (parsed) byName.set(parsed.name.toLowerCase(), parsed);
+        if (!parsed) continue;
+        const key = parsed.name.toLowerCase();
+        if (parsed.sourcePath) {
+          let canonical = parsed.sourcePath;
+          try { canonical = await fs.realpath(parsed.sourcePath); } catch {}
+          if (seenRealPaths.get(key) === canonical && byName.has(key)) continue;
+          seenRealPaths.set(key, canonical);
+        }
+        byName.set(key, parsed);
       }
     }
   }

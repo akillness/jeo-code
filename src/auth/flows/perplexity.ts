@@ -68,9 +68,30 @@ export async function extractPerplexityMacAppToken(): Promise<string | null> {
   }
 }
 
-function perplexityAuthHeaders(includeJsonContentType = false): Record<string, string> {
+function collectSetCookies(res: Response, jar: Map<string, string>): void {
+  const headers = res.headers as Headers & { getSetCookie?: () => string[] };
+  const rawList =
+    typeof headers.getSetCookie === "function"
+      ? headers.getSetCookie()
+      : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+  for (const header of rawList) {
+    const firstPart = header.split(";")[0]?.trim();
+    if (!firstPart) continue;
+    const eq = firstPart.indexOf("=");
+    if (eq <= 0) continue;
+    jar.set(firstPart.slice(0, eq).trim(), firstPart.slice(eq + 1).trim());
+  }
+}
+
+function serializeCookies(jar: Map<string, string>): string | undefined {
+  if (jar.size === 0) return undefined;
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+function perplexityAuthHeaders(includeJsonContentType = false, cookieHeader?: string): Record<string, string> {
   return {
     ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
+    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     "User-Agent": APP_USER_AGENT,
     "X-App-ApiVersion": API_VERSION,
   };
@@ -88,11 +109,14 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
   }
   if (ctrl.signal?.aborted) throw new Error("Perplexity login cancelled");
 
+  const cookieJar = new Map<string, string>();
+
   ctrl.onProgress?.("Fetching Perplexity CSRF token...");
   const csrfResponse = await fetch(`${PERPLEXITY_AUTH_BASE}/csrf`, {
     headers: perplexityAuthHeaders(),
     signal: ctrl.signal,
   });
+  collectSetCookies(csrfResponse, cookieJar);
   if (!csrfResponse.ok) {
     throw new Error(`Perplexity CSRF request failed: ${csrfResponse.status}`);
   }
@@ -104,13 +128,14 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
   ctrl.onProgress?.("Sending login code to your email...");
   const sendResponse = await fetch(`${PERPLEXITY_AUTH_BASE}/signin-email`, {
     method: "POST",
-    headers: perplexityAuthHeaders(true),
+    headers: perplexityAuthHeaders(true, serializeCookies(cookieJar)),
     body: JSON.stringify({
       email,
       csrfToken: csrfData.csrfToken,
     }),
     signal: ctrl.signal,
   });
+  collectSetCookies(sendResponse, cookieJar);
   if (!sendResponse.ok) {
     const body = await sendResponse.text();
     throw new Error(`Perplexity send login code failed (${sendResponse.status}): ${body}`);
@@ -126,7 +151,7 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
   ctrl.onProgress?.("Verifying login code...");
   const verifyResponse = await fetch(`${PERPLEXITY_AUTH_BASE}/signin-otp`, {
     method: "POST",
-    headers: perplexityAuthHeaders(true),
+    headers: perplexityAuthHeaders(true, serializeCookies(cookieJar)),
     body: JSON.stringify({
       email,
       otp,
@@ -134,6 +159,7 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
     }),
     signal: ctrl.signal,
   });
+  collectSetCookies(verifyResponse, cookieJar);
 
   const verifyData = (await verifyResponse.json().catch(() => ({}))) as {
     token?: string;
@@ -145,14 +171,18 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
     const reason = verifyData.text ?? verifyData.error_code ?? verifyData.status ?? `HTTP ${verifyResponse.status}`;
     throw new Error(`Perplexity OTP verification failed: ${reason}`);
   }
-  if (!verifyData.token) {
+  const sessionToken =
+    verifyData.token?.trim() ||
+    cookieJar.get("__Secure-next-auth.session-token") ||
+    cookieJar.get("next-auth.session-token");
+  if (!sessionToken) {
     throw new Error("Perplexity OTP verification response missing token");
   }
 
   return {
-    access: verifyData.token,
-    refresh: verifyData.token,
-    expires: perplexityJwtExpiryMs(verifyData.token),
+    access: sessionToken,
+    refresh: sessionToken,
+    expires: perplexityJwtExpiryMs(sessionToken),
     email,
   };
 }

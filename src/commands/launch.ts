@@ -4798,10 +4798,25 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
 
   const pickCloudProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
-    const cloud = new Set<string>(OAUTH_PROVIDERS); // OAuth-login providers (anthropic/openai/gemini/antigravity)
+    const cloud = new Set<string>(OAUTH_PROVIDERS); // OAuth-login providers (anthropic/openai/gemini/antigravity/kimi/perplexity)
     const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // subscription/plan products (token-keyed)
+    const oauthList = statuses.filter(s => cloud.has(s.name));
+    if (!oauthList.some(s => (s.name as string) === "perplexity")) {
+      const { snapshotProvider } = await import("../auth");
+      const snap = await snapshotProvider("perplexity");
+      oauthList.push({
+        name: "perplexity" as ProviderName,
+        kind: snap.oauth ? "oauth" : "none",
+        label: snap.oauth ? "OAuth" : "none (run 'jeo auth login perplexity')",
+        ready: !!snap.oauth,
+        loggedIn: !!snap.oauth,
+        oauthEmail: snap.oauthEmail,
+        oauthExpires: snap.oauthExpires,
+        poolSize: snap.poolSize,
+      });
+    }
     const list = subscriptionLoginPicker(
-      statuses.filter(s => cloud.has(s.name)),
+      oauthList,
       statuses.filter(s => subs.has(s.name)),
       true,
     );
@@ -6096,7 +6111,7 @@ navMatches = [];
         if (name === "login" || name === "auth") {
           const replaceAll = tokens.includes("--replace");
           const nonFlag = tokens.slice(1).filter(t => t !== "--replace");
-          const cloud = ["anthropic", "openai", "gemini", "antigravity", "kimi"] as const;
+          const cloud = OAUTH_PROVIDERS;
           const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // token-keyed subscription/plan products
           let target = nonFlag.map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t) || subs.has(t));
           if (!target) {

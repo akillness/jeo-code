@@ -29,10 +29,12 @@ import {
   isConnectionError,
   isRateLimitError,
   isUsageLimitError,
+  isStreamIdleError,
   ConnectionContextError,
   type RetryOptions,
 } from "../util/retry";
 import { jeoEnv } from "../util/env";
+import { logOpsEvent } from "../util/ops-log";
 import type { Config } from "../agent/state";
 import { listProviderModels } from "./model-discovery";
 import type { ProviderModelsResult } from "./model-discovery";
@@ -758,6 +760,7 @@ export interface StreamIdleOptions {
    *  watchdog re-arms instead of falsely aborting an actively-reasoning stream. Absent
    *  → only a yielded chunk counts as activity (legacy behaviour). */
   lastActivityAt?: () => number;
+  resolveIdleMs?: () => number;
   onIdle?: () => void;
 }
 
@@ -779,10 +782,12 @@ export interface StreamWatchdogHandle {
  *  ~0 forever, so the idle timer can never fire and a genuinely stalled stream hangs
  *  forever instead of timing out. `touch()` (called by the consumer after each
  *  received chunk) advances this fallback baseline; `lastActivityAt`, when provided,
- *  always takes precedence (reasoning-progress tracking is more precise). */
+ *  takes precedence once it advances past `attemptStartedAt` (preventing a stale
+ *  timestamp from a prior failed retry attempt from aborting retry #2 in 0ms). */
 function idleWatchdog(idle: StreamIdleOptions): StreamWatchdogHandle {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let lastChunkAt = Date.now();
+  const attemptStartedAt = Date.now();
+  let lastChunkAt = attemptStartedAt;
   const promise = new Promise<never>((_, reject) => {
     const arm = () => {
       const now = Date.now();
@@ -792,12 +797,13 @@ function idleWatchdog(idle: StreamIdleOptions): StreamWatchdogHandle {
         reject(new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`));
         return;
       }
-      const lastAct = idle.lastActivityAt ? idle.lastActivityAt() : lastChunkAt;
-      const idleRemaining = idle.idleMs - (now - lastAct);
+      const effectiveIdleMs = idle.resolveIdleMs ? idle.resolveIdleMs() : idle.idleMs;
+      const lastAct = idle.lastActivityAt ? Math.max(attemptStartedAt, idle.lastActivityAt()) : lastChunkAt;
+      const idleRemaining = effectiveIdleMs - (now - lastAct);
       const wait = Math.min(idleRemaining, overallRemaining);
       if (wait <= 0) {
         idle.onIdle?.();
-        reject(new Error(`stream idle for ${idle.idleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
+        reject(new Error(`stream idle for ${effectiveIdleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
         return;
       }
       timer = setTimeout(arm, wait);
@@ -836,13 +842,29 @@ export function streamMaxMs(env?: Record<string, string | undefined>): number | 
   return n === 0 ? undefined : n;
 }
 
-/** Per-chunk idle cap (ms) from the environment, falling back to the built-in default.
- *  Lets reasoning workloads whose "thinking" phase emits no visible token for a long
- *  time raise the stall threshold via JEO_STREAM_IDLE_MS without a code change. */
-export function streamIdleMs(env?: Record<string, string | undefined>): number {
+/** Per-chunk idle cap (ms) from the environment, falling back to a thinking-aware
+ *  built-in default (300s baseline, 600s for `high`, 900s for `xhigh`). Explicit
+ *  positive `JEO_STREAM_IDLE_MS` always overrides. */
+export function streamIdleMs(
+  env?: Record<string, string | undefined>,
+  reasoningEffort?: CallOptions["reasoningEffort"] | "xhigh",
+): number {
   const raw = jeoEnv("STREAM_IDLE_MS", env);
   const n = raw !== undefined ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : STREAM_IDLE_TIMEOUT_MS;
+  if (Number.isFinite(n) && n > 0) return n;
+  if (reasoningEffort === "xhigh") return 900_000;
+  if (reasoningEffort === "high") return 600_000;
+  return STREAM_IDLE_TIMEOUT_MS;
+}
+
+function stepDownReasoningEffort(
+  effort: CallOptions["reasoningEffort"],
+): CallOptions["reasoningEffort"] {
+  if (effort === "xhigh") return "high";
+  if (effort === "high") return "medium";
+  if (effort === "medium") return "low";
+  if (effort === undefined) return "low";
+  return effort;
 }
 
 /** Hard wall-clock cap (ms) for a NON-streaming provider call, falling back to the
@@ -875,7 +897,15 @@ export async function* retryableStream(
     if (!first.done) {
       yield first.value;
       for (;;) {
-        const n = await nextMaybeIdle(iter, watchdog);
+        let n: IteratorResult<string>;
+        try {
+          n = await nextMaybeIdle(iter, watchdog);
+        } catch (err) {
+          if (isStreamIdleError(err) && err && typeof err === "object") {
+            (err as { midStreamIdle?: boolean }).midStreamIdle = true;
+          }
+          throw err;
+        }
         if (n.done) break;
         touchWatchdog();
         yield n.value;
@@ -1041,6 +1071,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
           let usageAttempt: UsageAttempt | undefined;
           let lastActivityAt = Date.now();
           const bump = () => { lastActivityAt = Date.now(); };
+          let currentEffort: CallOptions["reasoningEffort"] = callOptions.reasoningEffort;
           const userOnReasoning = callOptions.onReasoning;
           const userOnReasoningStart = callOptions.onReasoningStart;
           const liveOptions: CallOptions = {
@@ -1049,7 +1080,33 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             onReasoningStart: () => { bump(); userOnReasoningStart?.(); },
             onStreamActivity: bump,
           };
+          const userOnRetry = attemptRetry.onRetry;
+          const streamRetry: RetryOptions = {
+            ...attemptRetry,
+            onRetry: (attempt, err, delayMs) => {
+              if (isStreamIdleError(err)) {
+                const prevEffort = currentEffort;
+                currentEffort = stepDownReasoningEffort(currentEffort);
+                logOpsEvent({
+                  level: "warn",
+                  category: "stream",
+                  event: "stream_idle_retry",
+                  message: err instanceof Error ? err.message : String(err),
+                  data: {
+                    provider,
+                    model: callOptions.model,
+                    attempt,
+                    delayMs: Math.round(delayMs),
+                    prevReasoningEffort: prevEffort ?? "default",
+                    nextReasoningEffort: currentEffort ?? "default",
+                  },
+                });
+              }
+              return userOnRetry ? userOnRetry(attempt, err, delayMs) : undefined;
+            },
+          };
           const makeIter = () => {
+            bump();
             usageAttempt?.finish();
             const scope = currentUsageScope();
             usageAttempt = scope ? createUsageAttempt({ ...scope, provider, model: callOptions.model }) : undefined;
@@ -1060,15 +1117,16 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             const onUsage: CallOptions["onUsage"] = usage => { thisAttempt?.onUsage(usage); liveOptions.onUsage?.(usage); };
             return streamFn(
               messages,
-              { ...liveOptions, onUsageSnapshot: usage => thisAttempt?.onUsage(usage), onUsage, signal },
+              { ...liveOptions, reasoningEffort: currentEffort, onUsageSnapshot: usage => thisAttempt?.onUsage(usage), onUsage, signal },
               activeCredential,
             )[Symbol.asyncIterator]();
           };
           const maxMs = streamMaxMs();
           let yieldedAny = false;
           try {
-            for await (const chunk of retryableStream(makeIter, attemptRetry, {
-              idleMs: streamIdleMs(),
+            for await (const chunk of retryableStream(makeIter, streamRetry, {
+              idleMs: streamIdleMs(undefined, currentEffort),
+              resolveIdleMs: () => streamIdleMs(undefined, currentEffort),
               ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
               lastActivityAt: () => lastActivityAt,
               onIdle: () => abortRef.current?.abort(),
@@ -1078,7 +1136,21 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             }
             return;
           } catch (err) {
-            if (yieldedAny || callOptions.signal?.aborted || activeCredential.kind === "none" || !isPoolRotatableError(err)) {
+            if (!yieldedAny && isStreamIdleError(err)) {
+              logOpsEvent({
+                level: "error",
+                category: "stream",
+                event: "stream_idle_exhausted",
+                message: err instanceof Error ? err.message : String(err),
+                data: { provider, model: callOptions.model, canRotate },
+              });
+            }
+            if (
+              yieldedAny ||
+              callOptions.signal?.aborted ||
+              activeCredential.kind === "none" ||
+              !(isPoolRotatableError(err) || isStreamIdleError(err))
+            ) {
               if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
               throw err;
             }

@@ -301,4 +301,52 @@ describe("perplexity auth, config, flow & sync", () => {
       token: pplxJwt,
     });
   });
+
+  it("loginPerplexity forwards CSRF Set-Cookie headers across email OTP steps and accepts session cookie fallback", async () => {
+    makeIsolatedEnv();
+    process.env.JEO_AUTH_NO_BORROW = "1";
+    const prevFetch = globalThis.fetch;
+    const cookieJwt = makeJwt({ sub: "cookie-sess" });
+    const calls: Array<{ url: string; cookie: string | null }> = [];
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const headers = new Headers(init?.headers);
+      calls.push({ url, cookie: headers.get("cookie") });
+      if (url.endsWith("/csrf")) {
+        const h = new Headers({ "content-type": "application/json" });
+        h.append("set-cookie", "next-auth.csrf-token=tok1%7Chash; Path=/; HttpOnly; Secure");
+        h.append("set-cookie", "__cf_bm=cf123; Path=/; Secure");
+        return new Response(JSON.stringify({ csrfToken: "tok1" }), { status: 200, headers: h });
+      }
+      if (url.endsWith("/signin-email")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const h = new Headers({ "content-type": "application/json" });
+      h.append("set-cookie", `__Secure-next-auth.session-token=${cookieJwt}; Path=/; HttpOnly; Secure`);
+      return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: h });
+    }) as typeof fetch;
+
+    try {
+      const prompts: string[] = [];
+      const creds = await OAUTH_FLOW_REGISTRY.perplexity.login({
+        onManualCodeInput: async label => {
+          prompts.push(label ?? "");
+          return prompts.length === 1 ? "akillness38@gmail.com" : "123456";
+        },
+      });
+      expect(prompts).toEqual(["Perplexity email address: ", "One-time login code sent to your email: "]);
+      expect(calls[1]?.cookie).toContain("next-auth.csrf-token=tok1%7Chash");
+      expect(calls[1]?.cookie).toContain("__cf_bm=cf123");
+      expect(calls[2]?.cookie).toContain("next-auth.csrf-token=tok1%7Chash");
+      expect(creds).toEqual({
+        access: cookieJwt,
+        refresh: cookieJwt,
+        expires: PERPLEXITY_NEVER_EXPIRES,
+        email: "akillness38@gmail.com",
+      });
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
 });

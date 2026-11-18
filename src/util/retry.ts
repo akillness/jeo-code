@@ -348,6 +348,19 @@ export function isTransientStreamDropError(err: unknown): boolean {
   return /socket connection was closed|socket hang up|other side closed|und_err_socket/i.test(errorMessageOf(err));
 }
 
+/** True when `idleWatchdog` (model-manager.ts) aborted a stream that produced no
+ *  chunk/activity within `JEO_STREAM_IDLE_MS`. */
+export function isStreamIdleError(err: unknown): boolean {
+  return /\bstream idle for \d+ms \(no chunk\)/i.test(errorMessageOf(err));
+}
+
+/** True when `retryableStream` hit a `stream idle` timeout AFTER yielding at least
+ *  one chunk — `retryableStream` cannot replay past chunk #1, so this class skips
+ *  `withRetry` and must be recovered by the engine's uncommitted-step resend ladder. */
+export function isMidStreamIdleError(err: unknown): boolean {
+  return Boolean(err && typeof err === "object" && (err as { midStreamIdle?: boolean }).midStreamIdle === true) && isStreamIdleError(err);
+}
+
 /** True for a pre-response TCP-level connection failure — the request never reached
  *  a server at all (refused, DNS unresolved, host unreachable), as opposed to a
  *  server responding with an error status or a mid-stream drop (see

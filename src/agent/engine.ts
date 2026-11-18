@@ -25,7 +25,8 @@ import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
 import { createJeoxTool, JEOX_TOOL_PROTOCOL_LINE, markJeoxDirty } from "./jeox-tool";
 import { createJevDecideTool, JEV_DECIDE_TOOL_PROTOCOL_LINE } from "./jev-tools";
-import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
+import { isRateLimitError, isTransientStreamDropError, isStreamIdleError, isMidStreamIdleError, isProviderStreamError, isMalformedFunctionCallError, waitAbortable } from "../util/retry";
+import { logOpsEvent } from "../util/ops-log";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { currentDiscordHostExecution, withDiscordHostExecution } from "./discord-host";
@@ -1172,16 +1173,25 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       //   - `isMalformedFunctionCallError` — a provider mid-stream abort (e.g. Antigravity/Gemini
       //     finishReason=MALFORMED_FUNCTION_CALL arriving after partial text/thought was yielded,
       //     which retryableStream cannot replay).
+      //   - `isMidStreamIdleError` — `retryableStream` hit `stream idle` AFTER chunk #1 was
+      //     already yielded (so `retryableStream`'s pre-first-chunk `withRetry` never ran).
       // Deliberately narrower than a general `defaultRetryable` check — a rate-limit/5xx/
-      // timeout error already ran the FULL model-manager `withRetry` budget (visible as
-      // its own "auto-retry #N" notices) before reaching here, so re-retrying it in this
-      // ladder too would silently double that budget.
-      if (isTransientStreamDropError(err) || isProviderStreamError(err) || isMalformedFunctionCallError(err)) {
+      // pre-first-chunk timeout error already ran the FULL model-manager `withRetry` budget
+      // (visible as its own "auto-retry #N" notices) before reaching here, so re-retrying
+      // it in this ladder too would silently double that budget.
+      if (isTransientStreamDropError(err) || isStreamIdleError(err) || isMidStreamIdleError(err) || isProviderStreamError(err) || isMalformedFunctionCallError(err)) {
         transientNetworkRetries++;
         if (transientNetworkRetries <= GUARD_LIMITS.MAX_TRANSIENT_NETWORK_RETRIES) {
           const baseRaw = Number(jeoEnv("TRANSIENT_NETWORK_BACKOFF_BASE_MS") ?? NaN);
           const baseMs = Number.isFinite(baseRaw) && baseRaw >= 0 ? baseRaw : GUARD_LIMITS.TRANSIENT_NETWORK_BACKOFF_BASE_MS;
           const delayMs = Math.min(baseMs * 2 ** (transientNetworkRetries - 1), GUARD_LIMITS.TRANSIENT_NETWORK_BACKOFF_MAX_MS);
+          logOpsEvent({
+            level: "warn",
+            category: "stream",
+            event: "mid_stream_recovery",
+            message: err instanceof Error ? err.message : String(err),
+            data: { retry: transientNetworkRetries, step, delayMs: Math.round(delayMs) },
+          });
           const escHint = ev.onModelStream ? " (Esc to cancel)" : "";
           ev.onNotice?.(
             `mid-response provider fault (${friendlyProviderError(err)}) — auto-retry #${transientNetworkRetries} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`,

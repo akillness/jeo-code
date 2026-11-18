@@ -627,11 +627,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.12.59]** (2026-11-17) — Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`.
 - **[0.12.58]** (2026-11-17) — Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`.
 - **[0.12.57]** (2026-11-17) — Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models.
 - **[0.12.56]** (2026-11-17) — Keep Discord and Slack notify daemons connected across long outages and sleep/wake cycles, recover from transient Gateway budget refresh failures, and reset Discord messenger backoff after established sessions.
 - **[0.12.55]** (2026-11-17) — Eliminate the circular import between `jeox-tool.ts`, `hooks.ts`, and `engine.ts` so standalone `jeox-tool` imports never hit a TDZ `ReferenceError`.
-- **[0.12.54]** (2026-11-17) — Close the `.jeo/db/jeo.db` auto-refresh & `<code_graph_scope>` reference loop across interactive/CLI/MCP/Discord sessions and harden runtime stall, OOM, and PTY `EIO` guards.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

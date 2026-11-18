@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.59] - 2026-11-17
+_Eliminate `stream idle for 300000ms` stalls with thinking-aware idle windows, automatic effort step-down, and engine recovery; harden Perplexity email OTP cookie forwarding and REPL `/provider login perplexity`._
+
+### Fixed
+- **Stream idle timeout & recovery (`src/ai/types.ts`, `src/ai/model-manager.ts`, `src/agent/engine.ts`, `src/util/retry.ts`, `src/util/ops-log.ts`, `test/stream-idle-recovery.test.ts`):** Add `"xhigh"` to `CallOptions.reasoningEffort`, scale `streamIdleMs` (`300s` baseline, `600s` for `high`, `900s` for `xhigh`), reset `idleWatchdog`'s activity baseline per retry attempt (`attemptStartedAt`), step down `reasoningEffort` (`xhigh` → `high` → `medium` → `low`, and `undefined` → `low`) on pre-first-chunk idle retries, and recover both pre-first-chunk and mid-stream `stream idle` errors in `runAgentLoop` instead of aborting the turn.
+- **Perplexity email OTP cookie jar & `/provider login perplexity` (`src/auth/flows/perplexity.ts`, `src/commands/launch.ts`, `src/commands/setup.ts`, `test/perplexity-auth.test.ts`):** Forward `Set-Cookie` headers (`next-auth.csrf-token`, Cloudflare cookies) across `/api/auth/csrf` → `/signin-email` → `/signin-otp`, extract `__Secure-next-auth.session-token` from `Set-Cookie` when `verifyData.token` is omitted, include `perplexity` in REPL `/provider login` (`OAUTH_PROVIDERS` and `pickCloudProvider`), and forward prompt labels in `setup.ts` `onManualCodeInput`.
+
 ## [0.12.58] - 2026-11-17
 _Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`._
 

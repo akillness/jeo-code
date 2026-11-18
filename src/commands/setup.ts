@@ -157,8 +157,8 @@ export async function runSetupCommand(): Promise<void> {
           void openInBrowser(url);
         },
         onProgress: msg => console.log(`  … ${msg}`),
-        onManualCodeInput: async () =>
-          (await rl.question("Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
+        onManualCodeInput: async (label?: string) =>
+          (await rl.question(label ?? "Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
       };
       try {
         let email: string | undefined;

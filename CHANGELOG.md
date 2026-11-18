@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.2] - 2026-11-18
+_Fix Perplexity `web_search` live SSE parsing, logged-out macOS token filtering, Korean/upsell authwall detection, and Playwright in-page browser fallback; surface Perplexity across `status`/`doctor`/`provider`/onboarding._
+
+### Fixed
+- **Perplexity live search & auth hardening (`src/agent/web-search.ts`, `src/auth/flows/perplexity.ts`, `test/web-search.test.ts`, `test/perplexity-auth.test.ts`):** Ignore logged-out `ai.perplexity.mac` tokens (`cachedLaunchLoginStatus = 0` or empty `/api/auth/session`), avoid stopping SSE streams early on intermediate `status: "PENDING", final: true, final_sse_message: false` chunks, detect `fraud_authwall_upsell` and Korean sign-up walls, and fall back to a cached headless Playwright Chromium in-page `perplexity_ask` fetch before DuckDuckGo.
+- **Perplexity provider surfaces (`src/commands/status.ts`, `src/commands/doctor.ts`, `src/commands/provider.ts`, `src/commands/launch.ts`, `src/tui/components/provider-picker.ts`, `test/perplexity-provider-surfaces.test.ts`):** Report search-provider readiness in `jeo status`, `jeo doctor`, and `jeo provider`, and include `perplexity` in onboarding API-key hints.
+
 ## [1.0.1] - 2026-11-18
 _Fix `jeo evolve-core` isolated git worktree probe dependency resolution by symlinking `node_modules` from the source repo, and release `1.0.1` cleanly to npm._
 

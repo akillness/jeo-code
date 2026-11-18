@@ -229,6 +229,13 @@ export async function measureProbeDefault(
 async function createGitWorktree(repoCwd: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-evolve-probe-"));
   await execFileAsync("git", ["worktree", "add", "--detach", dir, "HEAD"], { cwd: repoCwd });
+  const srcModules = path.join(repoCwd, "node_modules");
+  const dstModules = path.join(dir, "node_modules");
+  const hasSrcModules = await fs.stat(srcModules).then(() => true, () => false);
+  const hasDstModules = await fs.lstat(dstModules).then(() => true, () => false);
+  if (hasSrcModules && !hasDstModules) {
+    await fs.symlink(srcModules, dstModules, process.platform === "win32" ? "junction" : "dir").catch(() => {});
+  }
   return dir;
 }
 

@@ -2,6 +2,8 @@ import { test, expect, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { classifyProbeRegression } from "../src/agent/loop-guards";
 import {
   buildProposePrompt,
@@ -333,4 +335,52 @@ test("bundled workflow skills and ralplan reflect Karpathy & Harness² disciplin
   const ralplanSrc = await fs.readFile(path.join(root, "src", "commands", "ralplan.ts"), "utf-8");
   expect(ralplanSrc).toContain("do not add a new role, skill, rule, or harness component");
   expect(ralplanSrc).toContain("probe/verification step");
+});
+test("runProposeProbeComposeEvolution: real git worktree symlinks node_modules, runs probes, applies patch, and cleans up", async () => {
+  const execFileAsync = promisify(execFile);
+  const repoDir = await makeTempDir("jeo-evo-realgit-");
+
+  await execFileAsync("git", ["init"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repoDir });
+  await fs.writeFile(path.join(repoDir, ".gitignore"), "node_modules/\n.harness2/\n", "utf-8");
+  await fs.writeFile(path.join(repoDir, "target.txt"), "broken\n", "utf-8");
+  await fs.mkdir(path.join(repoDir, "node_modules", "dummy"), { recursive: true });
+  await fs.writeFile(path.join(repoDir, "node_modules", "dummy", "ok.txt"), "ok", "utf-8");
+  await execFileAsync("git", ["add", ".gitignore", "target.txt"], { cwd: repoDir });
+  await execFileAsync("git", ["commit", "-m", "init"], { cwd: repoDir });
+
+  const spec: EvolutionProbeSpec = {
+    domain: "realgit-smoke",
+    target: "target.txt",
+    taskSpec: "Fix target.txt to say fixed",
+    probeCommands: [
+      "test -e node_modules/dummy/ok.txt",
+      "grep -q '^fixed$' target.txt",
+    ],
+  };
+
+  let sawWorktreeModules = false;
+  const res = await runProposeProbeComposeEvolution(
+    repoDir,
+    spec,
+    {},
+    {
+      propose: async worktreeCwd => {
+        sawWorktreeModules = await fs
+          .stat(path.join(worktreeCwd, "node_modules", "dummy", "ok.txt"))
+          .then(() => true, () => false);
+        await fs.writeFile(path.join(worktreeCwd, "target.txt"), "fixed\n", "utf-8");
+      },
+    },
+  );
+
+  expect(sawWorktreeModules).toBe(true);
+  expect(res.base.passedChecks).toBe(1);
+  expect(res.candidate.passedChecks).toBe(2);
+  expect(res.adopted).toBe(true);
+  expect(await fs.readFile(path.join(repoDir, "target.txt"), "utf-8")).toBe("fixed\n");
+
+  const { stdout: wtList } = await execFileAsync("git", ["worktree", "list"], { cwd: repoDir });
+  expect(wtList.trim().split(/\r?\n/)).toHaveLength(1);
 });

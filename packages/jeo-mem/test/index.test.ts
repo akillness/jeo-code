@@ -82,4 +82,31 @@ test("FTS5 search supports camelCase queries and Korean/Unicode text", () => {
   indexDir(db, root);
   expect(search(db, "parseLedgerEntry").some((h) => h.type === "symbol" && h.label.includes("parseLedgerEntry"))).toBe(true);
   expect(search(db, "메모리 엔진").some((h) => h.type === "doc" && h.path === "README.ko.md")).toBe(true);
+  expect(search(db, "parseLedgerEntry", 5, ["!README*"]).every((h) => !h.path.startsWith("README"))).toBe(true);
+});
+
+test("indexes Python (.py) + Rust (.rs) definitions, calls, and glob-filtered queries", () => {
+  const root = mkdtempSync(join(tmpdir(), "jm-py-rs-"));
+  try {
+    mkdirSync(join(root, "pkg"), { recursive: true });
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    writeFileSync(join(root, "pkg/a.py"), "import os\ndef foo():\n    return bar()\ndef bar():\n    return 1\n");
+    writeFileSync(join(root, "pkg/b.py"), "from .a import foo\ndef baz():\n    return foo()\n");
+    writeFileSync(join(root, "scripts/native.rs"), "pub fn rs_entry() {\n    rs_leaf();\n}\nfn rs_leaf() {}\n");
+    writeFileSync(join(root, "docs/guide.md"), "# PyWorker\nfoo pipeline needleAlpha notes\n");
+    const db = openDb(":memory:");
+    const s = indexDir(db, root);
+    expect(s.added).toBe(4);
+    expect(whereDefined(db, "foo")[0]?.path).toBe("pkg/a.py");
+    expect(whoCalls(db, "foo", { limit: 10 }).map((l) => l.name)).toContain("baz");
+    expect(whereDefined(db, "rs_entry")[0]?.path).toBe("scripts/native.rs");
+    expect(whoCalls(db, "rs_leaf").map((l) => l.name)).toContain("rs_entry");
+    const docsOnly = search(db, "needleAlpha", 10, ["docs/**", "!pkg/**"]);
+    expect(docsOnly.some((h) => h.path === "docs/guide.md")).toBe(true);
+    expect(search(db, "needleAlpha", 5, ["!docs/**"])).toEqual([]);
+    db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

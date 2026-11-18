@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
@@ -82,5 +83,67 @@ test("MCP server auto-indexes on first query and refreshes modified files", asyn
     expect(out).toContain("mcpAutoInitFn");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP guards $HOME against accidental DB creation, supports multi-repo calls, and prunes legacy tables", async () => {
+  const base = mkdtempSync(join(tmpdir(), "jm-home-guard-"));
+  const fakeHome = join(base, "home");
+  const repo = join(base, "proj");
+  try {
+    mkdirSync(fakeHome, { recursive: true });
+    mkdirSync(join(repo, "mod"), { recursive: true });
+    writeFileSync(join(repo, "mod/worker.py"), "import os\ndef target_py():\n    return 42\n");
+
+    // Seed leftover foreign schema tables that must be cleaned by jeo-code openDb()
+    mkdirSync(join(repo, ".jeo", "db"), { recursive: true });
+    const legacy = new Database(join(repo, ".jeo", "db", "jeo.db"));
+    legacy.exec("CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE files_state (path TEXT PRIMARY KEY);");
+    legacy.close();
+
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    const reqHome = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "jeox_where_defined", arguments: { name: "target_py" } } });
+    const reqRepo = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "jeox_where_defined", arguments: { name: "target_py", repo } } });
+    const proc = Bun.spawn(["bun", cliPath, "mcp"], {
+      cwd: fakeHome,
+      env: { ...process.env, HOME: fakeHome },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    proc.stdin.write(reqHome + "\n" + reqRepo + "\n");
+    proc.stdin.end();
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const responses = out.trim().split("\n").map((line) => JSON.parse(line));
+    expect(responses[0].error?.message).toContain("Refusing to initialize .jeo/db/jeo.db");
+    expect(existsSync(join(fakeHome, ".jeo", "db", "jeo.db"))).toBe(false);
+    expect(responses[1].result?.content?.[0]?.text).toContain("mod/worker.py");
+
+    const cleaned = new Database(join(repo, ".jeo", "db", "jeo.db"));
+    const tables = cleaned.query("SELECT name FROM sqlite_master WHERE type='table'").all().map((r: any) => r.name);
+    cleaned.close();
+    expect(tables).not.toContain("symbols");
+    expect(tables).not.toContain("files_state");
+    expect(tables).toContain("code_files");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("main `jeo jeox` CLI subcommand manages .jeo/db/jeo.db cleanly", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "jm-cli-jeox-"));
+  try {
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src/app.py"), "def helper_fn():\n    return 1\ndef main_fn():\n    return helper_fn()\n");
+    const mainCli = join(import.meta.dir, "..", "..", "..", "src", "cli.ts");
+    const build = Bun.spawnSync(["bun", mainCli, "jeox", "build", "--repo", repo], { stdout: "pipe", stderr: "pipe" });
+    expect(build.exitCode).toBe(0);
+    const who = Bun.spawnSync(["bun", mainCli, "jeox", "who-calls", "helper_fn", "--repo", repo, "--json"], { stdout: "pipe", stderr: "pipe" });
+    expect(who.exitCode).toBe(0);
+    const parsed = JSON.parse(who.stdout.toString());
+    expect(parsed.some((r: any) => r.name === "main_fn" && r.path === "src/app.py")).toBe(true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 });

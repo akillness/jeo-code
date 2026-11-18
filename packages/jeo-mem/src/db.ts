@@ -3,6 +3,25 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DDL, SCHEMA_VERSION } from "./schema.ts";
 
+const LEGACY_NON_JEO_MEM_DDL = `
+DROP TRIGGER IF EXISTS chunks_ai;
+DROP TRIGGER IF EXISTS chunks_ad;
+DROP TABLE IF EXISTS chunks_fts;
+DROP TABLE IF EXISTS edges;
+DROP TABLE IF EXISTS symbols;
+DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS files_state;
+`;
+
+function pruneLegacyForeignTables(db: Database): void {
+  const row = db
+    .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('symbols','edges','chunks','files_state','chunks_fts') LIMIT 1")
+    .get();
+  if (row) {
+    db.exec(LEGACY_NON_JEO_MEM_DDL);
+  }
+}
+
 function initDb(path: string): Database {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
@@ -10,7 +29,9 @@ function initDb(path: string): Database {
     "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA busy_timeout=5000;" +
       (path !== ":memory:" ? " PRAGMA cache_size=-16000; PRAGMA mmap_size=67108864;" : ""),
   );
+  pruneLegacyForeignTables(db);
   for (const stmt of DDL) db.exec(stmt);
+
   const row = db.query("SELECT MAX(version) AS v FROM schema_versions").get() as { v: number | null };
   if ((row.v ?? 0) < SCHEMA_VERSION) {
     db.query("INSERT INTO schema_versions(version, applied_at) VALUES (?, ?)").run(

@@ -111,6 +111,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "jeox",
+    summary: "Manage & query the per-repo code-graph + FTS5 DB (.jeo/db/jeo.db) via jeo-mem.",
+    usage: "jeox <build|who-calls|what-calls|where-defined|impact|query|scope|status|mcp> [arg] [--repo DIR]",
+    loader: async () => {
+      const m = await import("../commands/jeox");
+      return args => m.runJeoxCommand(args);
+    },
+  },
+
+  {
     name: "notify",
     summary: "Configure/inspect Telegram, Discord, and Slack notification channels.",
     usage: "notify [setup|status|health|test] [--provider telegram|discord|slack] [--token-env NAME] [--app-token-env NAME] [--chat-id ID|--channel-id ID] [--allowed-user-ids IDS]",

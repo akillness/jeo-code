@@ -8,8 +8,172 @@ export interface RawNode {
   name: string; kind: string; startLine: number; endLine: number; exported: boolean; refs: RawRef[];
 }
 
-const SCRIPT_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
-export const isScript = (p: string) => SCRIPT_EXT.test(p);
+const TS_JS_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+const PY_EXT = /\.py$/;
+const RS_EXT = /\.rs$/;
+export const isScript = (p: string) => TS_JS_EXT.test(p) || PY_EXT.test(p) || RS_EXT.test(p);
+
+const CALL_SKIP = new Set([
+  "if", "for", "while", "switch", "catch", "return", "sizeof", "typeof", "match",
+  "print", "len", "str", "int", "float", "list", "dict", "set", "tuple", "bool",
+  "super", "range", "enumerate", "zip", "isinstance", "hasattr", "getattr",
+]);
+
+function extractPython(text: string): Extracted {
+  const lines = text.split("\n");
+  const mod: RawNode = { name: "<module>", kind: "module", startLine: 1, endLine: Math.max(1, lines.length), exported: false, refs: [] };
+  const nodes: RawNode[] = [mod];
+  const imports: RawImport[] = [];
+  const stack: { indent: number; node: RawNode }[] = [{ indent: -1, node: mod }];
+  const defRe = /^([ \t]*)(?:async\s+)?(def|class)\s+(\w+)/;
+  const impFromRe = /^\s*from\s+([\w.]+)\s+import\s+(.+)$/;
+  const impBareRe = /^\s*import\s+(.+)$/;
+  const callRe = /\b(\w+)\s*\(/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]!;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = raw.length - raw.trimStart().length;
+
+    const dm = defRe.exec(raw);
+    if (dm) {
+      while (stack.length > 1 && stack[stack.length - 1]!.indent >= indent) {
+        stack.pop()!.node.endLine = i;
+      }
+      const kind = dm[2] === "class" ? "class" : "function";
+      const name = dm[3]!;
+      const node: RawNode = { name, kind, startLine: i + 1, endLine: i + 1, exported: !name.startsWith("_"), refs: [] };
+      nodes.push(node);
+      stack.push({ indent, node });
+      continue;
+    }
+
+    if (indent === 0) {
+      const mFrom = impFromRe.exec(raw);
+      if (mFrom) {
+        const rawSpec = mFrom[1]!;
+        const spec = rawSpec.startsWith(".")
+          ? rawSpec.replace(/^(\.+)(.*)$/, (_, dots: string, rest: string) => {
+              const prefix = dots.length === 1 ? "./" : "../".repeat(dots.length - 1);
+              return prefix + rest.replace(/\./g, "/");
+            })
+          : rawSpec;
+        for (const item of mFrom[2]!.split(",")) {
+          const clean = item.trim();
+          if (!clean) continue;
+          const [orig, alias] = clean.split(/\s+as\s+/).map(s => s.trim());
+          if (orig) imports.push({ spec, imported: orig, local: alias || orig, reexport: false });
+        }
+        continue;
+      }
+      const mBare = impBareRe.exec(raw);
+      if (mBare) {
+        for (const item of mBare[1]!.split(",")) {
+          const clean = item.trim();
+          if (!clean) continue;
+          const [orig, alias] = clean.split(/\s+as\s+/).map(s => s.trim());
+          if (orig) imports.push({ spec: orig, imported: "*", local: alias || orig, reexport: false });
+        }
+        continue;
+      }
+    }
+
+    const owner = stack[stack.length - 1]!.node;
+    callRe.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = callRe.exec(raw)) !== null) {
+      const nm = cm[1]!;
+      if (!CALL_SKIP.has(nm) && nm !== owner.name) {
+        owner.refs.push({ name: nm, kind: "calls", recv: "" });
+      }
+    }
+  }
+  while (stack.length > 1) {
+    stack.pop()!.node.endLine = Math.max(1, lines.length);
+  }
+  for (const n of nodes) {
+    const seen = new Set<string>();
+    n.refs = n.refs.filter(r => {
+      const k = `${r.kind}|${r.recv}|${r.name}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+  return { nodes, imports };
+}
+
+function extractRust(text: string): Extracted {
+  const lines = text.split("\n");
+  const mod: RawNode = { name: "<module>", kind: "module", startLine: 1, endLine: Math.max(1, lines.length), exported: false, refs: [] };
+  const nodes: RawNode[] = [mod];
+  const imports: RawImport[] = [];
+  const stack: { depth: number; node: RawNode }[] = [{ depth: -1, node: mod }];
+  let depth = 0;
+  const defRe = /^\s*(pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(fn|struct|trait|enum)\s+(\w+)/;
+  const useRe = /^\s*(?:pub\s+)?use\s+([\w:]+)(?:::\{([^}]*)\})?;/;
+  const callRe = /\b(\w+)\s*\(/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]!;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("//")) continue;
+
+    const dm = defRe.exec(raw);
+    if (dm) {
+      const kind = dm[2] === "fn" ? "function" : dm[2]!;
+      const node: RawNode = { name: dm[3]!, kind, startLine: i + 1, endLine: i + 1, exported: Boolean(dm[1]), refs: [] };
+      nodes.push(node);
+      stack.push({ depth, node });
+    } else {
+      const um = useRe.exec(raw);
+      if (um) {
+        const spec = um[1]!;
+        if (um[2]) {
+          for (const item of um[2].split(",")) {
+            const sym = item.trim();
+            if (sym) imports.push({ spec, imported: sym, local: sym, reexport: false });
+          }
+        } else {
+          const leaf = spec.split("::").pop() || spec;
+          imports.push({ spec, imported: leaf, local: leaf, reexport: false });
+        }
+      }
+    }
+
+    const owner = stack[stack.length - 1]!.node;
+    callRe.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = callRe.exec(raw)) !== null) {
+      const nm = cm[1]!;
+      if (!CALL_SKIP.has(nm) && nm !== owner.name) {
+        owner.refs.push({ name: nm, kind: "calls", recv: "" });
+      }
+    }
+
+    for (const ch of raw) {
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth = Math.max(0, depth - 1);
+        while (stack.length > 1 && depth <= stack[stack.length - 1]!.depth) {
+          stack.pop()!.node.endLine = i + 1;
+        }
+      }
+    }
+  }
+  while (stack.length > 1) stack.pop()!.node.endLine = Math.max(1, lines.length);
+  for (const n of nodes) {
+    const seen = new Set<string>();
+    n.refs = n.refs.filter(r => {
+      const k = `${r.kind}|${r.recv}|${r.name}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+  return { nodes, imports };
+}
 
 function scriptKind(p: string): ts.ScriptKind {
   if (p.endsWith("x")) return p.endsWith("tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.JSX;
@@ -30,6 +194,8 @@ function calleeName(e: ts.Expression): string | undefined {
 }
 
 export function extractScript(path: string, text: string): Extracted {
+  if (PY_EXT.test(path)) return extractPython(text);
+  if (RS_EXT.test(path)) return extractRust(text);
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.ESNext, false, scriptKind(path));
   const line = (pos: number) => sf.getLineAndCharacterOfPosition(pos).line + 1;
   const mod: RawNode = { name: "<module>", kind: "module", startLine: 1, endLine: line(sf.end), exported: false, refs: [] };

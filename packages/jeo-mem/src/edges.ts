@@ -3,7 +3,7 @@ import { dirname, join, normalize } from "node:path";
 
 export type Conf = "local" | "import" | "name";
 const MAX_AMBIGUOUS = 5;
-const EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
+const EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs"];
 
 interface Imp { file_id: number; spec: string; imported: string; local: string; reexport: number }
 interface Ref { src_id: number; name: string; kind: string; recv: string; file_id: number }
@@ -31,8 +31,29 @@ export function rebuildEdges(db: Database): void {
   }
 
   const resolveSpec = (fromFileId: number, spec: string): number | null => {
+    const fromPath = idToPath.get(fromFileId) ?? "";
+    if (fromPath.endsWith(".py")) {
+      const dotMatch = /^(\.+)(.*)$/.exec(spec);
+      if (dotMatch) {
+        let dir = dirname(fromPath);
+        for (let up = 1; up < dotMatch[1]!.length; up++) dir = dirname(dir);
+        const tail = dotMatch[2] ? dotMatch[2]!.replace(/\./g, "/") : "";
+        const base = tail ? normalize(join(dir, tail)) : normalize(dir);
+        for (const t of [base + ".py", join(base, "__init__.py")]) {
+          const id = pathToId.get(t);
+          if (id !== undefined) return id;
+        }
+        return null;
+      }
+      const modBase = normalize(spec.replace(/\./g, "/"));
+      for (const t of [modBase + ".py", join(modBase, "__init__.py")]) {
+        const id = pathToId.get(t);
+        if (id !== undefined) return id;
+      }
+      return null;
+    }
     if (!spec.startsWith(".")) return null; // external package / alias: unresolved on purpose
-    const base = normalize(join(dirname(idToPath.get(fromFileId)!), spec));
+    const base = normalize(join(dirname(fromPath), spec));
     const stripped = base.replace(/\.(m|c)?jsx?$/, "");
     const tries = [base, ...EXTS.map((e) => stripped + e), ...EXTS.map((e) => join(base, `index${e}`))];
     for (const t of tries) { const id = pathToId.get(t); if (id !== undefined) return id; }

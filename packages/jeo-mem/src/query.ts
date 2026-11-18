@@ -79,19 +79,50 @@ const ftsQuery = (text: string) => {
 
 export type Hit = { type: "symbol" | "doc"; path: string; start: number; end: number; label: string };
 
+function globToRegExp(pattern: string): RegExp {
+  let out = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (ch === "*" && pattern[i + 1] === "*") {
+      if (pattern[i + 2] === "/") { out += "(?:.*/)?"; i += 2; }
+      else { out += ".*"; i += 1; }
+    } else if (ch === "*") out += "[^/]*";
+    else if (ch === "?") out += "[^/]";
+    else out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  out += "$";
+  return new RegExp(out);
+}
+
+export function matchGlobs(relPath: string, globs?: readonly string[]): boolean {
+  if (!globs || globs.length === 0) return true;
+  const clean = relPath.replaceAll("\\", "/");
+  let matched = !globs.some((g) => !g.startsWith("!"));
+  for (const g of globs) {
+    const neg = g.startsWith("!");
+    const pat = neg ? g.slice(1) : g;
+    const direct = globToRegExp(pat).test(clean);
+    const anyDir = !pat.startsWith("**/") && globToRegExp(`**/${pat}`).test(clean);
+    if (direct || anyDir) matched = !neg;
+  }
+  return matched;
+}
+
 /** FTS5 search over symbols + markdown chunks. Returns locations only (no bodies). */
-export function search(db: Database, text: string, limit = 5): Hit[] {
+export function search(db: Database, text: string, limit = 5, globs?: readonly string[]): Hit[] {
   const q = ftsQuery(text);
   if (!q) return [];
   const safeLimit = Math.max(1, Math.min(50, Math.floor(Number.isFinite(limit) ? limit : 5)));
+  const fetchLimit = globs && globs.length > 0 ? Math.min(200, safeLimit * 8) : safeLimit;
   try {
     const sym = db.query(`SELECT 'symbol' type, f.path path, n.start_line start, n.end_line end, n.kind||' '||n.name label
       FROM code_nodes_fts x JOIN code_nodes n ON n.id=x.rowid JOIN code_files f ON f.id=n.file_id
-      WHERE code_nodes_fts MATCH ? ORDER BY bm25(code_nodes_fts) LIMIT ?`).all(q, safeLimit) as Hit[];
+      WHERE code_nodes_fts MATCH ? ORDER BY bm25(code_nodes_fts) LIMIT ?`).all(q, fetchLimit) as Hit[];
     const doc = db.query(`SELECT 'doc' type, f.path path, c.start_line start, c.end_line end, c.heading label
       FROM code_chunks_fts x JOIN code_chunks c ON c.id=x.rowid JOIN code_files f ON f.id=c.file_id
-      WHERE code_chunks_fts MATCH ? ORDER BY bm25(code_chunks_fts) LIMIT ?`).all(q, safeLimit) as Hit[];
-    return [...sym, ...doc].slice(0, safeLimit * 2);
+      WHERE code_chunks_fts MATCH ? ORDER BY bm25(code_chunks_fts) LIMIT ?`).all(q, fetchLimit) as Hit[];
+    const filtered = [...sym, ...doc].filter((h) => matchGlobs(h.path, globs));
+    return filtered.slice(0, safeLimit * 2);
   } catch {
     return [];
   }

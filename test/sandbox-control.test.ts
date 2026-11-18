@@ -124,7 +124,7 @@ for (const decision of ["approve", "deny", "revoke"] as const) test(`authenticat
 	try {
 		const request = await f.authority.requestAccess(f.resource, "rw");
 		if (decision === "revoke") await f.authority.approve(request.id, f.actor);
-		const config = parseMessengerConfig({ cwd: f.cwd, sessionDir: path.join(f.root, "sessions"), sandbox: { image: "test-local-image", limits: { memoryBytes: 128 * 1024 * 1024, pids: 32, cpus: 1 } }, toolNames: [], platforms: { discord: { allowedUserIds: ["operator"], allowedChannelIds: ["parent"] } } }, f.cwd);
+		const config = parseMessengerConfig({ cwd: f.cwd, sessionDir: path.join(f.root, "sessions"), toolNames: [], platforms: { discord: { allowedUserIds: ["operator"], allowedChannelIds: ["parent"] } } }, f.cwd);
 		const adapter: MessengerAdapter = {
 			platform: "discord", async start() {},
 			async send(message, text) { delivered.push([message.messageId, text]); },
@@ -165,7 +165,7 @@ test("gateway authenticates a control sender before dispatch and never forwards 
 		const request = await f.authority.requestAccess(f.resource, "rw");
 		const prompts: string[] = [];
 		const delivered: string[] = [];
-		const config = parseMessengerConfig({ cwd: f.cwd, sessionDir: path.join(f.root, "sessions"), sandbox: { image: "test-local-image", limits: { memoryBytes: 128 * 1024 * 1024, pids: 32, cpus: 1 } }, toolNames: [], platforms: { discord: { allowedUserIds: ["operator"], allowedChannelIds: ["parent"] } } }, f.cwd);
+		const config = parseMessengerConfig({ cwd: f.cwd, sessionDir: path.join(f.root, "sessions"), toolNames: [], platforms: { discord: { allowedUserIds: ["operator"], allowedChannelIds: ["parent"] } } }, f.cwd);
 		const adapter: MessengerAdapter = { platform: "discord", async start() {}, async send(_message, text) { delivered.push(text); } };
 		const gateway = createMessengerGateway(config, [adapter], async message => { prompts.push(message.text); return "model ran"; }, {
 			sandboxControl: async message => handleSandboxControl(message.text, { origin: "discord", userId: message.senderId, sessionKey: "session-a" }, f.authority),

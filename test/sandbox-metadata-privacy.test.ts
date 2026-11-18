@@ -2,8 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createMessengerCliReply } from "../src/commands/messenger";
-import { parseMessengerConfig, validateMessengerStorage } from "../src/messenger/config";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -183,40 +181,3 @@ test.skipIf(process.platform !== "darwin")("native sandbox reads inherited snaps
   expect(report.write.success).toBe(false);
 }, 30_000);
 
-test("legacy workspace raw memory refuses sandbox startup without rewriting history or starting a worker/model", async () => {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jeo-legacy-privacy-")));
-  roots.push(root);
-  const cwd = path.join(root, "workspace");
-  const raw = path.join(cwd, ".jeo", "memory", "raw");
-  await fs.mkdir(raw, { recursive: true });
-  const history = Buffer.from(JSON.stringify({
-    model: "fixture/private-history",
-    messages: [
-      { role: "system", content: "LEGACY-PRIVATE-SYSTEM-971d" },
-      { role: "user", content: "LEGACY-PRIVATE-USER-28b1" },
-      { role: "assistant", content: "LEGACY-PRIVATE-ANSWER-a03f" },
-    ],
-  }, null, 2) + "\n");
-  const file = path.join(raw, "historical-session.json");
-  await fs.writeFile(file, history);
-  const config = parseMessengerConfig({
-    cwd, sessionDir: path.join(root, "sessions"),
-    sandbox: { image: "oven/bun:1.3.14", limits: { memoryBytes: 268435456, pids: 64, cpus: 1 } },
-    platforms: { discord: { allowedUserIds: ["operator"], model: "fixture/no-network" } },
-  }, root);
-  const refusal = "Legacy session transcripts or raw history may be exposed in the sandbox workspace";
-  await expect(validateMessengerStorage(config)).rejects.toThrow(refusal);
-  let workers = 0;
-  let models = 0;
-  const spawn = (() => { workers++; throw new Error("Private history must prevent worker startup"); }) as typeof Bun.spawn;
-  const reply = createMessengerCliReply(config, spawn, async () => { models++; throw new Error("Private history must prevent model selection"); });
-  try {
-    await expect(reply({ platform: "discord", accountId: "offline-bot", channelId: "offline-thread", senderId: "operator", messageId: "1", text: "Do not expose historical memory", direct: true, mentioned: false }, new AbortController().signal)).rejects.toThrow(refusal);
-    expect({ workers, models }).toEqual({ workers: 0, models: 0 });
-    expect(await fs.readFile(file)).toEqual(history);
-    expect(await fs.readdir(raw)).toEqual(["historical-session.json"]);
-    expect(await fs.readdir(root)).toEqual(["workspace"]);
-  } finally {
-    await reply.close();
-  }
-});

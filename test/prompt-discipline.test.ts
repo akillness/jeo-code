@@ -1,7 +1,14 @@
 import { test, expect } from "bun:test";
-import { TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, executorSystemPrompt } from "../src/agent/engine";
+import {
+  TOOL_PROTOCOL,
+  WORKING_DISCIPLINE,
+  OUTPUT_DISCIPLINE,
+  VERIFICATION_DIRECTIVE,
+  SYSTEM_PROMPT_BUDGET,
+  checkDisciplinePromptBudget,
+  executorSystemPrompt,
+} from "../src/agent/engine";
 import { buildToolProtocol } from "../src/commands/launch";
-
 // P1 — tool calibration + web_search reflex. The reflex only belongs where web_search
 // is advertised (engine TOOL_PROTOCOL); the calibration line must reach BOTH the executor
 // protocol AND the interactive buildToolProtocol (the interactive path uses its own,
@@ -147,4 +154,22 @@ test("jev: launch.ts routes each turn task through the Jev advisory skill router
   expect(src).toContain("skillAdvisoryRoutingNote(jev)");
   expect(src).toContain("const composeSystemPrompt = (memBlock: string, task: string = \"\", opts: { skillRun?: boolean } = {}): string =>");
   expect(src).toContain("task.trim() && !effectiveNoSkills && !opts.skillRun");
+});
+
+test("karpathy + harness2: OUTPUT_DISCIPLINE requires stopping before coding on non-trivial ambiguity", () => {
+  expect(OUTPUT_DISCIPLINE).toContain("before coding on non-trivial ambiguity");
+  expect(OUTPUT_DISCIPLINE).toContain("never guess silently");
+});
+
+test("harness2: checkDisciplinePromptBudget passes current blocks and flags oversized blocks", () => {
+  const current = checkDisciplinePromptBudget();
+  expect(current.ok).toBe(true);
+  expect(current.exceeded).toEqual([]);
+  expect(current.totalChars).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET.totalDisciplineChars);
+
+  const bloated = checkDisciplinePromptBudget({
+    karpathy: "x".repeat(SYSTEM_PROMPT_BUDGET.karpathyTokens * 4 + 40),
+  });
+  expect(bloated.ok).toBe(false);
+  expect(bloated.exceeded).toContain("karpathy");
 });

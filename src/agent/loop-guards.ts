@@ -637,3 +637,69 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
       unmeasuredNote,
   };
 }
+
+/** Snapshot of a frozen probe run for Harness² Propose–Probe–Compose gating. */
+export interface ProbeSummaryInput {
+  passedChecks: number;
+  totalChecks: number;
+  checkStatuses: Record<string, boolean>;
+  budgetOk: boolean;
+  hasChanges?: boolean;
+}
+
+export interface ProbeRegressionVerdict {
+  adopt: boolean;
+  regressedChecks: string[];
+  reason: string;
+}
+
+/**
+ * Pure c8 Compose gate: decides whether an isolated candidate probe may be
+ * composed into the workspace without regressing baseline checks or prompt budget.
+ */
+export function classifyProbeRegression(
+  base: ProbeSummaryInput,
+  candidate: ProbeSummaryInput,
+): ProbeRegressionVerdict {
+  if (candidate.hasChanges === false) {
+    return { adopt: false, regressedChecks: [], reason: "no-op: candidate produced no changes" };
+  }
+  if (!candidate.budgetOk) {
+    return {
+      adopt: false,
+      regressedChecks: [],
+      reason: base.budgetOk
+        ? "prompt-budget regression: always-on discipline prompt exceeded ceiling"
+        : "prompt-budget exceeded ceiling",
+    };
+  }
+  const regressedChecks = Object.entries(base.checkStatuses)
+    .filter(([name, passed]) => passed && candidate.checkStatuses[name] === false)
+    .map(([name]) => name);
+  if (regressedChecks.length > 0) {
+    return {
+      adopt: false,
+      regressedChecks,
+      reason: `probe regression in: ${regressedChecks.join(", ")}`,
+    };
+  }
+  if (candidate.passedChecks < base.passedChecks) {
+    return {
+      adopt: false,
+      regressedChecks: [],
+      reason: `passed checks decreased (${candidate.passedChecks}/${candidate.totalChecks} < ${base.passedChecks}/${base.totalChecks})`,
+    };
+  }
+  if (base.passedChecks < base.totalChecks && candidate.passedChecks <= base.passedChecks) {
+    return {
+      adopt: false,
+      regressedChecks: [],
+      reason: `candidate did not improve failing baseline (${candidate.passedChecks}/${candidate.totalChecks})`,
+    };
+  }
+  return {
+    adopt: true,
+    regressedChecks: [],
+    reason: `probe passed (${candidate.passedChecks}/${candidate.totalChecks}) with prompt budget ok`,
+  };
+}

@@ -238,7 +238,9 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     `Planning discipline: keep steps minimal, surgical, and traced strictly to the crystallized spec — ` +
     `no unasked features, speculative abstractions, or unnecessary layers; prefer the simplest direct ` +
     `design; preserve any unresolved or contested spec trade-offs inside step names/targets instead of ` +
-    `silently picking one; make every step independently verifiable.`;
+    `silently picking one; do not add a new role, skill, rule, or harness component unless the spec ` +
+    `shows a concrete failure/gap that existing components cannot cover, and attach an explicit ` +
+    `probe/verification step for every change.`;
 
   const PLANNER = `You are the PLANNER. From the crystallized spec, sequence the work into a logical, outcome-based progression of concrete, ordered tasks.\n${KARPATHY_PLAN_RULES}\n` + SCHEMA_SPEC;
   const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, simplest direct design, correct file targets, directory structure, and any missing setup/wiring/test steps — push back on speculative abstractions or over-engineering. Return an improved plan (same shape).\n${KARPATHY_PLAN_RULES}\n` + SCHEMA_SPEC;

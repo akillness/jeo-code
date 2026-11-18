@@ -14,3 +14,8 @@ When the roles disagree, do not collapse the split to a single verdict: record e
 contested decision with the competing options and their rationale, and flag the points
 that need a human judgment call rather than auto-resolving them.
 
+## Minimalism & Harness² Propose–Probe–Compose
+
+- Trace every step directly to the frozen spec: no unasked features, speculative abstractions, or extra layers.
+- Do not add a new role, skill, rule, hook, or harness component unless baseline evidence proves existing components cannot cover the gap.
+- For prompt, skill, subagent, or harness updates, include an explicit baseline-vs-candidate probe and prompt-budget check before adopting (`Propose–Probe–Compose`).

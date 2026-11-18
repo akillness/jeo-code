@@ -278,12 +278,12 @@ export const WORKING_DISCIPLINE = [
  *  read-only subagents carry their own output contracts. */
 export const OUTPUT_DISCIPLINE = [
   "Reply discipline:",
-  "- Lead with the answer or result; no preamble, no progress narration, no restating the task.",
-  "- Default to tight prose; use headers/bullets/tables ONLY when the content is genuinely multi-part or the user asked — never bullet a one-idea answer.",
-  "- When using lists, ensure each bullet carries a complete thought; avoid fragmented or shredded reports.",
-  "- Don't stall on ambiguity: on trivial tasks state reasonable assumptions; on non-trivial ambiguity ask at most one clarifying question.",
+  "- Lead with the answer or result; no preamble, narration, or restating the task.",
+  "- Default to tight prose; use headers/bullets/tables ONLY for multi-part answers or when asked — never bullet a one-idea answer.",
+  "- When using lists, ensure each bullet carries a complete thought; avoid fragmented reports.",
+  "- Don't stall on ambiguity: on trivial tasks state reasonable assumptions; before coding on non-trivial ambiguity ask at most one clarifying question (never guess silently).",
   "- Report only what is done or in progress; never announce future work instead of doing it.",
-  "- Give a substantive answer first; never punt with only a disclaimer, a knowledge-cutoff caveat, or an offer to search — answer with what you have, then note the caveat.",
+  "- Give a substantive answer first; never punt with only a disclaimer, cutoff caveat, or offer to search — answer first, then note caveats.",
   "- Match reply length to the task: a one-line change gets a one-line report.",
 ].join("\n");
 
@@ -309,6 +309,62 @@ export const KARPATHY_DISCIPLINE = [
   "- Surgical changes: touch only what the request requires; match existing style; mention unrelated dead code instead of deleting it; remove only the orphans YOUR changes created. Every changed line must trace to the request.",
   "- Goal-driven execution: turn tasks into verifiable goals (repro test before fix, tests-before/after for refactors, per-step verify checks) and loop until the verification signal passes — a stale pass from before the last edit does not count.",
 ].join("\n");
+
+/** Explicit always-on token/char budget for core discipline blocks (c1–c4).
+ *  Keeps high-frequency system prompts lean so detailed procedures stay in c6 skills. */
+export const SYSTEM_PROMPT_BUDGET = Object.freeze({
+  workingTokens: 560,
+  karpathyTokens: 260,
+  outputTokens: 220,
+  verificationTokens: 160,
+  totalDisciplineChars: 4500,
+});
+
+export function approxPromptTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export interface PromptBudgetReport {
+  ok: boolean;
+  totalChars: number;
+  tokens: {
+    working: number;
+    karpathy: number;
+    output: number;
+    verification: number;
+  };
+  exceeded: string[];
+}
+
+export function checkDisciplinePromptBudget(blocks: {
+  working?: string;
+  karpathy?: string;
+  output?: string;
+  verification?: string;
+} = {}): PromptBudgetReport {
+  const workingText = blocks.working ?? WORKING_DISCIPLINE;
+  const karpathyText = blocks.karpathy ?? KARPATHY_DISCIPLINE;
+  const outputText = blocks.output ?? OUTPUT_DISCIPLINE;
+  const verificationText = blocks.verification ?? VERIFICATION_DIRECTIVE;
+
+  const tokens = {
+    working: approxPromptTokens(workingText),
+    karpathy: approxPromptTokens(karpathyText),
+    output: approxPromptTokens(outputText),
+    verification: approxPromptTokens(verificationText),
+  };
+  const totalChars =
+    workingText.length + karpathyText.length + outputText.length + verificationText.length;
+
+  const exceeded: string[] = [];
+  if (tokens.working >= SYSTEM_PROMPT_BUDGET.workingTokens) exceeded.push("working");
+  if (tokens.karpathy >= SYSTEM_PROMPT_BUDGET.karpathyTokens) exceeded.push("karpathy");
+  if (tokens.output >= SYSTEM_PROMPT_BUDGET.outputTokens) exceeded.push("output");
+  if (tokens.verification >= SYSTEM_PROMPT_BUDGET.verificationTokens) exceeded.push("verification");
+  if (totalChars > SYSTEM_PROMPT_BUDGET.totalDisciplineChars) exceeded.push("totalChars");
+
+  return { ok: exceeded.length === 0, totalChars, tokens, exceeded };
+}
 
 
 export function executorSystemPrompt(

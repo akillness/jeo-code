@@ -289,8 +289,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "evolve-core",
-    summary: "Trigger a self-evolution turn using gjc as a guide (Dev Mode).",
-    usage: "evolve-core [args]",
+    summary: "Run Harness² Propose–Probe–Compose self-evolution in an isolated worktree (Dev Mode).",
+    usage: "evolve-core [--domain <name>] [--target <path>] [--dry-run]",
     loader: async () => {
       const m = await import("../commands/evolve-core");
       return args => m.runEvolveCoreCommand(args);

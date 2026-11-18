@@ -21,3 +21,6 @@ The completion report must be backed by concrete artifacts, not assertions:
 - If an acceptance criterion could not be verified (missing credential, service,
   or product decision), say so explicitly and mark it unresolved rather than
   implying success. A criterion with no supporting artifact is NOT met.
+- For prompt, skill, subagent, or harness changes, also record the Before-vs-After
+  probe results and always-on prompt-budget check (`checkDisciplinePromptBudget` /
+  `evolve-core` probe evidence) to prove no regression or token bloat.

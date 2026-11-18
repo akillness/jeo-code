@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.0] - 2026-11-18
+_Release jeo-code 1.0.0 with always-on Karpathy prompt discipline + budget caps, Harness² Propose–Probe–Compose self-evolution in `jeo evolve-core`, and aligned spec-first workflow skills._
+
+### Added
+- **Harness² Propose–Probe–Compose self-evolution (`src/agent/dev/evolution-bridge.ts`, `src/commands/evolve-core.ts`, `src/cli/runner.ts`, `src/agent/loop-guards.ts`, `test/harness2-evolution.test.ts`):** Add `runProposeProbeComposeEvolution` (task freeze with hidden probe commands → baseline probe → isolated git worktree proposal → candidate probe → regression gate `classifyProbeRegression` → compose or rollback) and persistent `.harness2/library/<domain>.jsonl` records, exposed via `jeo evolve-core [--domain <name>] [--target <path>] [--dry-run]`.
+- **Always-on prompt budget & regression guard (`src/agent/engine.ts`, `test/prompt-discipline.test.ts`):** Add `SYSTEM_PROMPT_BUDGET`, `approxPromptTokens`, and `checkDisciplinePromptBudget()` to keep always-on discipline blocks bounded.
+
+### Changed
+- **Karpathy discipline & workflow skill alignment (`src/agent/engine.ts`, `src/commands/ralplan.ts`, `src/prompts/skills/{deep-interview,ralplan,team,ultragoal}/SKILL.md`):** Harmonize `OUTPUT_DISCIPLINE` with `KARPATHY_DISCIPLINE` (state assumptions on trivial tasks; stop before coding on non-trivial ambiguity), enforce minimal/non-duplicative component creation and probe steps in `ralplan`, and align bundled workflow skills with Freeze/Probe/Compose and surgical execution.
+
 ## [0.12.60] - 2026-11-18
 _Align Discord integration with `jeopi` (non-isolated messenger + direct `/discord live` terminal bridge), default Discord setup to connecting a running terminal session, remove `SANDBOX_REQUIRED` from `/discord control`, and surface Perplexity search setup/autocomplete._
 

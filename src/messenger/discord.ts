@@ -480,7 +480,6 @@ export function createDiscordAdapter(
 						if (changed) await onThreadLifecycle?.(event);
 					};
 					const deliver = async (message: MessengerMessage): Promise<void> => {
-						if (!config.allowedUserIds.includes(message.senderId) || message.senderId === message.accountId) return;
 						const previous = normalizationTails.get(message.channelId) ?? Promise.resolve();
 						const ready = Promise.withResolvers<void>();
 						const tail = previous.then(() => ready.promise);

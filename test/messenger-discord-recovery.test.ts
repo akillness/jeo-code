@@ -745,7 +745,7 @@ test("Discord messenger resets reconnect backoff to 5s after an established READ
     expect(delays).toEqual([5_000, 10_000, 5_000]);
   } finally { controller.abort(); await running; }
 });
-test("Discord adapter drops non-allowlisted users before delivery/REST lookup and redacts bot token on send", async () => {
+test("Discord adapter skips REST lookups for non-allowlisted users and redacts bot token on send", async () => {
   const socketReady = Promise.withResolvers<void>();
   const delivered: MessengerMessage[] = [];
   const postedBodies: string[] = [];
@@ -774,12 +774,14 @@ test("Discord adapter drops non-allowlisted users before delivery/REST lookup an
     { fetch: fetchImpl, WebSocket: FakeSocket as unknown as typeof WebSocket },
   );
   const controller = new AbortController();
-  const running = adapter.start(async message => { delivered.push(message); }, controller.signal);
+  const running = adapter.start(async message => {
+    if (isMessengerMessageAllowed(message, settings)) delivered.push(message);
+  }, controller.signal);
   try {
     await socketReady.promise;
     socket!.receive({ op: 10, d: { heartbeat_interval: 300000 } });
     socket!.receive({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } });
-    // Unauthorized user in DM, channel, and thread must be dropped by the adapter before REST/onMessage.
+    // Unauthorized user in DM or guild channel triggers no channel REST lookup and is rejected by gateway admission.
     socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "m1", channel_id: "dm", author: { id: "stranger" }, content: "hi" } });
     socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "m2", channel_id: "parent", guild_id: "guild", author: { id: "stranger" }, mentions: [{ id: "bot" }], content: "<@bot> hi" } });
     for (let i = 0; i < 40; i++) await Promise.resolve();

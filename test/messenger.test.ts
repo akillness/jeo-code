@@ -47,6 +47,9 @@ describe("messenger security and configuration", () => {
 		expect(isMessengerMessageAllowed(message({ senderId: "other" }), settings)).toBe(false);
 		expect(isMessengerMessageAllowed(message({ channelId: "other" }), settings)).toBe(false);
 		expect(isMessengerMessageAllowed(message({ mentioned: false }), settings)).toBe(false);
+		expect(isMessengerMessageAllowed(message({ senderId: "bot", accountId: "bot" }), settings)).toBe(false);
+		expect(isMessengerMessageAllowed(message({ text: "hello\u0003" }), settings)).toBe(false);
+		expect(isMessengerMessageAllowed(message({ direct: true, guildId: "guild", mentioned: false, channelId: "dm" }), settings)).toBe(false);
 		expect(isMessengerMessageAllowed(message({ direct: true, mentioned: false, channelId: "dm" }), settings)).toBe(false);
 		delete settings.platforms.discord!.allowedChannelIds;
 		expect(isMessengerMessageAllowed(message({ direct: true, mentioned: false, channelId: "dm" }), settings)).toBe(true);

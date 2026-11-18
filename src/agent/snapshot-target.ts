@@ -94,7 +94,21 @@ function projectRoot(target: string, roots: readonly string[]): string | null {
   return root;
 }
 
-/** The `a.env` map bash receives, reduced to the string entries the tool actually forwards. */
+/**
+ * True when `dir` itself or any ancestor below shared scratch roots carries a project marker.
+ * Returns false for shared scratch roots and for markerless container folders (e.g. `~/work`, `~/Documents`).
+ */
+export function hasProjectMarker(dir: string, scratchRoots?: readonly string[]): boolean {
+  try {
+    if (isSharedScratchRoot(dir, scratchRoots)) return false;
+    const roots = scratchRoots
+      ? [...scratchRoots]
+      : [os.homedir(), accountHomedir(), os.tmpdir(), "/tmp", "/var/tmp"];
+    return projectRoot(dir, roots) !== null;
+  } catch {
+    return false;
+  }
+}
 function envValue(args: Record<string, any> | undefined, key: string): string | undefined {
   const env = args?.env;
   const own = env && typeof env === "object" && !Array.isArray(env) ? env[key] : undefined;
@@ -140,9 +154,10 @@ export function snapshotTarget(
   tool: string,
   args: Record<string, any> | undefined,
   scratchRoots?: readonly string[],
+  treatCwdAsScratch = false,
 ): string {
   try {
-    if (tool !== "bash" || !isSharedScratchRoot(cwd, scratchRoots)) return cwd;
+    if (tool !== "bash" || (!treatCwdAsScratch && !isSharedScratchRoot(cwd, scratchRoots))) return cwd;
     const sub = typeof args?.cwd === "string" ? args.cwd : typeof args?.subdir === "string" ? args.subdir : "";
     let dir = sub ? path.resolve(cwd, sub) : cwd;
     // The bash tool spawns in this directory; if it is missing the call fails before touching anything.

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as loop from "../src/agent/loop";
+import * as hooks from "../src/agent/hooks";
 import { DEFAULT_TOOLS, runAgentLoop, type ToolHandler } from "../src/agent/engine";
 import { isSharedScratchRoot, snapshotWorkspace, WORKSPACE_SNAPSHOT_LIMITS, type WorkspaceSnapshotter } from "../src/agent/workspace-snapshot";
 import { GUARD_LIMITS, MUTATION_NUDGE_PREFIX } from "../src/agent/loop-guards";
@@ -2107,4 +2108,59 @@ test("runAgentLoop: after a call overflows the cap, a later small write to the s
   // is told the host could not measure (not silently waved through as scratch).
   expect(userSaid(history, "could not measure")).toBe(true);
   expect(userSaid(history, "workspace has more than 3 entries")).toBe(true);
+});
+test("runAgentLoop: a markerless container cwd that hits the snapshot cap fails open on read-only bash and still brackets nested projects", async () => {
+  spyOn(hooks, "runPreToolHooks").mockResolvedValue({ vetoed: false });
+  spyOn(hooks, "runPostTurnHooksForBatch").mockResolvedValue({ diags: [], ran: [] });
+  const root = await scratchRoot();
+  const container = path.join(root, "work");
+  await fs.mkdir(container, { recursive: true });
+  await fs.writeFile(path.join(container, "one.txt"), "1");
+  await fs.writeFile(path.join(container, "two.txt"), "2");
+  const app = await projectDir(container, "app");
+  const measured: string[] = [];
+  const notices: string[] = [];
+  // First: two read-only bash calls in the markerless container cwd -> fail open after cap, done is accepted.
+  scripted([
+    { tool: "bash", arguments: { command: "ls" } },
+    { tool: "bash", arguments: { command: "pwd" } },
+    done,
+  ]);
+  const readOnlyHistory: Message[] = [{ role: "user", content: "list files in work" }];
+  const readOnlyResult = await runAgentLoop(readOnlyHistory, {
+    cwd: container, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    events: { onNotice: msg => { notices.push(msg); } },
+    workspaceSnapshot: recordingSnapshotter(measured, dir => dir === container ? { ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 } : WORKSPACE_SNAPSHOT_LIMITS),
+    tools: { bash: nestedShell },
+  });
+
+  expect(readOnlyResult.done).toBe(true);
+  expect(readOnlyResult.doneReason).toBe("verified");
+  expect(measured).toEqual([container]); // walked once, then skipped as scratch
+  expect(toolResultsOf(readOnlyHistory).map(r => r.workspace)).toStrictEqual([
+    { mutation: false, skipped: "scratch" },
+    { mutation: false, skipped: "scratch" },
+  ]);
+  expect(notices.filter(n => n.includes("has no project marker and exceeded the snapshot cap"))).toHaveLength(1);
+  expect(notices.some(n => n.includes("workspace snapshot inconclusive"))).toBe(false);
+
+  // Second: once container is known markerless+capped, a nested `cd app && printf x > f` still brackets `app`.
+  measured.length = 0;
+  scripted([
+    { tool: "bash", arguments: { command: "ls" } },
+    { tool: "bash", arguments: { command: "cd app && printf x > f" } },
+    ...repeatStep(FULL_BUDGET + 1, done),
+  ]);
+  const writeHistory: Message[] = [{ role: "user", content: "write f in app" }];
+  const writeResult = await runAgentLoop(writeHistory, {
+    cwd: container, scratchRoots: [root], maxSteps: 12, budget: { maxExtensions: 0 },
+    workspaceSnapshot: recordingSnapshotter(measured, dir => dir === container ? { ...WORKSPACE_SNAPSHOT_LIMITS, maxEntries: 1 } : WORKSPACE_SNAPSHOT_LIMITS),
+    tools: { bash: nestedShell },
+  });
+
+  expect(await fs.readFile(path.join(app, "f"), "utf8")).toBe("x");
+  expect(measured).toEqual([container, app, app]);
+  expect(writeResult.done).toBe(false);
+  expect(writeResult.completionRejected).toBe(true);
+  expect(userSaid(writeHistory, "added f (in app)")).toBe(true);
 });

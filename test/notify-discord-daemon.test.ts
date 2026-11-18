@@ -1089,3 +1089,30 @@ test("control off then on during attachment staging cannot execute the earlier r
     expect(cleaned).toBe(true);
   } finally { release.resolve(); f.daemon.stop(); }
 });
+test("DiscordDaemon rejects guild events on DM channels and redacts botToken on outbound messages", async () => {
+  const f = fixture(["alpha"]);
+  f.api.channelType = 1;
+  try {
+    await f.ready();
+    // Spoofed guild_id on a DM channel must be rejected silently.
+    await f.dispatch(f.message("/send alpha ignored", { guild_id: "999999999999999999" }));
+    expect(f.local.instances[0]!.sent).toEqual([]);
+    expect(f.api.sent).toEqual([]);
+
+    // Bot token in outbound session reply is redacted before sendMessage.
+    f.local.instances[0]!.autoRemote = false;
+    const req = f.dispatch(f.message("/send alpha check"));
+    const frame = await f.local.instances[0]!.waitForSend(item => item.type === "remote_request");
+    await f.local.instances[0]!.receive({ type: "ack", reqId: frame.reqId, ok: true });
+    await f.local.instances[0]!.receive({
+      type: "remote_final",
+      sessionId: "alpha",
+      reqId: frame.reqId,
+      ok: true,
+      controlGeneration: 1,
+      text: `secret is ${CONFIG.botToken}`,
+    });
+    await req;
+    expect(f.api.sent.at(-1)?.text).toBe("secret is [REDACTED_TOKEN]");
+  } finally { f.daemon.stop(); }
+});

@@ -996,3 +996,51 @@ test("formatRejectedCompletion pluralizes the correction count and keeps the UNV
     expect(withAnswer.endsWith(stop)).toBe(true);
   }
 });
+test("expanded language/tool verifiers and multiline cd/&& chains are recognized without weakening exclusions", () => {
+  const accepted = [
+    "bun run verify",
+    "npm run type-check",
+    "pnpm format:check",
+    "bun run unit-test",
+    "pyright",
+    "uv run pyright",
+    "biome check .",
+    "npx biome ci .",
+    "oxlint src",
+    "turbo run test",
+    "swift test",
+    "swift build",
+    "flutter test",
+    "dart analyze",
+    "mix test",
+    "zig build test",
+    "ctest",
+    "dotnet build -c Release",
+    "bun test &&\nbun run typecheck",
+    "cd sub\nbun test",
+    "set -e\ncd sub\nbun test",
+  ];
+  expect(accepted.filter(cmd => !isVerificationSignal(cmd))).toEqual([]);
+  expect(parseVerifier("bun test &&\nbun run typecheck")?.trusted).toBe(true);
+  expect(parseVerifier("cd sub\nbun test")?.trusted).toBe(false);
+
+  const rejected = [
+    "biome check --write .",
+    "biome check --apply .",
+    "pyright --createstub foo",
+    "turbo run test --dry",
+    "bun run verify:deploy",
+    "bun test\ntouch marker",
+    "swift test\nrm -rf x",
+    "dotnet build -t",
+  ];
+  expect(rejected.filter(cmd => isVerificationSignal(cmd))).toEqual([]);
+
+  expect(verificationProducedEvidence("swift test | tail", "Executed 4 tests, with 0 failures")).toBe(true);
+  expect(verificationProducedEvidence("swift test", "Executed 0 tests, with 0 failures")).toBe(false);
+  expect(verificationProducedEvidence("flutter test | tail", "+12: All tests passed!")).toBe(true);
+  expect(verificationProducedEvidence("mix test | tail", "8 tests, 0 failures")).toBe(true);
+  expect(verificationProducedEvidence("mix test", "0 tests, 0 failures")).toBe(false);
+  expect(verificationProducedEvidence("ctest | tail", "100% tests passed, 0 tests failed out of 5")).toBe(true);
+  expect(verificationProducedEvidence("ctest", "No tests were found!!!")).toBe(false);
+});

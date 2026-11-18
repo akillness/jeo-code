@@ -310,7 +310,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
 function globalConfigDir(): string {
   return jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".jeo");
 }
-function globalConfigPath(): string {
+export function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
 }
 

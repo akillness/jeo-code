@@ -10,6 +10,7 @@ for (const scenario of [
   { name: "different allowlisted original sender", sender: "owner", parent: "parent", originalAuthor: "teammate", accepted: true },
   { name: "different allowlisted follow-up sender", sender: "teammate", parent: "parent", originalAuthor: "owner", accepted: true },
   { name: "unlisted sender", sender: "other", parent: "parent", originalAuthor: "other", accepted: false },
+  { name: "unlisted original author", sender: "owner", parent: "parent", originalAuthor: "other", accepted: false },
   { name: "unlisted parent", sender: "owner", parent: "untrusted", originalAuthor: "owner", accepted: false },
   { name: "malformed parent", sender: "owner", parent: undefined, originalAuthor: "owner", accepted: false },
 ] as Array<{ name: string; sender: string; parent: string | undefined; originalAuthor: string; accepted: boolean }>) test(`Discord restart restores only authenticated threads: ${scenario.name}`, async () => {
@@ -742,5 +743,54 @@ test("Discord messenger resets reconnect backoff to 5s after an established READ
     socket!.dispatchEvent(ev);
     await fourthAttemptStarted.promise;
     expect(delays).toEqual([5_000, 10_000, 5_000]);
+  } finally { controller.abort(); await running; }
+});
+test("Discord adapter drops non-allowlisted users before delivery/REST lookup and redacts bot token on send", async () => {
+  const socketReady = Promise.withResolvers<void>();
+  const delivered: MessengerMessage[] = [];
+  const postedBodies: string[] = [];
+  const restPaths: string[] = [];
+  let socket: FakeSocket;
+  class FakeSocket extends EventTarget {
+    constructor(_url: string) { super(); socket = this; socketReady.resolve(); }
+    send(_value: string) {}
+    close() {}
+    receive(packet: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(packet) })); }
+  }
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    restPaths.push(url.pathname);
+    if (url.pathname.endsWith("/users/@me")) return Response.json({ id: "bot", bot: true });
+    if (url.pathname.endsWith("/gateway/bot")) return Response.json({ url: "wss://gateway.discord.gg" });
+    if (url.pathname.endsWith("/channels/parent/messages") && init?.method === "POST") {
+      postedBodies.push(String(init.body ?? ""));
+      return Response.json({ id: "sent-1" });
+    }
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  };
+  const adapter = createDiscordAdapter(
+    { tokenEnv: "JEO_DISCORD_BOT_TOKEN", allowedUserIds: ["owner"], allowedChannelIds: ["parent"] },
+    { JEO_DISCORD_BOT_TOKEN: "super-secret-bot-token" },
+    { fetch: fetchImpl, WebSocket: FakeSocket as unknown as typeof WebSocket },
+  );
+  const controller = new AbortController();
+  const running = adapter.start(async message => { delivered.push(message); }, controller.signal);
+  try {
+    await socketReady.promise;
+    socket!.receive({ op: 10, d: { heartbeat_interval: 300000 } });
+    socket!.receive({ op: 0, t: "READY", s: 1, d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } });
+    // Unauthorized user in DM, channel, and thread must be dropped by the adapter before REST/onMessage.
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "m1", channel_id: "dm", author: { id: "stranger" }, content: "hi" } });
+    socket!.receive({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "m2", channel_id: "parent", guild_id: "guild", author: { id: "stranger" }, mentions: [{ id: "bot" }], content: "<@bot> hi" } });
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    expect(delivered).toEqual([]);
+    expect(restPaths.filter(p => p.includes("/channels/"))).toEqual([]);
+    await adapter.send(
+      { platform: "discord", accountId: "bot", channelId: "parent", senderId: "owner", messageId: "m3", text: "hi", direct: false, mentioned: true },
+      "token is super-secret-bot-token!",
+    );
+    expect(postedBodies).toHaveLength(1);
+    expect(postedBodies[0]).not.toContain("super-secret-bot-token");
+    expect(postedBodies[0]).toContain("[REDACTED_TOKEN]");
   } finally { controller.abort(); await running; }
 });

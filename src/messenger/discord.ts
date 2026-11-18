@@ -480,6 +480,7 @@ export function createDiscordAdapter(
 						if (changed) await onThreadLifecycle?.(event);
 					};
 					const deliver = async (message: MessengerMessage): Promise<void> => {
+						if (!config.allowedUserIds.includes(message.senderId) || message.senderId === message.accountId) return;
 						const previous = normalizationTails.get(message.channelId) ?? Promise.resolve();
 						const ready = Promise.withResolvers<void>();
 						const tail = previous.then(() => ready.promise);
@@ -499,7 +500,8 @@ export function createDiscordAdapter(
 							if (thread?.state === "deleted") return;
 							if (thread && lookup.closedParents.has(thread.parentChannelId) && config.allowedUserIds.includes(message.senderId)) return;
 							if (thread?.verified && thread.state === "active" && thread.accountId === message.accountId &&
-								thread.guildId === message.guildId && config.allowedUserIds.includes(message.senderId)) {
+								thread.guildId === message.guildId && config.allowedUserIds.includes(message.senderId) &&
+								allowedThread(message.channelId, thread.parentChannelId)) {
 								await forward({ ...message, threadId: message.channelId, parentChannelId: thread.parentChannelId });
 							} else if (!message.direct && config.allowedUserIds.includes(message.senderId)) {
 								const revision = thread?.revision;
@@ -536,7 +538,9 @@ export function createDiscordAdapter(
 											{ headers: headers() }, signal, deps.fetch,
 										);
 										if (!isRecord(original) || original.id !== originalId || original.channel_id !== channel.parent_id ||
-											!isRecord(original.author) || typeof original.author.id !== "string" || original.author.bot === true || original.webhook_id) return;
+											!isRecord(original.author) || typeof original.author.id !== "string" ||
+											original.author.bot === true || original.webhook_id ||
+											!config.allowedUserIds.includes(original.author.id)) return;
 									}
 									if (signal.aborted || !unchanged()) return;
 									if (lookup.closedParents.has(channel.parent_id)) return;
@@ -782,6 +786,7 @@ export function createDiscordAdapter(
 				}
 			}
 			signal?.throwIfAborted();
+			if (token) text = text.split(token).join("[REDACTED_TOKEN]");
 			const { chunks, needsAttachment } = splitDiscordText(text);
 			for (let index = 0; index < chunks.length + Number(needsAttachment); index++) {
 				for (let attempt = 0; ; attempt++) {

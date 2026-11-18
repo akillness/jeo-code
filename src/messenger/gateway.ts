@@ -237,7 +237,10 @@ export function isMessengerMessageAllowed(message: MessengerMessage, config: Mes
 			message.accountId &&
 			message.channelId &&
 			message.senderId &&
+			message.senderId !== message.accountId &&
 			message.messageId &&
+			!(message.direct && message.guildId) &&
+			!message.text.includes("\u0003") &&
 			(message.text.trim() ||
 				(message.platform === "discord" && config.platforms.discord?.artifactDir && message.attachments?.length)) &&
 			message.text.length <= MAX_MESSAGE_LENGTH &&

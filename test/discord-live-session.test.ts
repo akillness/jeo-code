@@ -716,6 +716,52 @@ describe("live Discord bridge contracts", () => {
 		expect(postedMessages.some(item => item.content === "real-adapter-reply")).toBe(true);
 		expect(h.detached).toBe(true);
 	});
+
+	test("blocks remote slash/bang/Ctrl-C commands, passes trustedContext guardrails, and redacts bot token", async () => {
+		const harness = createFakeAdapterHarness();
+		const trustedContexts: Array<string | undefined> = [];
+		const h = createHostHarness({
+			async runTurn(promptText, signal, trustedContext) {
+				h.prompts.push(promptText);
+				h.turnSignals.push(signal);
+				trustedContexts.push(trustedContext);
+				return { ok: true, text: "leaked secret-live-token here" };
+			},
+		});
+		const bridge = createLiveDiscordBridge(
+			h.host,
+			makeConfig(),
+			{
+				env: { JEO_DISCORD_BOT_TOKEN: "secret-live-token" },
+				createAdapter: () => harness.adapter,
+			},
+			{ acknowledgeFullControl: true },
+		);
+
+		const runPromise = bridge.run();
+		await harness.waitReady();
+
+		for (const [idx, badText] of ["/sandbox status", "!rm -rf", "$deep-interview", "abort\u0003now"].entries()) {
+			await harness.emit(makeMessage({ messageId: `bad-${idx}`, text: badText }));
+		}
+		expect(h.prompts).toEqual([]);
+		expect(harness.sent.slice(0, 3).every(entry => entry.text.includes("Remote commands are disabled"))).toBe(true);
+		// \u0003 is rejected by isMessengerMessageAllowed before reaching reply/host.runTurn.
+		expect(harness.sent).toHaveLength(3);
+
+		await harness.emit(makeMessage({ messageId: "m-ok-guardrail", text: "summarize status" }));
+		expect(h.prompts).toEqual([`[Discord:m-ok-guardrail sender:${USER_ID} channel:${CHANNEL_1}] summarize status`]);
+		expect(trustedContexts[0]).toContain("Discord live session guardrail");
+		expect(trustedContexts[0]).toContain(USER_ID);
+		expect(harness.sent.at(-1)?.text).toBe("leaked [REDACTED_TOKEN] here");
+
+		bridge.setRelayDestination(CHANNEL_2);
+		await bridge.relayLocalOutput("local secret-live-token output");
+		expect(harness.sent.at(-1)?.text).toBe("local [REDACTED_TOKEN] output");
+
+		await bridge.close();
+		await runPromise;
+	});
 });
 
 describe("default Discord setup and messenger setup command", () => {

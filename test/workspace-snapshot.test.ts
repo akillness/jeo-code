@@ -10,9 +10,9 @@ import {
   formatSnapshotChange,
   isSharedScratchRoot,
   snapshotChangedPaths,
+  snapshotGitWorkspace,
   snapshotWorkspace,
   workspaceSnapshotChanged,
-  type SnapshotPathChange,
   type WorkspaceSnapshot,
   type WorkspaceSnapshotLimits,
 } from "../src/agent/workspace-snapshot";
@@ -200,7 +200,9 @@ test("an untouched workspace snapshots identically, and renames, deletes and emp
 });
 
 test("excluded directories at any depth do not change the snapshot", async () => {
-  expect([...WORKSPACE_SNAPSHOT_EXCLUDED_DIRS].sort()).toEqual([".git", ".jeo", "node_modules"]);
+  for (const name of [".git", ".jeo", "node_modules", ".venv", "__pycache__", "target", ".next", "Library", ".gradle", "DerivedData"]) {
+    expect(WORKSPACE_SNAPSHOT_EXCLUDED_DIRS.has(name)).toBe(true);
+  }
   // Every non-excluded parent exists before the first snapshot; only excluded dirs are created later.
   await fs.mkdir(path.join(dir, "sub", "deeper"), { recursive: true });
   await fs.mkdir(path.join(dir, ".git"));
@@ -214,10 +216,14 @@ test("excluded directories at any depth do not change the snapshot", async () =>
   await write("sub/node_modules/y.js", "y");
   await write("sub/deeper/.jeo/artifacts/out.txt", "artifact");
   await write("sub/deeper/.git/HEAD", "ref: refs/heads/main");
+  await write(".venv/lib/python3.12/site.py", "pass");
+  await write("sub/__pycache__/mod.cpython-312.pyc", "pyc");
+  await write("target/debug/deps/lib.rlib", "rlib");
+  await write(".next/cache/webpack/data.bin", "bin");
+  await write("Library/ArtifactDB", "unity");
   const after = await snap(before.startedAtMs);
   expect(workspaceSnapshotChanged(before, after)).toBe(false);
   expect(after.entries).toBe(before.entries);
-
   // Exclusions match directory names only: a `.git` FILE (worktree pointer) is a normal file.
   await fs.rm(path.join(dir, "sub/deeper/.git"), { recursive: true });
   const withoutNestedGit = await snap(before.startedAtMs);
@@ -1092,4 +1098,80 @@ test("isSharedScratchRoot: an unresolvable cwd never throws and falls back to it
   expect(isSharedScratchRoot(dangling)).toBe(false);
   expect(isSharedScratchRoot(loopA)).toBe(false);
   expect(isSharedScratchRoot("bad\0path")).toBe(false);
+});
+// ---- snapshotGitWorkspace fallback ----------------------------------------------------------------
+
+function gitRun(cwd: string, ...args: string[]): void {
+  const res = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (res.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${res.stderr.toString()}`);
+  }
+}
+
+test("snapshotGitWorkspace returns null outside a Git worktree", async () => {
+  await write("plain.txt", "hello");
+  expect(await snapshotGitWorkspace(dir)).toBeNull();
+});
+
+test("snapshotGitWorkspace detects clean vs added, modified (including racy same-size), deleted, untracked-dir, and excluded writes", async () => {
+  gitRun(dir, "init", "-q");
+  gitRun(dir, "config", "user.email", "test@example.com");
+  gitRun(dir, "config", "user.name", "Test User");
+  await write("tracked.txt", "aaaa");
+  await write("to-delete.txt", "bye");
+  gitRun(dir, "add", ".");
+  gitRun(dir, "commit", "-q", "-m", "init");
+
+  // Clean repo: consecutive snapshots agree and ignore excluded dirs.
+  const base = await snapshotGitWorkspace(dir);
+  if (!base) throw new Error("expected git snapshot");
+  expect(base.mode).toBe("git");
+
+  await write(".jeo/state/x.json", "{}");
+  await write(".venv/lib/site.py", "pass");
+  await write("node_modules/pkg/index.js", "module.exports = 1;");
+  const afterExcluded = await snapshotGitWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, base.startedAtMs);
+  if (!afterExcluded) throw new Error("expected git snapshot");
+  expect(workspaceSnapshotChanged(base, afterExcluded)).toBe(false);
+  expect(snapshotChangedPaths(base, afterExcluded)).toEqual(NO_CHANGE);
+
+  // Adding an untracked file and untracked directory shows up in path diff.
+  await write("added.txt", "hi");
+  await write("untracked-dir/nested.txt", "nested");
+  const afterAdd = await snapshotGitWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, base.startedAtMs);
+  if (!afterAdd) throw new Error("expected git snapshot");
+  expect(workspaceSnapshotChanged(base, afterAdd)).toBe(true);
+  expect(snapshotChangedPaths(base, afterAdd)).toEqual({
+    added: ["added.txt", "untracked-dir", "untracked-dir/nested.txt"],
+    removed: [],
+    modified: [],
+  });
+
+  // Modifying a tracked file, then doing a same-size rewrite inside the racy window, still flips the digest.
+  await write("tracked.txt", "bbbb");
+  const dirty1 = await snapshotGitWorkspace(dir);
+  if (!dirty1) throw new Error("expected git snapshot");
+  await write("tracked.txt", "cccc");
+  const dirty2 = await snapshotGitWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, dirty1.startedAtMs);
+  if (!dirty2) throw new Error("expected git snapshot");
+  expect(workspaceSnapshotChanged(dirty1, dirty2)).toBe(true);
+  expect(snapshotChangedPaths(dirty1, dirty2)).toEqual({ added: [], removed: [], modified: ["tracked.txt"] });
+
+  // Deleting a tracked file shows up.
+  await fs.rm(path.join(dir, "to-delete.txt"));
+  const afterDelete = await snapshotGitWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, dirty2.startedAtMs);
+  if (!afterDelete) throw new Error("expected git snapshot");
+  expect(workspaceSnapshotChanged(dirty2, afterDelete)).toBe(true);
+  expect(snapshotChangedPaths(dirty2, afterDelete)?.added).toEqual(["to-delete.txt"]);
+
+  // An empty commit (moving HEAD while working tree is clean) still changes the snapshot.
+  gitRun(dir, "add", ".");
+  gitRun(dir, "commit", "-q", "-m", "clean-head");
+  const cleanBefore = await snapshotGitWorkspace(dir);
+  if (!cleanBefore) throw new Error("expected git snapshot");
+  gitRun(dir, "commit", "--allow-empty", "-q", "-m", "empty-commit");
+  const cleanAfter = await snapshotGitWorkspace(dir, WORKSPACE_SNAPSHOT_LIMITS, cleanBefore.startedAtMs);
+  if (!cleanAfter) throw new Error("expected git snapshot");
+  expect(workspaceSnapshotChanged(cleanBefore, cleanAfter)).toBe(true);
+  expect(snapshotChangedPaths(cleanBefore, cleanAfter)).toEqual({ added: [], removed: [], modified: [".git/HEAD"] });
 });

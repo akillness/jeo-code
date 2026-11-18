@@ -150,7 +150,7 @@ function taskCore(head: string, spec: TaskSpec, primary: readonly string[]): str
 }
 const PRETTIER = String.raw`(?:(?:npx|bunx)\s+|(?:pnpm|npm|yarn|bun)\s+(?:exec|x|dlx)\s+)?prettier`;
 const TEST_CORES: readonly string[] = [
-  String.raw`${PM}\s+(?:test|tests|spec|vitest|jest)(?::[\w-]+)?`,
+  String.raw`${PM}\s+(?:test|tests|spec|vitest|jest|unit-test|e2e)(?::[\w-]+)?`,
   String.raw`(?:npx|bunx)\s+(?:vitest|jest|pytest)`,
   String.raw`(?:(?:npx|bunx)|(?:pnpm|npm|yarn|bun)\s+(?:exec|x|dlx))\s+playwright\s+test`,
   String.raw`(?:vitest|jest|pytest|phpunit|playwright\s+test)`,
@@ -160,17 +160,26 @@ const TEST_CORES: readonly string[] = [
   String.raw`deno\s+test`,
   String.raw`cargo\s+test`,
   String.raw`go\s+test`,
+  String.raw`swift\s+test`,
+  String.raw`(?:flutter|dart)\s+test`,
+  String.raw`mix\s+test`,
+  String.raw`ctest`,
 ];
 const SILENT_CORES: readonly string[] = [
-  String.raw`${PM}\s+(?:typecheck|lint|build|check|tsc|eslint)(?::[\w-]+)?`,
-  String.raw`(?:npx|bunx)\s+(?:tsc|eslint)`,
-  String.raw`(?:tsc|eslint|mypy|flake8|staticcheck|ruff\s+check|golangci-lint\s+run)`,
-  String.raw`(?:python(?:3(?:\.\d+)?)?|uv)\s+-m\s+(?:py_compile|mypy|flake8|ruff\s+check)`,
+  String.raw`${PM}\s+(?:typecheck|type-check|lint|build|check|verify|tsc|eslint|format-check|format:check)(?::[\w-]+)?`,
+  String.raw`(?:npx|bunx)\s+(?:tsc|eslint|pyright|oxlint)`,
+  String.raw`(?:(?:npx|bunx)|(?:pnpm|npm|yarn|bun)\s+(?:exec|x|dlx))\s+(?:pyright|oxlint|biome\s+(?:check|ci)|turbo\s+(?:run\s+)?(?:test|tests|typecheck|type-check|lint|build|check|verify))`,
+  String.raw`(?:tsc|eslint|mypy|flake8|staticcheck|pyright|oxlint|ruff\s+check|golangci-lint\s+run|biome\s+(?:check|ci))`,
+  String.raw`turbo\s+(?:run\s+)?(?:test|tests|typecheck|type-check|lint|build|check|verify)`,
+  String.raw`(?:python(?:3(?:\.\d+)?)?|uv)\s+-m\s+(?:py_compile|mypy|flake8|pyright|ruff\s+check)`,
   String.raw`node\s+(?:--check|-c)`,
   String.raw`deno\s+(?:check|lint)`,
   String.raw`cargo\s+(?:check|build|clippy)`,
   String.raw`cargo\s+fmt(?=(?:\s+\S+)*\s+--check(?:\s|$))`,
   String.raw`go\s+(?:vet|build)`,
+  String.raw`swift\s+build`,
+  String.raw`(?:flutter|dart)\s+analyze`,
+  String.raw`zig\s+(?:test|build\s+test)`,
   String.raw`${PRETTIER}(?=(?:\s+\S+)*\s+(?:--check|-c|--list-different|-l)(?:\s|$))`,
 ];
 // Task-runner cores carry their own closed tail (see taskCore); VERIFY_SIGNAL_RE must not append ARG to them.
@@ -186,6 +195,7 @@ const STRICT_SILENT_CORES: readonly string[] = [
   taskCore("make", MAKE_SPEC, BUILD_SILENT_TARGETS),
   taskCore("just", JUST_SPEC, BUILD_SILENT_TARGETS),
   taskCore("(?:gradle|gradlew)", GRADLE_SPEC, ["check", "build"]),
+  String.raw`dotnet\s+build(?:\s+(?:${taskFlag(DOTNET_SPEC)}|${DOTNET_PROJECT}))*`,
 ];
 // Loose cores match case-insensitively; the task-runner cores stay case-sensitive because their flags differ by case
 // (`mvn -B` batch vs `-b` builder, `-P` profile vs `-p`, `make -C` vs `-c`): `i` would let one swallow the target.
@@ -194,8 +204,8 @@ export const VERIFY_SIGNAL_RE = new RegExp(`^(?:(?i:${[...TEST_CORES, ...SILENT_
 /** Cores that run tests and print a pass summary: the only ones whose output can stand in for a trustworthy exit status. */
 const TEST_CORE_RE = new RegExp(`^(?:(?i:${TEST_CORES.join("|")})${ARG}|${STRICT_TEST_CORES.join("|")})$`);
 // `-x test` (gradle skip) and `-u` (jest update) are lowercase-only: mvn's `-X` (debug) and `-U` (update dependencies) are not them.
-const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--co|--show-?config|--show-settings|--show-files|--init|--dry-run|--no-run|--passWithNoTests|--if-present|-DskipTests|-Dmaven\.test\.skip|-Dmaven\.test\.failure\.ignore|-Dtest\.failure\.ignore|-DfailIfNoTests|-Dsurefire\.failIfNoSpecifiedTests|(?-i:-x)\s+test)(?=$|\s|=)/i;
-const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--fix-only|--unsafe-fixes|--add-noqa|--install-types|-fix|--write|--update|(?-i:-u)|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
+const NONEXECUTING_VERIFY_FLAG_RE = /(?:^|\s)(?:--help|-h|--version|-version|--list(?:-tests|Tests)?|-list|--collect-only|--co|--show-?config|--show-settings|--show-files|--init|--dry(?:=\S+)?|--dry-run|--no-run|--passWithNoTests|--if-present|-DskipTests|-Dmaven\.test\.skip|-Dmaven\.test\.failure\.ignore|-Dtest\.failure\.ignore|-DfailIfNoTests|-Dsurefire\.failIfNoSpecifiedTests|(?-i:-x)\s+test)(?=$|\s|=)/i;
+const MUTATING_VERIFY_FLAG_RE = /(?:^|\s)(?:--fix|--fix-only|--unsafe-fixes|--add-noqa|--install-types|--apply(?:-unsafe)?|--createstub|-fix|--write|--update|(?-i:-u)|--update[-_]snapshots?|--updateSnapshots?|--snapshot[-_]updates?)(?=$|\s|=)/i;
 // Judged on the first script token after any manager options, so `pnpm --filter web test:fix` is still caught.
 const MUTATING_VERIFY_SCRIPT_RE = /^(?:bun|npm|pnpm|yarn)\b(?:\s+\S+)*?\s+[\w-]+:[^\s]*(?:fix|update|write|deploy|publish)[^\s]*/i;
 // Any short-flag cluster containing `w` (`-w`, `-cw`, `-wc`) writes files; `--write` is caught by MUTATING_VERIFY_FLAG_RE.
@@ -307,9 +317,19 @@ function splitShell(command: string): { stages: string[]; ops: string[] } | null
   let quote = "";
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    if (ch === "$" || ch === "`" || ch === "\\" || ch === "\n" || ch === "\r") return null;
+    if (ch === "$" || ch === "`" || ch === "\\") return null;
     if (quote) {
+      if (ch === "\n" || ch === "\r") return null;
       if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") {
+      const stage = command.slice(start, i).trim();
+      if (stage) {
+        stages.push(stage);
+        ops.push(";");
+      }
+      start = i + 1;
       continue;
     }
     if (ch === '"' || ch === "'") { quote = ch; continue; }
@@ -330,7 +350,6 @@ function splitShell(command: string): { stages: string[]; ops: string[] } | null
   stages.push(command.slice(start).trim());
   return stages.some(stage => !stage) ? null : { stages, ops };
 }
-
 function parseChain(command: string, nested: boolean): Chain | null {
   const shell = splitShell(command);
   if (!shell) return null;
@@ -442,6 +461,11 @@ const PASS_LINE_RES: readonly RegExp[] = [
   /Tests run:\s*[1-9]\d*,\s*Failures:\s*0,\s*Errors:\s*0/, // maven
   /^\s*Passed!.*\bPassed:\s*[1-9]\d*/, // dotnet
   /^OK \([1-9]\d* tests?,/, // phpunit
+  /^[ \t]*Executed [1-9]\d* tests?, with 0 failures\b/, // swift xctest
+  /^[ \t]*(?:\u2714|✔)?[ \t]*Test run with [1-9]\d* tests? passed\b/, // swift testing
+  /^\+[1-9]\d*: All tests passed!/, // flutter / dart
+  /^[ \t]*[1-9]\d* tests?, 0 failures\b/, // mix test
+  /^100% tests passed, 0 tests failed out of [1-9]\d*/, // ctest
 ];
 const FAILURE_LINE_RES: readonly RegExp[] = [
   /(?:^|[^\d])[1-9]\d*\s+(?:fail(?:ed|ing|ures?)?|errors?)\b/i,
@@ -463,7 +487,7 @@ const FAILURE_LINE_RES: readonly RegExp[] = [
 /** A line a runner prints for a test that PASSED: its title may legitimately mention "errors" or "failed". */
 const PASSED_TITLE_RE = /^\s*(?:\((?:pass|skip|todo)\)|[\u2713\u2714\u221a])/;
 /** Explicit "nothing ran" output; only consulted when no positive pass summary is present. */
-const NO_TESTS_RE = /(?:^|[^\d])0 pass(?:ed|ing)?\b|(?:^|[^\d])0 examples?\b|\bno tests? (?:ran|found|to run|executed)\b|\bno test files found\b|\bNo test is available\b|\bcollected 0 items\b|\bRan 0 tests\b|\bTests run:\s*0\b|(?:\u2139|#)\s*pass\s+0\b/i;
+const NO_TESTS_RE = /(?:^|[^\d])0 pass(?:ed|ing)?\b|(?:^|[^\d])0 examples?\b|\bno tests? (?:ran|found|to run|executed)\b|\bno test files found\b|\bNo test is available\b|\bcollected 0 items\b|\bRan 0 tests\b|\bTests run:\s*0\b|(?:\u2139|#)\s*pass\s+0\b|\bExecuted 0 tests\b|\b0 tests, 0 failures\b|\bNo tests were found\b/i;
 const ANSI_RE = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
 
 function hasPassSummary(text: string): boolean {

@@ -60,8 +60,16 @@ export const WORKSPACE_SNAPSHOT_LIMITS: Readonly<WorkspaceSnapshotLimits> = Obje
   racyMaxTotalBytes: 8 * 1024 * 1024,
 });
 
-/** Directory NAMES skipped at any depth (A2): exactly these three. */
-export const WORKSPACE_SNAPSHOT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([".git", ".jeo", "node_modules"]);
+/** Directory NAMES skipped at any depth: VCS metadata, agent runtime state, dependency stores, and build caches. */
+export const WORKSPACE_SNAPSHOT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([
+  ".git", ".hg", ".svn",
+  ".jeo", ".omc", ".omx", ".gjc",
+  "node_modules", ".pnpm-store", ".yarn", ".venv", "venv", "Pods", ".dart_tool", ".pub-cache",
+  "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
+  ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache", ".cache",
+  ".gradle", ".zig-cache", "DerivedData", ".angular", ".vite", "target",
+  "Library", "Temp", "Obj",
+]);
 
 export type WorkspaceSnapshot =
   | {
@@ -71,9 +79,10 @@ export type WorkspaceSnapshot =
       /** Relative path -> entry fingerprint, so a mismatch can name WHICH paths changed
        *  (`snapshotChangedPaths`). Optional so hand-built snapshots and mocks stay valid. */
       paths?: ReadonlyMap<string, bigint>;
+      /** Measurement strategy that produced this snapshot (internal fast-path hint). */
+      mode?: "walk" | "git";
     }
   | { ok: false; reason: "error" | "cap"; detail: string };
-
 /** `racySinceMs`: anchor for the racy content-hash predicate. The engine passes the BEFORE snapshot's
  *  `startedAtMs` to the AFTER snapshot so both sides hash exactly the same set of unchanged files. */
 export type WorkspaceSnapshotter = (cwd: string, racySinceMs?: number) => Promise<WorkspaceSnapshot>;
@@ -106,6 +115,31 @@ interface Dir { rel: string; abs: string }
 interface Leaf extends Dir { dirent: Dirent }
 /** A racy file waiting for the post-walk hashing pass. */
 interface RacyCandidate { leaf: Leaf; stat: BigIntStats; entry: string; hashable: boolean }
+/** Bounded content hash of a regular file. `"gone"`: vanished before open. `"unhashed"`: any other failure. */
+async function racyHashFile(abs: string, stat: BigIntStats): Promise<bigint | "gone" | "unhashed"> {
+  const size = Number(stat.size);
+  let handle: FileHandle;
+  try { handle = await fs.open(abs, RACY_OPEN_FLAGS); }
+  catch (error) { return vanished(error) ? "gone" : "unhashed"; }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev) return "unhashed";
+    // One spare byte detects growth after lstat without reading past the cap.
+    const buffer = new Uint8Array(size + 1);
+    let read = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+      if (read > size) return "unhashed";
+    }
+    return Bun.hash.wyhash(buffer.subarray(0, read));
+  } catch {
+    return "unhashed";
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
 
 export async function snapshotWorkspace(
   cwd: string,
@@ -132,34 +166,6 @@ export async function snapshotWorkspace(
     if (entries > limits.maxEntries) stop("cap", `workspace has more than ${limits.maxEntries} entries`);
     if (performance.now() - startedAt > limits.maxMs) stop("cap", `workspace snapshot exceeded ${limits.maxMs} ms`);
   };
-
-  /** Bounded content hash of a regular file. `"gone"`: vanished before it could be opened. `"unhashed"`:
-   *  any other failure (permissions, swapped inode, grew or errored while read); the caller degrades. */
-  const racyHash = async (leaf: Leaf, stat: BigIntStats): Promise<bigint | "gone" | "unhashed"> => {
-    const size = Number(stat.size);
-    let handle: FileHandle;
-    try { handle = await fs.open(leaf.abs, RACY_OPEN_FLAGS); }
-    catch (error) { return vanished(error) ? "gone" : "unhashed"; }
-    try {
-      const opened = await handle.stat({ bigint: true });
-      if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev) return "unhashed";
-      // One spare byte detects growth after lstat without reading past the cap.
-      const buffer = new Uint8Array(size + 1);
-      let read = 0;
-      for (;;) {
-        const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
-        if (bytesRead === 0) break;
-        read += bytesRead;
-        if (read > size) return "unhashed";
-      }
-      return Bun.hash.wyhash(buffer.subarray(0, read));
-    } catch {
-      return "unhashed";
-    } finally {
-      await handle.close().catch(() => {});
-    }
-  };
-
   /** Racy files are collected during the walk and hashed afterwards in path order (see header). */
   const racy: RacyCandidate[] = [];
   const hashRacy = async (): Promise<void> => {
@@ -172,7 +178,7 @@ export async function snapshotWorkspace(
     }
     await chunked(racy, async candidate => {
       checkCaps();
-      const hash = candidate.hashable ? await racyHash(candidate.leaf, candidate.stat) : "unhashed";
+      const hash = candidate.hashable ? await racyHashFile(candidate.leaf.abs, candidate.stat) : "unhashed";
       if (hash === "gone") { entries -= 1; return; }
       if (hash === "unhashed") {
         degraded += 1;
@@ -274,10 +280,197 @@ export async function snapshotWorkspace(
     return { ok: false, reason: "error", detail: errorMessage(error) };
   }
 }
+async function runGit(cwd: string, args: readonly string[], timeoutMs: number): Promise<{ exitCode: number; stdout: string } | null> {
+  if (timeoutMs <= 0) return null;
+  let proc: ReturnType<typeof Bun.spawn> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    proc = Bun.spawn(["git", "--no-optional-locks", ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const outPromise = proc.stdout && typeof proc.stdout !== "number"
+      ? new Response(proc.stdout).text()
+      : Promise.resolve("");
+    const result = await Promise.race([
+      Promise.all([proc.exited, outPromise]).then(([exitCode, stdout]) => ({ exitCode, stdout })),
+      new Promise<null>(resolve => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          try { proc?.kill(); } catch { /* ignore */ }
+          resolve(null);
+        }, timeoutMs);
+      }),
+    ]);
+    return timedOut ? null : result;
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
-/** Production default: default limits, forwards the racy anchor. */
-export const defaultWorkspaceSnapshotter: WorkspaceSnapshotter = (cwd, since) => snapshotWorkspace(cwd, WORKSPACE_SNAPSHOT_LIMITS, since);
+/**
+ * Lightweight Git working-tree snapshot fallback for repositories whose full walk hits the entry/time cap.
+ * Uses `git status --porcelain=v1 -z` (scoped to `cwd`), `HEAD` SHA, and `lstat`/racy content hashing on
+ * only the reported dirty/untracked paths. Returns null when `cwd` is not a Git worktree or Git fails/caps.
+ */
+export async function snapshotGitWorkspace(
+  cwd: string,
+  limits: WorkspaceSnapshotLimits = WORKSPACE_SNAPSHOT_LIMITS,
+  racySinceMs?: number,
+): Promise<Extract<WorkspaceSnapshot, { ok: true }> | null> {
+  const startedAtMs = Date.now();
+  const startedAt = performance.now();
+  const anchorMs = racySinceMs !== undefined && Number.isFinite(racySinceMs) ? racySinceMs : startedAtMs;
+  const racyThresholdNs = BigInt(Math.floor(anchorMs - limits.racyWindowMs)) * 1_000_000n;
+  const remainingMs = (): number => Math.max(0, limits.maxMs - (performance.now() - startedAt));
 
+  let cwdReal: string;
+  try {
+    const root = await fs.stat(cwd, { bigint: true });
+    if (!root.isDirectory()) return null;
+    cwdReal = realpathSync(cwd);
+  } catch {
+    return null;
+  }
+
+  const topRes = await runGit(cwdReal, ["rev-parse", "--show-toplevel"], remainingMs());
+  if (!topRes || topRes.exitCode !== 0) return null;
+  let topReal: string;
+  try { topReal = realpathSync(topRes.stdout.trim()); } catch { return null; }
+  const relFromTop = path.relative(topReal, cwdReal);
+  if (relFromTop === ".." || relFromTop.startsWith(`..${path.sep}`) || path.isAbsolute(relFromTop)) return null;
+
+  const [headRes, statusRes] = await Promise.all([
+    runGit(cwdReal, ["rev-parse", "-q", "--verify", "HEAD"], remainingMs()),
+    runGit(cwdReal, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", "."], remainingMs()),
+  ]);
+  if (!statusRes || statusRes.exitCode !== 0 || remainingMs() <= 0) return null;
+
+  let digest = 0n;
+  let entries = 0;
+  let degraded = 0;
+  let racyBytes = 0;
+  const paths = new Map<string, bigint>();
+  const record = (entry: string, rel: string): void => {
+    const hash = BigInt(Bun.hash.wyhash(entry));
+    if (!paths.has(rel)) entries += 1;
+    digest = (digest - (paths.get(rel) ?? 0n) + hash) & DIGEST_MASK;
+    paths.set(rel, hash);
+  };
+
+  const headSha = headRes && headRes.exitCode === 0 ? headRes.stdout.trim() : "UNBORN";
+  record(`head:${headSha}`, ".git/HEAD");
+
+  interface DirtyItem { xy: string; rel: string; abs: string }
+  const items: DirtyItem[] = [];
+  const raw = statusRes.stdout;
+  let idx = 0;
+  while (idx < raw.length) {
+    const nul = raw.indexOf("\0", idx);
+    if (nul === -1) break;
+    const rec = raw.slice(idx, nul);
+    idx = nul + 1;
+    if (rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    if (xy[0] === "R" || xy[0] === "C") {
+      const oldNul = raw.indexOf("\0", idx);
+      if (oldNul === -1) break;
+      idx = oldNul + 1;
+    }
+    const repoRel = rec.slice(3);
+    const abs = path.resolve(topReal, repoRel);
+    const rel = path.relative(cwdReal, abs).split(path.sep).join("/");
+    if (!rel || rel === ".." || rel.startsWith("../")) continue;
+    if (rel.split("/").some(seg => WORKSPACE_SNAPSHOT_EXCLUDED_DIRS.has(seg))) continue;
+    items.push({ xy, rel, abs });
+    if (items.length > limits.maxEntries) return null;
+  }
+
+  for (const item of items) {
+    if (entries > limits.maxEntries || remainingMs() <= 0) return null;
+    let stat: BigIntStats;
+    try {
+      stat = await fs.lstat(item.abs, { bigint: true });
+    } catch (error) {
+      if (vanished(error)) {
+        record(`g:${item.rel}:${item.xy}:deleted`, item.rel);
+        continue;
+      }
+      return null;
+    }
+    if (stat.isDirectory()) {
+      if (item.xy === "??") {
+        const subSnap = await snapshotWorkspace(
+          item.abs,
+          {
+            ...limits,
+            maxEntries: Math.max(0, limits.maxEntries - entries),
+            maxMs: remainingMs(),
+          },
+          anchorMs,
+        );
+        if (!subSnap.ok) return null;
+        record(`d:${item.rel}`, item.rel);
+        degraded += subSnap.degraded ?? 0;
+        if (subSnap.paths) {
+          for (const [subRel, subHash] of subSnap.paths) {
+            if (entries > limits.maxEntries) return null;
+            const fullRel = `${item.rel}/${subRel}`;
+            record(`gsub:${fullRel}:${subHash}`, fullRel);
+          }
+        }
+      } else {
+        record(`g:${item.rel}:${item.xy}:dir:${stat.ino}`, item.rel);
+      }
+      continue;
+    }
+    const kind = stat.isSymbolicLink() ? "l" : stat.isFile() ? "f" : "o";
+    let entry = `g:${kind}:${item.rel}:${item.xy}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`;
+    if (kind === "l") {
+      try { entry += `:t${await fs.readlink(item.abs)}`; }
+      catch (error) {
+        if (vanished(error)) {
+          record(`g:${item.rel}:${item.xy}:deleted`, item.rel);
+          continue;
+        }
+        return null;
+      }
+    } else if (kind === "f" && stat.mtimeNs >= racyThresholdNs) {
+      const size = Number(stat.size);
+      const canHash = size <= limits.racyMaxFileBytes && racyBytes + size <= limits.racyMaxTotalBytes;
+      if (canHash) racyBytes += size;
+      const hash = canHash ? await racyHashFile(item.abs, stat) : "unhashed";
+      if (hash === "gone") {
+        record(`g:${item.rel}:${item.xy}:deleted`, item.rel);
+        continue;
+      }
+      if (hash === "unhashed") {
+        degraded += 1;
+        entry += ":x";
+      } else {
+        entry += `:h${hash}`;
+      }
+    }
+    record(entry, item.rel);
+  }
+
+  return { ok: true, digest, entries, degraded, elapsedMs: performance.now() - startedAt, startedAtMs, paths, mode: "git" };
+}
+
+/** Production default: default limits, forwards the racy anchor; falls back to Git status when a Git repo hits cap. */
+export const defaultWorkspaceSnapshotter: WorkspaceSnapshotter = async (cwd, since) => {
+  const snap = await snapshotWorkspace(cwd, WORKSPACE_SNAPSHOT_LIMITS, since);
+  if (!snap.ok && snap.reason === "cap") {
+    const gitSnap = await snapshotGitWorkspace(cwd, WORKSPACE_SNAPSHOT_LIMITS, since);
+    if (gitSnap) return gitSnap;
+  }
+  return snap;
+};
 /** Pure: true when either side failed, or digest/entry count differ. */
 export function workspaceSnapshotChanged(before: WorkspaceSnapshot, after: WorkspaceSnapshot): boolean {
   if (!before.ok || !after.ok) return true;

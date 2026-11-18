@@ -415,10 +415,11 @@ export class DiscordDaemon {
   private emit(text: string, sessionId?: string, destination = this.config.channelId, relayVersion?: number, guard?: () => boolean): Promise<boolean> {
     if (this.stopped || this.queued >= 128) { this.deps.onError?.("Discord outbound queue full or stopped"); return Promise.resolve(false); }
     this.queued++;
+    const safeText = this.config.botToken ? text.split(this.config.botToken).join("[REDACTED_TOKEN]") : text;
     const eligible = () => !this.stopped && (!guard || guard()) && (relayVersion === undefined || (!!sessionId && this.relayVersions.get(sessionId) === relayVersion && this.relayDestinations.get(sessionId) === destination));
     const result = this.outgoing.then(async () => {
       if (!eligible()) return false;
-      const messages = await this.api.sendMessage(destination, text, eligible);
+      const messages = await this.api.sendMessage(destination, safeText, eligible);
       this.rememberReplies(messages, sessionId);
       return true;
     }).catch(error => {
@@ -504,6 +505,7 @@ export class DiscordDaemon {
         typeof message.author.id !== "string" || !this.allowed.has(message.author.id) || message.author.id === this.botId ||
         message.author.bot === true || (message.author.bot !== undefined && message.author.bot !== false) ||
         "webhook_id" in message || ![0, 19].includes(message.type as number) ||
+        (this.channelType === 1 && message.guild_id !== undefined) ||
         typeof message.content !== "string" || (!message.content.trim() && !(Array.isArray(message.attachments) && message.attachments.length)) || message.content.length > 4_000 || this.seen.has(message.id)) return;
     const channelId = message.channel_id;
     const messageId = message.id;

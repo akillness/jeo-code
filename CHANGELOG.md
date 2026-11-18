@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.12.58] - 2026-11-17
+_Add cross-platform Perplexity web search (`web_search`) and OAuth/API-key/cookie authentication (`jeo auth login perplexity`, `jeo auth sync`) with parity to `jeopi`._
+
+### Added
+- **Perplexity `web_search` provider (`src/agent/web-search.ts`, `test/web-search.test.ts`):** Support `PERPLEXITY_COOKIES`, Perplexity OAuth / macOS `ai.perplexity.mac` app JWT (`__Secure-next-auth.session-token` via `perplexity_ask` SSE with `skip_search_enabled: false` and `always_search_override: true`), direct `PERPLEXITY_API_KEY` / `PPLX_API_KEY` (`api.perplexity.ai/chat/completions`, `sonar-pro`), explicit-only OpenRouter (`perplexity/sonar-pro`) and anonymous fallback, plus automatic failover to DuckDuckGo when unauthenticated `perplexity_ask` returns 0 sources or a sign-up prompt.
+- **Cross-platform Perplexity OAuth, config & `jeopi` sync (`src/auth/flows/perplexity.ts`, `src/auth/flows/index.ts`, `src/auth/oauth.ts`, `src/auth/storage.ts`, `src/auth/shared-pool-bridge.ts`, `src/auth/types.ts`, `src/commands/auth.ts`, `src/agent/config-schema.ts`, `src/agent/state.ts`, `test/perplexity-auth.test.ts`):** Register `perplexity` in `OAUTH_PROVIDERS` and `OAUTH_FLOW_REGISTRY` with macOS app token extraction (`darwin` only) and cross-platform Windows/Linux HTTP email OTP login (`perplexity.ai/api/auth`), add `providers.perplexity` and `oauth.perplexity` config/env support, and sync Perplexity OAuth accounts via `jeo auth sync`.
+
 ## [0.12.57] - 2026-11-17
 _Fix Antigravity Cloud Code Assist Claude/Gemini execution (tool schema `anyOf` flattening, model-scoped cooldowns without Gemini OAuth hijacking, live model catalog/retirements, `MALFORMED_FUNCTION_CALL`/omitted-`finishReason` JSON tool-call salvage), and keep PromptRouter routing OFF by default when assigning tier models._
 

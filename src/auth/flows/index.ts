@@ -6,6 +6,7 @@ import { loginOpenAI, refreshOpenAIToken } from "./openai";
 import { loginGoogle, refreshGoogleToken } from "./google";
 import { loginAntigravity, refreshAntigravityToken } from "./antigravity";
 import { loginKimi, refreshKimiToken } from "./kimi";
+import { loginPerplexity, refreshPerplexityToken } from "./perplexity";
 
 export interface OAuthFlow {
   readonly provider: OAuthProvider;
@@ -61,6 +62,14 @@ export const OAUTH_FLOW_REGISTRY: Record<OAuthProvider, OAuthFlow> = {
     verifiedEndToEnd: true,
     note: "Device-code OAuth (auth.kimi.com); the token is served via the Anthropic-compatible endpoint at api.kimi.com/coding. A KIMI_API_KEY, when set and no OAuth is stored, uses the OpenAI-compatible api.moonshot.ai/v1.",
   },
+  perplexity: {
+    provider: "perplexity",
+    label: "Perplexity (Pro/Max)",
+    login: loginPerplexity,
+    refresh: refreshPerplexityToken,
+    verifiedEndToEnd: true,
+    note: "Perplexity Pro/Max OAuth via macOS native app token (ai.perplexity.mac) or email OTP (perplexity.ai); used by web_search.",
+  },
 };
 
 export { loginAnthropic, refreshAnthropicToken } from "./anthropic";
@@ -68,3 +77,4 @@ export { loginOpenAI, refreshOpenAIToken } from "./openai";
 export { loginGoogle, refreshGoogleToken } from "./google";
 export { loginAntigravity, refreshAntigravityToken, discoverAntigravityProjectId, antigravityClientSecret } from "./antigravity";
 export { loginKimi, refreshKimiToken, getKimiCommonHeaders } from "./kimi";
+export { loginPerplexity, refreshPerplexityToken, perplexityJwtExpiryMs, extractPerplexityMacAppToken } from "./perplexity";

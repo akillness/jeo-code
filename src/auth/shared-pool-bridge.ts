@@ -26,6 +26,7 @@ const CANONICAL_PROVIDER_MAP: Record<string, string> = {
   "google-antigravity": "antigravity",
   gemini: "gemini",
   "google-gemini-cli": "gemini",
+  perplexity: "perplexity",
 };
 
 export function canonicalSharedProvider(provider: string): string {
@@ -201,10 +202,11 @@ export interface SyncOAuthResult {
   byProvider: Record<string, number>;
 }
 
-const JEOPI_PROVIDER_TO_JEO: Record<string, "anthropic" | "openai" | "antigravity"> = {
+const JEOPI_PROVIDER_TO_JEO: Record<string, "anthropic" | "openai" | "antigravity" | "perplexity"> = {
   anthropic: "anthropic",
   "openai-codex": "openai",
   "google-antigravity": "antigravity",
+  perplexity: "perplexity",
 };
 
 export async function syncOAuthFromJeopi(opts?: { agentDbPath?: string; dryRun?: boolean }): Promise<SyncOAuthResult> {
@@ -214,7 +216,7 @@ export async function syncOAuthFromJeopi(opts?: { agentDbPath?: string; dryRun?:
 
   const cfg = await readGlobalConfig();
   const oauthCopy: Record<string, OAuthEntry[]> = {};
-  for (const p of ["anthropic", "openai", "gemini", "antigravity", "kimi"] as const) {
+  for (const p of ["anthropic", "openai", "gemini", "antigravity", "kimi", "perplexity"] as const) {
     const rawPool = cfg.oauth?.[p];
     if (Array.isArray(rawPool)) oauthCopy[p] = [...rawPool];
     else if (rawPool) oauthCopy[p] = [rawPool];

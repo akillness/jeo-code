@@ -359,8 +359,8 @@ export async function interactiveOAuthLogin(
       void openInBrowser(url);
     },
     onProgress: msg => log(`  … ${msg}`),
-    onManualCodeInput: async () =>
-      (await prompt.question("Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
+    onManualCodeInput: async (label?: string) =>
+      (await prompt.question(label ?? "Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
   };
   try {
     return await interactiveLogin(provider, ctrl, opts);
@@ -537,13 +537,15 @@ async function selectProvider(
   console.log("  3) gemini      (real Google OAuth, Cloud Code Assist)");
   console.log("  4) antigravity (Google Cloud Code Assist OAuth)");
   console.log("  5) kimi        (Kimi Code OAuth device authorization)");
-  const ans = (await rl.question("Choose [1-5]: ")).trim();
+  console.log("  6) perplexity  (Perplexity Pro/Max web search OAuth / email OTP)");
+  const ans = (await rl.question("Choose [1-6]: ")).trim();
   const map: Record<string, AuthProvider> = {
     "1": "anthropic",
     "2": "openai",
     "3": "gemini",
     "4": "antigravity",
     "5": "kimi",
+    "6": "perplexity",
   };
   const p = map[ans];
   if (!p) {

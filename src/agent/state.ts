@@ -353,6 +353,7 @@ function envOAuth(): NonNullable<Config["oauth"]> {
     anthropic: process.env.ANTHROPIC_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN,
     openai: process.env.OPENAI_OAUTH_TOKEN,
     gemini: process.env.GEMINI_OAUTH_TOKEN,
+    perplexity: process.env.PERPLEXITY_OAUTH_TOKEN,
   };
 }
 
@@ -377,6 +378,9 @@ function withEnvOverlay(cfg: Config): Config {
   if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
   if (!providers.gemini && process.env.GEMINI_API_KEY) providers.gemini = process.env.GEMINI_API_KEY;
   if (!providers.xai && process.env.XAI_API_KEY) providers.xai = process.env.XAI_API_KEY;
+  if (!providers.perplexity && (process.env.PERPLEXITY_API_KEY || process.env.PPLX_API_KEY)) {
+    providers.perplexity = process.env.PERPLEXITY_API_KEY || process.env.PPLX_API_KEY;
+  }
   // Catalog-driven OpenAI-compatible providers: each provider's own `apiKeyEnv`
   // (e.g. GROQ_API_KEY, HF_TOKEN, NANO_GPT_API_KEY) fills config.providers[name].
   for (const def of OPENAI_COMPAT_PROVIDERS) {
@@ -425,6 +429,7 @@ function envDefaultConfig(): Config {
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
       xai: process.env.XAI_API_KEY,
+      perplexity: process.env.PERPLEXITY_API_KEY || process.env.PPLX_API_KEY,
     },
     defaultModel: jeoEnv("DEFAULT_MODEL") || DEFAULT_MODEL,
     thinkingLevel: "medium",

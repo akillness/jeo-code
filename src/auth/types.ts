@@ -21,6 +21,6 @@ export interface OAuthController {
   /** Progress messages during the flow. */
   onProgress?(message: string): void;
   /** Optional manual paste fallback when the browser cannot reach the callback. */
-  onManualCodeInput?(): Promise<string>;
+  onManualCodeInput?(promptLabel?: string): Promise<string>;
   signal?: AbortSignal;
 }

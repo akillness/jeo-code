@@ -70,6 +70,7 @@ export const ConfigSchema = z
         antigravity: z.string().optional(),
         xai: z.string().optional(),
         kimi: z.string().optional(),
+        perplexity: z.string().optional(),
         ...compatKeySchema,
       })
       .default({}),
@@ -81,6 +82,7 @@ export const ConfigSchema = z
         antigravity: OAuthEntry.optional(),
         xai: OAuthEntry.optional(),
         kimi: OAuthEntry.optional(),
+        perplexity: OAuthEntry.optional(),
         ...compatOAuthSchema,
       })
       .optional(),

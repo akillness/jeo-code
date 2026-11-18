@@ -53,6 +53,14 @@ export const OAUTH_FLOWS: Record<OAuthProvider, OauthFlowDef> = {
       "Note: the minted token targets api.kimi.com/coding (Anthropic Messages format), not api.moonshot.ai.",
     ],
   },
+  perplexity: {
+    label: "Perplexity (Pro/Max)",
+    authorizeUrl: "https://www.perplexity.ai",
+    instructions: [
+      "On macOS, automatically reads the Perplexity desktop app session token if signed in.",
+      "Otherwise, enter your Perplexity email address and the one-time code sent to your inbox.",
+    ],
+  },
 };
 
 export async function openInBrowser(url: string): Promise<void> {

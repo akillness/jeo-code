@@ -19,7 +19,7 @@ import { classifyRefreshFailure, mergeRefreshedOAuth, OAUTH_REFRESH_SKEW_MS } fr
 import { clearSharedCooldown, lookupSharedCooldown, recordSharedCooldown, shouldUseSharedPool } from "./shared-pool-bridge";
 
 /** Providers with an interactive OAuth login + refresh flow. */
-export type OAuthProvider = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi";
+export type OAuthProvider = "anthropic" | "openai" | "gemini" | "antigravity" | "kimi" | "perplexity";
 /** Every provider jeo resolves a credential for: OAuth-capable ∪ API-key-only. */
 export type AuthProvider =
   | OAuthProvider
@@ -52,7 +52,7 @@ export type AuthProvider =
   | "deepinfra"
   | "litellm";
 
-export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["anthropic", "openai", "gemini", "antigravity", "kimi"];
+export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["anthropic", "openai", "gemini", "antigravity", "kimi", "perplexity"];
 /** API-key-only providers (no OAuth flow) — resolved from config.providers / `<NAME>_API_KEY`. */
 export const API_KEY_ONLY_PROVIDERS: readonly AuthProvider[] = [
   "xai",

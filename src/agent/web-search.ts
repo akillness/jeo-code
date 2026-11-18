@@ -22,8 +22,10 @@
  * Web Search card (Query / Answer / Sources / Metadata sections — see
  * `webSearchCardLines` in tui/components/forge.ts).
  */
-import { createHash, randomBytes } from "node:crypto";
-import { resolveCredential, type Credential } from "../auth";
+import { execFile } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import { jeoEnv } from "../util/env";
 import { getClaudeCodeVersion, parseRequiredClaudeCodeVersion, raiseClaudeCodeVersion } from "../ai/claude-code-version";
 import type { ToolResult } from "./tools";
@@ -47,6 +49,7 @@ export interface WebSearchResponse {
   usage?: { inputTokens?: number; outputTokens?: number; searchRequests?: number };
   model?: string;
   requestId?: string;
+  relatedQuestions?: string[];
 }
 
 export interface SearchRequest {
@@ -57,12 +60,791 @@ export interface SearchRequest {
 }
 
 export interface SearchProviderDef {
-  id: "anthropic" | "openai" | "gemini" | "duckduckgo";
+  id: "perplexity" | "anthropic" | "openai" | "gemini" | "duckduckgo";
   label: string;
   /** Credential gate — keyless providers return true unconditionally. */
   isAvailable(): Promise<boolean> | boolean;
   /** Throws on failure; the chain runner fails over to the next provider. */
   search(req: SearchRequest): Promise<WebSearchResponse>;
+}
+
+// ── Perplexity provider (cookies / OAuth / API key / OpenRouter / anonymous) ──
+
+const execFileAsync = promisify(execFile);
+
+const PERPLEXITY_ASK_URL = "https://www.perplexity.ai/rest/sse/perplexity_ask";
+const PERPLEXITY_CHAT_URL = "https://api.perplexity.ai/chat/completions";
+const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_SEARCH_MODEL_PERPLEXITY = "sonar-pro";
+const PERPLEXITY_DEFAULT_MAX_TOKENS = 8192;
+const PERPLEXITY_DEFAULT_TEMPERATURE = 0.2;
+const PERPLEXITY_DEFAULT_NUM_SEARCH_RESULTS = 20;
+const PERPLEXITY_HARD_TIMEOUT_MS = 90_000;
+const PERPLEXITY_OAUTH_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const PERPLEXITY_OAUTH_API_VERSION = "2.18";
+const PERPLEXITY_OAUTH_USER_AGENT = "Perplexity/641 CFNetwork/1568 Darwin/25.2.0";
+const PERPLEXITY_ANONYMOUS_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
+interface PerplexityAskMarkdownBlock {
+  answer?: string;
+  chunks?: string[];
+  chunk_starting_offset?: number;
+}
+
+interface PerplexityAskWebResult {
+  name?: string;
+  url?: string;
+  snippet?: string;
+  timestamp?: string;
+}
+
+interface PerplexityAskWebResultBlock {
+  web_results?: PerplexityAskWebResult[];
+}
+
+interface PerplexityAskBlock {
+  intended_usage?: string;
+  markdown_block?: PerplexityAskMarkdownBlock;
+  web_result_block?: PerplexityAskWebResultBlock;
+}
+
+interface PerplexityAskSource {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  date?: string;
+}
+
+export interface PerplexityAskStreamEvent {
+  status?: string;
+  final?: boolean;
+  text?: string;
+  blocks?: PerplexityAskBlock[];
+  sources_list?: PerplexityAskSource[];
+  error_code?: string;
+  error_message?: string;
+  display_model?: string;
+  uuid?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonSafe(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Decode a Perplexity JWT `exp` claim in ms; returns `undefined` when absent (non-expiring session). */
+export function jwtExpiryMs(token: string): number | undefined {
+  const parts = token.split(".");
+  if (parts.length !== 3) return undefined;
+  const payload = parts[1];
+  if (!payload) return undefined;
+  try {
+    const decoded = parseJsonSafe(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!isRecord(decoded)) return undefined;
+    const exp = decoded.exp;
+    if (typeof exp !== "number" || !Number.isFinite(exp)) return undefined;
+    return exp * 1000;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPerplexityJwtValid(token: string): boolean {
+  const exp = jwtExpiryMs(token);
+  return exp === undefined || exp > Date.now() + PERPLEXITY_OAUTH_EXPIRY_BUFFER_MS;
+}
+
+async function readMacPerplexityAuthToken(): Promise<string | undefined> {
+  if (
+    process.platform !== "darwin" ||
+    process.env.NODE_ENV === "test" ||
+    jeoEnv("CONFIG_DIR") ||
+    process.env.JEO_AUTH_NO_BORROW === "1"
+  ) {
+    return undefined;
+  }
+  try {
+    const { stdout } = await execFileAsync("defaults", ["read", "ai.perplexity.mac", "authToken"], { timeout: 2000 });
+    const token = stdout.trim();
+    return token.length > 0 ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type PerplexityAuthMethod =
+  | { type: "cookies"; cookies: string }
+  | { type: "oauth"; token: string }
+  | { type: "api_key"; provider: "perplexity" | "openrouter"; apiKey: string; baseUrl: string; model: string }
+  | { type: "anonymous" };
+
+async function resolvePerplexityAuthMethods(explicit: boolean): Promise<PerplexityAuthMethod[]> {
+  const methods: PerplexityAuthMethod[] = [];
+
+  // 1. Browser cookies take top precedence
+  const cookies = process.env.PERPLEXITY_COOKIES?.trim();
+  if (cookies) {
+    methods.push({ type: "cookies", cookies });
+  }
+
+  // 2. Perplexity OAuth (stored credential / env / macOS app token fallback)
+  let oauthToken: string | undefined;
+  const storedOAuth = await resolveCredential("perplexity" as AuthProvider, { preferKind: "oauth" }).catch(() => null);
+  if (storedOAuth?.kind === "oauth" && storedOAuth.token.trim() && isPerplexityJwtValid(storedOAuth.token.trim())) {
+    oauthToken = storedOAuth.token.trim();
+  }
+  if (!oauthToken) {
+    const envOAuth = process.env.PERPLEXITY_OAUTH_TOKEN?.trim();
+    if (envOAuth && isPerplexityJwtValid(envOAuth)) {
+      oauthToken = envOAuth;
+    }
+  }
+  if (!oauthToken) {
+    const macToken = await readMacPerplexityAuthToken();
+    if (macToken && isPerplexityJwtValid(macToken)) {
+      oauthToken = macToken;
+    }
+  }
+  if (oauthToken) {
+    methods.push({ type: "oauth", token: oauthToken });
+  }
+
+  // 3. Direct Perplexity API key
+  let directApiKey =
+    jeoEnv("SEARCH_API_KEY_PERPLEXITY")?.trim() ||
+    process.env.PERPLEXITY_API_KEY?.trim() ||
+    process.env.PPLX_API_KEY?.trim();
+  if (!directApiKey) {
+    const storedKey = await resolveCredential("perplexity" as AuthProvider, { preferKind: "api_key" }).catch(() => null);
+    if (storedKey?.kind === "api_key" && storedKey.token.trim()) {
+      directApiKey = storedKey.token.trim();
+    }
+  }
+  if (directApiKey) {
+    methods.push({
+      type: "api_key",
+      provider: "perplexity",
+      apiKey: directApiKey,
+      baseUrl: PERPLEXITY_CHAT_URL,
+      model: jeoEnv("SEARCH_MODEL_PERPLEXITY")?.trim() || DEFAULT_SEARCH_MODEL_PERPLEXITY,
+    });
+  }
+
+  // 4. OpenRouter fallback ONLY when Perplexity is explicitly selected
+  if (explicit) {
+    let openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
+    if (!openrouterKey) {
+      const storedOr = await resolveCredential("openrouter", { preferKind: "api_key" }).catch(() => null);
+      if (storedOr?.kind === "api_key" && storedOr.token.trim()) {
+        openrouterKey = storedOr.token.trim();
+      }
+    }
+    if (openrouterKey) {
+      const modelOverride = jeoEnv("SEARCH_MODEL_PERPLEXITY")?.trim();
+      const model = modelOverride
+        ? (modelOverride.startsWith("perplexity/") ? modelOverride : `perplexity/${modelOverride}`)
+        : "perplexity/sonar-pro";
+      methods.push({
+        type: "api_key",
+        provider: "openrouter",
+        apiKey: openrouterKey,
+        baseUrl: OPENROUTER_CHAT_URL,
+        model,
+      });
+    }
+  }
+
+  // 5. Anonymous fallback ONLY when Perplexity is explicitly selected and no auth is configured
+  if (explicit && methods.length === 0) {
+    methods.push({ type: "anonymous" });
+  }
+
+  return methods;
+}
+
+function mergeMarkdownBlock(
+  existing: PerplexityAskMarkdownBlock | undefined,
+  incoming: PerplexityAskMarkdownBlock,
+): PerplexityAskMarkdownBlock {
+  if (!existing) return { ...incoming };
+  const result: PerplexityAskMarkdownBlock = { ...existing, ...incoming };
+  if (incoming.chunks?.length) {
+    const offset = incoming.chunk_starting_offset ?? 0;
+    const existingChunks = existing.chunks ?? [];
+    result.chunks = offset === 0 ? [...incoming.chunks] : [...existingChunks.slice(0, offset), ...incoming.chunks];
+  }
+  return result;
+}
+
+function mergeBlocks(existing: PerplexityAskBlock[], incoming: PerplexityAskBlock[]): PerplexityAskBlock[] {
+  const blockMap = new Map<string, PerplexityAskBlock>(
+    existing
+      .filter(block => typeof block.intended_usage === "string" && block.intended_usage.length > 0)
+      .map(block => [block.intended_usage as string, block]),
+  );
+  for (const block of incoming) {
+    if (!block.intended_usage) continue;
+    const prev = blockMap.get(block.intended_usage);
+    if (block.markdown_block) {
+      blockMap.set(block.intended_usage, {
+        ...prev,
+        ...block,
+        markdown_block: mergeMarkdownBlock(prev?.markdown_block, block.markdown_block),
+      });
+      continue;
+    }
+    blockMap.set(block.intended_usage, { ...prev, ...block });
+  }
+  return [...blockMap.values()];
+}
+
+function mergeAskEventSnapshot(
+  existing: PerplexityAskStreamEvent,
+  incoming: PerplexityAskStreamEvent,
+): PerplexityAskStreamEvent {
+  const merged: PerplexityAskStreamEvent = { ...existing, ...incoming };
+  merged.blocks = incoming.blocks?.length ? mergeBlocks(existing.blocks ?? [], incoming.blocks) : (existing.blocks ?? []);
+  if (!merged.sources_list && existing.sources_list) {
+    merged.sources_list = existing.sources_list;
+  }
+  return merged;
+}
+
+function textFromChunks(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  let text = "";
+  for (const chunk of value) {
+    if (typeof chunk !== "string") return null;
+    text += chunk;
+  }
+  return text.length > 0 ? text : null;
+}
+
+function parseAskTextPayload(text: string): Record<string, unknown> | null {
+  const parsed = parseJsonSafe(text);
+  if (isRecord(parsed)) return parsed;
+  if (!Array.isArray(parsed)) return null;
+  for (const item of parsed) {
+    const step = isRecord(item) ? item : null;
+    const content = isRecord(step?.content) ? step.content : null;
+    const answer = content?.answer;
+    if (typeof answer !== "string" || answer.length === 0) continue;
+    const payload = parseJsonSafe(answer);
+    if (isRecord(payload)) return payload;
+  }
+  return null;
+}
+
+function parseAskTextAnswer(text: string): string {
+  const payload = parseAskTextPayload(text);
+  if (payload) {
+    if (Array.isArray(payload.structured_answer)) {
+      for (const item of payload.structured_answer) {
+        if (!isRecord(item)) continue;
+        if (typeof item.text === "string" && item.text.length > 0) return item.text;
+        const structuredChunks = textFromChunks(item.chunks);
+        if (structuredChunks) return structuredChunks;
+      }
+    }
+    const chunks = textFromChunks(payload.chunks);
+    if (chunks) return chunks;
+    if (typeof payload.answer === "string" && payload.answer.length > 0) return payload.answer;
+  }
+  const parsed = parseJsonSafe(text);
+  if (!Array.isArray(parsed)) return text;
+  for (const item of parsed) {
+    const step = isRecord(item) ? item : null;
+    const content = isRecord(step?.content) ? step.content : null;
+    const answer = content?.answer;
+    if (typeof answer === "string" && answer.length > 0) return answer;
+  }
+  return text;
+}
+
+function buildAskSources(event: PerplexityAskStreamEvent): WebSearchSource[] {
+  const results = event.blocks?.find(block => block.intended_usage === "web_results")?.web_result_block?.web_results ?? [];
+  if (results.length > 0) {
+    return results
+      .filter(result => typeof result.url === "string" && result.url.length > 0)
+      .map(result => ({
+        title: (typeof result.name === "string" && result.name) || result.url!,
+        url: result.url!,
+        snippet: typeof result.snippet === "string" ? result.snippet : undefined,
+        publishedDate: typeof result.timestamp === "string" ? result.timestamp : undefined,
+      }));
+  }
+
+  const listSources = (event.sources_list ?? [])
+    .filter(source => typeof source.url === "string" && source.url.length > 0)
+    .map(source => ({
+      title: (typeof source.title === "string" && source.title) || source.url!,
+      url: source.url!,
+      snippet: typeof source.snippet === "string" ? source.snippet : undefined,
+      publishedDate: typeof source.date === "string" ? source.date : undefined,
+    }));
+  if (listSources.length > 0) return listSources;
+
+  if (!event.text) return [];
+  const payload = parseAskTextPayload(event.text);
+  const webResults = payload?.web_results;
+  if (!Array.isArray(webResults) || webResults.length === 0) return [];
+  const sources: WebSearchSource[] = [];
+  for (const value of webResults) {
+    if (!isRecord(value)) continue;
+    const url = value.url;
+    if (typeof url !== "string" || url.length === 0) continue;
+    const name = value.name ?? value.title;
+    sources.push({
+      title: typeof name === "string" && name.length > 0 ? name : url,
+      url,
+      snippet: typeof value.snippet === "string" ? value.snippet : undefined,
+      publishedDate: typeof value.timestamp === "string" ? value.timestamp : undefined,
+    });
+  }
+  return sources;
+}
+
+function buildAskAnswer(event: PerplexityAskStreamEvent): string {
+  if (!event.blocks?.length) {
+    return typeof event.text === "string" ? parseAskTextAnswer(event.text) : "";
+  }
+  const markdownBlock = event.blocks.find(
+    block => block.intended_usage?.includes("markdown") && block.markdown_block,
+  )?.markdown_block;
+  if (markdownBlock) {
+    if (Array.isArray(markdownBlock.chunks) && markdownBlock.chunks.length > 0) {
+      return markdownBlock.chunks.join("");
+    }
+    if (typeof markdownBlock.answer === "string" && markdownBlock.answer.length > 0) {
+      return markdownBlock.answer;
+    }
+  }
+  const textBlock = event.blocks.find(
+    block => block.intended_usage === "ask_text" && block.markdown_block,
+  )?.markdown_block;
+  if (textBlock) {
+    if (Array.isArray(textBlock.chunks) && textBlock.chunks.length > 0) {
+      return textBlock.chunks.join("");
+    }
+    if (typeof textBlock.answer === "string" && textBlock.answer.length > 0) {
+      return textBlock.answer;
+    }
+  }
+  if (typeof event.text === "string" && event.text.length > 0) {
+    return parseAskTextAnswer(event.text);
+  }
+  return "";
+}
+
+interface AskAccumulatorState {
+  answer: string;
+  model?: string;
+  requestId?: string;
+  sourcesByUrl: Map<string, WebSearchSource>;
+  mergedEvent: PerplexityAskStreamEvent;
+}
+
+function applyAskEvent(state: AskAccumulatorState, rawEvent: unknown): boolean {
+  if (!isRecord(rawEvent)) return false;
+  const event = rawEvent as PerplexityAskStreamEvent;
+  if (event.error_code || event.error_message) {
+    const message = event.error_message ?? event.error_code ?? "unknown error";
+    throw new Error(`Perplexity ask stream error: ${message}`);
+  }
+  state.mergedEvent = mergeAskEventSnapshot(state.mergedEvent, event);
+  const eventAnswer = buildAskAnswer(state.mergedEvent);
+  if (eventAnswer.length > 0) {
+    state.answer = eventAnswer;
+  }
+  for (const source of buildAskSources(state.mergedEvent)) {
+    state.sourcesByUrl.set(source.url, source);
+  }
+  if (typeof state.mergedEvent.display_model === "string" && state.mergedEvent.display_model) {
+    state.model = state.mergedEvent.display_model;
+  }
+  if (typeof state.mergedEvent.uuid === "string" && state.mergedEvent.uuid) {
+    state.requestId = state.mergedEvent.uuid;
+  }
+  return Boolean(state.mergedEvent.final || state.mergedEvent.status === "COMPLETED");
+}
+
+/** Parse an iterable sequence of decoded Perplexity `perplexity_ask` SSE JSON objects. */
+export function parsePerplexityAskEvents(
+  events: Iterable<unknown>,
+  fallbackRequestId?: string,
+): WebSearchResponse {
+  const state: AskAccumulatorState = {
+    answer: "",
+    sourcesByUrl: new Map<string, WebSearchSource>(),
+    mergedEvent: { blocks: [] },
+  };
+  for (const event of events) {
+    if (applyAskEvent(state, event)) break;
+  }
+  return {
+    provider: "Perplexity",
+    answer: state.answer || undefined,
+    sources: [...state.sourcesByUrl.values()],
+    citations: [],
+    searchQueries: [],
+    model: state.model,
+    requestId: state.requestId ?? fallbackRequestId,
+  };
+}
+
+async function* readSseJsonEvents(stream: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let dataLines: string[] = [];
+
+  const flushEvent = (): { done: boolean; payload?: unknown } => {
+    if (dataLines.length === 0) return { done: false };
+    const rawData = dataLines.join("\n");
+    dataLines = [];
+    if (rawData === "" || rawData === "[DONE]") {
+      return { done: rawData === "[DONE]" };
+    }
+    return { done: false, payload: JSON.parse(rawData) };
+  };
+
+  const processLine = (rawLine: string): { done: boolean; payload?: unknown } | undefined => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "") return flushEvent();
+    if (line.startsWith(":")) return undefined;
+    if (line.startsWith("data:")) {
+      let data = line.slice(5);
+      if (data.startsWith(" ")) data = data.slice(1);
+      dataLines.push(data);
+    }
+    return undefined;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nlIdx: number;
+      while ((nlIdx = buffer.indexOf("\n")) !== -1) {
+        const res = processLine(buffer.slice(0, nlIdx));
+        buffer = buffer.slice(nlIdx + 1);
+        if (res?.payload !== undefined) yield res.payload;
+        if (res?.done) return;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.length > 0) {
+      for (const line of buffer.split("\n")) {
+        const res = processLine(line);
+        if (res?.payload !== undefined) yield res.payload;
+        if (res?.done) return;
+      }
+    }
+    const trailing = flushEvent();
+    if (trailing.payload !== undefined) yield trailing.payload;
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/** Parse a `perplexity_ask` SSE stream (ReadableStream or raw SSE text) into the unified response. */
+export async function parsePerplexityAskStream(
+  streamOrText: ReadableStream<Uint8Array> | string,
+  fallbackRequestId?: string,
+): Promise<WebSearchResponse> {
+  const stream =
+    typeof streamOrText === "string"
+      ? new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(streamOrText));
+            controller.close();
+          },
+        })
+      : streamOrText;
+  const state: AskAccumulatorState = {
+    answer: "",
+    sourcesByUrl: new Map<string, WebSearchSource>(),
+    mergedEvent: { blocks: [] },
+  };
+  for await (const event of readSseJsonEvents(stream)) {
+    if (applyAskEvent(state, event)) break;
+  }
+  return {
+    provider: "Perplexity",
+    answer: state.answer || undefined,
+    sources: [...state.sourcesByUrl.values()],
+    citations: [],
+    searchQueries: [],
+    model: state.model,
+    requestId: state.requestId ?? fallbackRequestId,
+  };
+}
+
+/** Parse a non-streaming Perplexity (or OpenRouter `perplexity/*`) `chat/completions` JSON response. */
+export function parsePerplexityApiResponse(response: unknown): WebSearchResponse {
+  const res = isRecord(response) ? response : null;
+  const choices = Array.isArray(res?.choices) ? res.choices : [];
+  const firstChoice = isRecord(choices[0]) ? choices[0] : null;
+  const message = isRecord(firstChoice?.message) ? firstChoice.message : null;
+
+  let answer = "";
+  if (typeof message?.content === "string") {
+    answer = message.content;
+  } else if (Array.isArray(message?.content)) {
+    answer = message.content
+      .map(part => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+      .join("");
+  } else if (typeof res?.output_text === "string") {
+    answer = res.output_text;
+  }
+
+  interface ParsedSearchResult {
+    url: string;
+    title?: string;
+    snippet?: string;
+    date?: string;
+  }
+  const rawSearchResults = Array.isArray(res?.search_results)
+    ? res.search_results
+    : Array.isArray(res?.results)
+      ? res.results
+      : [];
+  const searchResults: ParsedSearchResult[] = [];
+  for (const item of rawSearchResults) {
+    if (!isRecord(item) || typeof item.url !== "string" || item.url.length === 0) continue;
+    searchResults.push({
+      url: item.url,
+      title: typeof item.title === "string" && item.title.length > 0 ? item.title : undefined,
+      snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+      date: typeof item.date === "string" ? item.date : undefined,
+    });
+  }
+
+  const rawCitations = Array.isArray(res?.citations) ? res.citations : [];
+  const citationUrls: string[] = [];
+  for (const item of rawCitations) {
+    if (typeof item === "string" && item.length > 0) {
+      citationUrls.push(item);
+    } else if (isRecord(item) && typeof item.url === "string" && item.url.length > 0) {
+      citationUrls.push(item.url);
+    }
+  }
+
+  const sources: WebSearchSource[] = [];
+  const citations: WebSearchResponse["citations"] = [];
+  if (citationUrls.length > 0) {
+    for (const url of citationUrls) {
+      const sr = searchResults.find(r => r.url === url);
+      const title = sr?.title ?? url;
+      sources.push({ title, url, snippet: sr?.snippet, publishedDate: sr?.date });
+      citations.push({ url, title });
+    }
+  } else if (searchResults.length > 0) {
+    for (const sr of searchResults) {
+      sources.push({ title: sr.title ?? sr.url, url: sr.url, snippet: sr.snippet, publishedDate: sr.date });
+    }
+  } else if (Array.isArray(message?.annotations)) {
+    const seen = new Set<string>();
+    for (const ann of message.annotations) {
+      if (!isRecord(ann)) continue;
+      const urlCitation = isRecord(ann.url_citation) ? ann.url_citation : ann;
+      if (typeof urlCitation.url !== "string" || !urlCitation.url) continue;
+      const url = urlCitation.url;
+      const title = typeof urlCitation.title === "string" && urlCitation.title ? urlCitation.title : url;
+      citations.push({ url, title });
+      if (!seen.has(url)) {
+        seen.add(url);
+        sources.push({ title, url });
+      }
+    }
+  }
+
+  const relatedQuestions = Array.isArray(res?.related_questions)
+    ? res.related_questions.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+    : [];
+
+  const rawUsage = isRecord(res?.usage) ? res.usage : null;
+  const inputTokens =
+    typeof rawUsage?.prompt_tokens === "number"
+      ? rawUsage.prompt_tokens
+      : typeof rawUsage?.input_tokens === "number"
+        ? rawUsage.input_tokens
+        : undefined;
+  const outputTokens =
+    typeof rawUsage?.completion_tokens === "number"
+      ? rawUsage.completion_tokens
+      : typeof rawUsage?.output_tokens === "number"
+        ? rawUsage.output_tokens
+        : undefined;
+
+  return {
+    provider: "Perplexity",
+    answer: answer.trim() || undefined,
+    sources,
+    citations,
+    searchQueries: [],
+    ...(relatedQuestions.length > 0 ? { relatedQuestions } : {}),
+    usage: inputTokens !== undefined || outputTokens !== undefined ? { inputTokens, outputTokens } : undefined,
+    model: typeof res?.model === "string" ? res.model : undefined,
+    requestId: typeof res?.id === "string" ? res.id : undefined,
+  };
+}
+
+async function callPerplexityApi(
+  auth: Extract<PerplexityAuthMethod, { type: "api_key" }>,
+  req: SearchRequest,
+): Promise<WebSearchResponse> {
+  const body: Record<string, unknown> = {
+    model: auth.model,
+    messages: [
+      { role: "system", content: SEARCH_SYSTEM_PROMPT },
+      { role: "user", content: req.query },
+    ],
+    max_tokens: typeof req.maxTokens === "number" ? req.maxTokens : PERPLEXITY_DEFAULT_MAX_TOKENS,
+    temperature: PERPLEXITY_DEFAULT_TEMPERATURE,
+    search_mode: "web",
+    num_search_results: PERPLEXITY_DEFAULT_NUM_SEARCH_RESULTS,
+    web_search_options: {
+      search_type: "pro",
+      search_context_size: "high",
+    },
+    return_related_questions: true,
+    stream: false,
+  };
+  if (req.recency) {
+    body.search_recency_filter = req.recency;
+  }
+  const response = await fetch(auth.baseUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: `Bearer ${auth.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(PERPLEXITY_HARD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    const label = auth.provider === "openrouter" ? "OpenRouter" : "Perplexity";
+    throw new Error(`${label} API error (${response.status}): ${detail}`);
+  }
+  const parsed = parsePerplexityApiResponse(await response.json().catch(() => null));
+  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+    parsed.sources = parsed.sources.slice(0, req.limit);
+  }
+  return parsed;
+}
+
+async function callPerplexityAsk(
+  auth: Extract<PerplexityAuthMethod, { type: "cookies" | "oauth" | "anonymous" }>,
+  req: SearchRequest,
+): Promise<WebSearchResponse> {
+  const requestId = randomUUID();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    Origin: "https://www.perplexity.ai",
+    Referer: "https://www.perplexity.ai/",
+    "User-Agent": auth.type === "anonymous" ? PERPLEXITY_ANONYMOUS_USER_AGENT : PERPLEXITY_OAUTH_USER_AGENT,
+    "X-Request-ID": requestId,
+  };
+  if (auth.type === "oauth") {
+    headers.Cookie = `__Secure-next-auth.session-token=${auth.token}`;
+  } else if (auth.type === "cookies") {
+    headers.Cookie = auth.cookies;
+  }
+  if (auth.type !== "anonymous") {
+    headers["X-App-ApiClient"] = "default";
+    headers["X-App-ApiVersion"] = PERPLEXITY_OAUTH_API_VERSION;
+    headers["X-Perplexity-Request-Reason"] = "submit";
+  }
+
+  const requestParams: Record<string, unknown> = {
+    query_str: req.query,
+    search_focus: "internet",
+    mode: "copilot",
+    model_preference: "experimental",
+    sources: ["web"],
+    attachments: [],
+    frontend_uuid: randomUUID(),
+    frontend_context_uuid: randomUUID(),
+    version: PERPLEXITY_OAUTH_API_VERSION,
+    language: "en-US",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    search_recency_filter: req.recency ?? null,
+    is_incognito: true,
+    use_schematized_api: true,
+    skip_search_enabled: false,
+    always_search_override: true,
+    prompt_source: "user",
+    source: "default",
+    local_search_enabled: false,
+    should_ask_for_mcp_tool_confirmation: false,
+    supports_tool_approval_modal: false,
+    force_enable_browser_agent: false,
+    is_local_browser_available: false,
+    is_local_browser_allowed: false,
+  };
+  if (auth.type === "anonymous") {
+    requestParams.send_back_text_in_streaming_api = true;
+  }
+
+  const response = await fetch(PERPLEXITY_ASK_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      query_str: req.query,
+      params: requestParams,
+    }),
+    signal: AbortSignal.timeout(PERPLEXITY_HARD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    throw new Error(`Perplexity ask API error (${response.status}): ${detail}`);
+  }
+  if (!response.body) {
+    throw new Error("Perplexity ask API returned no response body");
+  }
+  const parsed = await parsePerplexityAskStream(response.body, requestId);
+  if (parsed.sources.length === 0 && (!parsed.answer?.trim() || /\b(?:sign up|log in)\b/i.test(parsed.answer))) {
+    throw new Error(`Perplexity ask returned no search results${parsed.answer ? `: ${parsed.answer.trim().slice(0, 120)}` : ""}`);
+  }
+  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+    parsed.sources = parsed.sources.slice(0, req.limit);
+  }
+  return parsed;
+}
+
+async function searchPerplexity(req: SearchRequest, opts: { explicit?: boolean } = {}): Promise<WebSearchResponse> {
+  const explicit = opts.explicit ?? jeoEnv("SEARCH_PROVIDER")?.toLowerCase() === "perplexity";
+  const methods = await resolvePerplexityAuthMethods(explicit);
+  if (methods.length === 0) {
+    throw new Error(
+      "Perplexity: no direct credentials (set PERPLEXITY_COOKIES, PERPLEXITY_API_KEY, or run 'jeo auth login perplexity')",
+    );
+  }
+  let lastError: unknown;
+  for (const auth of methods) {
+    try {
+      if (auth.type === "api_key") {
+        return await callPerplexityApi(auth, req);
+      }
+      return await callPerplexityAsk(auth, req);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // ── Anthropic provider (server-side web_search tool) ─────────────────────────
@@ -574,6 +1356,12 @@ async function searchDuckDuckGo(req: SearchRequest): Promise<WebSearchResponse> 
 // ── Provider chain ──────────────────────
 
 const PROVIDERS: Record<SearchProviderDef["id"], SearchProviderDef> = {
+  perplexity: {
+    id: "perplexity",
+    label: "Perplexity",
+    isAvailable: async () => (await resolvePerplexityAuthMethods(false)).length > 0,
+    search: req => searchPerplexity(req),
+  },
   anthropic: {
     id: "anthropic",
     label: "Anthropic",
@@ -661,16 +1449,26 @@ export async function resolveSearchChain(opts: { preferred?: string; modelProvid
   const chain: SearchProviderDef[] = [];
   const preferred = (opts.preferred ?? jeoEnv("SEARCH_PROVIDER"))?.toLowerCase();
 
-  if (preferred && preferred !== "auto") {
+  if (preferred === "perplexity") {
+    chain.push({
+      ...PROVIDERS.perplexity,
+      search: req => searchPerplexity(req, { explicit: true }),
+    });
+  } else if (preferred && preferred !== "auto") {
     const provider = PROVIDERS[preferred as SearchProviderDef["id"]];
     if (provider && (await provider.isAvailable())) chain.push(provider);
   } else {
+    if (await PROVIDERS.perplexity.isAvailable()) {
+      chain.push({
+        ...PROVIDERS.perplexity,
+        search: req => searchPerplexity(req, { explicit: false }),
+      });
+    }
     const modelProvider = (opts.modelProvider ?? (await activeModelProviderName()))?.toLowerCase();
     const nativeId = modelProvider ? MODEL_PROVIDER_TO_SEARCH[modelProvider] : undefined;
     const provider = nativeId ? PROVIDERS[nativeId] : undefined;
     if (provider && (await provider.isAvailable())) chain.push(provider);
   }
-
   if (!chain.some(p => p.id === "duckduckgo")) chain.push(PROVIDERS.duckduckgo);
   return chain;
 }

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { DDL, SCHEMA_VERSION } from "./schema.ts";
 
@@ -118,9 +118,34 @@ function wrapOpenDbError(path: string, err: unknown): Error {
   return new Error(`Failed to open writable jeo-mem database at "${path}" (${detail})`, { cause: err });
 }
 
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "ascii");
+
+function hasInvalidSqliteHeader(path: string): boolean {
+  try {
+    const st = statSync(path);
+    if (!st.isFile() || st.size === 0) return false;
+    const buf = Buffer.alloc(SQLITE_HEADER.length);
+    const fd = openSync(path, "r");
+    try {
+      const read = readSync(fd, buf, 0, buf.length, 0);
+      return read < SQLITE_HEADER.length || !buf.equals(SQLITE_HEADER);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 export function openDb(path: string, options?: OpenDbOptions): Database {
   if (path === ":memory:") return initDb(path);
   try {
+    // Move non-SQLite corrupt DB + -wal/-shm sidecars BEFORE SQLite opens the path:
+    // on Linux, opening a non-database file with PRAGMA journal_mode=WAL + close()
+    // can unlink the companion -wal/-shm files before catch-time backup runs.
+    if (hasInvalidSqliteHeader(path)) {
+      backupCorruptDb(path);
+    }
     return initDb(path);
   } catch (err) {
     if (isCorruptSqliteError(err)) {

@@ -537,24 +537,31 @@ test.skipIf(process.platform === "win32")(
       } catch {}
     };
 
-    const watcher = fsSync.watch(stateDir, (_event, filename) => {
-      if (filename === "predicate.pid") tryReadPid();
+    const watcher = fsSync.watch(stateDir, () => {
+      tryReadPid();
     });
     watchers.push(watcher);
+    const poll = setInterval(tryReadPid, 25);
     tryReadPid();
 
     const controller = new AbortController();
     const predicate = `echo $$ > "${markerPath}.tmp" && mv "${markerPath}.tmp" "${markerPath}" && exec sleep 30`;
     const bisectPromise = bisectTool(goodSha, "HEAD", predicate, false, 40, 60_000, repoDir, controller.signal);
 
-    const predicatePid = await pidReady.promise;
-    controller.abort();
+    try {
+      const predicatePid = await pidReady.promise;
+      clearInterval(poll);
+      controller.abort();
 
-    const res = await bisectPromise;
-    expect(res.success).toBe(false);
-    expect(res.error).toBe("Bisect aborted");
-    expect(fsSync.existsSync(path.join(repoDir, ".git", "BISECT_START"))).toBe(false);
-    expect(gitSync(repoDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
-    expect(isPidAlive(predicatePid)).toBe(false);
+      const res = await bisectPromise;
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("Bisect aborted");
+      expect(fsSync.existsSync(path.join(repoDir, ".git", "BISECT_START"))).toBe(false);
+      expect(gitSync(repoDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+      expect(isPidAlive(predicatePid)).toBe(false);
+    } finally {
+      clearInterval(poll);
+    }
   },
+  15_000,
 );

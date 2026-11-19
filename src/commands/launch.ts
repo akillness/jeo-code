@@ -1641,7 +1641,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (paste) emergencyPaste = true;
       const submitted = !emergencyInput.inPaste && /[\r\n]/.test(chunk) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
       captureLivePromptInputChunk(emergencyInput, chunk, { multiline: true });
-      if (!emergencyInput.partial && !paste && !emergencyInput.inPaste) emergencyPaste = false;
+      if (!emergencyInput.partial && !emergencyInput.inPaste) emergencyPaste = false;
       if (!submitted) return;
       const endpoint = sessionNotifyEndpoint;
       if (!emergencyPaste && /^\/discord\s+(?:control\s+off|stop)$/.test(emergencyInput.partial.trim())) {
@@ -1771,6 +1771,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       onHardExit: () => { handleTurnCtrlC(); },
     }) : undefined;
     if (preflightHarness) interactiveTurnActive = true;
+    let tui: LaunchTui | null = null;
+    let tuiStarted = false;
+    let tuiFinished = false;
     try {
     const preflightSignal = preflightHarness && opts?.signal ? AbortSignal.any([preflightHarness.controller.signal, opts.signal]) : preflightHarness?.controller.signal ?? opts?.signal;
     const turnConfig = await readGlobalConfig();
@@ -2005,7 +2008,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // config file. (Dirty count per-turn, not per-render.)
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
+    tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
     activeTui = tui;
     // Hook notices are advisory; outside the TUI they go to stderr so piped stdout stays the reply only.
     const hookNotice = (msg: string): void => {
@@ -2119,8 +2122,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui) {
         interactiveTurnActive = true;
         tui.start();
+        tuiStarted = true;
       }
-      // Refresh injected OKF memory with THIS turn's query before the model call so
       // failure-first ranking fires and same-session dead ends resurface.
       await refreshSessionMemory(userInput, opts?.skillRun ?? false);
       preflightSignal?.throwIfAborted();
@@ -2147,7 +2150,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           if (!handled && captured && jeoEnv("NO_LIVE_DRAFT") !== "1") tui?.setLivePromptInput(expandSentinel(queueBusySnapshot?.().text ?? ""));
         },
         onHardExit: () => {
-          handleTurnCtrlC(() => { if (tui) tui.finish("Cancelled.", { ok: false }); });
+          handleTurnCtrlC(() => { if (tui && !tuiFinished) { tui.finish("Cancelled.", { ok: false }); tuiFinished = true; } });
         },
       });
       const abortRemoteCompaction = () => compactHarness.controller.abort();
@@ -2317,7 +2320,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           else console.log(msg);
         },
         onHardExit: () => {
-          handleTurnCtrlC(() => { if (tui) tui.finish("Cancelled.", { ok: false }); });
+          handleTurnCtrlC(() => { if (tui && !tuiFinished) { tui.finish("Cancelled.", { ok: false }); tuiFinished = true; } });
         },
       });
       const abortRemote = () => harness.controller.abort();
@@ -2821,8 +2824,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }
     } catch (err) {
       await subagentWrites;
-      if (tui) {
+      if (tui && !tuiFinished) {
         tui.finish(`! ${friendlyProviderError(err)}`, { ok: false });
+        tuiFinished = true;
         interactiveTurnActive = false;
       }
       flushSubagentWarnings();
@@ -2875,7 +2879,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       history.push(assistantMsg);
       if (sessionId) await appendMessage(sessionId, assistantMsg, cwd);
       opts?.signal?.throwIfAborted();
-      if (tui) tui.finish(reply);
+      if (tui && !tuiFinished) { tui.finish(reply); tuiFinished = true; }
     } finally {
       if (tui) interactiveTurnActive = false;
       flushSubagentWarnings();
@@ -2953,10 +2957,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     lastActiveModel = activeModel;
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage, unverified: result.completionRejected === true };
     } finally {
+      if (tuiStarted && tui && !tuiFinished) {
+        tui.finish("Cancelled.", { ok: false });
+        tuiFinished = true;
+      }
+      if (activeTui === tui) activeTui = null;
       preflightHarness?.dispose();
       interactiveTurnActive = false;
     }
-
   };
 
 
@@ -3717,8 +3725,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // line breaks only when the submit path expands them again (it always does unless
   // JEO_NO_MULTILINE=1, which degrades the same paste to space-joined text).
   queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk, { multiline: multilineInput, storePaste: storePromptPaste });
-  queueBusyPasteActive = () => queuedPromptInput.inPaste;
-  queueBusyTakePaste = () => { const active = queuedPromptInput.inPaste; queuedPromptInput.inPaste = false; return active; };
+  queueBusyPasteActive = () => queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste;
+  queueBusyTakePaste = () => {
+    const active = queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste;
+    queuedPromptInput.inPaste = false;
+    if (queuedPromptInput.compactFilter) {
+      queuedPromptInput.compactFilter.inPaste = false;
+      queuedPromptInput.compactFilter.pasteBody = undefined;
+    }
+    return active;
+  };
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
   });
@@ -4423,7 +4439,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
    *  "is there input?" predicate shared by clearTypedInput and the Ctrl+C decision. */
   const promptHasContent = (): boolean => {
     const line = (rl as unknown as { line?: string }).line;
-    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || queuedPromptInput.pastedLines.length > 0 || queuedPromptInput.partial.length > 0;
+    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste || queuedPromptInput.pastedLines.length > 0 || queuedPromptInput.partial.length > 0;
   };
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
@@ -4439,6 +4455,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     for (const w of pasteMerge.endWaiters.splice(0)) w();
     queuedPromptInput.partial = "";
     queuedPromptInput.inPaste = false;
+    if (queuedPromptInput.compactFilter) {
+      queuedPromptInput.compactFilter.inPaste = false;
+      queuedPromptInput.compactFilter.pasteBody = undefined;
+      queuedPromptInput.compactFilter.carry = undefined;
+    }
 
     // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
     if (hadPastedQueue) {
@@ -5452,7 +5473,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     pastedLines: queuedPromptInput.pastedLines.length,
     commands: pendingMidTurnCommands.length,
     partial: partial || queuedPromptInput.partial || String(Reflect.get(rl, "line") ?? ""),
-    pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste,
+    pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste,
   });
 
   // Bare `--resume`/`-r` (no value) at cold startup: show the SAME
@@ -5808,7 +5829,7 @@ navMatches = [];
                   sessionId,
                   cwd,
                   isAlive: () => sessionStillActive(),
-                  isBusy: () => interactiveTurnActive || !!pendingRemote || !!exclusiveRemote || pendingImages.length > 0 || pendingStdinLines.length > 0 || draftHasPaste || promptPasteActive || pasteInFlight || queuedPromptInput.inPaste || !!queuedPromptInput.partial || queuedPromptInput.pastedLines.length > 0 || Reflect.get(rl, "line") !== "",
+                  isBusy: () => interactiveTurnActive || !!pendingRemote || !!exclusiveRemote || pendingImages.length > 0 || pendingStdinLines.length > 0 || draftHasPaste || promptPasteActive || pasteInFlight || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste || !!queuedPromptInput.partial || queuedPromptInput.pastedLines.length > 0 || Reflect.get(rl, "line") !== "",
                   runTurn: (promptText, signal, trustedContext) => enqueueLiveDiscordTurn(promptText, signal, trustedContext),
                   abortTurn: async reason => { activeTurnAbort?.(reason); },
                   onStatus: msg => { if (activeTui) activeTui.events().onNotice?.(msg); else console.log(msg); },
@@ -6010,7 +6031,7 @@ navMatches = [];
       }
       if (input === "/session" || input.startsWith("/session ")) {
         const preservedPartial = commandFromQueue ? prefilledLine : "";
-        if (sessionSwitchBlocked(input, { images: pendingImages.length, lines: pendingStdinLines.length + remoteInputPending + pendingTelegram.length + (pendingRemote || exclusiveRemote ? 1 : 0), pastedLines: queuedPromptInput.pastedLines.length, commands: pendingMidTurnCommands.length, partial: preservedPartial || queuedPromptInput.partial || String(Reflect.get(rl, "line") ?? ""), pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste })) {
+        if (sessionSwitchBlocked(input, { images: pendingImages.length, lines: pendingStdinLines.length + remoteInputPending + pendingTelegram.length + (pendingRemote || exclusiveRemote ? 1 : 0), pastedLines: queuedPromptInput.pastedLines.length, commands: pendingMidTurnCommands.length, partial: preservedPartial || queuedPromptInput.partial || String(Reflect.get(rl, "line") ?? ""), pasteActive: pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste })) {
           if (preservedPartial) queuedPromptInput.partial = preservedPartial;
           console.log("(session unchanged: send or clear pending input and attachments before switching)");
           continue;

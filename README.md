@@ -626,11 +626,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.6]** (2026-11-19) — Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation.
 - **[1.0.5]** (2026-11-19) — In-place TTY subagent HUD panel without scrollback push, multi-language `jeox`/`jeo-mem` extended code-graph indexing, and runtime hardening across auth locks, compaction, browser/debug sessions, Perplexity search, OpenAI fallback, Discord, and MCP.
 - **[1.0.4]** (2026-11-18) — Harden Discord session allowlist/guardrail enforcement across gateway, live bridge, and daemon control; eliminate false 50k snapshot cap rejections on large repos and markerless directories.
 - **[1.0.2]** (2026-11-18) — Fix Perplexity `web_search` live SSE parsing, logged-out macOS token filtering, Korean/upsell authwall detection, and Playwright in-page browser fallback; surface Perplexity across `status`/`doctor`/`provider`/onboarding.
 - **[1.0.1]** (2026-11-18) — Fix `jeo evolve-core` isolated git worktree probe dependency resolution by symlinking `node_modules` from the source repo, and release `1.0.1` cleanly to npm.
-- **[1.0.0]** (2026-11-18) — Release jeo-code 1.0.0 with always-on Karpathy prompt discipline + budget caps, Harness² Propose–Probe–Compose self-evolution in `jeo evolve-core`, and aligned spec-first workflow skills.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

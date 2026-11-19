@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.6] - 2026-11-19
+_Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation._
+
+### Fixed
+- **`jeo-mem` corrupt DB sidecar backup (`packages/jeo-mem/src/db.ts`):** Detect invalid SQLite file headers in `openDb` and move the corrupt database plus `-wal`/`-shm` sidecars via `backupCorruptDb()` before SQLite opens the path with `PRAGMA journal_mode=WAL` (preventing Linux WAL teardown from unlinking sidecars first).
+- **Launch TUI & compact-paste abort cleanup (`src/commands/launch.ts`):** Track `tuiStarted`/`tuiFinished` across `runTurnScoped` so remote-cancelled turns always finish `LaunchTui`, propagate `compactFilter.inPaste` across busy-queue paste checks/clearing, and reset `emergencyPaste` when `PASTE_END` closes an empty draft.
+- **Process-session bisect watch test (`test/phase1a-process-session.test.ts`):** Poll alongside `fs.watch` and clear the interval cleanly in `finally` to avoid Linux `inotify` rename races.
+
 ## [1.0.5] - 2026-11-19
 _In-place TTY subagent HUD panel without scrollback push, multi-language `jeox`/`jeo-mem` extended code-graph indexing, and runtime hardening across auth locks, compaction, browser/debug sessions, Perplexity search, OpenAI fallback, Discord, and MCP._
-
 ### Added
 - **In-place live subagent HUD panel (`src/tui/app.ts`, `src/tui/components/status.ts`, `test/subagent-live-activity.test.ts`, `test/tui-app.test.ts`, `test/tui-activity-regression.test.ts`):** Update the bottom live subagent panel in-place on a TTY across `start`/`step`/`tool`/`thinking` events without pushing scrollback lines mid-turn, preserve stable worker ordering (`index`/`seq`) and constant 2-line row height (≤3 workers), surface tool summaries and total tool counts, show `(sub ×N)` in the status line, and commit a single summary card on `done`/`error`.
 - **Extended multi-language `jeo-mem` / `jeox` code-graph index (`packages/jeo-mem/src/{extract-ext,indexer-ext,query-multi,cli,db,index}.ts`, `src/agent/jeox-tool.ts`, `packages/jeo-mem/test/ext.test.ts`):** Index C/C++, C#, Go, Java, and Shell definitions, imports/includes, and calls into `jeo-ext.db` alongside `jeo.db`, and aggregate `where-defined`, `who-calls`, `what-calls`, `impact`, `search`, and `stats` across both databases.

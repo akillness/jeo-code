@@ -44,6 +44,8 @@ import type { ImageAttachment } from "../ai/types";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
+const NATIVE_RENDER = Renderer.prototype.render;
+
 const SUBAGENT_RAW_DETAIL_CAP = 8192;
 
 function safeSlice(text: string, maxUnits: number): string {
@@ -363,6 +365,9 @@ export class LaunchTui {
   // event loop waiting on 'drain' — keeps the render loop responsive and non-blocking.
   // Generic and tmux-agnostic: helps regardless of what's downstream of stdout.
   private stdoutBackpressured = false;
+  private readonly onDrain = (): void => {
+    this.stdoutBackpressured = false;
+  };
   // Resize handling: repaint IMMEDIATELY on the first event
   // so a deliberate resize never lags, then cap follow-ups to ~30fps so a drag-resize
   // tracks the cursor live (instead of staying stale until the drag pauses — the lag a
@@ -454,6 +459,7 @@ export class LaunchTui {
   // Shown as a DIMMED bounded block while the tool runs; cleared when the formatted
   // result card lands (onToolResult) — the "shaded until complete" effect.
   private liveToolOutput = "";
+  private pendingToolPartial: string | null = null;
   // Ctrl+O history/detail panel. When set, the live inline frame shows this
   // block above the heartbeat; pressing Ctrl+O again clears it and restores the
   // normal activity view. Kept as data, not scrollback text, so it can actually close.
@@ -528,7 +534,7 @@ export class LaunchTui {
     this.write = (s: string) => {
       if (rawWrite(s) === false && !this.stdoutBackpressured) {
         this.stdoutBackpressured = true;
-        process.stdout.once("drain", () => { this.stdoutBackpressured = false; });
+        process.stdout.once("drain", this.onDrain);
       }
     };
     this.tty = opts.tty ?? isTTY();
@@ -756,20 +762,18 @@ export class LaunchTui {
       },
       onToolProgress: (_tool, partial) => {
         if (this.finished) return;
-        // Sanitize raw child stdout (CR / EL / cursor-move escapes) before it enters the
-        // frame — unsanitized control bytes tore the renderer's next \x1b[2K (literal "2K")
-        // and hijacked the cursor, corrupting the live frame.
-        // Only the display WINDOW is sanitized: renderLiveBlock tails the text anyway, so
-        // scanning the full cumulative buffer per event was O(n²) over a chatty stream.
-        this.liveToolOutput = sanitizeForFrame(tailForWrap(partial));
-        if (Date.now() - this.lastStreamDraw >= 100) {
-          this.lastStreamDraw = Date.now();
-          this.draw();
-        }
+        this.pendingToolPartial = partial;
+        const now = Date.now();
+        if (now - this.lastStreamDraw < 100) return;
+        this.lastStreamDraw = now;
+        this.liveToolOutput = sanitizeForFrame(tailForWrap(this.pendingToolPartial));
+        this.pendingToolPartial = null;
+        this.draw();
       },
       onToolResult: (tool, success, output) => {
         this.runningTool = false;
         this.liveToolOutput = ""; // formatted result card now replaces the live dim output
+        this.pendingToolPartial = null;
         if (this.pendingIndex !== null) {
           this.tools.finish(this.pendingIndex, success);
           this.pendingIndex = null;
@@ -1376,6 +1380,26 @@ export class LaunchTui {
   }
 
   start(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = undefined;
+    }
+    process.stdout.off("drain", this.onDrain);
+    this.stdoutBackpressured = false;
+    if (this.stopResizeWatch) {
+      this.stopResizeWatch();
+      this.stopResizeWatch = undefined;
+    }
+    if (this.tty) {
+      process.stdout.removeListener("resize", this.onResize);
+      if (process.platform !== "win32") {
+        process.removeListener("SIGCONT", this.onResume);
+      }
+    }
     this.startedAt = Date.now();
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
@@ -1475,6 +1499,9 @@ export class LaunchTui {
         // Ignore transient render races (resize/component state) so the agent turn keeps running.
       }
     }, 120);
+    if (typeof this.timer === "object" && this.timer !== null && "unref" in this.timer && typeof this.timer.unref === "function") {
+      this.timer.unref();
+    }
   }
 
   /** Force a full repaint of the live frame (auto-invoked on resize/input noise). */
@@ -1696,10 +1723,16 @@ export class LaunchTui {
     this.cachedFrame = -1;
     this.forgeSummaries.length = 0;
     this.liveToolOutput = "";
+    this.pendingToolPartial = null;
     this.streamingThought = "";
     this.streamingReasoning = "";
     this.flushedThought = "";
     this.flushedReasoning = "";
+    this.tools.reset();
+    this.activityLog.length = 0;
+    this.todos = [];
+    process.stdout.off("drain", this.onDrain);
+    this.stdoutBackpressured = false;
   }
 
   private rememberForge(summary: ForgeSummary): void {
@@ -2101,6 +2134,10 @@ export class LaunchTui {
     // Live tool output with streaming bash stdout: while a tool runs, its
     // output arrives via onToolProgress and is shown as a DIMMED, bounded tail block.
     // It is transient — cleared on result, when the formatted forge card takes over.
+    if (this.runningTool && this.pendingToolPartial !== null) {
+      this.liveToolOutput = sanitizeForFrame(tailForWrap(this.pendingToolPartial));
+      this.pendingToolPartial = null;
+    }
     if (this.runningTool && this.liveToolOutput.trim()) {
       tail.push(...this.renderLiveBlock("Output", this.liveToolOutput, cols, rows, 8));
     }
@@ -2253,7 +2290,10 @@ export class LaunchTui {
       // (e.g. the model bar with a deep cwd) cannot soft-wrap into a second physical row
       // and desync the differential renderer's 1-line=1-row accounting. Frame height stays
       // content-sized so completed cards remain visible in scrollback above the live frame.
-      this.renderer.render(inlineFrame.slice(0, rows).map(l => truncateToWidth(l, cols)));
+      const inlineLines = inlineFrame.slice(0, rows);
+      this.renderer.render(
+        this.renderer.render === NATIVE_RENDER ? inlineLines : inlineLines.map(l => truncateToWidth(l, cols)),
+      );
       return;
     }
 
@@ -2423,6 +2463,8 @@ export class LaunchTui {
     if (fit) {
       frame = frame.slice(0, rows);
     }
-    this.renderer.render(frame.map(l => truncateToWidth(l, cols)));
+    this.renderer.render(
+      this.renderer.render === NATIVE_RENDER ? frame : frame.map(l => truncateToWidth(l, cols)),
+    );
   }
 }

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import chalk from "chalk";
 import {
   editBlockDiffLines,
@@ -13,6 +13,9 @@ import { renderWelcome } from "../src/tui/components/welcome";
 import { buildRalphSubagentPrompt, formatRalphStreamEvent, formatRalphTodoGuide } from "../src/commands/team";
 import { visibleWidth } from "../src/tui/components/width";
 import { stripInlineMarkdown } from "../src/tui/components/markdown-text";
+import { renderStatusBox } from "../src/tui/components/status";
+import { ColorLevel } from "../src/tui/components/color";
+import { applyDimensionalGradient } from "../src/tui/components/evolution";
 import { parseChangelogSections, changelogText } from "../src/util/whats-new";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -856,4 +859,135 @@ test("summarizeForgeInvocation and summarizeForgeResult sanitize ESC/OSC sequenc
   expect(customResText).not.toContain("\x1b");
   expect(customResText).not.toContain("\x07");
   expect(customResText).not.toContain("evil");
+});
+
+test("formatForgeBox({ dim: true }) produces plain dimmed lines without embedded color SGR", () => {
+  const prevLevel = chalk.level;
+  chalk.level = 3;
+  try {
+    const summary = {
+      title: "\x1b[32m✓ Bash\x1b[0m",
+      language: "bash",
+      lines: [
+        '\x1b[31mconst msg = "secret";\x1b[0m',
+        "\x1b[36m+ added line\x1b[0m",
+        "\x1b[33m- removed line\x1b[0m",
+      ],
+    };
+    const box = formatForgeBox(summary, {
+      width: 48,
+      unicode: true,
+      color: true,
+      dim: true,
+      paint: chalk.cyan,
+      paintShadow: chalk.blue,
+      fill: chalk.bgRed,
+      titleMark: "\x1b[35m▸\x1b[0m",
+      flow: { palette: ["#ff0000", "#00ff00"], phase: 0.3, colorLevel: 3 },
+    });
+    for (const row of box) {
+      expect(row.startsWith("\x1b[2m")).toBe(true);
+      expect(row.endsWith("\x1b[22m")).toBe(true);
+      const inner = row.slice("\x1b[2m".length, -"\x1b[22m".length);
+      // No embedded color, bold, background, or nested reset SGR inside the dimmed wrapper.
+      expect(inner).not.toContain("\x1b[");
+      expect(visibleWidth(row)).toBe(48);
+    }
+
+    // Patch cards with diffPaint must also suppress diff background SGR under dim: true.
+    const patchBox = formatForgeBox(
+      { title: "\x1b[32mEdit src/a.ts\x1b[0m", language: "patch", lines: ["+ new", "- old"] },
+      {
+        width: 40,
+        color: true,
+        dim: true,
+        diffPaint: { add: chalk.bgGreen, del: chalk.bgRed },
+      },
+    );
+    for (const row of patchBox) {
+      expect(row.startsWith("\x1b[2m")).toBe(true);
+      expect(row.endsWith("\x1b[22m")).toBe(true);
+      expect(row.slice("\x1b[2m".length, -"\x1b[22m".length)).not.toContain("\x1b[");
+    }
+
+    // color: false + dim: true stays completely ANSI-free.
+    const plainDim = formatForgeBox(summary, { width: 48, color: false, dim: true });
+    for (const row of plainDim) {
+      expect(row).not.toContain("\x1b[");
+      expect(visibleWidth(row)).toBe(48);
+    }
+  } finally {
+    chalk.level = prevLevel;
+  }
+});
+
+test("paintGradientLabel / renderStatusBox preserves gradient memoization across 0.1s elapsed ticks", () => {
+  const prevLevel = chalk.level;
+  chalk.level = 3;
+  let fakeNow = 9000; // exact 225ms bucket boundary (9000 % 225 === 0)
+  const nowSpy = spyOn(Date, "now").mockImplementation(() => fakeNow);
+  try {
+    const baseData = {
+      cols: 80,
+      phaseLabel: "thinking",
+      spinner: "⠋",
+      escHint: true,
+      unicode: true,
+      color: true,
+      colorLevel: ColorLevel.TrueColor,
+      palette: ["#0a3d62", "#48dbfb"] as const,
+      isThinking: true,
+    };
+
+    fakeNow = 9000;
+    const tick0 = renderStatusBox({ ...baseData, activity: "calling model (m1) (1.0s)…" });
+    fakeNow = 9100; // +0.1s inside the same 225ms bucket [9000, 9225)
+    const tick1 = renderStatusBox({ ...baseData, activity: "calling model (m1) (1.1s)…" });
+
+    const row0 = tick0[0]!;
+    const row1 = tick1[0]!;
+    expect(row0).toContain("\x1b[38;2;");
+    // Split right before the dimmed elapsed suffix so the entire gradient-painted prefix is compared.
+    const marker0 = row0.indexOf(" (1.0s)…");
+    const marker1 = row1.indexOf(" (1.1s)…");
+    expect(marker0).toBeGreaterThan(0);
+    expect(marker1).toBe(marker0);
+    expect(row0.slice(0, marker0)).toBe(row1.slice(0, marker1));
+    // The elapsed suffix itself is dimmed, not painted with per-character gradient escapes.
+    const suffix0 = row0.slice(marker0, row0.indexOf("\x1b[22m", marker0) + 5);
+    expect(suffix0).toBe(" (1.0s)…\x1b[22m");
+
+    // ASCII "..." suffix must preserve the exact same gradient prefix memoization.
+    fakeNow = 9000;
+    const ascii0 = renderStatusBox({ ...baseData, unicode: false, activity: "calling model (m1) (1.0s)..." })[0]!;
+    fakeNow = 9100;
+    const ascii1 = renderStatusBox({ ...baseData, unicode: false, activity: "calling model (m1) (1.1s)..." })[0]!;
+    const aIdx0 = ascii0.indexOf(" (1.0s)...");
+    const aIdx1 = ascii1.indexOf(" (1.1s)...");
+    expect(aIdx0).toBeGreaterThan(0);
+    expect(ascii0.slice(0, aIdx0)).toBe(ascii1.slice(0, aIdx1));
+
+    // Crossing the 225ms bucket boundary advances the shimmer phase, changing the gradient prefix.
+    fakeNow = 9225;
+    const tick2 = renderStatusBox({ ...baseData, activity: "calling model (m1) (1.2s)…" })[0]!;
+    const marker2 = tick2.indexOf(" (1.2s)…");
+    expect(tick2.slice(0, marker2)).not.toBe(row0.slice(0, marker0));
+
+    // Labels without an elapsed suffix stay byte-for-byte identical within a 225ms bucket.
+    fakeNow = 9000;
+    const steady0 = renderStatusBox({ ...baseData, activity: "thinking through the next tool call" })[0]!;
+    fakeNow = 9100;
+    const steady1 = renderStatusBox({ ...baseData, activity: "thinking through the next tool call" })[0]!;
+    expect(steady1).toBe(steady0);
+
+    // Direct check on applyDimensionalGradient memoization across 0.1s ticks vs bucket boundary.
+    const g0 = applyDimensionalGradient("calling model (m1)", 9000, "#0a3d62", "#48dbfb", ColorLevel.TrueColor, false);
+    const g1 = applyDimensionalGradient("calling model (m1)", 9100, "#0a3d62", "#48dbfb", ColorLevel.TrueColor, false);
+    const g2 = applyDimensionalGradient("calling model (m1)", 9225, "#0a3d62", "#48dbfb", ColorLevel.TrueColor, false);
+    expect(g1).toBe(g0);
+    expect(g2).not.toBe(g0);
+  } finally {
+    nowSpy.mockRestore();
+    chalk.level = prevLevel;
+  }
 });

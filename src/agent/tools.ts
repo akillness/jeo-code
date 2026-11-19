@@ -239,6 +239,8 @@ const STRUCTURAL_SUMMARY_EXTS = new Set([
   ".cts",
 ]);
 
+export const MAX_STRUCTURAL_SUMMARY_BYTES = 512 * 1024;
+
 export interface StructuralDeclaration {
   kind:
     | "import"
@@ -289,6 +291,13 @@ export function summarizeTypeScriptStructure(
 ): StructuralReadSummary {
   const ext = path.extname(filePath).toLowerCase();
   if (!STRUCTURAL_SUMMARY_EXTS.has(ext)) {
+    return { supported: false, declarations: [], formatted: "" };
+  }
+  if (
+    content.length > MAX_STRUCTURAL_SUMMARY_BYTES ||
+    (content.length * 3 > MAX_STRUCTURAL_SUMMARY_BYTES &&
+      Buffer.byteLength(content, "utf-8") > MAX_STRUCTURAL_SUMMARY_BYTES)
+  ) {
     return { supported: false, declarations: [], formatted: "" };
   }
 
@@ -557,14 +566,20 @@ export async function readTool(
     }
 
     let summaryFallbackPrefix = "";
+    const ext = path.extname(filePath).toLowerCase();
+    const withinSummaryCap = rawBuf.length <= MAX_STRUCTURAL_SUMMARY_BYTES;
     if (summary || isSummarySelector) {
-      const struct = summarizeTypeScriptStructure(content, filePath);
-      if (struct.supported && struct.declarations.length > 0) {
-        return { success: true, output: struct.formatted };
+      if (!withinSummaryCap && STRUCTURAL_SUMMARY_EXTS.has(ext)) {
+        summaryFallbackPrefix = `[structural summary fallback: ${filePath} is ${(rawBuf.length / 1024).toFixed(0)} KiB (exceeds ${(MAX_STRUCTURAL_SUMMARY_BYTES / 1024).toFixed(0)} KiB AST parse limit); showing anchored lines]\n`;
+      } else {
+        const struct = summarizeTypeScriptStructure(content, filePath);
+        if (struct.supported && struct.declarations.length > 0) {
+          return { success: true, output: struct.formatted };
+        }
+        summaryFallbackPrefix = !struct.supported
+          ? `[structural summary fallback: ${filePath} is not a supported TypeScript/JavaScript source file; showing anchored lines]\n`
+          : `[structural summary fallback: ${filePath} has no top-level AST declarations; showing anchored lines]\n`;
       }
-      summaryFallbackPrefix = !struct.supported
-        ? `[structural summary fallback: ${filePath} is not a supported TypeScript/JavaScript source file; showing anchored lines]\n`
-        : `[structural summary fallback: ${filePath} has no top-level AST declarations; showing anchored lines]\n`;
     }
 
     // Default (no lineRange): fill the model-visible read budget with WHOLE lines
@@ -588,8 +603,8 @@ export async function readTool(
     if (shownLines.length < lines.length) {
       const shown = shownLines.length;
       let notice = `\n…(showing lines 1-${shown} of ${lines.length}; pass lineRange "${shown + 1}-" to read the rest)`;
-      const struct = summarizeTypeScriptStructure(content, filePath);
-      const remainingDecls = struct.supported
+      const struct = withinSummaryCap ? summarizeTypeScriptStructure(content, filePath) : null;
+      const remainingDecls = struct?.supported
         ? struct.declarations.filter(d => d.endLine > shown)
         : [];
       if (remainingDecls.length > 0) {

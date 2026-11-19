@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,6 +13,9 @@ import {
   parseSkillInvocation,
   parseSkillMarkdown,
   buildSkillTask,
+  skillDirs,
+  loadSkills,
+  invalidateSkillsCache,
 } from "../src/skills/catalog";
 
 test("buildSkillTask: drives execution with real tools, not a skill-named tool call", () => {
@@ -285,4 +288,123 @@ test("skillInvocationCard: shows the intent line (truncated) when given, instead
   const intentRow = long.find(l => l.startsWith("├─ intent:"))!;
   expect(intentRow.length).toBeLessThanOrEqual("├─ intent: ".length + 88);
   expect(intentRow.endsWith("…")).toBe(true);
+});
+
+test("skillDirs(os.homedir()) deduplicates ~/.agents/skills and preserves highest-precedence order", () => {
+  const prevHome = process.env.HOME;
+  const prevCfg = process.env.JEO_CONFIG_DIR;
+  const prevSkillsDir = process.env.JEO_SKILLS_DIR;
+  try {
+    const homeDir = os.homedir();
+    process.env.HOME = homeDir;
+    delete process.env.JEO_CONFIG_DIR;
+    delete process.env.JEO_SKILLS_DIR;
+
+    const dirs = skillDirs(homeDir, true);
+    const agentsSkills = path.join(homeDir, ".agents", "skills");
+    const claudeSkills = path.join(homeDir, ".claude", "skills");
+    const jeoSkills = path.join(homeDir, ".jeo", "skills");
+    const jeoAgentSkills = path.join(homeDir, ".jeo", "agent", "skills");
+
+    expect(dirs.filter(d => d === agentsSkills)).toHaveLength(1);
+    expect(dirs.filter(d => d === claudeSkills)).toHaveLength(1);
+    expect(dirs.filter(d => d === jeoSkills)).toHaveLength(1);
+    expect(dirs.filter(d => d === jeoAgentSkills)).toHaveLength(1);
+
+    // Highest-precedence (later) occurrence is kept so .agents/skills stays after .claude/skills and before .jeo/skills.
+    expect(dirs.indexOf(agentsSkills)).toBeGreaterThan(dirs.indexOf(claudeSkills));
+    expect(dirs.indexOf(jeoSkills)).toBeGreaterThan(dirs.indexOf(agentsSkills));
+
+    // Even if JEO_SKILLS_DIR explicitly repeats ~/.agents/skills, deduplication collapses it to once.
+    process.env.JEO_SKILLS_DIR = agentsSkills;
+    expect(skillDirs(homeDir, true).filter(d => d === agentsSkills)).toHaveLength(1);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevCfg;
+    if (prevSkillsDir === undefined) delete process.env.JEO_SKILLS_DIR;
+    else process.env.JEO_SKILLS_DIR = prevSkillsDir;
+  }
+});
+
+test("loadSkills hits cache within TTL and invalidates on new skill file write or TTL expiry", async () => {
+  const prevHome = process.env.HOME;
+  const prevCfg = process.env.JEO_CONFIG_DIR;
+  const prevSkillsDir = process.env.JEO_SKILLS_DIR;
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-cache-home-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-cache-cwd-"));
+  let now = 1_700_000_000_000;
+  const nowSpy = spyOn(Date, "now").mockImplementation(() => now);
+  const readdirSpy = spyOn(fs, "readdir");
+  try {
+    process.env.HOME = home;
+    process.env.JEO_CONFIG_DIR = path.join(home, ".jeo");
+    delete process.env.JEO_SKILLS_DIR;
+    invalidateSkillsCache();
+
+    const skillsRoot = path.join(cwd, ".agents", "skills");
+    const alphaDir = path.join(skillsRoot, "alpha-skill");
+    await fs.mkdir(alphaDir, { recursive: true });
+    await fs.writeFile(
+      path.join(alphaDir, "SKILL.md"),
+      "---\nname: alpha-skill\ndescription: alpha v1\n---\n\nBody v1.",
+    );
+
+    const first = await loadSkills(cwd);
+    const firstAlpha = first.find(s => s.name === "alpha-skill");
+    expect(firstAlpha?.summary).toBe("alpha v1");
+    firstAlpha!.summary = "caller-mutated";
+
+    // In-place nested edit leaves skillsRoot mtime unchanged -> within TTL must serve cached entry without readdir.
+    await fs.writeFile(
+      path.join(alphaDir, "SKILL.md"),
+      "---\nname: alpha-skill\ndescription: alpha v2\n---\n\nBody v2.",
+    );
+    readdirSpy.mockClear();
+    now += 500;
+
+    const second = await loadSkills(cwd);
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(second.find(s => s.name === "alpha-skill")?.summary).toBe("alpha v1");
+
+    // Writing a new skill file under skillsRoot updates dirStamps -> invalidates immediately within TTL.
+    await fs.writeFile(
+      path.join(skillsRoot, "beta-skill.md"),
+      "---\nname: beta-skill\ndescription: beta v1\n---\n\nBeta body.",
+    );
+    now += 100;
+    const third = await loadSkills(cwd);
+    expect(readdirSpy).toHaveBeenCalled();
+    expect(third.find(s => s.name === "beta-skill")?.summary).toBe("beta v1");
+    expect(third.find(s => s.name === "alpha-skill")?.summary).toBe("alpha v2");
+
+    // In-place edit of beta-skill.md stays cached until TTL elapses, then refreshes.
+    await fs.writeFile(
+      path.join(skillsRoot, "beta-skill.md"),
+      "---\nname: beta-skill\ndescription: beta v2\n---\n\nBeta body v2.",
+    );
+    readdirSpy.mockClear();
+    now += 500;
+    const stillCached = await loadSkills(cwd);
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(stillCached.find(s => s.name === "beta-skill")?.summary).toBe("beta v1");
+
+    now += 2_500;
+    const expired = await loadSkills(cwd);
+    expect(readdirSpy).toHaveBeenCalled();
+    expect(expired.find(s => s.name === "beta-skill")?.summary).toBe("beta v2");
+  } finally {
+    invalidateSkillsCache();
+    readdirSpy.mockRestore();
+    nowSpy.mockRestore();
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevCfg;
+    if (prevSkillsDir === undefined) delete process.env.JEO_SKILLS_DIR;
+    else process.env.JEO_SKILLS_DIR = prevSkillsDir;
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });

@@ -66,6 +66,39 @@ export function gitDirtyCount(cwd: string): number | undefined {
 }
 
 /**
+ * Async variant of {@link gitDirtyCount} with a bounded timeout so REPL turn
+ * boundaries never block the event loop on slow or large repositories.
+ */
+export async function gitDirtyCountAsync(cwd: string, timeoutMs = 500): Promise<number | undefined> {
+  try {
+    const proc = Bun.spawn(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
+    const stdoutPromise = new Response(proc.stdout).text().catch(() => "");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        proc.exited,
+        new Promise<"timeout">(resolve => {
+          timer = setTimeout(() => resolve("timeout"), timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+      if (outcome === "timeout") {
+        try { proc.kill?.(); } catch {}
+        return undefined;
+      }
+      if (outcome !== 0) return undefined;
+      const stdout = await stdoutPromise;
+      const n = stdout.split("\n").filter(l => l.trim().length > 0).length;
+      return n || undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Allocate + create an INDEPENDENT tmux session from a base name. Each separate,
  * concurrent `jeo --tmux` invocation gets its OWN session instead of attaching to (and
  * mirroring) one another process already created: try `base`, then `base-2`, `base-3`, …
@@ -358,6 +391,32 @@ export function currentTmuxClipboardCommands(
 }
 
 /**
+ * Apply a sequence of tmux commands in a single `tmux` client invocation using
+ * tmux's standalone `;` command-separator token (no shell involved). Falls back
+ * to individual best-effort invocations if the batched call exits non-zero (for
+ * instance, an older tmux rejecting one option stops the `;` chain early).
+ */
+export function applyTmuxCommands(tmuxBin: string, commands: readonly TmuxProfileCommand[]): void {
+  if (commands.length === 0) return;
+  if (commands.length === 1) {
+    try { Bun.spawnSync([tmuxBin, ...commands[0]!.args]); } catch { /* best-effort */ }
+    return;
+  }
+  const batchedArgs: string[] = [];
+  for (let i = 0; i < commands.length; i++) {
+    if (i > 0) batchedArgs.push(";");
+    batchedArgs.push(...commands[i]!.args);
+  }
+  try {
+    const res = Bun.spawnSync([tmuxBin, ...batchedArgs]);
+    if (res.exitCode === 0) return;
+  } catch { /* fall through to per-command best-effort */ }
+  for (const cmd of commands) {
+    try { Bun.spawnSync([tmuxBin, ...cmd.args]); } catch { /* best-effort */ }
+  }
+}
+
+/**
  * Resolve a git worktree path (`--worktree <path>`). If the path
  * already exists it is reused as-is; otherwise a new worktree is created on a
  * branch derived from the path basename. Returns the absolute worktree path.
@@ -511,17 +570,30 @@ export function reapStaleTmuxSessions(
     keep,
   });
   if (reapable.length === 0) return [];
-  const kill = deps.kill ?? ((name: string): void => {
-    try {
-      Bun.spawnSync([tmuxBin, "kill-session", "-t", `=${name}`], { stdout: "ignore", stderr: "ignore" });
-    } catch {
-      /* best-effort: the session may have died on its own between list and kill */
+  if (deps.kill) {
+    for (const name of reapable) {
+      deps.kill(name);
     }
-  });
-  const reaped: string[] = [];
-  for (const name of reapable) {
-    kill(name);
-    reaped.push(name);
+    return reapable;
   }
-  return reaped;
+  const killArgs: string[] = [];
+  for (let i = 0; i < reapable.length; i++) {
+    if (i > 0) killArgs.push(";");
+    killArgs.push("kill-session", "-t", `=${reapable[i]}`);
+  }
+  try {
+    const res = Bun.spawnSync([tmuxBin, ...killArgs], { stdout: "ignore", stderr: "ignore" });
+    if (res.exitCode !== 0 && reapable.length > 1) {
+      for (const name of reapable) {
+        try {
+          Bun.spawnSync([tmuxBin, "kill-session", "-t", `=${name}`], { stdout: "ignore", stderr: "ignore" });
+        } catch {
+          /* best-effort: the session may have died on its own between list and kill */
+        }
+      }
+    }
+  } catch {
+    /* best-effort: the session may have died on its own between list and kill */
+  }
+  return reapable;
 }

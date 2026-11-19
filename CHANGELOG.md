@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.7] - 2026-11-19
+_TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching._
+
+### Changed
+- **TUI rendering & timer hygiene (`src/tui/app.ts`, `src/tui/renderer.ts`, `src/tui/components/{width,forge,status,color}.ts`):** Deduplicate `truncateToWidth` in production `draw()`/`Renderer.render()`, gate sync-escape output on a `dirty` flag, add fast-path width checks, split `(elapsed)` suffixes from gradient memo keys, render `dim: true` forge boxes directly, bound macOS `defaults read` with a 250ms timeout, add `start()` re-entrancy guards + `timer.unref()`, detach `drain` / reset turn state in `finish()`, and defer `onToolProgress` sanitization until draw.
+- **Agent tools, fan-out & skill catalog (`src/agent/tools.ts`, `src/agent/task-tool.ts`, `src/skills/catalog.ts`):** Cap `readTool` / `summarizeTypeScriptStructure` AST parsing at 512 KiB, preload `memoryPromptSection` once per `createTaskTool` fan-out batch, deduplicate `skillDirs` roots, add 2s TTL + stat-validated `loadSkills` caching, and reuse a singleton `dlopen` handle in `readAuthorizedSkillFile`.
+- **`jeo-mem` incremental graph & MCP framing (`packages/jeo-mem/src/{edges,mcp}.ts`, `src/mcp/server.ts`):** Replace full `code_edges` rebuilds with transactional incremental per-file updates, raise `jeo-mem` MCP sync TTL to 15s with `fs.watch` dirty tracking, and switch `src/mcp/server.ts` to $O(N)$ `Buffer`-based framing with 16 MiB frame / 16 KiB header limits and pipelined post-error draining.
+- **CLI cold start & `--tmux` batching (`src/commands/launch.ts`, `src/commands/launch/tmux.ts`):** Handle `--help`/`--list`/`--tmux` outer wrapper before loading heavy session modules, convert session-only imports to lazy `import()`, add async `gitDirtyCountAsync` with timeout, and batch `tmux` profile/reap commands via `applyTmuxCommands`.
+
 ## [1.0.6] - 2026-11-19
 _Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation._
 

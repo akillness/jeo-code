@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, draftFromUnsentLine, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
+import { runLaunchCommand, parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, draftFromUnsentLine, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
 import { MULTILINE_SENTINEL } from "../src/commands/launch/input";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
@@ -309,4 +312,89 @@ test("captureLivePromptInputChunk: multiline:false degrades a pasted break to on
   const state = freshQueue();
   captureLivePromptInputChunk(state, `${PASTE_START}one\ntwo${PASTE_END}`, { multiline: false });
   expect(state.partial).toBe("one two");
+});
+
+test("runLaunchCommand(['--help']) prints usage and returns cleanly without reading config or touching tmux", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-launch-help-"));
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
+  const originalExitCode = process.exitCode;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWhich = Bun.which;
+  const logs: string[] = [];
+  const errors: string[] = [];
+  let whichCalled = false;
+
+  try {
+    // Malformed config.json would throw if readGlobalConfig({ requireValid: true }) ran.
+    await fs.writeFile(path.join(root, "config.json"), "{corrupt-json");
+    process.env.JEO_CONFIG_DIR = root;
+    process.exitCode = undefined;
+    console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+    console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+    Bun.which = (bin: string) => {
+      whichCalled = true;
+      return originalWhich(bin);
+    };
+
+    await runLaunchCommand(["--help"]);
+    await runLaunchCommand(["-h", "--tmux", "--resume"]);
+
+    expect(logs).toHaveLength(2);
+    for (const line of logs) {
+      expect(line).toContain("Usage: jeo launch");
+    }
+    expect(errors).toEqual([]);
+    expect(whichCalled).toBe(false);
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  } finally {
+    if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = originalConfigDir;
+    process.exitCode = originalExitCode;
+    console.log = originalLog;
+    console.error = originalError;
+    Bun.which = originalWhich;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runLaunchCommand(['--help']) in a fresh process avoids loading session, workflow, or sandbox supervisor modules", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-launch-help-proc-"));
+  const configDir = path.join(root, "cfg");
+  const workDir = path.join(root, "work");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.mkdir(workDir, { recursive: true });
+
+  try {
+    await fs.writeFile(path.join(configDir, "config.json"), "{invalid");
+    const launchModule = path.resolve(import.meta.dir, "../src/commands/launch.ts");
+    const script = [
+      `import { runLaunchCommand } from ${JSON.stringify(launchModule)};`,
+      `await runLaunchCommand(["--help"]);`,
+      `const loaded = Object.keys(require.cache).filter(k => k.includes("/src/"));`,
+      `process.stdout.write("LOADED=" + JSON.stringify(loaded) + "\\n");`,
+    ].join(" ");
+
+    const res = Bun.spawnSync([process.execPath, "--eval", script], {
+      cwd: workDir,
+      env: { ...process.env, JEO_CONFIG_DIR: configDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const stdout = res.stdout.toString();
+    const stderr = res.stderr.toString();
+    expect(res.exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("Usage: jeo launch");
+
+    const loadedLine = stdout.split("\n").find(l => l.startsWith("LOADED="));
+    expect(loadedLine).toBeDefined();
+    const loaded = JSON.parse(loadedLine!.slice("LOADED=".length)) as string[];
+    expect(loaded.some(p => p.endsWith("/src/agent/session.ts"))).toBe(false);
+    expect(loaded.some(p => p.endsWith("/src/commands/launch/workflow.ts"))).toBe(false);
+    expect(loaded.some(p => p.endsWith("/src/agent/sandbox/supervisor.ts"))).toBe(false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

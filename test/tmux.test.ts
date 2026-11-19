@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
-import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags, shouldEnableCurrentTmuxMouse, tmuxProfileCommands, shouldSelfCloseTmuxSession, tmuxRemainOnExitChainArgs } from "../src/commands/launch";
+import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags, shouldEnableCurrentTmuxMouse, tmuxProfileCommands, shouldSelfCloseTmuxSession, tmuxRemainOnExitChainArgs, applyTmuxCommands, gitDirtyCountAsync } from "../src/commands/launch";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -716,4 +716,201 @@ test("tmuxNewSessionSizeArgs: emits -x/-y for a known size and nothing when unkn
   const { tmuxNewSessionSizeArgs } = await import("../src/commands/launch/tmux");
   expect(tmuxNewSessionSizeArgs({ columns: 178, rows: 35 })).toEqual(["-x", "178", "-y", "35"]);
   expect(tmuxNewSessionSizeArgs(undefined)).toEqual([]);
+});
+
+test("applyTmuxCommands batches commands with ';' in one Bun.spawnSync call and skips fallback on exit 0", () => {
+  const originalSpawnSync = Bun.spawnSync;
+  const calls: string[][] = [];
+
+  try {
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for argv verification
+
+    applyTmuxCommands("/usr/bin/tmux", []);
+    expect(calls).toEqual([]);
+
+    applyTmuxCommands("/usr/bin/tmux", [
+      { description: "single", args: ["set-option", "-t", "=s:", "mouse", "on"] },
+    ]);
+    expect(calls).toEqual([
+      ["/usr/bin/tmux", "set-option", "-t", "=s:", "mouse", "on"],
+    ]);
+
+    calls.length = 0;
+    applyTmuxCommands("/usr/bin/tmux", [
+      { description: "first", args: ["set-option", "-t", "=s:", "mouse", "on"] },
+      { description: "second", args: ["set-option", "-t", "=s:", "@jeo-profile", "1"] },
+      { description: "third", args: ["set-window-option", "-t", "=s:", "window-size", "latest"] },
+    ]);
+
+    expect(calls).toEqual([[
+      "/usr/bin/tmux",
+      "set-option", "-t", "=s:", "mouse", "on",
+      ";",
+      "set-option", "-t", "=s:", "@jeo-profile", "1",
+      ";",
+      "set-window-option", "-t", "=s:", "window-size", "latest",
+    ]]);
+  } finally {
+    Bun.spawnSync = originalSpawnSync;
+  }
+});
+
+test("applyTmuxCommands falls back to individual calls in order when batched spawnSync exits non-zero or throws", () => {
+  const originalSpawnSync = Bun.spawnSync;
+  const calls: string[][] = [];
+  let failBatch = true;
+  let throwOnSecondIndividual = false;
+
+  try {
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      if (failBatch && argv.includes(";")) {
+        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("unknown option") };
+      }
+      if (throwOnSecondIndividual && argv.includes("@jeo-profile")) {
+        throw new Error("transient failure");
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for fallback verification
+
+    const cmds = [
+      { description: "first", args: ["set-option", "-t", "=s:", "mouse", "on"] },
+      { description: "second", args: ["set-option", "-t", "=s:", "@jeo-profile", "1"] },
+      { description: "third", args: ["set-window-option", "-t", "=s:", "window-size", "latest"] },
+    ];
+
+    throwOnSecondIndividual = true;
+    applyTmuxCommands("/usr/bin/tmux", cmds);
+
+    expect(calls).toEqual([
+      [
+        "/usr/bin/tmux",
+        "set-option", "-t", "=s:", "mouse", "on",
+        ";",
+        "set-option", "-t", "=s:", "@jeo-profile", "1",
+        ";",
+        "set-window-option", "-t", "=s:", "window-size", "latest",
+      ],
+      ["/usr/bin/tmux", "set-option", "-t", "=s:", "mouse", "on"],
+      ["/usr/bin/tmux", "set-option", "-t", "=s:", "@jeo-profile", "1"],
+      ["/usr/bin/tmux", "set-window-option", "-t", "=s:", "window-size", "latest"],
+    ]);
+
+    // Throwing on the batched call itself also falls back to individual commands.
+    calls.length = 0;
+    failBatch = false;
+    throwOnSecondIndividual = false;
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      if (argv.includes(";")) throw new Error("batched error");
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for exception fallback
+
+    applyTmuxCommands("/usr/bin/tmux", cmds);
+    expect(calls).toHaveLength(4);
+    expect(calls.slice(1)).toEqual(cmds.map(c => ["/usr/bin/tmux", ...c.args]));
+  } finally {
+    Bun.spawnSync = originalSpawnSync;
+  }
+});
+
+test("tmux launch batches profile commands with ';' in one Bun.spawnSync call and keeps window-size latest last", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalEnv = { ...process.env };
+  const spawnSyncCalls: string[][] = [];
+
+  try {
+    Bun.which = (bin: string) => (bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin));
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      spawnSyncCalls.push(argv);
+      if (argv[0] === "git" && argv[1] === "symbolic-ref") {
+        return { exitCode: 0, stdout: Buffer.from("main\n"), stderr: Buffer.from("") };
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for tmux launch batching
+    Bun.spawn = ((() => ({ exited: Promise.resolve(0) })) as unknown) as typeof Bun.spawn; // partial Bun.Subprocess mock
+
+    delete process.env.TMUX;
+    delete process.env.JEO_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_MOUSE;
+    delete process.env.JEO_TMUX_PROFILE;
+
+    await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
+
+    const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
+    expect(newSessionCall).toBeDefined();
+    const sessionName = newSessionCall![newSessionCall!.indexOf("-s") + 1]!;
+
+    const profileBatches = spawnSyncCalls.filter(
+      c => c[0] === "/usr/local/bin/tmux" && (c[1] === "set-option" || c[1] === "set-window-option"),
+    );
+    expect(profileBatches).toHaveLength(1);
+    const batch = profileBatches[0]!;
+    expect(batch).toContain(";");
+    expect(batch.slice(-5)).toEqual([
+      "set-window-option",
+      "-t",
+      `=${sessionName}:`,
+      "window-size",
+      "latest",
+    ]);
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    process.env = originalEnv;
+  }
+});
+
+test("gitDirtyCountAsync returns dirty file count on dirty repo, undefined when clean or non-repo, and undefined on timeout", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-git-dirty-async-"));
+  const repoDir = path.join(root, "repo");
+  const nonRepoDir = path.join(root, "non-repo");
+  await fs.mkdir(repoDir, { recursive: true });
+  await fs.mkdir(nonRepoDir, { recursive: true });
+
+  try {
+    const initRes = Bun.spawnSync(["git", "init"], { cwd: repoDir, stdout: "ignore", stderr: "ignore" });
+    expect(initRes.exitCode).toBe(0);
+
+    // Clean repo -> undefined
+    expect(await gitDirtyCountAsync(repoDir, 2000)).toBeUndefined();
+
+    // Dirty repo with two untracked files -> 2
+    await fs.writeFile(path.join(repoDir, "one.txt"), "1\n");
+    await fs.writeFile(path.join(repoDir, "two.txt"), "2\n");
+    expect(await gitDirtyCountAsync(repoDir, 2000)).toBe(2);
+
+    // Non-repo directory and nonexistent directory -> undefined
+    expect(await gitDirtyCountAsync(nonRepoDir, 2000)).toBeUndefined();
+    expect(await gitDirtyCountAsync(path.join(root, "missing"), 2000)).toBeUndefined();
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+
+  // Deterministic timeout path: hung git subprocess is killed and resolves to undefined
+  const originalSpawn = Bun.spawn;
+  let killed = false;
+  try {
+    Bun.spawn = ((() => ({
+      stdout: new ReadableStream<Uint8Array>(),
+      exited: new Promise<number>(() => { /* intentionally never resolves to trigger timeout */ }),
+      kill: () => { killed = true; },
+    })) as unknown) as typeof Bun.spawn; // partial Bun.Subprocess mock for deterministic timeout
+
+    const count = await gitDirtyCountAsync("/tmp/any-cwd", 5);
+    expect(count).toBeUndefined();
+    expect(killed).toBe(true);
+  } finally {
+    Bun.spawn = originalSpawn;
+  }
 });

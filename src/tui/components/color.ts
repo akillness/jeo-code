@@ -325,7 +325,10 @@ function detectAppearanceUncached(env: EnvLike = process.env): "light" | "dark" 
 
   if (process.platform === "darwin") {
     try {
-      const style = execSync("defaults read -g AppleInterfaceStyle", { stdio: ["ignore", "pipe", "ignore"] })
+      const style = execSync("defaults read -g AppleInterfaceStyle", {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 250,
+      })
         .toString()
         .trim();
       if (style === "Dark") {

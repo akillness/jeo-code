@@ -223,3 +223,62 @@ test("sanitizeForFrame strips bare ESC before an astral emoji without splitting 
   expect(out.isWellFormed()).toBe(true);
   expect(out).toBe("🚀hello");
 });
+
+test("visibleWidth / truncateToWidth fast paths preserve exact widths across colored ASCII, CJK, emoji/ZWJ, tabs, and non-SGR CSI", () => {
+  const family = "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}";
+  const coloredAscii = "\x1b[1;38;2;120;200;255mhello world\x1b[0m";
+  const coloredCjk = "\x1b[36m한글\x1b[0m";
+  const coloredZwj = `\x1b[33m${family}!\x1b[0m`;
+
+  // Colored ASCII fast path
+  expect(visibleWidth(coloredAscii)).toBe(11);
+  expect(truncateToWidth(coloredAscii, 11)).toBe(coloredAscii);
+  expect(truncateToWidth(coloredAscii, 40)).toBe(coloredAscii);
+  const cutAscii = truncateToWidth(coloredAscii, 5);
+  expect(visibleWidth(cutAscii)).toBe(5);
+  expect(cutAscii).toBe("\x1b[1;38;2;120;200;255mhello\x1b[0m");
+  expect(truncateToWidth("abcdef", 6)).toBe("abcdef");
+  expect(truncateToWidth("abcdef", 4)).toBe("abcd");
+
+  // CJK: both the `stripped.length * 2 <= limit` fast path and exact-boundary fallback
+  expect(visibleWidth("한글테스트")).toBe(10);
+  expect(visibleWidth(coloredCjk)).toBe(4);
+  expect(visibleWidth("a한b글")).toBe(6);
+  expect(truncateToWidth(coloredCjk, 4)).toBe(coloredCjk); // hits length*2 <= limit fast path
+  const cutCjk = truncateToWidth(coloredCjk, 3);
+  expect(visibleWidth(cutCjk)).toBe(2);
+  expect(cutCjk).toBe("\x1b[36m한\x1b[0m");
+  expect(truncateToWidth("a한b글", 5)).toBe("a한b");
+  expect(visibleWidth(truncateToWidth("a한b글", 5))).toBe(4);
+
+  // Emoji & ZWJ chains (UTF-16 length > display width)
+  expect(visibleWidth("🚀👍🏽❤️❤\ufe0e🇰🇷")).toBe(9); // 2+2+2+1+2
+  expect(visibleWidth(coloredZwj)).toBe(3);
+  expect(truncateToWidth(family, 22)).toBe(family); // hits length*2 <= limit fast path
+  expect(truncateToWidth(family, 2)).toBe(family);  // bypasses fast path, keeps atomic cluster
+  const cutZwj = truncateToWidth(coloredZwj, 2);
+  expect(visibleWidth(cutZwj)).toBe(2);
+  expect(cutZwj).toBe(`\x1b[33m${family}\x1b[0m`);
+  expect(visibleWidth(truncateToWidth(coloredZwj, 1))).toBe(0);
+
+  // Tabs: CONTROL_OR_TAB must block the `length * 2 <= limit` fast path (tab len 1, width 8)
+  expect(visibleWidth("\t")).toBe(8);
+  expect(visibleWidth("\x1b[31mab\x1b[0m\tcd")).toBe(10);
+  expect(truncateToWidth("\t", 4)).toBe("");
+  expect(truncateToWidth("\t", 8)).toBe("\t");
+  expect(truncateToWidth("ab\tcd", 7)).toBe("ab");
+  expect(truncateToWidth("ab\tcd", 8)).toBe("ab\t");
+  const cutTab = truncateToWidth("\x1b[31mab\x1b[0m\tcd", 7);
+  expect(visibleWidth(cutTab)).toBe(2);
+  expect(cutTab).toBe("\x1b[31mab\x1b[0m");
+
+  // Non-SGR CSI and private DEC CSI: ESC is 0-width, non-SGR payload chars are NOT stripped as SGR
+  expect(visibleWidth("\x1b[2Kabc")).toBe(6); // ESC(0) + "[2Kabc"(6)
+  expect(visibleWidth("\x1b[2K\x1b[31mhi\x1b[0m")).toBe(5); // ESC(0) + "[2K"(3) + "hi"(2)
+  expect(visibleWidth("\x1b[>4;2mok")).toBe(8); // private CSI '>' not treated as SGR
+  const cutNonSgr = truncateToWidth("\x1b[2Kabc", 4);
+  expect(visibleWidth(cutNonSgr)).toBe(4);
+  expect(cutNonSgr).toBe("\x1b[2Ka");
+  expect(truncateToWidth("\x1b[2K", 4)).toBe("\x1b[2K");
+  expect(visibleWidth(truncateToWidth("\x1b[>4;2mok", 5))).toBe(5);
+});

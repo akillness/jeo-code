@@ -14,6 +14,9 @@ import { isImageEscapeLine } from "../terminal-image";
 const TAB_STOP = 8;
 // Sticky SGR matcher: scan a heavily color-escaped line in O(n) without slicing.
 const SGR = /\x1b\[[0-9;]*m/y;
+const SGR_GLOBAL = /\x1b\[[0-9;]*m/g;
+const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
+const CONTROL_OR_TAB = /[\x00-\x1f\x7f-\x9f]/;
 
 /**
  * Display columns for a single code point. 0 for combining/zero-width, 2 for
@@ -178,6 +181,8 @@ export function nextGraphemeCluster(s: string, i: number): { length: number; wid
  */
 export function visibleWidth(s: string): number {
   if (!s) return 0;
+  const stripped = s.includes("\x1b") ? s.replace(SGR_GLOBAL, "") : s;
+  if (!NON_PRINTABLE_ASCII.test(stripped)) return stripped.length;
   let w = 0;
   let i = 0;
   while (i < s.length) {
@@ -218,9 +223,14 @@ export function truncateToWidth(s: string, cols: number): string {
   // already fit to the caller's column budget when the sequence was BUILT, so the
   // correct "truncation" here is always a no-op.
   if (isImageEscapeLine(s)) return s;
-  // Fast path: no escapes, no wide chars, no tabs → plain slice by length.
-  if (!s.includes("\x1b") && !/[\t\u0300-\uffff]/.test(s) && !/[\u{10000}-\u{10ffff}]/u.test(s)) {
-    return s.length <= limit ? s : s.slice(0, limit);
+  // Fast path: strip SGR and check printable length against column budget so
+  // already-fitting colored lines skip the per-cluster loop.
+  const stripped = s.includes("\x1b") ? s.replace(SGR_GLOBAL, "") : s;
+  if (!NON_PRINTABLE_ASCII.test(stripped)) {
+    if (stripped.length <= limit) return s;
+    if (!s.includes("\x1b")) return s.slice(0, limit);
+  } else if (!CONTROL_OR_TAB.test(stripped) && stripped.length * 2 <= limit) {
+    return s;
   }
   let out = "";
   let w = 0;

@@ -1,170 +1,40 @@
-import { createInterface } from "node:readline/promises";
-import { emitKeypressEvents } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
-import { PassThrough } from "node:stream";
-import { createHash } from "node:crypto";
-import { MUTATION_NUDGE_PREFIX } from "../agent/loop-guards";
-import { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
-import { jeoxScopePromptSection } from "../agent/jeox-tool";
-import { withUsageScope } from "../agent/usage-ledger";
-import { computerSupervisor } from "../agent/computer-supervisor";
-import { executeComputerAction } from "./computer";
-
-import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
-import { initialDynamicStepLimit } from "../agent/step-budget";
-import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "../agent/memory";
-import { recordSkillLesson } from "../agent/skill-lessons";
-import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
-import { createEvalTool, evalToolProtocolLine } from "../agent/eval-tool";
-import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
-import { SubagentRegistry } from "../agent/subagent-registry";
-import { SessionNotifyEndpoint, stopSessionNotifyEndpoint, startSessionNotifyEndpoint } from "../agent/notify/session-endpoint";
-import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
-import { jeoHomeDir, notifySessionsDir } from "../agent/notify/paths";
-
-import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
-import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
-import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../agent/monitor-tool";
-import { MonitorRegistry, type MonitorEvent } from "../agent/monitor-registry";
-import { JobRegistry } from "../agent/job-registry";
-import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
-import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
+import * as path from "node:path";
+import { tmpdir } from "node:os";
+import * as fs from "node:fs";
 import { createApproveTool, APPROVE_TOOL_PROTOCOL_LINE } from "../agent/approve-tool";
-import { LaunchTui } from "../tui/app";
-import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-interview";
-import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
-import { runTeamEngine, type TeamEngineOptions } from "./team";
-import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { snapshotSandboxSkillAssets, prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots, skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
-import { routeSkillsForTask, skillAdvisoryRoutingNote } from "../agent/skill-router";
-import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
-import { interactiveOAuthLogin, runAuthCommand } from "./auth";
-import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey, addApiKeyToPool, removeApiKeyFromPool } from "../auth";
-import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
-import { normalizeBaseUrl } from "./setup-helpers";
-import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
-import { getEvolutionTip } from "../tui/components/evolution";
-import { checkForUpdate, readUpdateCache, writeUpdateCache } from "../util/update-check";
-import { checkNofileLimit } from "../util/nofile-limit";
-import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { jeoEnv } from "../util/env";
-import { renderUpdateBox } from "../tui/components/update-box";
-import { consumeLaunchWhatsNew } from "../util/whats-new";
-import { runWhatsNewCommand } from "./whats-new";
-import { maybeBell } from "../util/notify";
-import { supportsUnicode } from "../tui/components/capability";
-import pkg from "../../package.json";
-import chalk from "chalk";
-import { callLlm, type Message } from "../agent/loop";
-import { friendlyProviderError } from "../util/provider-error";
-import { readGlobalConfig, saveConfigPatch, resolveWikiRoot, globalConfigPath } from "../agent/state";
-import { AgyCliError, type AgyTurnResult } from "../agent/antigravity-cli";
-import { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks, runPrePromptHooks, runTurnEndHooks, setHookSessionId } from "../agent/hooks";
-import { createSandboxSupervisor } from "../agent/sandbox/supervisor";
-import { reapOrphanedNativeProcesses } from "../agent/sandbox/native";
-import { canonicalSandboxPath, createSandboxPolicy, sandboxPathContains } from "../agent/sandbox/policy";
-import { createGrantAuthority, ensurePrivateSandboxDirectory } from "../agent/sandbox/authority";
-import { handleSandboxControl } from "../agent/sandbox/control";
-import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
-import { loadAndCreateLiveDiscordBridge, type LiveDiscordBridge } from "../messenger/live-session";
-import { defaultDiscordConfigPath } from "../messenger/discord-setup";
-import { runAgySessionTurn } from "./launch/agy-turn";
-import { listProviderModels } from "../ai/model-discovery";
-import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { resolveStartupDefaultModel } from "../agent/session-model";
-import { describeModel, describeAllProviders, describeSearchProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable } from "../ai";
-import { modelServableWithDiscovery } from "../ai/model-manager";
-import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
-import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
-import { GoalStateCorruptError, readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate, applyPendingEvidence, type GoalState } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
-import { RouteHistory } from "../agent/route-history";
-
-import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
-import { messengerUsageFallback } from "../messenger/model-policy";
-
-
-import { listAliases } from "../ai/model-registry";
+import { readGlobalConfig, saveConfigPatch, resolveWikiRoot, globalConfigPath, type Config } from "../agent/state";
+import { describeModel, describeAllProviders, describeSearchProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable, type ProviderModelsResult, type PickEntry, type ProviderName, type ModelRole, type ThinkLevel } from "../ai";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
-import {
-  applyCustomProviderPatch,
-  formatCustomProviderList,
-  formatPresetsCommand,
-  looksLikePreset,
-  parseProviderAddArgs,
-  planProviderAdd,
-  planProviderRemove,
-  providerAddUsage,
-} from "./launch/provider-slash";
-
-import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
-import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
-
-import {
-  formatModelLine,
-  formatProviderPanel,
-  formatAgentsPanel,
-  formatAgentDetail,
-  formatConfigPanel,
-  formatPickListWithCapabilities,
-  formatCapabilityLine,
-} from "../tui/components/config-panel";
-import { liveModelPicker, renderLiveModelPicker, buildThinkingLevelChoices, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
-
-import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { sanitizeForTerminal } from "../tui/components/code-view";
 
-import { categoryBadge } from "../tui/components/category-index";
-import { renderInputFrame, type HighlightRange } from "../tui/components/input-box";
-
-import { renderStatusBar } from "../tui/components/status";
-import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
-import { readClipboardImage } from "../util/clipboard-image";
-import { attachImagePaths, insertImageTag, findImagePathTokens, reconcileImageTags } from "../util/file-attachment";
-
-import { copyTextToClipboard, readClipboardText } from "../tui/clipboard";
-import { loadInputHistory, appendInputHistory } from "../agent/input-history";
-import type { ImageAttachment } from "../ai/types";
-import { extractLastAssistantReply } from "../tui/components/transcript";
-import { renderMarkdownBlock } from "../tui/components/markdown-text";
-import { wrapTextWordAware } from "../tui/components/width";
-import { createMessengerActivityEvents } from "../messenger/activity";
-import { formatDuration, formatUsage } from "../tui/components/duration";
-
-import { bashTool } from "../agent/tools";
-
-import { loadProjectContext, withProjectContext } from "../agent/context-files";
-import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/compaction";
-import * as path from "node:path";
-import { homedir, tmpdir } from "node:os";
-import * as fs from "node:fs";
-import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint, mutedPaint } from "../tui/components/themes";
-import {
-  sessionsDir,
-  createSession,
-  appendMessage,
-  appendMessages,
-  appendParentResponse,
-  appendSubagentEvent,
-  appendSubagentMessage,
-  type SubagentMessage,
-  type SessionTimelineEntry,
-  loadSession,
-  listSessions,
-  latestSessionId,
-  exportSession,
-  updateSessionModel,
-  updateSessionDraft,
-  consumeSessionDraft,
-  appendCompaction,
-  resolveSessionRef,
-} from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard, setCursorColor, resetCursorColor, isTTY, watchResize } from "../tui/terminal";
-
-
-
+import type { PassThrough as PassThroughStream } from "node:stream";
+import type { AgentLoopEvents } from "../agent/engine";
+import type { TaskSubEvent } from "../agent/task-tool";
+import type { MonitorEvent } from "../agent/monitor-registry";
+import type { LaunchTui as LaunchTuiInstance, AgentEventsLike } from "../tui/app";
+import type { DeepInterviewEngineOptions } from "./deep-interview";
+import type { RalplanEngineOptions } from "./ralplan";
+import type { TeamEngineOptions } from "./team";
+import type { UltragoalEngineOptions } from "./ultragoal";
+import type { SkillDoc, SkillInvocation } from "../skills/catalog";
+import type { AuthProvider } from "../auth";
+import type { SlashCommandInfo } from "../tui/components/slash";
+import type { CompletionContext } from "../tui/components/autocomplete";
+import type { Message } from "../agent/loop";
+import type { AgyTurnResult } from "../agent/antigravity-cli";
+import type { SandboxConfig, SandboxSupervisor } from "../agent/sandbox/types";
+import type { LiveDiscordBridge } from "../messenger/live-session";
+import type { GoalState } from "../agent/goal-verifier";
+import type { PromptTier, RouteDecision, RoutingConfig } from "../agent/prompt-router";
+import type { SelectItem } from "../tui/components/select-list";
+import type { ModelAssignmentBadge } from "../tui/components/live-model-picker";
+import type { OnboardingAction } from "../tui/components/provider-picker";
+import type { HighlightRange } from "../tui/components/input-box";
+import type { ImageAttachment, ReasoningArtifact } from "../ai/types";
+import type { SubagentMessage, SessionTimelineEntry } from "../agent/session";
+import type { SlashContext } from "./launch/slash-handlers";
 
 import {
   type LaunchFlags,
@@ -180,11 +50,13 @@ import {
 import {
   tmuxSessionName,
   gitDirtyCount,
+  gitDirtyCountAsync,
   allocateTmuxSession,
   shouldEnableCurrentTmuxMouse,
   tmuxLaunchCommand,
   tmuxProfileCommands,
   currentTmuxClipboardCommands,
+  applyTmuxCommands,
   resolveWorktree,
   shellQuote,
   reapStaleTmuxSessions,
@@ -226,6 +98,7 @@ import {
   decideCtrlC,
   CTRLC_COLLAPSE_MS,
   filterPromptInputChunk,
+  type PromptKeyFilterState,
   pasteIdleDecision,
   PASTE_MERGE_IDLE_MS,
   chunkHasCtrlC,
@@ -240,48 +113,22 @@ import {
   shouldUseOneShotTui,
 } from "./launch/stream";
 import {
-  WORKFLOW_NAMES,
-  isWorkflowSkill,
-  runWorkflowEngine,
-} from "./launch/workflow";
-import {
   mentionPaths as mentionPathsIn,
   currentAtLabel as currentAtLabelFn,
 } from "./launch/mentions";
-import {
-  hotkeysLines,
-  contextUsageLines,
-  historyViewLines,
-  parseHandoffCommand,
-  handoffLines,
-} from "./launch/slash-views";
 
-
-import {
-  handleUsage,
-  handleTools,
-  handleHotkeys,
-  handleContext,
-  type SlashContext,
-} from "./launch/slash-handlers";
-import {
-  handleViewSlash,
-  handleDiffSlash,
-  handleFindSlash,
-  handleSearchSlash,
-} from "./launch/code-slash";
-import { handleUndoSlash } from "./launch/git-slash";
-import { runSessionSlash, renderSessionTimeline, sessionPromptHistory, sessionSwitchBlocked } from "./launch/session-slash";
-import { runJobsSlash } from "./launch/jobs-slash";
-import { runModelSlash } from "./launch/model-slash";
-import { runRouteSlash } from "./launch/route-slash";
-import { runComputerSlash } from "./launch/computer-slash";
-
-import { runAgentsSlash, runRolesSlash, runFastSlash, runThinkingSlash } from "./launch/agents-slash";
-import { wikiRootPromptLine, decideWikiSlash } from "./launch/wiki-slash";
-import { decideThemeSlash, buildConfigPanelLines, runEvolveSimulation } from "./launch/system-slash";
-
-
+export const WORKFLOW_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"] as const;
+export function isWorkflowSkill(name: string): boolean {
+  return (WORKFLOW_NAMES as readonly string[]).includes(name);
+}
+export async function runWorkflowEngine(
+  name: string,
+  opts: DeepInterviewEngineOptions & RalplanEngineOptions & TeamEngineOptions & UltragoalEngineOptions,
+): Promise<{ ok: boolean; reason?: string }> {
+  // Dynamic import avoids loading deep-interview/ralplan/team/ultragoal engines on cold start (--help/--list/--tmux).
+  const { runWorkflowEngine: run } = await import("./launch/workflow");
+  return run(name, opts);
+}
 
 export {
   type LaunchFlags,
@@ -295,8 +142,10 @@ export {
   isThinkingLevel,
   tmuxSessionName,
   gitDirtyCount,
+  gitDirtyCountAsync,
   allocateTmuxSession,
   shouldEnableCurrentTmuxMouse,
+  applyTmuxCommands,
   tmuxLaunchCommand,
   tmuxProfileCommands,
   currentTmuxClipboardCommands,
@@ -338,9 +187,6 @@ export {
   logTaskSubEvent,
   createStreamEvents,
   shouldUseOneShotTui,
-  WORKFLOW_NAMES,
-  isWorkflowSkill,
-  runWorkflowEngine,
   mentionPathsIn as mentionPaths,
   currentAtLabelFn as currentAtLabel,
 };
@@ -418,6 +264,12 @@ export function formatResumeHint(sessionId: string): string {
 }
 
 export async function runLaunchCommand(args: string[]): Promise<void> {
+  const dashDash = args.indexOf("--");
+  const flagSlice = dashDash === -1 ? args : args.slice(0, dashDash);
+  if (flagSlice.includes("--help") || flagSlice.includes("-h")) {
+    console.log("Usage: jeo launch [\"one-shot request\"] [--resume [id]] [--list] [--tmux] [--worktree <path>]");
+    return;
+  }
   const launchCwd = process.cwd();
   let resumeId: string | undefined;
   for (;;) {
@@ -490,19 +342,41 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
   };
   if (shutdownNonce) process.on("message", handleControlMessage);
   const previousSessionDirectory = process.env.JEO_SESSION_DIR;
+  let loadedConfig: Config | undefined;
   const runSession = (): Promise<string | void> => {
     const ready = Promise.withResolvers<void>();
     endpointStartup = ready.promise;
     setup.resolve();
-    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId).finally(ready.resolve);
+    return runLaunchSession(args, cleanup => { stopEndpoint = cleanup; ready.resolve(); }, resumeId, loadedConfig).finally(ready.resolve);
   };
   try {
     const flags = parseFlags(args, process.cwd());
     const config = await readGlobalConfig({ requireValid: true });
+    loadedConfig = config;
     if (closing) throw new Error("Messenger worker stopping");
     const remoteConfig = process.env.JEO_MESSENGER_SANDBOX;
     const sandboxConfig: SandboxConfig | undefined = remoteConfig === undefined ? config.sandbox : JSON.parse(remoteConfig);
     if (!sandboxConfig) return await runSession();
+    // Dynamic imports keep sandbox/catalog modules off the non-sandbox --help/--list/--tmux cold start.
+    const [
+      { createHash },
+      { jeoHomeDir, notifySessionsDir },
+      { createSandboxPolicy },
+      { reapOrphanedNativeProcesses },
+      { snapshotSandboxSkillAssets, prepareSandboxSkillCatalog, updateSandboxSkillCatalogRoots },
+      { createSandboxSupervisor },
+      { createGrantAuthority, ensurePrivateSandboxDirectory },
+      { withSandboxExecution },
+    ] = await Promise.all([
+      import("node:crypto"),
+      import("../agent/notify/paths"),
+      import("../agent/sandbox/policy"),
+      import("../agent/sandbox/native"),
+      import("../skills/catalog"),
+      import("../agent/sandbox/supervisor"),
+      import("../agent/sandbox/authority"),
+      import("../agent/hooks"),
+    ]);
     const cwd = flags.worktree ? resolveWorktree(process.cwd(), flags.worktree) : process.cwd();
     const sessionKey = process.env.JEO_MESSENGER_SESSION_KEY || crypto.randomUUID();
     for (const legacy of [path.join(cwd, ".jeo", "sessions"), path.join(cwd, ".jeo", "messenger-sessions"), path.join(cwd, ".jeo", "memory", "raw")]) {
@@ -546,7 +420,7 @@ async function runLaunchScope(args: string[], resumeId?: string): Promise<string
     else process.env.JEO_SESSION_DIR = previousSessionDirectory;
   }
 }
-async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string): Promise<string | void> {
+async function runLaunchSession(args: string[], registerEndpointCleanup?: (cleanup?: () => Promise<void>) => void, resumeId?: string, preloadedConfig?: Config): Promise<string | void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
   if (resumeId) {
@@ -581,14 +455,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   process.on("exit", closeTmuxSession);
   let drainPromptListeners: () => void = () => {};
   try {
-  // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
-  // surfaces as an opaque downstream EMFILE ("too many open files") from file
-  // watching, the browser tool, or a broad repo scan — warn up front with
-  // actionable guidance instead of letting the user hit that later. No-op on
-  // non-macOS platforms and opt-out-able via JEO_SKIP_NOFILE_CHECK=1.
-  const nofileWarning = checkNofileLimit();
-  if (nofileWarning) console.error(nofileWarning);
-
   if (flags.worktree) {
     const wt = resolveWorktree(cwd, flags.worktree);
     if (wt !== cwd) {
@@ -597,54 +463,40 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (jeoEnv("TMUX_LAUNCHED") !== "1") console.log(`Using worktree: ${wt}`);
     }
   }
-  let branch: string | undefined;
-  try {
-    // Same git invocation the tmux session-naming path uses (symbolic-ref is
-    // quiet + fails cleanly on detached HEAD, so no "HEAD" placeholder leaks).
-    const gitRes = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
-      cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    if (gitRes.exitCode === 0) {
-      const out = gitRes.stdout.toString().trim();
-      branch = out || undefined;
-    }
-  } catch {}
-  const cfg = await readGlobalConfig({ requireValid: true });
-  // Restore account-scoped model lists before selection and live discovery, so
-  // a later disk restore cannot overwrite fresher results from this launch.
-  await rehydrateLiveModels().catch(() => null);
+  const cfg = preloadedConfig ?? await readGlobalConfig({ requireValid: true });
+  let providerChecked = false;
   let initialSessionModel =
     flags.model ??
     (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
-  if (flags.provider === "agy" && !flags.model && !flags.modelRole) {
-    const available = await listProviderModels("agy", { config: cfg });
-    if (!available.ok || !available.models.length) {
-      console.error(sanitizeForTerminal(`error: ${available.error ?? "the official agy CLI returned no available models"}`));
-      process.exitCode = 1;
-      return;
-    }
-    initialSessionModel = available.models[0];
-  }
-  if (flags.provider && initialSessionModel) {
-    const { provider } = await describeModel(initialSessionModel);
-    if (provider !== flags.provider) {
-      console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
-      return;
-    }
-  }
-  // A session always opens on the configured default model, or, when the stored login cannot
-  // serve it, on the first authenticated model (session-local; the saved default is untouched).
-  // An explicit --model/--model-role/--provider pin takes precedence and skips this.
-  const startupModel = initialSessionModel === undefined ? await resolveStartupDefaultModel(cfg) : { model: cfg.defaultModel, notice: undefined };
-  const defaultModel = startupModel.model;
 
   if (flags.tmux) {
     if (!process.env.TMUX && jeoEnv("TMUX_LAUNCHED") !== "1") {
+      // Outer `--tmux` wrapper: validate explicit --provider mismatch before touching tmux,
+      // while avoiding live model catalog rehydration, default-model probing, or heavy session modules.
+      if (flags.provider) {
+        if (flags.provider === "agy" && !flags.model && !flags.modelRole) {
+          // Dynamic import avoids loading model-discovery on non-agy outer --tmux launches.
+          const { listProviderModels } = await import("../ai/model-discovery");
+          const available = await listProviderModels("agy", { config: cfg });
+          if (!available.ok || !available.models.length) {
+            console.error(sanitizeForTerminal(`error: ${available.error ?? "the official agy CLI returned no available models"}`));
+            process.exitCode = 1;
+            return;
+          }
+          initialSessionModel = available.models[0];
+        }
+        if (initialSessionModel) {
+          const { provider } = await describeModel(initialSessionModel);
+          if (provider !== flags.provider) {
+            console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
+            return;
+          }
+        }
+        providerChecked = true;
+      }
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
-        let branch = "";
+        let tmuxBranch = "";
         try {
           const gitRes = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
             cwd,
@@ -652,10 +504,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             stderr: "ignore",
           });
           if (gitRes.exitCode === 0) {
-            branch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
+            tmuxBranch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
           }
         } catch {}
-        const sessionBase = tmuxSessionName(cwd, branch, flags);
+        const sessionBase = tmuxSessionName(cwd, tmuxBranch, flags);
 
         // Strip orchestration flags: the worktree is already the tmux session
         // cwd (`-c cwd` below), so the inner process inherits it directly.
@@ -737,13 +589,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         process.on("SIGTERM", onAttachSigterm);
         try {
           // Session profile (mouse / clipboard / copy-mode style / @jeo-*
-          // markers): wheel-up enters copy-mode over the REAL pane history, so the
-          // mid-turn scrollback (ledger lines flushed above the live frame) is
-          // reachable with the mouse wheel. Session-scoped (`-t =name`, never -g).
-          // Best-effort per command: an old tmux missing an option is fine.
-          for (const profileCmd of tmuxProfileCommands(sessionName, process.env, { branch: branch || undefined, project: cwd })) {
-            try { Bun.spawnSync([tmuxBin, ...profileCmd.args]); } catch { /* best-effort */ }
-          }
+          // markers): batched into a single `tmux` invocation (`;`-separated),
+          // with `window-size latest` placed at the tail.
+          const profileCmds = tmuxProfileCommands(sessionName, process.env, { branch: tmuxBranch || undefined, project: cwd });
+          applyTmuxCommands(
+            tmuxBin,
+            profileCmds.length > 1 ? [...profileCmds.slice(1), profileCmds[0]!] : profileCmds,
+          );
           // Reap orphaned jeo sessions: each detached, long-idle `jeo launch` REPL
           // pins tens of MB forever, so over days they pile up and aggregate RSS
           // climbs (the "jeo/bun 프로세스가 쌓여 메모리가 점점 커진다" report). Sweep the
@@ -818,19 +670,18 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       // scoped (never -g), best-effort; JEO_TMUX_MOUSE=0 opts out.
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
-        try { Bun.spawnSync([tmuxBin, "set-option", "mouse", "on"]); } catch { /* best-effort */ }
-        // Enabling the mouse re-routes a drag into copy-mode; set-clipboard +
-        // copy-command make that drag-select actually land on the system clipboard.
-        for (const c of currentTmuxClipboardCommands(process.env)) {
-          try { Bun.spawnSync([tmuxBin, ...c.args]); } catch { /* best-effort */ }
-        }
+        applyTmuxCommands(tmuxBin, [
+          { description: "enable tmux mouse scrolling", args: ["set-option", "mouse", "on"] },
+          ...currentTmuxClipboardCommands(process.env),
+        ]);
       }
     }
   }
 
-
-  // --list: print persisted sessions and exit.
+  // --list: print persisted sessions and exit without loading heavy session modules or live catalogs.
   if (flags.list) {
+    // Dynamic import keeps session storage off `--help` and `--tmux` cold start.
+    const { listSessions } = await import("../agent/session");
     const sessions = await listSessions(cwd);
     if (sessions.length === 0) {
       console.log("No saved sessions in .jeo/sessions/.");
@@ -843,6 +694,302 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     console.log("\nResume with: jeo launch --resume <id>");
     return;
   }
+
+  // Dynamic imports: defer heavy session-only modules (engine, TUI, notify endpoint, pickers,
+  // slash handlers, skills, compaction) until after `--help`, `--list`, and outer `--tmux` exit.
+  const [
+    { createInterface },
+    { emitKeypressEvents },
+    { PassThrough },
+    { MUTATION_NUDGE_PREFIX },
+    { runAgentLoop, DEFAULT_TOOLS, SANDBOX_MEDIATED_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, KARPATHY_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag },
+    { jeoxScopePromptSection },
+    { withUsageScope },
+    { computerSupervisor },
+    { executeComputerAction },
+    { createOpikTracer, wrapEvents },
+    { initialDynamicStepLimit },
+    { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt },
+    { recordSkillLesson },
+    { createTaskTool, taskToolProtocolLine },
+    { createEvalTool, evalToolProtocolLine },
+    { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE },
+    { SubagentRegistry },
+    { SessionNotifyEndpoint, stopSessionNotifyEndpoint, startSessionNotifyEndpoint },
+    { parseInThreadConfigCommand },
+    { createTodoTool, TODO_TOOL_PROTOCOL_LINE },
+    { createJobTool, JOB_TOOL_PROTOCOL_LINE },
+    { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE },
+    { MonitorRegistry },
+    { JobRegistry },
+    { createIrcTool, IRC_TOOL_PROTOCOL_LINE },
+    { createGoalTool, GOAL_TOOL_PROTOCOL_LINE },
+    { LaunchTui },
+    { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard },
+    { routeSkillsForTask, skillAdvisoryRoutingNote },
+    { formatForgeBox, scaleForgeWidth },
+    { interactiveOAuthLogin, runAuthCommand },
+    { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey, addApiKeyToPool, removeApiKeyFromPool },
+    { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection },
+    { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize },
+    { normalizeBaseUrl },
+    { EVOLUTION_STAGES, animateAsciiArt },
+    { getEvolutionTip },
+    { checkForUpdate, readUpdateCache, writeUpdateCache },
+    { checkNofileLimit },
+    { renderWelcome, playWelcomeSweep },
+    { renderUpdateBox },
+    { consumeLaunchWhatsNew },
+    { runWhatsNewCommand },
+    { maybeBell },
+    { supportsUnicode },
+    { default: pkg },
+    { default: chalk },
+    { callLlm },
+    { friendlyProviderError },
+    { AgyCliError },
+    { currentSandboxExecution, withSandboxExecution, runPreToolHooks, runPostTurnHooks, runPrePromptHooks, runTurnEndHooks, setHookSessionId },
+    { canonicalSandboxPath, sandboxPathContains },
+    { handleSandboxControl },
+    { defaultDiscordConfigPath },
+    { runAgySessionTurn },
+    { listProviderModels },
+    { rememberModelPatch, recentModelsForDisplay },
+    { resolveStartupDefaultModel },
+    { modelServableWithDiscovery },
+    { rehydrateLiveModels, writeModelCache },
+    { GoalStateCorruptError, readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate, applyPendingEvidence },
+    { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel },
+    { RouteHistory },
+    { isRateLimitError, isUsageLimitError, isConnectionError },
+    { messengerUsageFallback },
+    { listAliases },
+    {
+      applyCustomProviderPatch,
+      formatCustomProviderList,
+      formatPresetsCommand,
+      looksLikePreset,
+      parseProviderAddArgs,
+      planProviderAdd,
+      planProviderRemove,
+      providerAddUsage,
+    },
+    { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices },
+    { SelectList, renderSelectList },
+    {
+      formatModelLine,
+      formatProviderPanel,
+      formatAgentsPanel,
+      formatAgentDetail,
+      formatConfigPanel,
+      formatPickListWithCapabilities,
+      formatCapabilityLine,
+    },
+    { liveModelPicker, renderLiveModelPicker, buildThinkingLevelChoices },
+    { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker },
+    { categoryBadge },
+    { renderInputFrame },
+    { renderStatusBar },
+    { detectColorLevel, ColorLevel, visibleWidth },
+    { readClipboardImage },
+    { attachImagePaths, insertImageTag, findImagePathTokens, reconcileImageTags },
+    { copyTextToClipboard, readClipboardText },
+    { loadInputHistory, appendInputHistory },
+    { extractLastAssistantReply },
+    { renderMarkdownBlock },
+    { wrapTextWordAware },
+    { createMessengerActivityEvents },
+    { formatDuration, formatUsage },
+    { bashTool },
+    { loadProjectContext, withProjectContext },
+    { maybeCompact, historyTokens, buildHandoffDocument },
+    { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint, mutedPaint },
+    {
+      sessionsDir,
+      createSession,
+      appendMessage,
+      appendMessages,
+      appendParentResponse,
+      appendSubagentEvent,
+      appendSubagentMessage,
+      loadSession,
+      listSessions,
+      latestSessionId,
+      exportSession,
+      updateSessionModel,
+      updateSessionDraft,
+      consumeSessionDraft,
+      appendCompaction,
+      resolveSessionRef,
+    },
+    { clearLine, cursorUp, toColumn, truncate: truncateAnsi, size: terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard, setCursorColor, resetCursorColor, isTTY, watchResize },
+    { hotkeysLines, contextUsageLines, historyViewLines, parseHandoffCommand, handoffLines },
+    { handleUsage, handleTools, handleHotkeys, handleContext },
+    { handleViewSlash, handleDiffSlash, handleFindSlash, handleSearchSlash },
+    { handleUndoSlash },
+    { runSessionSlash, renderSessionTimeline, sessionPromptHistory, sessionSwitchBlocked },
+    { runJobsSlash },
+    { runModelSlash },
+    { runRouteSlash },
+    { runComputerSlash },
+    { runAgentsSlash, runRolesSlash, runFastSlash, runThinkingSlash },
+    { wikiRootPromptLine, decideWikiSlash },
+    { decideThemeSlash, buildConfigPanelLines, runEvolveSimulation },
+  ] = await Promise.all([
+    import("node:readline/promises"),
+    import("node:readline"),
+    import("node:stream"),
+    import("../agent/loop-guards"),
+    import("../agent/engine"),
+    import("../agent/jeox-tool"),
+    import("../agent/usage-ledger"),
+    import("../agent/computer-supervisor"),
+    import("./computer"),
+    import("../agent/opik-tracer"),
+    import("../agent/step-budget"),
+    import("../agent/memory"),
+    import("../agent/skill-lessons"),
+    import("../agent/task-tool"),
+    import("../agent/eval-tool"),
+    import("../agent/subagent-tool"),
+    import("../agent/subagent-registry"),
+    import("../agent/notify/session-endpoint"),
+    import("../agent/notify/config-commands"),
+    import("../agent/todo-tool"),
+    import("../agent/job-tool"),
+    import("../agent/monitor-tool"),
+    import("../agent/monitor-registry"),
+    import("../agent/job-registry"),
+    import("../agent/irc-tool"),
+    import("../agent/goal-tool"),
+    import("../tui/app"),
+    import("../skills/catalog"),
+    import("../agent/skill-router"),
+    import("../tui/components/forge"),
+    import("./auth"),
+    import("../auth"),
+    import("../tui/components/slash"),
+    import("../tui/components/autocomplete"),
+    import("./setup-helpers"),
+    import("../tui/components/ascii-art"),
+    import("../tui/components/evolution"),
+    import("../util/update-check"),
+    import("../util/nofile-limit"),
+    import("../tui/components/welcome"),
+    import("../tui/components/update-box"),
+    import("../util/whats-new"),
+    import("./whats-new"),
+    import("../util/notify"),
+    import("../tui/components/capability"),
+    import("../../package.json"),
+    import("chalk"),
+    import("../agent/loop"),
+    import("../util/provider-error"),
+    import("../agent/antigravity-cli"),
+    import("../agent/hooks"),
+    import("../agent/sandbox/policy"),
+    import("../agent/sandbox/control"),
+    import("../messenger/discord-setup"),
+    import("./launch/agy-turn"),
+    import("../ai/model-discovery"),
+    import("../agent/model-recency"),
+    import("../agent/session-model"),
+    import("../ai/model-manager"),
+    import("../ai/model-cache"),
+    import("../agent/goal-verifier"),
+    import("../agent/prompt-router"),
+    import("../agent/route-history"),
+    import("../util/retry"),
+    import("../messenger/model-policy"),
+    import("../ai/model-registry"),
+    import("./launch/provider-slash"),
+    import("../agent/subagents"),
+    import("../tui/components/select-list"),
+    import("../tui/components/config-panel"),
+    import("../tui/components/live-model-picker"),
+    import("../tui/components/provider-picker"),
+    import("../tui/components/category-index"),
+    import("../tui/components/input-box"),
+    import("../tui/components/status"),
+    import("../tui/components/color"),
+    import("../util/clipboard-image"),
+    import("../util/file-attachment"),
+    import("../tui/clipboard"),
+    import("../agent/input-history"),
+    import("../tui/components/transcript"),
+    import("../tui/components/markdown-text"),
+    import("../tui/components/width"),
+    import("../messenger/activity"),
+    import("../tui/components/duration"),
+    import("../agent/tools"),
+    import("../agent/context-files"),
+    import("../agent/compaction"),
+    import("../tui/components/themes"),
+    import("../agent/session"),
+    import("../tui/terminal"),
+    import("./launch/slash-views"),
+    import("./launch/slash-handlers"),
+    import("./launch/code-slash"),
+    import("./launch/git-slash"),
+    import("./launch/session-slash"),
+    import("./launch/jobs-slash"),
+    import("./launch/model-slash"),
+    import("./launch/route-slash"),
+    import("./launch/computer-slash"),
+    import("./launch/agents-slash"),
+    import("./launch/wiki-slash"),
+    import("./launch/system-slash"),
+  ]);
+
+  // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
+  // surfaces as an opaque downstream EMFILE ("too many open files") from file
+  // watching, the browser tool, or a broad repo scan — warn up front with
+  // actionable guidance instead of letting the user hit that later. No-op on
+  // non-macOS platforms and opt-out-able via JEO_SKIP_NOFILE_CHECK=1.
+  const nofileWarning = checkNofileLimit();
+  if (nofileWarning) console.error(nofileWarning);
+
+  let branch: string | undefined;
+  try {
+    // Same git invocation the tmux session-naming path uses (symbolic-ref is
+    // quiet + fails cleanly on detached HEAD, so no "HEAD" placeholder leaks).
+    const gitRes = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    if (gitRes.exitCode === 0) {
+      const out = gitRes.stdout.toString().trim();
+      branch = out || undefined;
+    }
+  } catch {}
+
+  // Restore account-scoped model lists before selection and live discovery, so
+  // a later disk restore cannot overwrite fresher results from this launch.
+  await rehydrateLiveModels().catch(() => null);
+  if (!providerChecked) {
+    if (flags.provider === "agy" && !flags.model && !flags.modelRole) {
+      const available = await listProviderModels("agy", { config: cfg });
+      if (!available.ok || !available.models.length) {
+        console.error(sanitizeForTerminal(`error: ${available.error ?? "the official agy CLI returned no available models"}`));
+        process.exitCode = 1;
+        return;
+      }
+      initialSessionModel = available.models[0];
+    }
+    if (flags.provider && initialSessionModel) {
+      const { provider } = await describeModel(initialSessionModel);
+      if (provider !== flags.provider) {
+        console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
+        return;
+      }
+    }
+  }
+  // A session always opens on the configured default model, or, when the stored login cannot
+  // serve it, on the first authenticated model (session-local; the saved default is untouched).
+  // An explicit --model/--model-role/--provider pin takes precedence and skips this.
+  const startupModel = initialSessionModel === undefined ? await resolveStartupDefaultModel(cfg) : { model: cfg.defaultModel, notice: undefined };
+  const defaultModel = startupModel.model;
 
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
@@ -1051,10 +1198,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // Native reasoning artifacts for the FINAL (done) step — the engine attaches intermediate
   // steps' artifacts to their own pushed messages, but the done turn is built here. Reset on
   // each step boundary so only the last step's artifacts ride the final reply (no duplication).
-  let lastTurnArtifacts: import("../ai/types").ReasoningArtifact[] = [];
+  let lastTurnArtifacts: ReasoningArtifact[] = [];
   /** Wrap turn events so EVERY sink (TUI or plain stream) records the last full
    *  tool output for the Ctrl+O detail view. */
-  const withToolDetailCapture = (base: ReturnType<LaunchTui["events"]>): ReturnType<LaunchTui["events"]> => ({
+  const withToolDetailCapture = (base: AgentEventsLike): AgentEventsLike => ({
     ...base,
     onToolResult: (tool, success, output) => {
       lastToolDetail = { tool, output };
@@ -1361,7 +1508,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   const turnSandboxScope = currentSandboxExecution();
   const subagentRegistry = new SubagentRegistry();
   const jobRegistry = new JobRegistry();
-  let activeTui: LaunchTui | null = null;
+  let activeTui: LaunchTuiInstance | null = null;
   let activeAgyController: AbortController | undefined;
   let activeAgyTurn: Promise<AgyTurnResult> | undefined;
   const showMonitorEvent = (event: MonitorEvent): void => {
@@ -1584,7 +1731,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     setHookSessionId(sessionId);
     resetTurnCtrlCArmed();
     let busyDraftHasPaste = false;
-    const captureLiveInput = (chunk: string, view: LaunchTui | null): { captured: boolean; submittedEnter: boolean; handled: boolean } => {
+    const captureLiveInput = (chunk: string, view: LaunchTuiInstance | null): { captured: boolean; submittedEnter: boolean; handled: boolean } => {
       if (!queueBusyInput || !queueBusySnapshot) return { captured: false, submittedEnter: false, handled: false };
       const paste = (queueBusyPasteActive?.() ?? false) || chunk.includes(PASTE_START) || chunk.includes(PASTE_END) || chunk.includes("\u0016");
       if (paste) busyDraftHasPaste = true;
@@ -1636,9 +1783,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (queueBusyTakePaste?.()) { emergencyInput.inPaste = true; emergencyPaste = true; }
       return emergencyInput.inPaste;
     };
-    const captureAfterAbort = (chunk: string, view: LaunchTui | null): void => {
+    const captureAfterAbort = (chunk: string, view: LaunchTuiInstance | null): void => {
       const paste = emergencyInput.inPaste || chunk.includes(PASTE_START) || chunk.includes(PASTE_END) || chunk.includes("\u0016");
       if (paste) emergencyPaste = true;
+      if (chunkHasCtrlC(chunk)) queueBusyClear?.();
       const submitted = !emergencyInput.inPaste && /[\r\n]/.test(chunk) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
       captureLivePromptInputChunk(emergencyInput, chunk, { multiline: true });
       if (!emergencyInput.partial && !emergencyInput.inPaste) emergencyPaste = false;
@@ -1652,6 +1800,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           void bridge.close().catch(() => undefined);
         }
         if (endpoint && endpointMatchesCurrentSession()) endpoint.setDiscordControlEnabled(false);
+        queueBusyClear?.();
         const noticeText = isStop ? "Discord bridge stopped; access revoked." : "Discord control revoked for this session.";
         if (view) view.events().onNotice?.(noticeText);
         else console.log(noticeText);
@@ -1771,7 +1920,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       onHardExit: () => { handleTurnCtrlC(); },
     }) : undefined;
     if (preflightHarness) interactiveTurnActive = true;
-    let tui: LaunchTui | null = null;
+    let tui: LaunchTuiInstance | null = null;
     let tuiStarted = false;
     let tuiFinished = false;
     try {
@@ -2006,8 +2155,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // Resolve provider + dirty count up front — both are cheap and feed the live
     // frame's footer. `turnConfig` is reused so describeModel does NOT re-read the
     // config file. (Dirty count per-turn, not per-render.)
-    const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
-    const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
+    const [{ provider: activeProvider }, turnDirtyCount] = await Promise.all([
+      describeModel(activeModel, turnConfig),
+      branch ? gitDirtyCountAsync(cwd) : Promise.resolve(undefined),
+    ]);
     tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
     activeTui = tui;
     // Hook notices are advisory; outside the TUI they go to stderr so piped stdout stays the reply only.
@@ -3590,11 +3741,11 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       cleanup();
     });
   };
-  let keyFilter: PassThrough | undefined;
+  let keyFilter: PassThroughStream | undefined;
+  const kfState: PromptKeyFilterState = { inPaste: false };
   // Holder for the active readline so the input filter can see the current line
   // buffer (used by the empty-line backspace guard below). Set after rl is created.
   let activeRl: { line?: string; cursor?: number } | undefined;
-
   if (multilineInput) {
     const kf = new PassThrough();
     (kf as unknown as { isTTY: boolean }).isTTY = true;
@@ -3616,7 +3767,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // Stateful across chunks (a bracketed paste can span several). The byte-rewrite logic
     // lives in `filterPromptInputChunk` (pure + exported) so the full keystroke wiring is
     // testable without a live readline/PTY; this handler is the thin live adapter.
-    const kfState = { inPaste: false };
     // Preserve supplementary Unicode input: a raw stdin "data"
     // chunk boundary can land MID multi-byte UTF-8 sequence (real terminals/ptys do not
     // guarantee byte-aligned-to-character delivery, especially under load or over
@@ -3628,6 +3778,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // string-mode streams do internally — this is the standard fix for streaming UTF-8.
     const kfUtf8Decoder = new StringDecoder("utf8");
     const kfDataHandler = (chunk: Buffer) => {
+      if (interactiveTurnActive) return;
       const data = kfUtf8Decoder.write(chunk);
       if (!data) return; // an incomplete sequence is buffered inside the decoder; wait for the rest
       const result = filterPromptInputChunk(
@@ -5662,10 +5813,20 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         rli._refreshLine?.();
       }
       drawFooter(previewLines(typedLine));
-      // Refresh the status bar's dirty flag once per prompt (one git spawn, not per
-      // frame); the second drawFooter repaints only if the count actually changed.
-      idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-      drawFooter(previewLines(typedLine));
+      // Refresh the status bar's dirty flag asynchronously once per prompt so
+      // the event loop and prompt input never block on slow git repositories.
+      let dirtyRefreshCancelled = false;
+      if (branch && previewEnabled) {
+        void gitDirtyCountAsync(cwd).then(count => {
+          if (dirtyRefreshCancelled || !previewArmed || pickerActive || promptHistoryLines) return;
+          if (count !== idleDirtyCount) {
+            idleDirtyCount = count;
+            drawFooter(previewLines(typedLine, navIdx));
+          }
+        });
+      } else {
+        idleDirtyCount = undefined;
+      }
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
@@ -5673,6 +5834,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const rawText = pendingMidTurnCommands.length
         ? (disarmPreview(), pendingMidTurnCommands.shift()!)
         : await promptInput(previewEnabled ? "" : "\njeo> ");
+      dirtyRefreshCancelled = true;
       const relayGeneration = sessionNotifyEndpoint?.localRelayGeneration();
       const pastedDraft = draftHasPaste || pasteInFlight || promptPasteActive;
       const explicitPastedDraft = explicitDraftPaste || pasteInFlight || promptPasteActive;
@@ -5825,6 +5987,8 @@ navMatches = [];
               const resolvedPath = configArg ? path.resolve(cwd, configArg) : defaultDiscordConfigPath();
               liveDiscordStarting = true;
               try {
+                // Dynamic import keeps Discord gateway/live-session off the normal launch cold start.
+                const { loadAndCreateLiveDiscordBridge } = await import("../messenger/live-session");
                 const bridge = await loadAndCreateLiveDiscordBridge({
                   sessionId,
                   cwd,

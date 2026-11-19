@@ -751,14 +751,18 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const width = Math.max(floor, Math.trunc(innerWidth));
   const maxLines = Math.max(1, Math.trunc(opts.maxLines ?? 10));
   const glyphs = borderGlyphs(opts.unicode);
-  const paint = opts.paint ?? chalk.gray;
-  const shadow = opts.paintShadow ?? (opts.color === false ? paint : (s: string) => chalk.dim(paint(s)));
+  const isDim = !!opts.dim;
+  const effectiveColor = opts.color !== false && !isDim;
+  const identity = (s: string) => s;
+  const stripSgr = (s: string): string => (s.includes("\x1b") ? s.replace(/\x1b\[[0-9;]*m/g, "") : s);
+  const paint = isDim ? identity : (opts.paint ?? chalk.gray);
+  const shadow = isDim ? identity : (opts.paintShadow ?? (opts.color === false ? paint : (s: string) => chalk.dim(paint(s))));
   // DNA-flow border painters: a flowing gradient over the border glyph runs, the
   // bottom offset half a cycle so the helix appears to travel around the card.
   // Pure functions of (text, phase) — no per-frame state is retained — and below
   // TrueColor animatedGradientText returns the text unchanged, so the static
   // paint/shadow path takes over byte-identically.
-  const flowOn = !!opts.flow && opts.color !== false;
+  const flowOn = !!opts.flow && effectiveColor;
   const flowTop = (s: string): string => {
     if (!flowOn) return paint(s);
     const g = animatedGradientText(s, opts.flow!.palette, opts.flow!.phase, { colorLevel: opts.flow!.colorLevel });
@@ -773,9 +777,11 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   // jeo-ref layout: the title rides ON the top border (`╭── ✗ Bash ──────╮`)
   // instead of occupying a title row + separator — two chrome rows become one,
   // and the card scans like the reference's labeled panel.
-  const mark = opts.titleMark ? `${opts.titleMark} ` : "";
-  const label = truncateToWidth(summary.title, Math.max(1, inner - 4 - visibleWidth(mark)));
-  const titleText = ` ${mark}${opts.color === false ? label : chalk.bold(label)} `;
+  const rawMark = opts.titleMark ? `${opts.titleMark} ` : "";
+  const mark = isDim ? stripSgr(rawMark) : rawMark;
+  const rawTitle = isDim ? stripSgr(summary.title) : summary.title;
+  const label = truncateToWidth(rawTitle, Math.max(1, inner - 4 - visibleWidth(mark)));
+  const titleText = ` ${mark}${!effectiveColor ? label : chalk.bold(label)} `;
   const lead = glyphs.h.repeat(Math.min(2, inner));
   const tail = Math.max(0, inner - visibleWidth(lead) - visibleWidth(titleText));
   const top = flowTop(glyphs.tl + lead) + titleText + flowTop(glyphs.h.repeat(tail) + glyphs.tr);
@@ -787,7 +793,8 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   // to the guttered width; a labeled divider still counts as one content row.
   const gutterWidth = Math.max(1, inner - 1);
   const content: string[] = [];
-  for (const line of summary.lines) {
+  for (const rawLine of summary.lines) {
+    const line = isDim ? stripSgr(rawLine) : rawLine;
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) { content.push(line); continue; }
     for (const wrapped of wrapPlainLine(line, gutterWidth)) content.push(wrapped);
   }
@@ -800,12 +807,12 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   // Patch cards: +/- rows get the themed diff stripe painted over the FULL
   // padded row (background tint spans the card width), so added/removed lines
   // separate as blocks instead of relying on a colored sign alone.
-  const diffRows = summary.language === "patch" && opts.color !== false ? opts.diffPaint : undefined;
+  const diffRows = summary.language === "patch" && effectiveColor ? opts.diffPaint : undefined;
   // Code cards (jeo-ref): conservative single-pass light highlight — comments,
   // string literals, keywords — applied AFTER wrapping so padding math stays
   // visible-width true. color:false stays byte-identical.
   const CODE_LANGS = new Set(["bash", "typescript", "javascript", "python", "json", "yaml", "rust", "go"]);
-  const highlightLang = opts.color !== false && summary.language && CODE_LANGS.has(summary.language) ? summary.language : undefined;
+  const highlightLang = effectiveColor && summary.language && CODE_LANGS.has(summary.language) ? summary.language : undefined;
   const contentRow = (line: string): string => {
     const lit = highlightLang ? lightHighlightLine(line, highlightLang) : line;
     // Defense-in-depth truncation: ordinary content already arrives pre-wrapped to
@@ -843,8 +850,8 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   rendered.push(bottom);
   // In-flight shading takes precedence: strip inner color and dim every row so a
   // live card reads as a flat shaded block until its formatted result replaces it.
-  if (opts.dim) {
-    return rendered.map(l => chalk.dim(l.replace(/\x1b\[[0-9;]*m/g, "")));
+  if (isDim) {
+    return opts.color === false ? rendered : rendered.map(l => chalk.dim(l));
   }
   // Faint panel tint: wrap each whole, width-padded row so the card background spans
   // the full rectangle (borders + content). No-op when no fill painter is supplied.

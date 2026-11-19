@@ -357,7 +357,16 @@ function includeForeignSkillDirs(configHome: string): boolean {
   return true;
 }
 
-export function skillDirs(cwd: string = process.cwd(), includeForeignOverride?: boolean): string[] {
+function canonicalSkillRoot(dir: string): string {
+  const resolved = path.resolve(dir);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function rawSkillDirs(cwd: string = process.cwd(), includeForeignOverride?: boolean): string[] {
   // $HOME wins over os.homedir(): Bun caches the system home, so tests (and
   // sandboxed runs) that re-point HOME would otherwise still scan the real one.
   const userHome = process.env.HOME || os.homedir();
@@ -382,6 +391,23 @@ export function skillDirs(cwd: string = process.cwd(), includeForeignOverride?: 
   ];
 }
 
+export function skillDirs(cwd: string = process.cwd(), includeForeignOverride?: boolean): string[] {
+  const raw = rawSkillDirs(cwd, includeForeignOverride);
+  // Keep the highest-precedence (last) occurrence when two roots resolve to
+  // the same directory (e.g. cwd === os.homedir()).
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const dir = raw[i]!;
+    const key = canonicalSkillRoot(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(dir);
+  }
+  deduped.reverse();
+  return deduped;
+}
+
 /** Fixed user skill stores only: never turn a redirected root or a configured
  * arbitrary directory into guest authority. Descendant symlinks remain subject
  * to the sandbox's normal path restrictions. */
@@ -398,7 +424,7 @@ export async function nativeSandboxSkillRoots(cwd: string): Promise<string[]> {
   ]);
   const roots: string[] = [];
   const globalCount = includeForeign ? 5 : 4;
-  for (const dir of skillDirs(cwd, includeForeign).slice(0, globalCount)) {
+  for (const dir of rawSkillDirs(cwd, includeForeign).slice(0, globalCount)) {
 
     const expected = path.resolve(dir);
     if (!allowed.has(expected)) continue;
@@ -416,14 +442,29 @@ export interface SandboxSkillSnapshot {
   resources?: Map<string, string>;
 }
 
-/** Open every component without following links; never resolve an untrusted pathname after opening it. */
-function readAuthorizedSkillFile(source: string, remainingBytes: number): { data: Buffer; mode: number } {
+interface SkillLibcHandle {
+  symbols: {
+    open: (path: Uint8Array, flags: number) => number;
+    openat: (dirfd: number, path: Uint8Array, flags: number) => number;
+  };
+}
+
+let cachedSkillLibc: SkillLibcHandle | undefined;
+
+function getSkillLibc(): SkillLibcHandle {
+  if (cachedSkillLibc) return cachedSkillLibc;
   const library = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : process.platform === "linux" ? "libc.so.6" : undefined;
   if (!library || !fsConstants.O_DIRECTORY || !fsConstants.O_NOFOLLOW) throw new Error("SANDBOX_SKILLS: safe directory-relative file access is unavailable");
-  const libc = dlopen(library, {
+  cachedSkillLibc = dlopen(library, {
     open: { args: ["ptr", "i32"], returns: "i32" },
     openat: { args: ["i32", "ptr", "i32"], returns: "i32" },
   });
+  return cachedSkillLibc;
+}
+
+/** Open every component without following links; never resolve an untrusted pathname after opening it. */
+function readAuthorizedSkillFile(source: string, remainingBytes: number): { data: Buffer; mode: number } {
+  const libc = getSkillLibc();
   let fd = -1;
   try {
     fd = libc.symbols.open(Buffer.from("/\0"), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
@@ -460,7 +501,6 @@ function readAuthorizedSkillFile(source: string, remainingBytes: number): { data
     return { data: data.subarray(0, count), mode: stat.mode };
   } finally {
     if (fd >= 0) closeSync(fd);
-    libc.close();
   }
 }
 
@@ -491,7 +531,7 @@ export async function snapshotSandboxSkillAssets(cwd: string, destination: strin
     const userHome = process.env.HOME || os.homedir();
     const configHome = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
     const globalCount = includeForeignSkillDirs(configHome) ? 5 : 4;
-    const index = skillDirs(cwd).slice(0, globalCount).findIndex(dir => path.resolve(dir) === store);
+    const index = rawSkillDirs(cwd).slice(0, globalCount).findIndex(dir => path.resolve(dir) === store);
     const target = path.join(root, String(index), relative);
     await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await fs.writeFile(target, data, { flag: "wx", mode: 0o600 | (mode & 0o100) });
@@ -736,7 +776,7 @@ export async function prepareSandboxSkillCatalog(supervisor: SandboxSupervisor, 
   const includeForeign = includeForeignSkillDirs(configHome);
   const globalCount = includeForeign ? 5 : 4;
   const directories: CatalogDirectory[] = [];
-  for (const [index, dir] of skillDirs(cwd, includeForeign).entries()) {
+  for (const [index, dir] of rawSkillDirs(cwd, includeForeign).entries()) {
     let location: CatalogPath;
     try { location = await traceCatalogPath(dir, roots, protectedRoots); }
     catch {
@@ -791,7 +831,7 @@ async function loadSandboxSkills(cwd: string): Promise<SkillDoc[]> {
   const includeForeign = catalog.includeForeign;
   const globalCount = includeForeign ? 5 : 4;
   const projectEnd = globalCount + (includeForeign ? 5 : 4);
-  const dirsForCwd = skillDirs(cwd, includeForeign);
+  const dirsForCwd = rawSkillDirs(cwd, includeForeign);
   const directories = path.resolve(cwd) === catalog.cwd
     ? catalog.directories
     : catalog.directories.map((directory, index) => index >= globalCount && index < projectEnd
@@ -854,11 +894,59 @@ export async function executeSkillCatalogOperation(args: Record<string, unknown>
   throw new Error("Unknown skill catalog operation");
 }
 
+const SKILLS_CACHE_TTL_MS = 2000;
+const MAX_SKILLS_CACHE_ENTRIES = 16;
+
+interface SkillsCacheEntry {
+  expiresAt: number;
+  lockStamp: string | null;
+  dirStamps: (string | null)[];
+  skills: SkillDoc[];
+}
+
+const skillsCache = new Map<string, SkillsCacheEntry>();
+
+async function pathStatStamp(targetPath: string): Promise<string | null> {
+  try {
+    const st = await fs.stat(targetPath);
+    return `${st.ino}:${st.mtimeMs}:${st.ctimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
+export function invalidateSkillsCache(): void {
+  skillsCache.clear();
+}
+
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
   if (currentSandboxExecution()) return loadSandboxSkills(cwd);
+
+  const resolvedCwd = path.resolve(cwd);
+  const scanDirs = skillDirs(cwd);
+  const resolvedRoots = scanDirs.map(canonicalSkillRoot);
+  const cacheKey = `${resolvedCwd}\0${resolvedRoots.join("\0")}`;
+  const lockPath = path.join(cwd, "skills-lock.json");
+
+  const [lockStamp, ...dirStamps] = await Promise.all([
+    pathStatStamp(lockPath),
+    ...resolvedRoots.map(root => pathStatStamp(root)),
+  ]);
+
+  const now = Date.now();
+  const cached = skillsCache.get(cacheKey);
+  if (
+    cached &&
+    now < cached.expiresAt &&
+    lockStamp === cached.lockStamp &&
+    dirStamps.length === cached.dirStamps.length &&
+    dirStamps.every((s, i) => s === cached.dirStamps[i])
+  ) {
+    return cached.skills.map(s => ({ ...s }));
+  }
+
   try {
-    const lockPath = path.join(cwd, "skills-lock.json");
     const lockContent = await fs.readFile(lockPath, "utf-8");
     const lockData = JSON.parse(lockContent);
     if (lockData && lockData.skills) {
@@ -875,7 +963,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
   // have no such contract (readdir order is not a precedence guarantee anyone
   // depends on), so they resolve concurrently in bounded batches, then apply to
   // `byName` in their original readdir order for a fully deterministic result.
-  for (const dir of skillDirs(cwd)) {
+  for (const dir of scanDirs) {
     let entries: Dirent[] = [];
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (let i = 0; i < entries.length; i += SKILL_ENTRY_LOAD_BATCH) {
@@ -894,7 +982,20 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
       }
     }
   }
-  return [...byName.values()];
+
+  const result = [...byName.values()];
+  if (skillsCache.size >= MAX_SKILLS_CACHE_ENTRIES && !skillsCache.has(cacheKey)) {
+    const oldest = skillsCache.keys().next().value;
+    if (oldest !== undefined) skillsCache.delete(oldest);
+  }
+  skillsCache.delete(cacheKey);
+  skillsCache.set(cacheKey, {
+    expiresAt: Date.now() + SKILLS_CACHE_TTL_MS,
+    lockStamp,
+    dirStamps,
+    skills: result.map(s => ({ ...s })),
+  });
+  return result;
 }
 
 /** Skill-invocation card body (the `[skill]` block shown in the TUI

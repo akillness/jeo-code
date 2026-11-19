@@ -1,7 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as ts from "typescript";
 import { readTool, summarizeTypeScriptStructure } from "../src/agent/tools";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -114,6 +115,82 @@ describe("structural read summaries (Tier 2 #6)", () => {
       expect(res.success).toBe(true);
       expect(res.output).toContain("[structural summary fallback: README.md is not a supported TypeScript/JavaScript source file; showing anchored lines]");
       expect(res.output).toContain("# Title");
+    });
+  });
+
+  test("summarizeTypeScriptStructure parses up to 512 KiB and skips ts.createSourceFile above 512 KiB (ASCII and multi-byte UTF-8)", () => {
+    const limitBytes = 512 * 1024;
+    const header = "export function boundaryOk() { return 1; }\n// ";
+    const atLimit = header + "a".repeat(limitBytes - Buffer.byteLength(header, "utf-8"));
+    const overAscii = atLimit + "x";
+    // Multi-byte UTF-8: character count stays well below 512 KiB while UTF-8 byte count exceeds it.
+    const utf8Header = "export function utf8Check() { return 1; }\n// ";
+    const overUtf8 = utf8Header + "가".repeat(180_000);
+    expect(overUtf8.length).toBeLessThan(limitBytes);
+    expect(Buffer.byteLength(overUtf8, "utf-8")).toBeGreaterThan(limitBytes);
+
+    const tsSpy = spyOn(ts, "createSourceFile");
+    try {
+      const okRes = summarizeTypeScriptStructure(atLimit, "boundary.ts");
+      expect(tsSpy).toHaveBeenCalledTimes(1);
+      expect(okRes.supported).toBe(true);
+      expect(okRes.declarations.some(d => d.name === "boundaryOk")).toBe(true);
+
+      tsSpy.mockClear();
+      const asciiRes = summarizeTypeScriptStructure(overAscii, "over-ascii.ts");
+      expect(tsSpy).not.toHaveBeenCalled();
+      expect(asciiRes).toEqual({ supported: false, declarations: [], formatted: "" });
+
+      tsSpy.mockClear();
+      const utf8Res = summarizeTypeScriptStructure(overUtf8, "over-utf8.js");
+      expect(tsSpy).not.toHaveBeenCalled();
+      expect(utf8Res).toEqual({ supported: false, declarations: [], formatted: "" });
+    } finally {
+      tsSpy.mockRestore();
+    }
+  });
+
+  test("readTool skips ts.createSourceFile on >512 KiB TS/JS files and falls back cleanly to bounded anchored lines", async () => {
+    await withTempDir(async dir => {
+      const paddingLine = `// ${"x".repeat(60)}`;
+      const lineCount = 9_000;
+      const lines = [
+        "export function firstFn() { return 1; }",
+        ...Array.from({ length: lineCount }, () => paddingLine),
+        "export function lastFn() { return 2; }",
+      ];
+      const bigTs = lines.join("\n");
+      expect(Buffer.byteLength(bigTs, "utf-8")).toBeGreaterThan(512 * 1024);
+      await fs.writeFile(path.join(dir, "huge.ts"), bigTs, "utf-8");
+      await fs.writeFile(path.join(dir, "huge.mjs"), bigTs, "utf-8");
+
+      const tsSpy = spyOn(ts, "createSourceFile");
+      try {
+        const sumRes = await readTool("huge.ts", "summary", dir);
+        expect(tsSpy).not.toHaveBeenCalled();
+        expect(sumRes.success).toBe(true);
+        expect(sumRes.output).toContain("exceeds 512 KiB AST parse limit); showing anchored lines]");
+        expect(sumRes.output).not.toContain("[structural summary: huge.ts");
+        expect(sumRes.output).toContain("|export function firstFn() { return 1; }");
+        expect(sumRes.output).toContain("…(showing lines 1-");
+        expect(sumRes.output).not.toContain("Structural declarations in remaining lines");
+        expect(sumRes.output).not.toContain("lastFn");
+        expect(sumRes.output.length).toBeLessThanOrEqual(40_000);
+
+        const defaultJsRes = await readTool("huge.mjs", undefined, dir, false, false);
+        expect(tsSpy).not.toHaveBeenCalled();
+        expect(defaultJsRes.success).toBe(true);
+        expect(defaultJsRes.output).toContain("…(showing lines 1-");
+        expect(defaultJsRes.output).not.toContain("Structural declarations in remaining lines");
+
+        const tailRange = `${lines.length}-${lines.length}`;
+        const tailRes = await readTool("huge.ts", tailRange, dir);
+        expect(tsSpy).not.toHaveBeenCalled();
+        expect(tailRes.success).toBe(true);
+        expect(tailRes.output).toContain("|export function lastFn() { return 2; }");
+      } finally {
+        tsSpy.mockRestore();
+      }
     });
   });
 });

@@ -149,3 +149,101 @@ test("reapStaleTmuxSessions honors a custom idle TTL override", () => {
   expect(reaped).toEqual(["jeo-2h"]);
   expect(killed).toEqual(["jeo-2h"]);
 });
+
+test("reapStaleTmuxSessions batches kill-session commands with ';' when deps.kill is not injected", () => {
+  const originalSpawnSync = Bun.spawnSync;
+  const calls: string[][] = [];
+  const raw = [
+    `jeo-keep\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+    `jeo-stale-1\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+    `jeo-stale-2\t0\t${NOW_SEC - 10 * HOUR}\t1`,
+    `user-stale\t0\t${NOW_SEC - 20 * HOUR}\t`,
+  ].join("\n");
+
+  try {
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for kill batching
+
+    const reaped = reapStaleTmuxSessions("/usr/bin/tmux", ["jeo-keep"], {
+      env: {},
+      now: () => NOW_MS,
+      list: () => raw,
+    });
+
+    expect(reaped).toEqual(["jeo-stale-1", "jeo-stale-2"]);
+    expect(calls).toEqual([[
+      "/usr/bin/tmux",
+      "kill-session", "-t", "=jeo-stale-1",
+      ";",
+      "kill-session", "-t", "=jeo-stale-2",
+    ]]);
+  } finally {
+    Bun.spawnSync = originalSpawnSync;
+  }
+});
+
+test("reapStaleTmuxSessions falls back cleanly to individual kill-session calls on non-zero batch exit", () => {
+  const originalSpawnSync = Bun.spawnSync;
+  const calls: string[][] = [];
+  const raw = [
+    `jeo-stale-a\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+    `jeo-stale-b\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+    `jeo-stale-c\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+  ].join("\n");
+
+  try {
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      if (argv.includes(";")) {
+        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("session died mid-batch") };
+      }
+      if (argv.includes("=jeo-stale-b")) {
+        throw new Error("session already exited");
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for fallback verification
+
+    const reaped = reapStaleTmuxSessions("/usr/bin/tmux", [], {
+      env: {},
+      now: () => NOW_MS,
+      list: () => raw,
+    });
+
+    expect(reaped).toEqual(["jeo-stale-a", "jeo-stale-b", "jeo-stale-c"]);
+    expect(calls).toEqual([
+      [
+        "/usr/bin/tmux",
+        "kill-session", "-t", "=jeo-stale-a",
+        ";",
+        "kill-session", "-t", "=jeo-stale-b",
+        ";",
+        "kill-session", "-t", "=jeo-stale-c",
+      ],
+      ["/usr/bin/tmux", "kill-session", "-t", "=jeo-stale-a"],
+      ["/usr/bin/tmux", "kill-session", "-t", "=jeo-stale-b"],
+      ["/usr/bin/tmux", "kill-session", "-t", "=jeo-stale-c"],
+    ]);
+
+    // Single stale session sends one unbatched call and does not duplicate on non-zero exit.
+    calls.length = 0;
+    Bun.spawnSync = ((cmd: string | string[]) => {
+      const argv = Array.isArray(cmd) ? cmd : [cmd];
+      calls.push(argv);
+      return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as unknown as typeof Bun.spawnSync; // partial Bun.SyncSubprocess mock for single-session guard
+
+    const single = reapStaleTmuxSessions("/usr/bin/tmux", [], {
+      env: {},
+      now: () => NOW_MS,
+      list: () => `jeo-only-one\t0\t${NOW_SEC - 20 * HOUR}\t1`,
+    });
+    expect(single).toEqual(["jeo-only-one"]);
+    expect(calls).toEqual([["/usr/bin/tmux", "kill-session", "-t", "=jeo-only-one"]]);
+  } finally {
+    Bun.spawnSync = originalSpawnSync;
+  }
+});

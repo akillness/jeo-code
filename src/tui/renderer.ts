@@ -89,6 +89,7 @@ export class Renderer {
     this.coverRows = 0;
     let cursorRow = 0;
     let out = "";
+    let dirty = false;
 
     if (this.reserve && next.length > occupied && next.length <= Math.max(1, currentRows)) {
       // The cursor rests on the frame's first row (the anchor). Walk to the last
@@ -97,6 +98,7 @@ export class Renderer {
       // shifted — anchor so the diff below paints at stable relative positions.
       const have = Math.max(occupied, 1);
       out += cursorDown(have - 1) + "\n".repeat(next.length - have) + cursorUp(next.length - 1) + toColumn(1);
+      dirty = true;
     }
 
     for (let i = 0; i < maxLen; i++) {
@@ -109,6 +111,7 @@ export class Renderer {
           }
           cursorRow = i;
           out += toColumn(1) + clearLine() + next[i];
+          dirty = true;
         }
       } else {
         if (i > cursorRow) {
@@ -118,27 +121,26 @@ export class Renderer {
         }
         cursorRow = i;
         out += toColumn(1) + clearLine();
+        dirty = true;
       }
     }
-
-    if (cursorRow > 0) {
-      out += cursorUp(cursorRow);
-    }
-    out += toColumn(1);
 
     // Atomic present (DECSET-2026 synchronized update): wrap the WHOLE repaint so the
     // terminal never shows a half-painted frame — no torn row, no transient duplicate
     // bar a mid-repaint snapshot could catch. An insertAbove() may have already opened
     // the update (syncOpen); otherwise this render opens its own. Exactly one BSU/ESU
     // pair is emitted per write.
-    if (out.length > 0) {
+    if (dirty) {
+      if (cursorRow > 0) {
+        out += cursorUp(cursorRow);
+      }
+      out += toColumn(1);
       this.write((this.syncOpen ? "" : BEGIN_SYNC) + out + END_SYNC);
       this.syncOpen = false;
     } else if (this.syncOpen) {
       this.write(END_SYNC);
       this.syncOpen = false;
     }
-
     this.prev = next;
   }
 

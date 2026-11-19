@@ -1,7 +1,9 @@
+import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rebuildEdges } from "../src/edges.ts";
 import { chunkMarkdown, impact, indexDir, openDb, search, whoCalls, whereDefined, whatCalls } from "../src/index.ts";
 
 function fixture() {
@@ -107,6 +109,130 @@ test("indexes Python (.py) + Rust (.rs) definitions, calls, and glob-filtered qu
     expect(search(db, "needleAlpha", 5, ["!docs/**"])).toEqual([]);
     db.close();
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function canonicalEdges(db: Database): string[] {
+  const rows = db.query(`
+    SELECT sf.path || ':' || sn.name || ':' || sn.kind || ' -[' || e.kind || ':' || e.conf || ']-> ' ||
+           df.path || ':' || dn.name || ':' || dn.kind AS edge
+    FROM code_edges e
+    JOIN code_nodes sn ON sn.id = e.src_id
+    JOIN code_files sf ON sf.id = sn.file_id
+    JOIN code_nodes dn ON dn.id = e.dst_id
+    JOIN code_files df ON df.id = dn.file_id
+    ORDER BY edge
+  `).all() as { edge: string }[];
+  return rows.map((r) => r.edge);
+}
+
+function rawEdgeTuples(db: Database): string[] {
+  const rows = db.query(
+    "SELECT src_id || ':' || dst_id || ':' || kind || ':' || conf AS row FROM code_edges ORDER BY src_id, dst_id, kind, conf",
+  ).all() as { row: string }[];
+  return rows.map((r) => r.row);
+}
+
+function fullCanonicalEdgesFromDisk(root: string): string[] {
+  const fresh = openDb(":memory:");
+  try {
+    indexDir(fresh, root);
+    rebuildEdges(fresh, { full: true });
+    return canonicalEdges(fresh);
+  } finally {
+    fresh.close();
+  }
+}
+
+test("incremental rebuildEdges matches full rebuild across edit, addition, removal, re-export chains, and manual code_edges wipe", () => {
+  const root = mkdtempSync(join(tmpdir(), "jm-edges-inc-"));
+  const incDb = openDb(":memory:");
+  let tick = Date.now() + 5_000;
+  const touch = (relPath: string, content: string) => {
+    const abs = join(root, relPath);
+    writeFileSync(abs, content);
+    tick += 5_000;
+    utimesSync(abs, new Date(tick), new Date(tick));
+  };
+
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    touch("src/leaf.ts", [
+      "export function leafCore() { return leafUtil(); }",
+      "export function leafUtil() { return 1; }",
+      "export function helper() { return 2; }",
+    ].join("\n"));
+    touch("src/mid.ts", [
+      'export { leafCore as renamedLeaf } from "./leaf";',
+      'export * from "./leaf";',
+    ].join("\n"));
+    touch("src/barrel.ts", 'export * from "./mid";\n');
+    touch("src/consumer.ts", [
+      'import { renamedLeaf, helper } from "./barrel";',
+      "export function runAll() { renamedLeaf(); return helper(); }",
+    ].join("\n"));
+    touch("src/ambig.ts", "export function sharedName() { return 1; }\nexport function callShared() { return sharedName(); }\n");
+
+    // 1. Initial index + verify multi-hop re-export edges exist
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "leafCore", { strict: true }).map((l) => l.name)).toContain("runAll");
+
+    // 2. 1-file edit: drop helper and add newHelper in leaf.ts (must clear stale consumer -> helper edge)
+    touch("src/leaf.ts", [
+      "export function leafCore() { return leafUtil(); }",
+      "export function leafUtil() { return 1; }",
+      "export function newHelper() { return 3; }",
+    ].join("\n"));
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "helper")).toEqual([]);
+
+    // 3. File addition: new caller through re-export chain + competing name definition
+    touch("src/extra.ts", [
+      'import { renamedLeaf } from "./barrel";',
+      "export function extraCaller() { return renamedLeaf(); }",
+    ].join("\n"));
+    touch("src/shared_dup.ts", "export function sharedName() { return 2; }\n");
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "leafCore", { strict: true }).map((l) => l.name)).toContain("extraCaller");
+
+    // 4. Re-export chain edit: retarget mid.ts alias to newHelper and drop wildcard re-export
+    touch("src/mid.ts", 'export { newHelper as renamedLeaf } from "./leaf";\n');
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "leafCore", { strict: true }).map((l) => l.name)).not.toContain("extraCaller");
+    expect(whoCalls(incDb, "newHelper", { strict: true }).map((l) => l.name)).toContain("extraCaller");
+
+    // 5. File removal + subsequent addition (exercises removed state & potential SQLite rowid reuse)
+    rmSync(join(root, "src/mid.ts"));
+    rmSync(join(root, "src/extra.ts"));
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "newHelper", { strict: true })).toEqual([]);
+
+    touch("src/mid.ts", 'export { leafCore as renamedLeaf } from "./leaf";\n');
+    indexDir(incDb, root);
+    expect(canonicalEdges(incDb)).toEqual(fullCanonicalEdgesFromDisk(root));
+    expect(whoCalls(incDb, "leafCore", { strict: true }).map((l) => l.name)).toContain("runAll");
+
+    // Check exact parity with full rebuild on the same DB before wipe
+    const incBeforeFull = rawEdgeTuples(incDb);
+    expect(incBeforeFull.length).toBeGreaterThan(0);
+
+    // 6. Manual code_edges wipe while code_edge_file_state remains populated
+    incDb.exec("DELETE FROM code_edges");
+    expect(rawEdgeTuples(incDb)).toEqual([]);
+    rebuildEdges(incDb);
+    const afterWipeRecover = rawEdgeTuples(incDb);
+    expect(afterWipeRecover).toEqual(incBeforeFull);
+
+    rebuildEdges(incDb, { full: true });
+    expect(rawEdgeTuples(incDb)).toEqual(afterWipeRecover);
+  } finally {
+    incDb.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

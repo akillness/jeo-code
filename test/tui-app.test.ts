@@ -1,6 +1,7 @@
 import { test, expect, spyOn, vi } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
 import { visibleWidth } from "../src/tui/components/width";
+import * as widthModule from "../src/tui/components/width";
 import { hideCursor, showCursor, clearToEnd, enterAltScreen, leaveAltScreen } from "../src/tui/terminal";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -1492,5 +1493,167 @@ test("Memory: inline TTY mode does not retain appended ledger lines in tui.strea
     tui.finish("done");
     if (origAlt === undefined) delete process.env.JEO_TUI_ALT_SCREEN;
     else process.env.JEO_TUI_ALT_SCREEN = origAlt;
+  }
+});
+
+test("LaunchTui.start() called twice does not leak duplicate listeners or interval timers", () => {
+  vi.useFakeTimers();
+  const realRender = Renderer.prototype.render;
+  let renderCalls = 0;
+  Renderer.prototype.render = function () { renderCalls++; };
+  const beforeResize = process.stdout.listenerCount("resize");
+  const beforeSigcont = process.listenerCount("SIGCONT");
+  const beforeDrain = process.stdout.listenerCount("drain");
+  let backpressured = true;
+  const tui = new LaunchTui({
+    model: "m1",
+    tty: true,
+    write: () => !backpressured,
+  });
+  try {
+    // First start hits backpressure on initial write -> attaches one 'drain' listener.
+    tui.start();
+    expect(process.stdout.listenerCount("resize")).toBe(beforeResize + 1);
+    if (process.platform !== "win32") {
+      expect(process.listenerCount("SIGCONT")).toBe(beforeSigcont + 1);
+    }
+    expect(process.stdout.listenerCount("drain")).toBe(beforeDrain + 1);
+
+    // Second start must tear down previous listeners, drain hook, and interval before re-arming.
+    backpressured = false;
+    tui.start();
+    expect(process.stdout.listenerCount("resize")).toBe(beforeResize + 1);
+    if (process.platform !== "win32") {
+      expect(process.listenerCount("SIGCONT")).toBe(beforeSigcont + 1);
+    }
+    expect(process.stdout.listenerCount("drain")).toBe(beforeDrain);
+
+    // Only ONE 120ms interval should be active (1 render per 120ms, never 2).
+    renderCalls = 0;
+    vi.advanceTimersByTime(120);
+    expect(renderCalls).toBe(1);
+    vi.advanceTimersByTime(120);
+    expect(renderCalls).toBe(2);
+  } finally {
+    tui.finish("done");
+    expect(process.stdout.listenerCount("resize")).toBe(beforeResize);
+    if (process.platform !== "win32") {
+      expect(process.listenerCount("SIGCONT")).toBe(beforeSigcont);
+    }
+    expect(process.stdout.listenerCount("drain")).toBe(beforeDrain);
+    renderCalls = 0;
+    vi.advanceTimersByTime(240);
+    expect(renderCalls).toBe(0);
+    Renderer.prototype.render = realRender;
+    vi.useRealTimers();
+  }
+});
+
+test("LaunchTui.finish() detaches drain listener and resets tools, activityLog, and todos", () => {
+  const realRender = Renderer.prototype.render;
+  Renderer.prototype.render = function () {};
+  const beforeDrain = process.stdout.listenerCount("drain");
+  const tui = new LaunchTui({
+    model: "m1",
+    tty: true,
+    write: () => false, // permanently backpressured -> keeps 'drain' listener armed until finish()
+  });
+  try {
+    tui.start();
+    expect(process.stdout.listenerCount("drain")).toBe(beforeDrain + 1);
+
+    const ev = tui.events();
+    ev.onStep!(1);
+    ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/index.ts" } });
+    ev.onToolResult!("read", true, "export const ok = true;");
+    tui.setTodos([
+      { title: "first step", status: "done" },
+      { title: "second step", status: "in_progress" },
+    ]);
+
+    expect(tui.recentActivity().length).toBeGreaterThan(0);
+    const toolsBefore = Reflect.get(tui, "tools");
+    expect(toolsBefore && typeof toolsBefore === "object" && "snapshot" in toolsBefore && typeof toolsBefore.snapshot === "function").toBe(true);
+    if (toolsBefore && typeof toolsBefore === "object" && "snapshot" in toolsBefore && typeof toolsBefore.snapshot === "function") {
+      expect(toolsBefore.snapshot().length).toBe(1);
+    }
+    const todosBefore = Reflect.get(tui, "todos");
+    expect(Array.isArray(todosBefore) && todosBefore.length).toBe(2);
+
+    tui.finish("done");
+
+    expect(process.stdout.listenerCount("drain")).toBe(beforeDrain);
+    expect(tui.recentActivity()).toEqual([]);
+    const toolsAfter = Reflect.get(tui, "tools");
+    if (toolsAfter && typeof toolsAfter === "object" && "snapshot" in toolsAfter && typeof toolsAfter.snapshot === "function") {
+      expect(toolsAfter.snapshot()).toEqual([]);
+    }
+    expect(Reflect.get(tui, "todos")).toEqual([]);
+  } finally {
+    tui.finish("cleanup");
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui: onToolProgress throttles before calling sanitizeForFrame", () => {
+  vi.useFakeTimers();
+  const realRender = Renderer.prototype.render;
+  let lastFrame: string[] = [];
+  let renderCount = 0;
+  Renderer.prototype.render = function (f: string[]) {
+    renderCount++;
+    lastFrame = f.slice();
+  };
+  const sanitizeSpy = spyOn(widthModule, "sanitizeForFrame");
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    tui.start();
+    const spinnerTimer = Reflect.get(tui, "timer");
+    if (spinnerTimer) clearInterval(spinnerTimer as NodeJS.Timeout);
+    vi.advanceTimersByTime(100);
+    const ev = tui.events();
+    ev.onStep!(1);
+    ev.onAssistant!("", { tool: "bash", arguments: { command: "tail -f log" } });
+
+    sanitizeSpy.mockClear();
+    renderCount = 0;
+
+    // First chunk (>= 100ms since start's lastStreamDraw = 0): runs sanitizeForFrame + draw.
+    ev.onToolProgress!("bash", "alpha\r\x1b[2Kone");
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1);
+    expect(renderCount).toBe(1);
+    expect(lastFrame.map(strip).join("\n")).toContain("alphaone");
+
+    // Subsequent bursts within 100ms must be throttled BEFORE calling sanitizeForFrame.
+    vi.advanceTimersByTime(30);
+    ev.onToolProgress!("bash", "throttled-a\x1b[2K");
+    vi.advanceTimersByTime(69);
+    ev.onToolProgress!("bash", "throttled-b\x1b[2K");
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1);
+    expect(renderCount).toBe(1);
+    expect(Reflect.get(tui, "liveToolOutput")).toBe("alphaone");
+
+    // Advancing past the 100ms window allows the next progress chunk through.
+    vi.advanceTimersByTime(1);
+    ev.onToolProgress!("bash", "beta\r\x1b[2Ktwo");
+    expect(sanitizeSpy).toHaveBeenCalledTimes(2);
+    expect(renderCount).toBe(2);
+    expect(lastFrame.map(strip).join("\n")).toContain("betatwo");
+
+    // Large progress buffers are sliced to FRAME_WRAP_TAIL_CHARS before sanitizeForFrame.
+    vi.advanceTimersByTime(100);
+    const hugePrefix = "x".repeat(20_000);
+    ev.onToolProgress!("bash", `${hugePrefix}tail-end\r\x1b[2K`);
+    expect(sanitizeSpy).toHaveBeenCalledTimes(3);
+    const thirdArg = sanitizeSpy.mock.calls[2]?.[0];
+    expect(typeof thirdArg).toBe("string");
+    expect(thirdArg?.length).toBe(16 * 1024);
+    expect(lastFrame.map(strip).join("\n")).toContain("tail-end");
+  } finally {
+    tui.finish("done");
+    sanitizeSpy.mockRestore();
+    Renderer.prototype.render = realRender;
+    vi.useRealTimers();
   }
 });

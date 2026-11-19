@@ -278,6 +278,8 @@ export interface RunSubagentOptions {
   slot?: { index: number; total: number };
   /** Pre-loaded project context to avoid re-scanning AGENTS.md per batch item. */
   projectContext?: ProjectContextFile[];
+  /** Pre-loaded `<project_memory>` section to avoid re-walking `.jeo/memory/` per batch item. */
+  memorySection?: string;
   /** BATCH-scoped (not per-call) credential scopes already known exhausted this
    *  turn, shared across every CONCURRENT fan-out worker (see `createTaskTool`'s
    *  fan-out path). Up to MAX_FANOUT subagents can be dispatched against the SAME
@@ -358,7 +360,7 @@ export async function runSubagentOnce(
   if (opts.sandbox && currentSandboxExecution() !== opts.sandbox) {
     return withSandboxExecution(opts.sandbox, () => runSubagentOnce(role, taskText, context, cwd, opts));
   }
-  const { steer, slot, detachedId, projectContext: preloadedContext, signal } = opts;
+  const { steer, slot, detachedId, projectContext: preloadedContext, memorySection: preloadedMemorySection, signal } = opts;
   const runId = crypto.randomUUID();
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
@@ -410,8 +412,10 @@ export async function runSubagentOnce(
   // A role may pin its own reasoning budget; absent = inherit the
   // session/global thinking level (the "(inherit)" row in the picker).
   const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
-  const projectContext = preloadedContext ?? await loadProjectContext(cwd);
-  const memorySection = await memoryPromptSection(cwd, taskText);
+  const [projectContext, memorySection] = await Promise.all([
+    preloadedContext !== undefined ? preloadedContext : loadProjectContext(cwd),
+    preloadedMemorySection !== undefined ? preloadedMemorySection : memoryPromptSection(cwd, taskText),
+  ]);
   const systemBase = withProjectContext(subagentSystemPrompt(role), projectContext);
   const history: Message[] = [
     { role: "system", content: memorySection ? `${systemBase}\n\n${memorySection}` : systemBase },
@@ -775,6 +779,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       steer?: () => string[];
       slot?: { index: number; total: number };
       projectContext?: ProjectContextFile[];
+      memorySection?: string;
       /** Overrides opts.signal — a detached run uses its own registry signal so it
        *  is cancellable independently of the parent turn. */
       signal?: AbortSignal;
@@ -798,6 +803,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       steer: extra.steer,
       slot: extra.slot,
       projectContext: extra.projectContext,
+      memorySection: extra.memorySection,
       excludedCredentialScopes: extra.excludedCredentialScopes,
       modelOverride: extra.modelOverride,
       detachedId: extra.detachedId,
@@ -894,9 +900,16 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // rate-limited account can drop below the default instead of backoff-storming.
       const fanoutLimit = resolveFanoutLimit(opts.config as { subagentConcurrency?: number });
       const limit = Math.min(items.length, fanoutLimit);
-      // Load project context ONCE per batch instead of re-scanning AGENTS.md for
-      // every fan-out task (redundant IO + duplicated tokens).
-      const batchContext = await loadProjectContext(cwd);
+      // Load project context and memory section ONCE per batch instead of re-scanning
+      // AGENTS.md / `.jeo/memory/` and recomputing TF-IDF for every fan-out task.
+      const batchMemoryQuery = items.map(it => it.task).join("\n");
+      const loadBatchShared = () => Promise.all([
+        loadProjectContext(cwd),
+        memoryPromptSection(cwd, batchMemoryQuery || undefined),
+      ]);
+      const [batchContext, batchMemorySection] = sandbox && currentSandboxExecution() !== sandbox
+        ? await withSandboxExecution(sandbox, loadBatchShared)
+        : await loadBatchShared();
       // Cost tier: an UNPINNED fan-out batch (no explicit 'role' arg — the common
       // case, MAX_FANOUT concurrent items all defaulting to executor) is bulk/
       // high-volume work by construction, not a single deep task — default it to
@@ -933,7 +946,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           // task runs isolated on its own slice of context; a task that genuinely
           // depends on another's output belongs in a sequential follow-up call.
           try {
-            results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride, signal: combinedSignal });
+            results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, memorySection: batchMemorySection, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride, signal: combinedSignal });
           } catch (error: unknown) {
             // Setup and reporting callbacks can throw outside the inner loop's
             // failure handler. Keep that child's failure without dropping siblings.

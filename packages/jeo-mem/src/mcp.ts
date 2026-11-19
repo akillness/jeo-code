@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join, parse, resolve } from "node:path";
 import { openDb } from "./db.ts";
 import { indexDir } from "./indexer.ts";
-import { impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
+import { hasIndexedFiles, impact, search, stats, whatCalls, whereDefined, whoCalls } from "./query.ts";
 
 const REPO_PROP = {
   type: "string",
@@ -111,7 +111,105 @@ export interface McpServerOptions {
 }
 
 const MAX_MCP_DB_CACHE = 4;
+const DEFAULT_SYNC_STALENESS_MS = 15_000;
+const WATCH_IGNORE_DIRS = new Set([
+  "node_modules",
+  "dist",
+  ".git",
+  ".jeo",
+  ".jeopi",
+  ".mex",
+  "coverage",
+  "build",
+  "graphify-out",
+  "llm-wiki",
+  "Library",
+  "gen",
+  "target",
+  "__pycache__",
+]);
 
+interface RepoCacheEntry {
+  db: Database;
+  root: string;
+  dbPath: string;
+  lastSyncAt: number;
+  dirty: boolean;
+  watcher: FSWatcher | null;
+  watcherActive: boolean;
+}
+
+interface RepoContext {
+  db: Database;
+  root: string;
+  lastSyncAt: number;
+  dirty: boolean;
+  watcherActive: boolean;
+  setLastSyncAt: (ts: number) => void;
+  setDirty: (dirty: boolean) => void;
+}
+
+function getSyncStalenessMs(): number {
+  const raw = process.env.JEOX_SYNC_TTL_MS ?? process.env.JEO_DB_REFRESH_MS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_SYNC_STALENESS_MS;
+}
+
+function readLastIndexedAt(db: Database): number {
+  try {
+    if (!hasIndexedFiles(db)) return 0;
+    const row = db.query("SELECT MAX(indexed_at) AS ts FROM code_files").get() as { ts: string | null } | null;
+    if (!row?.ts) return 0;
+    const parsed = Date.parse(row.ts);
+    return Number.isFinite(parsed) && parsed <= Date.now() ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function isIgnoredWatchPath(filename: string | Buffer | null): boolean {
+  if (!filename) return false;
+  const str = typeof filename === "string" ? filename : filename.toString("utf8");
+  for (const part of str.split(/[/\\]/)) {
+    if (WATCH_IGNORE_DIRS.has(part)) return true;
+  }
+  return false;
+}
+
+function attachRepoWatcher(entry: RepoCacheEntry): void {
+  if (!existsSync(entry.root)) return;
+  try {
+    const watcher = watch(entry.root, { recursive: true }, (_eventType, filename) => {
+      if (isIgnoredWatchPath(filename)) return;
+      entry.dirty = true;
+    });
+    watcher.on("error", () => {
+      entry.watcherActive = false;
+      if (entry.watcher === watcher) entry.watcher = null;
+      try { watcher.close(); } catch {}
+    });
+    watcher.unref?.();
+    entry.watcher = watcher;
+    entry.watcherActive = true;
+  } catch {
+    entry.watcher = null;
+    entry.watcherActive = false;
+  }
+}
+
+function closeRepoEntry(entry: RepoCacheEntry, closeDb: boolean): void {
+  entry.watcherActive = false;
+  if (entry.watcher) {
+    try { entry.watcher.close(); } catch {}
+    entry.watcher = null;
+  }
+  if (closeDb) {
+    try { entry.db.close(); } catch {}
+  }
+}
 export function isUnsafeDbRoot(dir: string): boolean {
   const resolved = resolve(dir);
   let realTarget = resolved;
@@ -148,21 +246,38 @@ export async function runMcpServer(dbOrOpts: Database | McpServerOptions, rootAr
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
 
-  const dbCache = new Map<string, { db: Database; root: string; dbPath: string; lastSyncAt: number }>();
+  const dbCache = new Map<string, RepoCacheEntry>();
 
-  const getRepoContext = (rawRepo?: unknown): { db: Database; root: string; lastSyncAt: number; setLastSyncAt: (ts: number) => void } => {
+  const toRepoContext = (entry: RepoCacheEntry): RepoContext => ({
+    db: entry.db,
+    root: entry.root,
+    lastSyncAt: entry.lastSyncAt,
+    dirty: entry.dirty,
+    watcherActive: entry.watcherActive,
+    setLastSyncAt: (ts: number) => { entry.lastSyncAt = ts; },
+    setDirty: (dirty: boolean) => { entry.dirty = dirty; },
+  });
+
+  const getRepoContext = (rawRepo?: unknown): RepoContext => {
     if (singleDb) {
       let cached = dbCache.get("__single__");
       if (!cached) {
-        cached = { db: singleDb, root: resolve(rootArg ?? process.cwd()), dbPath: ":single:", lastSyncAt: 0 };
+        const root = resolve(rootArg ?? process.cwd());
+        const lastSyncAt = readLastIndexedAt(singleDb);
+        const stalenessMs = getSyncStalenessMs();
+        cached = {
+          db: singleDb,
+          root,
+          dbPath: ":single:",
+          lastSyncAt,
+          dirty: lastSyncAt === 0 || Date.now() - lastSyncAt >= stalenessMs,
+          watcher: null,
+          watcherActive: false,
+        };
+        if (rootArg) attachRepoWatcher(cached);
         dbCache.set("__single__", cached);
       }
-      return {
-        db: cached.db,
-        root: cached.root,
-        lastSyncAt: cached.lastSyncAt,
-        setLastSyncAt: (ts: number) => { cached!.lastSyncAt = ts; },
-      };
+      return toRepoContext(cached);
     }
 
     const raw =
@@ -177,7 +292,7 @@ export async function runMcpServer(dbOrOpts: Database | McpServerOptions, rootAr
 
     let entry = dbCache.get(repoPath);
     if (entry && dbPath !== ":memory:" && !existsSync(entry.dbPath)) {
-      try { entry.db.close(); } catch {}
+      closeRepoEntry(entry, true);
       dbCache.delete(repoPath);
       entry = undefined;
     }
@@ -190,29 +305,42 @@ export async function runMcpServer(dbOrOpts: Database | McpServerOptions, rootAr
         if (oldestKey !== undefined) {
           const oldest = dbCache.get(oldestKey);
           dbCache.delete(oldestKey);
-          try { oldest?.db.close(); } catch {}
+          if (oldest) closeRepoEntry(oldest, true);
         }
       }
-      entry = { db: openDb(dbPath), root: repoPath, dbPath, lastSyncAt: 0 };
+      const db = openDb(dbPath);
+      const lastSyncAt = readLastIndexedAt(db);
+      const stalenessMs = getSyncStalenessMs();
+      entry = {
+        db,
+        root: repoPath,
+        dbPath,
+        lastSyncAt,
+        dirty: lastSyncAt === 0 || Date.now() - lastSyncAt >= stalenessMs,
+        watcher: null,
+        watcherActive: false,
+      };
+      attachRepoWatcher(entry);
       dbCache.set(repoPath, entry);
     }
-    return {
-      db: entry.db,
-      root: entry.root,
-      lastSyncAt: entry.lastSyncAt,
-      setLastSyncAt: (ts: number) => { entry!.lastSyncAt = ts; },
-    };
+    return toRepoContext(entry);
   };
 
-  const ensureFresh = (ctx: ReturnType<typeof getRepoContext>, force = false) => {
+  const ensureFresh = (ctx: RepoContext, force = false) => {
     try {
-      if (force || stats(ctx.db).files === 0 || Date.now() - ctx.lastSyncAt >= 3_000) {
-        indexDir(ctx.db, ctx.root);
-        ctx.setLastSyncAt(Date.now());
+      if (!force && hasIndexedFiles(ctx.db)) {
+        const stalenessMs = getSyncStalenessMs();
+        if (Date.now() - ctx.lastSyncAt < stalenessMs) return;
+        if (ctx.watcherActive && !ctx.dirty) {
+          ctx.setLastSyncAt(Date.now());
+          return;
+        }
       }
+      indexDir(ctx.db, ctx.root);
+      ctx.setLastSyncAt(Date.now());
+      ctx.setDirty(false);
     } catch { /* best-effort: keep serving last known index */ }
   };
-
   try {
     for await (const line of rl) {
       const trimmed = line.trim();
@@ -275,6 +403,7 @@ export async function runMcpServer(dbOrOpts: Database | McpServerOptions, rootAr
             case "index":
               content = indexDir(ctx.db, ctx.root, { rebuild: !!args.rebuild });
               ctx.setLastSyncAt(Date.now());
+              ctx.setDirty(false);
               break;
             case "jeox_status":
             case "status":
@@ -298,11 +427,9 @@ export async function runMcpServer(dbOrOpts: Database | McpServerOptions, rootAr
       }
     }
   } finally {
-    if (!singleDb) {
-      for (const entry of dbCache.values()) {
-        try { entry.db.close(); } catch {}
-      }
-      dbCache.clear();
+    for (const [key, entry] of dbCache) {
+      closeRepoEntry(entry, !singleDb && key !== "__single__");
     }
+    dbCache.clear();
   }
 }

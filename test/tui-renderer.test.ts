@@ -433,3 +433,52 @@ test("Renderer non-reserve mode still ED-clears on resize (unaffected by the res
   r.render(["x"]);
   expect(out.join("")).toContain("\x1b[0J");
 });
+
+test("Renderer.render() emits 0 bytes when frame lines match prev and syncOpen is false", () => {
+  for (const reserve of [false, true]) {
+    const writes: string[] = [];
+    let cols = 10;
+    const r = new Renderer(s => writes.push(s), () => cols, { reserve });
+
+    r.render(["alpha", "beta"]);
+    expect(writes.join("").length).toBeGreaterThan(0);
+
+    // Identical frame with syncOpen === false must be a strict 0-byte no-op.
+    writes.length = 0;
+    r.render(["alpha", "beta"]);
+    expect(writes).toEqual([]);
+
+    // Lines that differ beyond `cols` still truncate to identical `prev` rows -> 0 bytes.
+    cols = 5;
+    r.render(["12345xxx", "abcde111"]);
+    writes.length = 0;
+    r.render(["12345yyy", "abcde222"]);
+    expect(writes).toEqual([]);
+  }
+});
+
+test("Renderer.render() emits END_SYNC when lines match prev (dirty === false) and syncOpen is true", () => {
+  for (const reserve of [false, true]) {
+    const writes: string[] = [];
+    const r = new Renderer(s => writes.push(s), () => 40, { reserve });
+
+    r.render(["row1", "row2"]);
+    writes.length = 0;
+
+    // insertAbove opens DECSET 2026 (syncOpen = true) and drops prev to [].
+    r.insertAbove("ledger\n");
+    expect(writes.join("")).toContain("\x1b[?2026h");
+    expect(writes.join("")).not.toContain("\x1b[?2026l");
+
+    // Rendering an empty frame matches prev ([]) so dirty === false, yet syncOpen === true
+    // must still emit END_SYNC without opening a new BEGIN_SYNC.
+    writes.length = 0;
+    r.render([]);
+    expect(writes).toEqual(["\x1b[?2026l"]);
+
+    // syncOpen is now closed; repeating the identical empty render emits 0 bytes.
+    writes.length = 0;
+    r.render([]);
+    expect(writes).toEqual([]);
+  }
+});

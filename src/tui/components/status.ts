@@ -6,6 +6,21 @@ import * as os from "node:os";
 import { formatUsage } from "./duration";
 import { formatCost } from "../../ai/pricing";
 import { applyDimensionalGradient, stageGradient, stageIndexForStep } from "./evolution";
+const ELAPSED_SUFFIX_RE = /^(.+?)(\s+\(\d+\.\ds\)(?:…|\.\.\.)?)$/;
+
+function paintGradientLabel(
+  text: string,
+  fromHex: string,
+  toHex: string,
+  level: ColorLevel,
+  dimFn: (s: string) => string,
+): string {
+  const m = ELAPSED_SUFFIX_RE.exec(text);
+  if (!m) {
+    return applyDimensionalGradient(text, Date.now(), fromHex, toHex, level, false);
+  }
+  return applyDimensionalGradient(m[1]!, Date.now(), fromHex, toHex, level, false) + dimFn(m[2]!);
+}
 
 /**
  * One-row status bar pinned directly above the boxed input:
@@ -181,7 +196,7 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
       fromHex = grad.from;
       toHex = grad.to;
     }
-    msg = applyDimensionalGradient(msg, Date.now(), fromHex, toHex, level, false);
+    msg = paintGradientLabel(msg, fromHex, toHex, level, useColor ? chalk.dim : (s: string) => s);
   }
   const current = data.currentTool ? `forging ${data.currentTool}` : "forge idle";
   const stage = data.stage ? `${data.stage} · ` : "";
@@ -300,7 +315,7 @@ export function renderStatusBox(data: StatusBoxData): string[] {
       fromHex = grad.from;
       toHex = grad.to;
     }
-    activity = applyDimensionalGradient(activity, Date.now(), fromHex, toHex, level, false);
+    activity = paintGradientLabel(activity, fromHex, toHex, level, dim);
   }
   const escPad = esc
     ? " ".repeat(Math.max(1, cols - 1 - visibleWidth(headPlain) - plainActivityWidth - visibleWidth(esc))) + dim(esc)

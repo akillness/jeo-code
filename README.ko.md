@@ -638,11 +638,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
 - **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 - **[1.0.6]** (2026-11-19) — Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation.
 - **[1.0.5]** (2026-11-19) — In-place TTY subagent HUD panel without scrollback push, multi-language `jeox`/`jeo-mem` extended code-graph indexing, and runtime hardening across auth locks, compaction, browser/debug sessions, Perplexity search, OpenAI fallback, Discord, and MCP.
-- **[1.0.4]** (2026-11-18) — Harden Discord session allowlist/guardrail enforcement across gateway, live bridge, and daemon control; eliminate false 50k snapshot cap rejections on large repos and markerless directories.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

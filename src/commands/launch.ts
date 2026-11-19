@@ -4610,7 +4610,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
    *  "is there input?" predicate shared by clearTypedInput and the Ctrl+C decision. */
   const promptHasContent = (): boolean => {
     const line = (rl as unknown as { line?: string }).line;
-    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || pasteInFlight || promptPasteActive || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste || queuedPromptInput.pastedLines.length > 0 || queuedPromptInput.partial.length > 0;
+    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || (pasteInFlight && !imagePasteInFlight) || promptPasteActive || queuedPromptInput.inPaste || !!queuedPromptInput.compactFilter?.inPaste || queuedPromptInput.pastedLines.length > 0 || queuedPromptInput.partial.length > 0;
   };
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
@@ -5869,6 +5869,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         ? (disarmPreview(), pendingMidTurnCommands.shift()!)
         : await promptInput(previewEnabled ? "" : "\njeo> ");
       clearPromptPrefill = undefined;
+      lastCtrlCAt = 0;
       promptPasteEpochs = 0;
       const directLocalPrompt = process.stdin.isTTY && remoteInputPending === 0 && !promptPrefilled && !queuedAtPromptStart;
       dirtyRefreshCancelled = true;

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.9] - 2026-11-19
+_Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste._
+
+### Fixed
+- **Post-submit Ctrl+C collapse & `imagePasteInFlight` (`src/commands/launch.ts`, `test/discord-live-session.test.ts`):** Reset `lastCtrlCAt` once a prompt submits and exclude background `imagePasteInFlight` scans from `promptHasContent()` so a subsequent Ctrl+C on an empty prompt exits immediately even within 50ms of clearing an earlier paste.
+
 ## [1.0.8] - 2026-11-19
 _Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup._
 

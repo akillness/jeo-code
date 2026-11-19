@@ -1396,6 +1396,7 @@ describe("unsandboxed launch PTY Discord control", () => {
 			TERM: "xterm-256color",
 			JEO_TEST_DISCORD_STDIN: "1",
 		};
+		const cliExited = Promise.withResolvers<number>();
 		const proc = Bun.spawn(
 			[process.execPath, GUARDIAN, process.execPath, CLI, "launch", "--no-skills", "--model", "openai/pty-model"],
 			{
@@ -1404,6 +1405,7 @@ describe("unsandboxed launch PTY Discord control", () => {
 				terminal,
 				detached: true,
 				ipc(message) {
+					if (message.type === "exit") cliExited.resolve(message.exitCode);
 					if (message.type === "stdin-consumed") {
 						consumedStdin += message.data;
 						for (const resolve of stdinWaiters.splice(0)) resolve();
@@ -1512,6 +1514,8 @@ describe("unsandboxed launch PTY Discord control", () => {
 						(frame.generation as number) > (enabled.generation as number),
 				);
 				expect(disabled.enabled).toBe(false);
+				terminal.write("\u0003");
+				expect(await phase("terminal exit", () => cliExited.promise)).not.toBe(0);
 			} finally {
 				clearTimeout(diagnostic);
 			}

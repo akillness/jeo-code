@@ -1284,4 +1284,264 @@ describe("unsandboxed launch PTY Discord control", () => {
 			}
 		}
 	}, 90_000);
+
+	test("clearing an open mid-turn paste after remote cancellation allows direct /discord control off", async () => {
+		const root = await makeTempRoot("jeo-discord-paste-abort-");
+		const config = path.join(root, "config");
+		const workspace = path.join(root, "workspace");
+		const sessions = path.join(config, "notifications", "sessions");
+		await fs.mkdir(sessions, { recursive: true });
+		await fs.mkdir(workspace);
+		await fs.chmod(config, 0o700);
+
+		const providerReady = Promise.withResolvers<void>();
+		const providerAborted = Promise.withResolvers<void>();
+		const providerRequests: { release: () => void }[] = [];
+		const provider = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				if (request.method !== "POST") return Response.json({ data: [{ id: "pty-model" }] });
+				const released = Promise.withResolvers<void>();
+				providerRequests.push({ release: released.resolve });
+				request.signal.addEventListener("abort", () => {
+					providerAborted.resolve();
+					released.resolve();
+				});
+				providerReady.resolve();
+				await released.promise;
+				return Response.json({
+					choices: [{ message: { role: "assistant", content: "released" }, finish_reason: "stop" }],
+				});
+			},
+		});
+
+		await fs.writeFile(
+			path.join(config, "config.json"),
+			JSON.stringify({
+				providers: {},
+				defaultModel: "openai/pty-model",
+				openaiBaseUrl: `http://127.0.0.1:${provider.port}/v1`,
+				notifications: { enabled: true, discord: { allowedUserIds: [USER_ID] } },
+				routing: { enabled: false },
+				computer: { enabled: false },
+				gitAutoCommit: false,
+			}),
+		);
+
+		let output = "";
+		let outputWaiters: Array<() => void> = [];
+		let consumedStdin = "";
+		const stdinWaiters: Array<() => void> = [];
+		const { promise: deadline, reject: rejectDeadline } = Promise.withResolvers<never>();
+		deadline.catch(() => {});
+		const pending = new Set<string>();
+		const phase = async <T>(label: string, action: () => Promise<T>): Promise<T> => {
+			pending.add(label);
+			try {
+				return await Promise.race([action(), deadline]);
+			} finally {
+				pending.delete(label);
+			}
+		};
+		const terminal = new Bun.Terminal({
+			cols: 120,
+			rows: 36,
+			data(_terminal, bytes) {
+				output += new TextDecoder().decode(bytes);
+				for (const resolve of outputWaiters.splice(0)) resolve();
+			},
+		});
+		const nextOutput = () => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			outputWaiters.push(resolve);
+			return promise;
+		};
+		const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+		const waitOutput = (needle: string, from = 0) =>
+			phase(`output ${JSON.stringify(needle)}`, async () => {
+				while (!plain(output.slice(from)).includes(needle)) await nextOutput();
+			});
+		const typed = (text: string) =>
+			phase(`typing ${JSON.stringify(text)}`, async () => {
+				for (const character of text) {
+					const echoed = nextOutput();
+					terminal.write(character);
+					await echoed;
+				}
+				terminal.write("\r");
+			});
+
+		const discoveryReady = Promise.withResolvers<{ url: string; token: string; id: string }>();
+		const scanDiscovery = async () => {
+			const names = await fs.readdir(sessions).catch(() => []);
+			for (const name of names) {
+				if (!name.endsWith(".json")) continue;
+				try {
+					const data = JSON.parse(await fs.readFile(path.join(sessions, name), "utf8")) as { url: string; token: string };
+					discoveryReady.resolve({ ...data, id: name.slice(0, -5) });
+				} catch {}
+			}
+		};
+		const watcher = watch(sessions, () => {
+			void scanDiscovery();
+		});
+		const env = {
+			HOME: process.env.HOME ?? "",
+			PATH: process.env.PATH ?? "",
+			JEO_CONFIG_DIR: config,
+			OPENAI_API_KEY: "sk-test-fake-local-openai-key",
+			JEO_STATIC_MEMORY: "1",
+			NO_COLOR: "1",
+			TERM: "xterm-256color",
+			JEO_TEST_DISCORD_STDIN: "1",
+		};
+		const proc = Bun.spawn(
+			[process.execPath, GUARDIAN, process.execPath, CLI, "launch", "--no-skills", "--model", "openai/pty-model"],
+			{
+				cwd: workspace,
+				env,
+				terminal,
+				detached: true,
+				ipc(message) {
+					if (message.type === "stdin-consumed") {
+						consumedStdin += message.data;
+						for (const resolve of stdinWaiters.splice(0)) resolve();
+					}
+				},
+			},
+		);
+		void proc.exited.then(code => rejectDeadline(new Error(`PTY guardian exited unexpectedly: ${code}`)));
+
+		let ws: WebSocket | undefined;
+		let testFailure: unknown;
+		try {
+			const diagnostic = setTimeout(() => {
+				rejectDeadline(new Error(`Discord paste-abort PTY stalled; pending: ${[...pending].join("; ")}; tail: ${JSON.stringify(output.slice(-800))}`));
+			}, 45_000);
+			try {
+				await waitOutput("Type your message");
+				const discoveryPoll = setInterval(() => {
+					void scanDiscovery();
+				}, 100);
+				let discovery: { url: string; token: string; id: string };
+				try {
+					await scanDiscovery();
+					discovery = await phase("session discovery", () => discoveryReady.promise);
+				} finally {
+					clearInterval(discoveryPoll);
+				}
+
+				ws = new WebSocket(`${discovery.url}/?token=${encodeURIComponent(discovery.token)}`);
+				const frames: Array<Record<string, unknown>> = [];
+				const listeners: Array<() => void> = [];
+				ws.addEventListener("message", event => {
+					frames.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+					for (const resolve of listeners.splice(0)) resolve();
+				});
+				const waitFrame = (predicate: (frame: Record<string, unknown>) => boolean, from = 0) =>
+					phase(`frame from ${from}`, async () => {
+						for (;;) {
+							const found = frames.slice(from).find(predicate);
+							if (found) return found;
+							const { promise, resolve } = Promise.withResolvers<void>();
+							listeners.push(resolve);
+							await promise;
+						}
+					});
+				await waitFrame(frame => frame.type === "snapshot");
+
+				const beforeControlOn = output.length;
+				await typed("/discord control on --allow-full-control");
+				const outcome = await Promise.race([
+					waitFrame(frame => frame.type === "discord_control" && frame.enabled === true).then(frame => ({ frame })),
+					waitOutput("Confirm Discord control: press y to allow, any other key to cancel.", beforeControlOn).then(() => ({ frame: undefined })),
+				]);
+				let enabled = outcome.frame;
+				if (!enabled) {
+					terminal.write("y");
+					enabled = await waitFrame(frame => frame.type === "discord_control" && frame.enabled === true);
+				}
+
+				// Security invariant: bracketed-pasted /discord control off must still be rejected.
+				const beforePastedOff = output.length;
+				await waitOutput("Type your message", beforeControlOn);
+				terminal.write("\u001b[200~/discord control off\u001b[201~\r");
+				await waitOutput("Discord control requires a directly submitted local prompt.", beforePastedOff);
+				await waitOutput("Type your message", beforePastedOff);
+
+				// Start a remote turn, leave an open bracketed paste across remote_cancel, clear with Ctrl+C + paste-end, then revoke.
+				const reqId = crypto.randomUUID();
+				ws.send(
+					JSON.stringify({
+						type: "remote_request",
+						sessionId: discovery.id,
+						reqId,
+						controlGeneration: enabled.generation,
+						actor: { origin: "discord", sessionKey: discovery.id, userId: USER_ID },
+						text: "long remote task",
+					}),
+				);
+				expect((await waitFrame(frame => frame.type === "ack" && frame.reqId === reqId)).ok).toBe(true);
+				await phase("provider ready", () => providerReady.promise);
+
+				const beforePaste = output.length;
+				const beforeInput = consumedStdin.length;
+				const paste = "\u001b[200~paste before abort\u001b[201~\u001b[200~paste before abort";
+				terminal.write(paste);
+				await phase("compact paste display", async () => {
+					while (!/\[Paste #\d+, 1 lines, 18 cols\]/.test(plain(output.slice(beforePaste)))) await nextOutput();
+				});
+				await phase("open paste consumed", async () => {
+					while (!consumedStdin.slice(beforeInput).includes(paste)) {
+						const { promise, resolve } = Promise.withResolvers<void>();
+						stdinWaiters.push(resolve);
+						await promise;
+					}
+				});
+
+				ws.send(JSON.stringify({ type: "remote_cancel", sessionId: discovery.id, reqId }));
+				await phase("provider abort", () => providerAborted.promise);
+				terminal.write("\u0003\u001b[201~");
+				terminal.write("/discord  control   off\r");
+
+				const disabled = await waitFrame(
+					frame =>
+						frame.type === "discord_control" &&
+						frame.enabled === false &&
+						(frame.generation as number) > (enabled.generation as number),
+				);
+				expect(disabled.enabled).toBe(false);
+			} finally {
+				clearTimeout(diagnostic);
+			}
+		} catch (error) {
+			testFailure = error;
+			throw error;
+		} finally {
+			watcher.close();
+			ws?.close();
+			for (const request of providerRequests) request.release();
+			let cleanupFailure: unknown;
+			const { promise: cleanupDeadline, reject: rejectCleanup } = Promise.withResolvers<never>();
+			const cleanupTimer = setTimeout(() => rejectCleanup(new Error("PTY guardian did not stop within 10 seconds")), 10_000);
+			try {
+				if (proc.exitCode === null) proc.send("stop");
+				await Promise.race([proc.exited, cleanupDeadline]);
+			} catch (error) {
+				cleanupFailure = error;
+				try {
+					proc.disconnect();
+				} catch {}
+			} finally {
+				clearTimeout(cleanupTimer);
+				terminal.close();
+				provider.stop(true);
+			}
+			if (cleanupFailure) {
+				if (testFailure) throw new AggregateError([testFailure, cleanupFailure], "PTY test and cleanup failed");
+				throw cleanupFailure;
+			}
+		}
+	}, 90_000);
 });

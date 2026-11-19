@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.8] - 2026-11-19
+_Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup._
+
+### Fixed
+- **Launch direct-prompt & paste-abort cleanup (`src/commands/launch.ts`, `test/discord-live-session.test.ts`):** Reset `explicitDraftPaste`/`draftHasPaste`, `promptPasteActive`, `queuedPromptInput` paste state, and prefill/paste-epoch baselines on `queueBusyClear()` and `clearTypedInput()`, clear `emergencyInput.partial`/`emergencyPaste` when Ctrl+C closes an emergency paste in `captureAfterAbort`, guard `handleCtrlCByte` against `PASTE_START` payloads, and exclude background drag-and-drop `imagePasteInFlight` scans from `explicitPastedDraft` so `/discord control off` succeeds reliably after cancelling a turn with an open bracketed paste.
+
 ## [1.0.7] - 2026-11-19
 _TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching._
 

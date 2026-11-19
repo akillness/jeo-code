@@ -1579,6 +1579,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   // Clears the live next-prompt draft — used after a mid-turn Enter is lifted into
   // the steering inbox so the consumed line does not also become the next prompt.
   let queueBusyClear: (() => void) | undefined;
+  let clearPromptPrefill: (() => void) | undefined;
   // Routes a command-shaped (/… or $…) mid-turn draft into the idle loop's
   // pending-line queue so it runs as a real COMMAND at the turn boundary,
   // instead of being steered into the model as literal text.
@@ -1786,9 +1787,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const captureAfterAbort = (chunk: string, view: LaunchTuiInstance | null): void => {
       const paste = emergencyInput.inPaste || chunk.includes(PASTE_START) || chunk.includes(PASTE_END) || chunk.includes("\u0016");
       if (paste) emergencyPaste = true;
-      if (chunkHasCtrlC(chunk)) queueBusyClear?.();
+      const ctrlCClear = !chunk.includes(PASTE_START) && chunkHasCtrlC(chunk);
+      if (ctrlCClear) queueBusyClear?.();
       const submitted = !emergencyInput.inPaste && /[\r\n]/.test(chunk) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
       captureLivePromptInputChunk(emergencyInput, chunk, { multiline: true });
+      if (ctrlCClear) {
+        emergencyInput.partial = "";
+        emergencyInput.pastedLines.length = 0;
+        if (!emergencyInput.inPaste) emergencyPaste = false;
+        return;
+      }
       if (!emergencyInput.partial && !emergencyInput.inPaste) emergencyPaste = false;
       if (!submitted) return;
       const endpoint = sessionNotifyEndpoint;
@@ -3891,6 +3899,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   });
   queueBusyClear = () => {
     queuedPromptInput.partial = "";
+    queuedPromptInput.inPaste = false;
+    if (queuedPromptInput.compactFilter) {
+      queuedPromptInput.compactFilter.inPaste = false;
+      queuedPromptInput.compactFilter.pasteBody = undefined;
+      queuedPromptInput.compactFilter.carry = undefined;
+    }
+    promptPasteActive = false;
+    pasteLineFired = false;
+    pasteMerge.buf = [];
+    explicitDraftPaste = false;
+    draftHasPaste = false;
     const r = rl as unknown as { line?: string; cursor?: number };
     if (typeof r.line === "string") {
       r.line = "";
@@ -3921,6 +3940,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   let draftHasPaste = false;
   let explicitDraftPaste = false;
   let ambiguousPasteEpoch = 0;
+  let promptPasteEpochs = 0;
   if (process.stdin.isTTY) {
     const pasteUtf8Decoder = new StringDecoder("utf8");
     const pasteDataHandler = (chunk: Uint8Array | string) => {
@@ -3930,7 +3950,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     process.stdin.on("data", pasteDataHandler);
     promptListenerCleanups.push(() => process.stdin.off("data", pasteDataHandler));
     const pasteKeypressHandler = (_ch: string, key: { name?: string } | undefined) => {
-      if (key?.name === "paste-start") { explicitDraftPaste = true; draftHasPaste = true; relayInputEpoch++; promptPasteActive = true; pasteMerge.buf = []; pasteMerge.lastActivityAt = Date.now(); }
+      if (key?.name === "paste-start") { explicitDraftPaste = true; draftHasPaste = true; relayInputEpoch++; if (promptActive) promptPasteEpochs++; promptPasteActive = true; pasteMerge.buf = []; pasteMerge.lastActivityAt = Date.now(); }
       else if (key?.name === "paste-end") {
         promptPasteActive = false;
         for (const w of pasteMerge.endWaiters.splice(0)) w();
@@ -4598,6 +4618,9 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
     if (!promptHasContent()) return false;
     invalidateDraftPaste();
+    explicitDraftPaste = false;
+    draftHasPaste = false;
+    clearPromptPrefill?.();
     promptPasteActive = false;
     pasteLineFired = false;
     pasteMerge.buf = [];
@@ -4682,6 +4705,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return;
     }
     if (interactiveTurnActive || activeTurnAbort) {
+      if (!activeTurnAbort && promptHasContent()) {
+        queueBusyClear?.();
+        return;
+      }
       handleTurnCtrlC(() => { if (activeTui) activeTui.finish("Cancelled.", { ok: false }); });
       return;
     }
@@ -4699,7 +4726,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
     // chunkHasCtrlC also matches the kitty CSI-u (`CSI 99;5u`) and xterm
     // modifyOtherKeys (`CSI 27;5;99~`) encodings jeo's protocol push provokes.
-    if (chunkHasCtrlC(text)) handleCtrlC();
+    if (!text.includes(PASTE_START) && chunkHasCtrlC(text)) handleCtrlC();
   };
   // Bun/readline can deliver Ctrl+C as readline SIGINT, process SIGINT, or (tmux)
   // a raw \u0003 byte before readline resolves the question; funnel all three through
@@ -5394,6 +5421,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         explicitDraftPaste = true;
         draftHasPaste = true;
         relayInputEpoch++;
+        promptPasteEpochs++;
         if (pasteInFlight) return;
         pasteInFlight = true;
         const operation = ++pasteOperation;
@@ -5784,10 +5812,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
       }
       const prefilledLine = queuedPromptInput.partial;
-      const relayEpoch = relayInputEpoch;
+      let promptPrefilled = !!prefilledLine;
+      let relayEpoch = relayInputEpoch;
       const ambiguousEpoch = ambiguousPasteEpoch;
-      const directLocalPrompt = process.stdin.isTTY && remoteInputPending === 0 && !prefilledLine &&
-        pendingMidTurnCommands.length === 0 && pendingStdinLines.length === 0 && queuedPromptInput.pastedLines.length === 0;
+      promptPasteEpochs = 0;
+      clearPromptPrefill = () => {
+        promptPrefilled = false;
+        relayEpoch += promptPasteEpochs;
+        promptPasteEpochs = 0;
+      };
+      const queuedAtPromptStart = pendingMidTurnCommands.length > 0 || pendingStdinLines.length > 0 || queuedPromptInput.pastedLines.length > 0;
       queuedPromptInput.partial = "";
       // Resolve the visible input text FIRST (cheap, no I/O): the queued prefill, else
       // any partial the user typed while the previous live turn/subagent was running
@@ -5834,10 +5868,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       const rawText = pendingMidTurnCommands.length
         ? (disarmPreview(), pendingMidTurnCommands.shift()!)
         : await promptInput(previewEnabled ? "" : "\njeo> ");
+      clearPromptPrefill = undefined;
+      promptPasteEpochs = 0;
+      const directLocalPrompt = process.stdin.isTTY && remoteInputPending === 0 && !promptPrefilled && !queuedAtPromptStart;
       dirtyRefreshCancelled = true;
       const relayGeneration = sessionNotifyEndpoint?.localRelayGeneration();
-      const pastedDraft = draftHasPaste || pasteInFlight || promptPasteActive;
-      const explicitPastedDraft = explicitDraftPaste || pasteInFlight || promptPasteActive;
+      const pastedDraft = draftHasPaste || (pasteInFlight && !imagePasteInFlight) || promptPasteActive;
+      const explicitPastedDraft = explicitDraftPaste || (pasteInFlight && !imagePasteInFlight) || promptPasteActive;
       if ((!pasteInFlight || imagePasteInFlight) && !promptPasteActive) {
         draftHasPaste = false;
         explicitDraftPaste = false;

@@ -1,7 +1,7 @@
 import type { Credential } from "../auth";
 
 /** Providers compiled into jeo (built-ins + the OpenAI/Anthropic-compatible catalog). */
-export type BuiltinProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "agy" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
+export type BuiltinProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "agy" | "ollama" | "lmstudio" | "llama-cpp" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
 
 /**
  * A provider id at runtime: a compiled-in name, OR a user-registered custom provider id
@@ -187,6 +187,12 @@ export interface CallOptions {
    *  these on the wire and re-serialize the structured tool call back into the engine's
    *  canonical {"tool":...}/{"tools":[...]} string; others ignore it. */
   tools?: NativeToolSchema[];
+  /** GBNF grammar string for constrained decoding on llama.cpp backends. */
+  grammar?: string;
+  /** JSON Schema for structured output (`response_format.json_schema` or Ollama `format`). */
+  jsonSchema?: Record<string, unknown>;
+  /** Tool-calling tier override (`native` -> `structured` -> `prose`). */
+  toolCallingTier?: "native" | "structured" | "prose";
   /** Extra HTTP headers merged into the outgoing provider request (adapter-specific;
    *  currently honored by the anthropic adapter). Used by Anthropic-compatible OAuth
    *  providers — e.g. Kimi Code sends its X-Msh-* device headers on every call. */

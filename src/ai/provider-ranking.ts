@@ -77,6 +77,7 @@ export const FAMOUS_PROVIDER_ORDER: readonly string[] = [
   "litellm",
   "ollama",
   "lmstudio",
+  "llama-cpp",
 ];
 
 const FAMOUS_PROVIDER_INDEX = new Map(FAMOUS_PROVIDER_ORDER.map((id, i) => [id, i]));

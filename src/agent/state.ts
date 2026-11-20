@@ -89,6 +89,8 @@ export interface Config {
   openaiBaseUrl?: string;
   /** Base URL for the local LM Studio server (keyless, OpenAI-compatible). */
   lmstudioBaseUrl?: string;
+  /** Base URL for the local llama.cpp server (keyless or LLAMA_CPP_API_KEY). */
+  llamaCppBaseUrl?: string;
   defaultModel: string;
   /** Root path of the global llm-wiki vault, shared across every session regardless
    *  of project/cwd. A leading `~` is expanded at resolve time; env `JEO_WIKI_ROOT`
@@ -402,6 +404,7 @@ function withEnvOverlay(cfg: Config): Config {
   setLocalModelEndpoints({
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST,
     lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL,
+    llamaCppBaseUrl: cfg.llamaCppBaseUrl || process.env.LLAMA_CPP_BASE_URL,
   });
   return {
     ...cfg,
@@ -411,6 +414,7 @@ function withEnvOverlay(cfg: Config): Config {
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
     lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
+    llamaCppBaseUrl: cfg.llamaCppBaseUrl || process.env.LLAMA_CPP_BASE_URL || "http://localhost:8080/v1",
     roles: {
       smol: cfg.roles?.smol || jeoEnv("SMOL_MODEL"),
       medium: cfg.roles?.medium || jeoEnv("MEDIUM_MODEL"),

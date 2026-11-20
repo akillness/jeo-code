@@ -238,8 +238,9 @@ When jeo session persistence is enabled, resume uses that session's saved CLI co
 | `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | Autonomous build loop with a score ratchet (`status` shows direction, keep/revert counts, next action) · cross-plan append-only ledger |
 | `jeo routine init …` | Generate a GitHub Actions workflow that runs jeo headlessly on a schedule or repo event |
 | `jeo skills list\|read\|sync\|lesson\|eval` | Bundled, user, and project skills; drift check; recorded lessons |
-| `jeo mcp serve\|tools` · `jeo computer <action>` | MCP stdio server for external controllers · desktop automation actions |
-| `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux session management · transcript export · tool-less streaming chat |
+| `jeo serve [--port <p>]` · `jeo mcp serve|tools` · `jeo computer <action>` | Inbound HTTP Agent Server (OpenAI-compatible & GoalFlow) · MCP stdio server · desktop automation |
+| `jeo session list|attach|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux session management · transcript export · tool-less streaming chat |
+
 | `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | Self-update from npm · bundled release notes · legacy `MEMORY.md` → OKF bundle |
 
 ## Core Workflows
@@ -626,11 +627,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
 - **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 - **[1.0.6]** (2026-11-19) — Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation.
-- **[1.0.5]** (2026-11-19) — In-place TTY subagent HUD panel without scrollback push, multi-language `jeox`/`jeo-mem` extended code-graph indexing, and runtime hardening across auth locks, compaction, browser/debug sessions, Perplexity search, OpenAI fallback, Discord, and MCP.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

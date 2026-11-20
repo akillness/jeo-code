@@ -7,6 +7,7 @@ import { codexResponsesCall, codexResponsesStream, ResponsesIncompleteError } fr
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { createThinkSplitter, stripLeakedReasoningTags } from "../think-tags";
+import { buildToolCallJsonSchema } from "./local-capabilities";
 
 /** True for OpenAI reasoning models (o-series + gpt-5+ family). Digit-count agnostic
  *  (gpt-6/o10 stay reasoning). Strips the `openai/` routing prefix first. */
@@ -89,11 +90,23 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
     payload.stream = true;
     payload.stream_options = { include_usage: true };
   }
-  if (options.tools?.length) {
-    payload.tools = options.tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  const tier = options.toolCallingTier;
+  const sendNativeTools = Boolean(options.tools?.length) && tier !== "structured" && tier !== "prose";
+  if (sendNativeTools) {
+    payload.tools = options.tools!.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
     payload.tool_choice = "auto";
   }
-  if (options.jsonMode && !options.tools?.length) payload.response_format = { type: "json_object" };
+  if (options.grammar) {
+    payload.grammar = options.grammar;
+  } else if (options.jsonSchema || (tier === "structured" && options.tools?.length)) {
+    const schema = options.jsonSchema ?? buildToolCallJsonSchema(options.tools);
+    payload.response_format = {
+      type: "json_schema",
+      json_schema: { name: "jeo_tool_call", schema },
+    };
+  } else if (options.jsonMode && !sendNativeTools && tier !== "prose") {
+    payload.response_format = { type: "json_object" };
+  }
   const base = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
   return {
     url: `${base}/chat/completions`,
@@ -237,7 +250,7 @@ export const openaiAdapter: ProviderAdapter = {
     }
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     let response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
-    if (response.status === 400) {
+    if (response.status === 400 && options.toolCallingTier === undefined) {
       // Local OpenAI-compatible servers (LM Studio, llama.cpp, …) 400 when a GGUF chat
       // template can't render the `tools` array. Drop native tools and retry once — the
       // model drives tools via the JSON-in-prose protocol jeo always states in the prompt.
@@ -296,7 +309,7 @@ export const openaiAdapter: ProviderAdapter = {
         const stripped = JSON.parse(body) as Record<string, unknown>;
         delete stripped.stream_options;
         response = await fetch(url, { method: "POST", headers, body: JSON.stringify(stripped), signal: options.signal });
-      } else if (isUnsupportedToolsError(body, errBody)) {
+      } else if (options.toolCallingTier === undefined && isUnsupportedToolsError(body, errBody)) {
         await response.body?.cancel().catch(() => {});
         // A GGUF chat template that can't render the `tools` array (LM Studio jinja error).
         // Drop native tools and retry once — the model drives tools via JSON-in-prose.

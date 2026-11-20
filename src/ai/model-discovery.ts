@@ -109,9 +109,9 @@ function anthropicHeaders(cred: Credential): Record<string, string> {
 }
 
 function authProviderFor(provider: ProviderName): AuthProvider | undefined {
-  // Local providers (ollama/lmstudio) are keyless and do not resolve through the
+  // Local providers (ollama/lmstudio/llama-cpp) are keyless and do not resolve through the
   // auth core. API-key providers (incl. xai/kimi) DO — so discovery sends their key.
-  if (provider === "ollama" || provider === "lmstudio") return undefined;
+  if (provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp") return undefined;
   // A user-registered custom provider id is not in the `AuthProvider` literal union,
   // but `withEnvOverlay` publishes its key into the SAME `config.providers` map that
   // `resolveCredential` reads — so the lookup is keyed identically. Same cast the
@@ -184,6 +184,12 @@ export function discoveryRequest(
       const base = (baseUrl ?? "http://localhost:1234/v1").replace(/\/$/, "");
       return { url: `${base}/models`, headers: {} };
     }
+    case "llama-cpp": {
+      const rawBase = (baseUrl ?? process.env.LLAMA_CPP_BASE_URL ?? "http://localhost:8080/v1").replace(/\/+$/, "");
+      const base = rawBase.endsWith("/v1") ? rawBase : `${rawBase}/v1`;
+      const token = cred?.kind === "api_key" ? cred.token : (process.env.LLAMA_CPP_API_KEY?.trim() ?? "");
+      return { url: `${base}/models`, headers: token ? { Authorization: `Bearer ${token}` } : {} };
+    }
     case "xai": {
       const token = cred?.kind === "api_key" ? cred.token : "";
       return { url: "https://api.x.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
@@ -252,6 +258,9 @@ export function parseModelsBody(provider: ProviderName, body: unknown, opts: { o
   if (provider === "lmstudio") {
     // LM Studio is OpenAI-compatible: { data: [{ id }] }. Qualify with the routing prefix.
     return (data.data ?? []).map(m => `lmstudio/${m.id ?? ""}`).filter(s => s !== "lmstudio/");
+  }
+  if (provider === "llama-cpp") {
+    return (data.data ?? []).map(m => `llama-cpp/${m.id ?? ""}`).filter(s => s !== "llama-cpp/");
   }
   if (provider === "xai") {
     // xAI is OpenAI-compatible: { data: [{ id }] }. Grok ids route to xai by name, so no prefix.
@@ -408,10 +417,18 @@ export async function listProviderModels(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const limit = opts.limit ?? (provider === "openai" || provider === "antigravity" || provider === "kimi" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
   let baseUrl = opts.baseUrl;
-  if (provider === "ollama" || provider === "lmstudio") {
+  if (provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp") {
     const config = opts.config ?? await readGlobalConfig();
-    baseUrl ??= provider === "ollama" ? config.ollamaBaseUrl : config.lmstudioBaseUrl;
-    baseUrl ??= provider === "ollama" ? "http://localhost:11434" : "http://localhost:1234/v1";
+    baseUrl ??= provider === "ollama"
+      ? config.ollamaBaseUrl
+      : provider === "lmstudio"
+        ? config.lmstudioBaseUrl
+        : config.llamaCppBaseUrl;
+    baseUrl ??= provider === "ollama"
+      ? "http://localhost:11434"
+      : provider === "lmstudio"
+        ? "http://localhost:1234/v1"
+        : (process.env.LLAMA_CPP_BASE_URL ?? "http://localhost:8080/v1");
   }
   // An explicit Codex-catalog request (discoverModels' second pass, the
   // post-login report) ignores every custom base URL: the subscription
@@ -439,6 +456,12 @@ export async function listProviderModels(
     }
     cred = key ? { kind: "api_key", provider: provider as AuthProvider, token: key } : { kind: "none", provider: provider as AuthProvider };
     source = key ? "api_key" : "keyless";
+  } else if (provider === "llama-cpp") {
+    const envKey = process.env.LLAMA_CPP_API_KEY?.trim();
+    if (envKey) {
+      cred = { kind: "api_key", provider: "openai", token: envKey };
+      source = "api_key";
+    }
   } else if (provider !== "ollama" && provider !== "lmstudio") {
     const authProvider = authProviderFor(provider);
     const raw = await resolveCredential(authProvider!);
@@ -713,7 +736,7 @@ export async function discoverModels(
       const discoveryOpts = {
         ...opts,
         config: cfg,
-        baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "lmstudio" ? (cfg.lmstudioBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
+        baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "lmstudio" ? (cfg.lmstudioBaseUrl ?? opts.baseUrl) : p === "llama-cpp" ? (cfg.llamaCppBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
       };
       const primary = await listProviderModels(p, discoveryOpts);
       // A stored ChatGPT subscription is a second, independent catalog: the

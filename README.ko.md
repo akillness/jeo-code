@@ -234,8 +234,9 @@ jeo 세션 저장이 켜져 있으면 재개 시 해당 세션에 저장된 CLI 
 | `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | 점수 ratchet이 있는 자율 빌드 루프(`status`는 방향, keep/revert 횟수, 다음 액션 표시) · 플랜 간 append-only 원장 |
 | `jeo routine init …` | 스케줄 또는 저장소 이벤트에서 jeo를 헤드리스로 실행하는 GitHub Actions 워크플로 생성 |
 | `jeo skills list\|read\|sync\|lesson\|eval` | 번들·사용자·프로젝트 스킬; 드리프트 점검; 기록된 레슨 |
-| `jeo mcp serve\|tools` · `jeo computer <action>` | 외부 컨트롤러용 MCP stdio 서버 · 데스크톱 자동화 액션 |
-| `jeo session list\|attach\|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux 세션 관리 · 트랜스크립트 내보내기 · 도구 없는 스트리밍 채팅 |
+| `jeo serve [--port <p>]` · `jeo mcp serve|tools` · `jeo computer <action>` | 인바운드 HTTP 에이전트 서버 (OpenAI 호환 및 GoalFlow) · 외부 컨트롤러용 MCP stdio 서버 · 데스크톱 자동화 액션 |
+| `jeo session list|attach|rm` · `jeo export [id]` · `jeo chat "<msg>"` | tmux 세션 관리 · 트랜스크립트 내보내기 · 도구 없는 스트리밍 채팅 |
+
 | `jeo update [--check]` · `jeo whats-new` · `jeo memory-migrate` | npm 자가 업데이트 · 번들 릴리스 노트 · 레거시 `MEMORY.md` → OKF 번들 |
 
 ## 핵심 워크플로우 (Core Workflows)
@@ -638,11 +639,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
 - **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 - **[1.0.6]** (2026-11-19) — Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation.
-- **[1.0.5]** (2026-11-19) — In-place TTY subagent HUD panel without scrollback push, multi-language `jeox`/`jeo-mem` extended code-graph indexing, and runtime hardening across auth locks, compaction, browser/debug sessions, Perplexity search, OpenAI fallback, Discord, and MCP.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

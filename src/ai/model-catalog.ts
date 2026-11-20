@@ -329,14 +329,15 @@ function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
   return baseUrl?.replace(/\/+$/, "");
 }
 
-type LiveModelConfig = { openaiBaseUrl?: string; openaiOauthScope?: string; ollamaBaseUrl?: string; lmstudioBaseUrl?: string; kimiBaseUrl?: string };
-let localModelEndpoints = { ollama: "http://localhost:11434", lmstudio: "http://localhost:1234/v1" };
+type LiveModelConfig = { openaiBaseUrl?: string; openaiOauthScope?: string; ollamaBaseUrl?: string; lmstudioBaseUrl?: string; llamaCppBaseUrl?: string; kimiBaseUrl?: string };
+let localModelEndpoints = { ollama: "http://localhost:11434", lmstudio: "http://localhost:1234/v1", "llama-cpp": "http://localhost:8080/v1" };
 
 /** Keep config-less model lookups aligned with the most recently loaded local endpoints. */
 export function setLocalModelEndpoints(config: LiveModelConfig): void {
   localModelEndpoints = {
     ollama: normalizeBaseUrl(config.ollamaBaseUrl) ?? "http://localhost:11434",
     lmstudio: normalizeBaseUrl(config.lmstudioBaseUrl) ?? "http://localhost:1234/v1",
+    "llama-cpp": normalizeBaseUrl(config.llamaCppBaseUrl) ?? "http://localhost:8080/v1",
   };
 }
 
@@ -363,7 +364,7 @@ function liveCanonicalId(provider: ProviderName, id: string): string {
   }
   if (provider === "xai" || provider === "kimi") return trimmed;
   if (provider === "agy") return `${provider}/${trimmed}`;
-  return openaiCompatDef(provider) || provider === "ollama" || provider === "lmstudio" || provider === "antigravity"
+  return openaiCompatDef(provider) || provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp" || provider === "antigravity"
     ? `${provider}/${trimmed}`
     : trimmed;
 }
@@ -463,10 +464,18 @@ function liveRecordMatchesConfig(
   if (record.row.provider === "kimi") {
     return normalizeBaseUrl(record.baseUrl) === normalizeBaseUrl(config?.kimiBaseUrl);
   }
-  if (record.row.provider === "ollama" || record.row.provider === "lmstudio") {
+  if (record.row.provider === "ollama" || record.row.provider === "lmstudio" || record.row.provider === "llama-cpp") {
     const provider = record.row.provider;
-    const requested = provider === "ollama" ? config?.ollamaBaseUrl : config?.lmstudioBaseUrl;
-    const active = provider === "ollama" ? localModelEndpoints.ollama : localModelEndpoints.lmstudio;
+    const requested = provider === "ollama"
+      ? config?.ollamaBaseUrl
+      : provider === "lmstudio"
+        ? config?.lmstudioBaseUrl
+        : config?.llamaCppBaseUrl;
+    const active = provider === "ollama"
+      ? localModelEndpoints.ollama
+      : provider === "lmstudio"
+        ? localModelEndpoints.lmstudio
+        : localModelEndpoints["llama-cpp"];
     return normalizeBaseUrl(record.baseUrl) === (normalizeBaseUrl(requested) ?? active);
   }
   const custom = customProviderDef(record.row.provider);
@@ -757,6 +766,7 @@ export function companyLabel(provider: string, entry?: { company?: string }): st
   if (low === "gemini") return "Google";
   if (low === "ollama") return "Ollama";
   if (low === "lmstudio") return "LM Studio";
+  if (low === "llama-cpp") return "llama.cpp";
   if (low === "xai") return "xAI";
   if (low === "kimi") return "Moonshot";
   const compat = openaiCompatDef(low);

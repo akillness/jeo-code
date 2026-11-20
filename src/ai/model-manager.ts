@@ -64,6 +64,7 @@ export function resolveProvider(model: string): ProviderName {
   // or `openrouter/openai/gpt-4o-mini`), so prefix routing is resolved first.
   if (m.startsWith("ollama/")) return "ollama";
   if (m.startsWith("lmstudio/")) return "lmstudio";
+  if (m.startsWith("llama-cpp/")) return "llama-cpp";
   if (m.startsWith("antigravity/")) return "antigravity";
   if (m.startsWith("agy/")) return "agy";
   if (m.startsWith("xai/")) return "xai";
@@ -91,6 +92,7 @@ const STATIC_ID_PREFIX: Partial<Record<ProviderName, string>> = {
   agy: "agy/",
   ollama: "ollama/",
   lmstudio: "lmstudio/",
+  "llama-cpp": "llama-cpp/",
   xai: "xai/",
   kimi: "kimi/",
 };
@@ -124,6 +126,7 @@ export function providerModelFor(model: string): string {
     model.startsWith("google/") ||
     model.startsWith("antigravity/") ||
     model.startsWith("lmstudio/") ||
+    model.startsWith("llama-cpp/") ||
     model.startsWith("xai/") ||
     model.startsWith("agy/") ||
     model.startsWith("kimi/") ||
@@ -385,7 +388,7 @@ export function modelServableWithConfig(
   config: Partial<Pick<Config, "providers" | "providerPools" | "oauth" | "openaiBaseUrl">>,
 ): boolean {
   if (provider === "agy") return false;
-  if (provider === "ollama" || provider === "lmstudio") return true;
+  if (provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp") return true;
   if (provider === "antigravity") return hasOAuthConfigured(config.oauth?.antigravity) || hasOAuthConfigured(config.oauth?.gemini);
   const custom = customProviderDef(provider);
   if (custom) return !custom.requiresApiKey || !!resolveCustomApiKey(custom);
@@ -540,7 +543,8 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     options.baseUrl ??
     (provider === "openai" ? config.openaiBaseUrl : undefined) ??
     (provider === "ollama" ? config.ollamaBaseUrl : undefined) ??
-    (provider === "lmstudio" ? config.lmstudioBaseUrl : undefined);
+    (provider === "lmstudio" ? config.lmstudioBaseUrl : undefined) ??
+    (provider === "llama-cpp" ? config.llamaCppBaseUrl : undefined);
 
   const callOptions: CallOptions = {
     // Map a catalog canonical (e.g. claude-3-5-sonnet) to the exact wire id the
@@ -561,24 +565,32 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     onReasoningStart: options.onReasoningStart,
     onReasoningArtifact: options.onReasoningArtifact,
     tools: options.tools,
+    grammar: options.grammar,
+    jsonSchema: options.jsonSchema,
+    toolCallingTier: options.toolCallingTier,
     sessionKey: options.sessionKey,
   };
-  // Caller-supplied retry sink rides on the config-derived retry budget so the
-  // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.
-  // `requestMaxRetries` governs non-stream calls; `streamMaxRetries`
-  // governs the stream site's replay-safe pre-first-chunk loop (retryableStream
-  // never replays after the first emitted chunk). Both fall back to `maxRetries`,
-  // and an unset stream budget keeps the conservative withRetry default — the
-  // generous stream budget (e.g. 100) only applies when the user configures it.
-  // `retry.signal` is the caller's ORIGINAL signal (Ctrl-C / turn abort) — not the
-  // per-attempt fetch timeout composed below — so a long, honored server-directed
-  // retry wait (see resolveRetryOptions) can still be cancelled by the user without
-  // waiting out the full delay, while a single attempt's timeout never cuts short
-  // the NEXT attempt's backoff sleep.
   const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}), ...(callOptions.signal ? { signal: callOptions.signal } : {}) };
 
-  if (provider === "ollama" || provider === "lmstudio") {
-    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry, provider, baseUrl };
+  const customEarly = customProviderDef(provider);
+  if (customEarly) {
+    const key = resolveCustomApiKey(customEarly);
+    if (!key && customEarly.requiresApiKey) {
+      throw new Error(`No credential for provider '${provider}'. Set ${customEarly.apiKeyEnv}.`);
+    }
+    const credential: Credential = key
+      ? { kind: "api_key", provider: provider as AuthProvider, token: key }
+      : { kind: "none", provider: provider as AuthProvider };
+    const customAdapter = providerRegistry.get(provider) ?? adapter;
+    return { adapter: customAdapter, callOptions, credential, retry, provider, baseUrl: baseUrl ?? customEarly.baseUrl };
+  }
+
+  if (provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp") {
+    const llamaKey = provider === "llama-cpp" ? process.env.LLAMA_CPP_API_KEY?.trim() : undefined;
+    const credential: Credential = llamaKey
+      ? { kind: "api_key", provider: "openai", token: llamaKey }
+      : { kind: "none", provider: "openai" };
+    return { adapter, callOptions, credential, retry, provider, baseUrl };
   }
 
   if (provider === "xai") {

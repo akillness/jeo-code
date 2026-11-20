@@ -96,6 +96,7 @@ export const ConfigSchema = z
     ollamaNumCtx: z.number().int().positive().optional(),
     openaiBaseUrl: z.string().optional(),
     lmstudioBaseUrl: z.string().optional(),
+    llamaCppBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
     theme: z.string().optional(),
     sandbox: z.union([
@@ -305,6 +306,8 @@ function normalizeModelId(id: string | undefined, aliases: Record<string, string
   // 1. 이미 접두사가 있는가? (ollama/, openai/, anthropic/, google/, antigravity/)
   if (
     lower.startsWith("ollama/") ||
+    lower.startsWith("lmstudio/") ||
+    lower.startsWith("llama-cpp/") ||
     lower.startsWith("openai/") ||
     lower.startsWith("anthropic/") ||
     lower.startsWith("google/") ||

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.10] - 2026-11-20
+_Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution._
+
+### Added
+- **Inbound Agent Server & GoalFlow API (`src/server/agent-api.ts`, `src/commands/serve.ts`, `src/agent/goalflow/`):** Expose `jeo serve` supporting `POST /v1/chat/completions` (OpenAI streaming SSE chunks and JSON), `POST /v1/workflows/run` (`spec-first` and `coding` modes with 202 Human-In-The-Loop interrupts), `POST /v1/workflows/resume` (approval/modification/rejection resumption from checkpoint), and model discovery (`GET /v1/models`, `GET /health`).
+- **GoalFlow 3-Layer Engine & Jev Runtime Guard (`src/agent/goalflow/`):** Implement declarative `StateGraph` with barrier-synchronized fan-in, bounded fan-out (`Send[]`), file-based durable checkpointer, and two-phase middleware pipeline strictly executing control gates (Jev runtime guard) before prompt enhancement.
+- **Local Model 3-Tier Tool Cascade (`src/ai/providers/llama-cpp.ts`, `src/ai/providers/local-capabilities.ts`, `src/ai/providers/ollama.ts`):** Auto-probe context length and chat template capabilities on `llama.cpp` and `Ollama`, cascading through native tool calling, structured schema (GBNF / JSON schema), and markdown prose with persistent tier demotion.
+- **Harness² Offline Self-Evolution (`src/agent/dev/harness2-offline.ts`, `src/agent/dev/trace-collector.ts`, `src/commands/evolve-core.ts`):** Collect execution traces (parse bounces, tool failures, tier step-downs) and execute offline candidate generation, multi-stage scoring, and atomic rule/skill promotion.
+
 ## [1.0.9] - 2026-11-19
 _Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste._
 

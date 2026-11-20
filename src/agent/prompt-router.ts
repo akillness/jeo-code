@@ -209,7 +209,7 @@ export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
  *  ollama/lmstudio, which are never a sensible "route to the cheapest/strongest"
  *  target — a local model's cost/capability isn't comparable to a hosted one). */
 function isCloudProvider(p: ProviderName): p is AuthProvider {
-  return p !== "ollama" && p !== "lmstudio";
+  return p !== "ollama" && p !== "lmstudio" && p !== "llama-cpp";
 }
 
 
@@ -248,7 +248,7 @@ export type CredentialScope = { kind: "no-credential" | "oauth-subscription"; ke
  *  behavior (see test/launch-fallback-live-discovery.test.ts). */
 export function credentialScopeFor(model: string, config: RoutingConfig): CredentialScope | null {
   const provider = resolveProvider(model);
-  if (provider === "ollama" || provider === "lmstudio") return null; // keyless, no shared account limit
+  if (provider === "ollama" || provider === "lmstudio" || provider === "llama-cpp") return null; // keyless, no shared account limit
   if (provider === "antigravity") {
     return hasAntigravityOauth(config) ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
   }

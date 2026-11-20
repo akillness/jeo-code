@@ -7,7 +7,10 @@
 Contains documentation, evolution notes, and improvement logs for `jeo-code`. Used to track long-term project trajectory and architectural decisions.
 
 ## Key Files
-*(None)*
+| File | Description |
+|------|-------------|
+| `goalflow-local-agent.md` | Architecture and API guide for GoalFlow engine, local model 3-tier cascade, Harness² offline evolution, and `jeo serve` |
+
 
 ## Subdirectories
 *(None)*

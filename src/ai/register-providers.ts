@@ -13,6 +13,7 @@ import { openaiAdapter } from "./providers/openai";
 import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import { lmstudioAdapter } from "./providers/lmstudio";
+import { llamaCppAdapter } from "./providers/llama-cpp";
 import { xaiAdapter } from "./providers/xai";
 import { antigravityAdapter } from "./providers/antigravity";
 import { kimiAdapter } from "./providers/kimi";
@@ -28,6 +29,7 @@ providerRegistry.register("gemini", geminiAdapter);
 providerRegistry.register("antigravity", antigravityAdapter);
 providerRegistry.register("ollama", ollamaAdapter);
 providerRegistry.register("lmstudio", lmstudioAdapter);
+providerRegistry.register("llama-cpp", llamaCppAdapter);
 providerRegistry.register("xai", xaiAdapter);
 providerRegistry.register("kimi", kimiAdapter);
 

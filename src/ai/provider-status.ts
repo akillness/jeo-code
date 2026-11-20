@@ -23,7 +23,7 @@ import { customProviderDef, customProviderNames, credentialSourceOf, resolveCust
 
 /** Compiled-in LLM providers, in declaration order. Custom providers are NOT here — they
  *  are discovered at runtime, so use {@link allProviderNames} for anything the user sees. */
-export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "agy", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
+export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "agy", "ollama", "lmstudio", "llama-cpp", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
 
 /** Dedicated search-only providers (not LLM model discovery targets, surfaced in `/provider` & `jeo setup`). */
 export const SEARCH_PROVIDER_NAMES: readonly ProviderName[] = ["perplexity"];
@@ -68,6 +68,7 @@ export interface ProviderStatus {
 /** The env var that supplies a provider's API key. Catalog providers carry their
  *  own (e.g. HF_TOKEN, NANO_GPT_API_KEY); built-ins use `<PROVIDER>_API_KEY`. */
 export function providerEnvVar(name: ProviderName): string | undefined {
+  if (name === "llama-cpp") return "LLAMA_CPP_API_KEY";
   if (name === "ollama" || name === "lmstudio" || name === "antigravity") return undefined;
   if (name === "agy") return undefined;
   const def = openaiCompatDef(name);
@@ -178,11 +179,16 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
       custom: true,
     };
   }
-  if (name === "ollama" || name === "lmstudio") {
+  if (name === "ollama" || name === "lmstudio" || name === "llama-cpp") {
     const baseUrl = name === "ollama"
       ? (cfg.ollamaBaseUrl ?? "http://localhost:11434")
-      : (cfg.lmstudioBaseUrl ?? "http://localhost:1234/v1");
-    return { name, kind: "keyless", label: credentialLabel("keyless"), baseUrl, ready: true };
+      : name === "lmstudio"
+        ? (cfg.lmstudioBaseUrl ?? "http://localhost:1234/v1")
+        : (cfg.llamaCppBaseUrl ?? process.env.LLAMA_CPP_BASE_URL ?? "http://localhost:8080/v1");
+    if (name === "llama-cpp" && process.env.LLAMA_CPP_API_KEY?.trim()) {
+      return { name, kind: "api_key", label: credentialLabel("api_key"), baseUrl, envVar: "LLAMA_CPP_API_KEY", ready: true };
+    }
+    return { name, kind: "keyless", label: credentialLabel("keyless"), baseUrl, ...(name === "llama-cpp" ? { envVar: "LLAMA_CPP_API_KEY" } : {}), ready: true };
   }
   if ((API_KEY_ONLY_PROVIDERS as readonly string[]).includes(name)) {
     // API-key-only providers (xai/kimi): no OAuth flow — ready when their key is set.

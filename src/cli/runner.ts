@@ -111,6 +111,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "serve",
+    summary: "Run inbound HTTP Agent Server (OpenAI-compatible & GoalFlow workflows).",
+    usage: "serve [--port <number>] [--host <string>] [--model <model>] [--workflow <coding|spec-first>] [--auto-approve]",
+    loader: async () => {
+      const m = await import("../commands/serve");
+      return args => m.runServeCommand(args);
+    },
+  },
+  {
     name: "jeox",
     summary: "Manage & query the per-repo code-graph + FTS5 DB (.jeo/db/jeo.db) via jeo-mem.",
     usage: "jeox <build|who-calls|what-calls|where-defined|impact|query|scope|status|mcp> [arg] [--repo DIR]",

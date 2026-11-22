@@ -150,11 +150,33 @@ export interface ThreadLoopState {
   lastPendingAtMs?: number;
   /** Active risky-action approval gate blocking execution, if any. */
   pendingGate?: ApprovalGate;
+  /** Latest triggering message ID currently showing lifecycle emoji reactions (👀 → 🧠 → 🔍 → ✅/❌/🛑). */
+  reactionMessageId?: string;
+  /** Emoji currently reacted by the orchestrator on `reactionMessageId`. */
+  activeReactionEmoji?: string;
+  /** Editable live thinking/progress status message ID in the Discord thread. */
+  statusMessageId?: string;
+  /** Last rendered content of `statusMessageId` (avoids redundant PATCH calls). */
+  lastStatusContent?: string;
+  /** Last observed worker activity phase (`thinking` / `planning` / `executing` / `reporting` / `working`). */
+  lastWorkerPhase?: WorkerActivityPhase;
   /** Human-readable reason for pause / escalation / last result. */
   statusReason?: string;
+  /** Active user task or fix objective currently executing in this cycle. */
+  currentTask?: string;
+  /** Saved copy of dispatched messages for recovery if assigned worker terminates. */
+  lastDispatchedMessages?: QueuedMessage[];
+  /** Alias for assignedWorkerHandle for backward compatibility. */
+  workerHandle?: string;
+  /** Alias for consecutiveSameFailures for backward compatibility. */
+  consecutiveFailureCount?: number;
+  /** Alias for lastFailureHash for backward compatibility. */
+  consecutiveFailureHash?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type WorkerActivityPhase = "thinking" | "planning" | "executing" | "reporting" | "working";
 
 export interface OrchState {
   version: 1;
@@ -180,6 +202,7 @@ export interface LedgerEntry {
     | "recursive_requeued"
     | "escalated_human"
     | "report_sent"
+    | "thread_deleted"
     | "error";
   threadId?: string;
   routeId?: string;

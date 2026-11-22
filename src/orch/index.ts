@@ -1,7 +1,13 @@
 export * from "./types";
 export * from "./store";
 export * from "./matcher";
-export { RestDiscordClient, chunkDiscordContent, type DiscordClient } from "./discord-api";
+export {
+  DISCORD_SILENT_FLAGS,
+  RestDiscordClient,
+  chunkDiscordContent,
+  type DiscordClient,
+  type RestDiscordClientOptions,
+} from "./discord-api";
 export * from "./orca";
 export * from "./verifier";
 export * from "./engine";

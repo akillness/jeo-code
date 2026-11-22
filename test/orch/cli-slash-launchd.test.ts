@@ -364,4 +364,107 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
     await runOrchDaemon({ orchHome: tmpHome, token: "dummy-token", signal: abortCtrl.signal });
     expect((await isDaemonRunning(tmpHome)).running).toBe(false);
   });
+
+  it("expands tilde in assign, warns on linked/shadowed unassign, shows worker phase, and blocks unknown daemon subcommands", async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-orch-linked-"));
+    try {
+      // 1. Local config file linked into orchHome
+      const localInit = await executeOrchAction(
+        ["init", "--local", "--guild", "9999", "--token-file", "~/.jeo/discord/discord-token"],
+        { orchHome: tmpHome, cwd: repoDir },
+      );
+      expect(localInit.exitCode ?? 0).toBe(0);
+
+      const assignLocal = await executeOrchAction(
+        ["assign", "--local", "--id", "linked-app", "--name", "LinkedApp", "--parent", "ch-1", "--repo", repoDir],
+        { orchHome: tmpHome, cwd: repoDir },
+      );
+      expect(assignLocal.exitCode ?? 0).toBe(0);
+
+      // 2. Unassigning a linked-only route explains which .jeo/orch.json owns it
+      const unassignLinked = await executeOrchAction(["unassign", "linked-app"], { orchHome: tmpHome });
+      expect(unassignLinked.exitCode).toBe(1);
+      expect(unassignLinked.lines.join("\n")).toContain(path.join(repoDir, ".jeo", "orch.json"));
+      expect(unassignLinked.lines.join("\n")).toContain("unlink");
+
+      // 3. Tilde expansion in assign --repo ~/demo-app (written to tmpHome/routes.json only)
+      await executeOrchAction(
+        ["assign", "--id", "tilde-app", "--name", "TildeApp", "--parent", "ch-2", "--repo", "~/demo-app"],
+        { orchHome: tmpHome },
+      );
+      const loadedTilde = await loadOrchConfig(tmpHome);
+      expect(loadedTilde.routes.find(r => r.id === "tilde-app")?.repoPath).toBe(path.join(os.homedir(), "demo-app"));
+
+      // 4. Shadowed route (present in BOTH routes.json and linked config): removing local warns it's still active via linked config
+      await executeOrchAction(
+        ["assign", "--id", "linked-app", "--name", "ShadowOverride", "--parent", "ch-2", "--repo", repoDir],
+        { orchHome: tmpHome },
+      );
+      const unassignShadow = await executeOrchAction(["unassign", "linked-app"], { orchHome: tmpHome });
+      expect(unassignShadow.exitCode ?? 0).toBe(0);
+      expect(unassignShadow.lines.join("\n")).toContain("still active via linked config");
+
+      // 5. threads displays phase=... and stop/retry clear lastWorkerPhase & workerHandle
+      await saveOrchState(
+        {
+          version: 1,
+          threads: {
+            "t-phase": {
+              threadId: "t-phase",
+              parentId: "ch-1",
+              name: "phase-thread",
+              routeId: "linked-app",
+              status: "DISPATCHED",
+              iteration: 1,
+              consecutiveSameFailures: 0,
+              assignedWorkerHandle: "w-1",
+              lastWorkerPhase: "thinking",
+              pendingMessages: [],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          },
+          gates: {},
+        },
+        tmpHome,
+      );
+      const threadsOut = await executeOrchAction(["threads"], { orchHome: tmpHome });
+      expect(threadsOut.lines.join("\n")).toContain("phase=thinking");
+
+      const retryOut = await executeOrchAction(["retry", "t-phase"], { orchHome: tmpHome });
+      expect(retryOut.exitCode ?? 0).toBe(0);
+      const stateAfterRetry = await loadOrchState(tmpHome);
+      expect(stateAfterRetry.threads["t-phase"]!.lastWorkerPhase).toBeUndefined();
+      expect(stateAfterRetry.threads["t-phase"]!.assignedWorkerHandle).toBeUndefined();
+
+      // 5. Unknown daemon subcommands fail fast in both CLI and /orch slash without hanging
+      const badCli = await executeOrchAction(["daemon", "start"], { orchHome: tmpHome });
+      expect(badCli.exitCode).toBe(1);
+      expect(badCli.lines.join("\n")).toContain("Unknown daemon subcommand");
+
+      const badSlash = await runOrchSlash("/orch daemon start", { orchHome: tmpHome });
+      expect(badSlash.lines.join("\n")).toContain("Unknown daemon subcommand");
+
+      const upperSlash = await runOrchSlash("/orch daemon STATUS", { orchHome: tmpHome });
+      expect(upperSlash.lines.join("\n")).toContain("Daemon process:");
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("currentJeoCommand handles compiled binaries, ./dist/jeo, /$bunfs/ virtual entries, and buildLaunchdPlist expands tilde", () => {
+    expect(currentJeoCommand("/$bunfs/root/jeo", "/usr/local/bin/jeo")).toEqual(["/usr/local/bin/jeo"]);
+    expect(currentJeoCommand(undefined, "./dist/jeo")).toEqual([path.resolve("./dist/jeo")]);
+    expect(currentJeoCommand(undefined, "~/bin/jeo")).toEqual([path.join(os.homedir(), "bin/jeo")]);
+    expect(currentJeoCommand("/opt/jeo/cli.ts", "/opt/bun/bin/bun")).toEqual(["/opt/bun/bin/bun", "/opt/jeo/cli.ts"]);
+
+    const plist = buildLaunchdPlist({
+      programArgs: ["~/bin/jeo"],
+      orchHome: "~/.jeo/thread-orchestrator",
+      homeDir: "~",
+    });
+    expect(plist).not.toContain("<string>~/");
+    expect(plist).toContain(`<string>${path.join(os.homedir(), "bin/jeo")}</string>`);
+    expect(plist).toContain(`<string>${path.join(os.homedir(), ".jeo/thread-orchestrator")}</string>`);
+  });
 });

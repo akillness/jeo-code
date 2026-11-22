@@ -7,12 +7,12 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { orchPaths, resolveOrchHome } from "./store";
+import { expandTilde, orchPaths, resolveOrchHome } from "./store";
 
 export const ORCH_LAUNCHD_LABEL = "dev.jeo.thread-orchestrator";
 
 export function launchdPlistPath(home = os.homedir()): string {
-  return path.join(home, "Library", "LaunchAgents", `${ORCH_LAUNCHD_LABEL}.plist`);
+  return path.join(path.resolve(expandTilde(home)), "Library", "LaunchAgents", `${ORCH_LAUNCHD_LABEL}.plist`);
 }
 
 function xmlEscape(value: string): string {
@@ -24,15 +24,50 @@ function xmlEscape(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+function isBunVirtualPath(value: string): boolean {
+  return value.startsWith("/$bunfs/") || value.replaceAll("\\", "/").startsWith("B:/~BUN/");
+}
+
+function isJsRuntimeBinary(binaryPath: string): boolean {
+  const base = path.basename(binaryPath).toLowerCase();
+  return (
+    base === "bun" ||
+    base === "bun.exe" ||
+    base === "node" ||
+    base === "node.exe" ||
+    base === "deno" ||
+    base === "deno.exe"
+  );
+}
+
 export function currentJeoCommand(
   entry?: string,
   execPath = process.execPath,
 ): string[] {
-  const binary = path.isAbsolute(execPath) ? execPath : path.join(os.homedir(), ".bun", "bin", "bun");
-  if (entry && path.isAbsolute(entry)) {
-    return [binary, entry];
+  const trimmedExec = execPath.trim();
+  const expandedExec = trimmedExec ? expandTilde(trimmedExec) : "";
+  const binary = expandedExec
+    ? path.isAbsolute(expandedExec) ||
+      expandedExec.includes("/") ||
+      expandedExec.includes("\\") ||
+      expandedExec.startsWith(".")
+      ? path.resolve(expandedExec)
+      : path.join(os.homedir(), ".bun", "bin", "bun")
+    : path.join(os.homedir(), ".bun", "bin", "bun");
+
+  if (entry) {
+    const trimmedEntry = entry.trim();
+    if (isBunVirtualPath(trimmedEntry)) {
+      return [binary];
+    }
+    const expandedEntry = expandTilde(trimmedEntry);
+    if (path.isAbsolute(expandedEntry)) {
+      const resolvedEntry = path.resolve(expandedEntry);
+      if (resolvedEntry === binary) return [binary];
+      return [binary, resolvedEntry];
+    }
   }
-  if (import.meta.dir.startsWith("/$bunfs/") || import.meta.dir.startsWith("B:\\~BUN\\")) {
+  if (isBunVirtualPath(import.meta.dir) || !isJsRuntimeBinary(binary)) {
     return [binary];
   }
   const devEntry = path.resolve(import.meta.dir, "../cli.ts");
@@ -46,7 +81,6 @@ export function currentJeoCommand(
   return [binary, devEntry];
 }
 
-
 export function buildLaunchdPlist(opts: {
   programArgs: string[];
   orchHome: string;
@@ -54,10 +88,13 @@ export function buildLaunchdPlist(opts: {
   pathEnv?: string;
   homeDir?: string;
 }): string {
-  const { orchHome } = opts;
-  const homeDir = opts.homeDir ?? os.homedir();
-  const workingDir = opts.workingDir ?? orchHome;
-  const args = [...opts.programArgs, "orch", "daemon"];
+  const orchHome = path.resolve(expandTilde(opts.orchHome));
+  const homeDir = path.resolve(expandTilde(opts.homeDir ?? os.homedir()));
+  const workingDir = path.resolve(expandTilde(opts.workingDir ?? orchHome));
+  const resolvedProgramArgs = opts.programArgs.map(arg =>
+    arg === "~" || arg.startsWith("~/") || arg.startsWith("~\\") ? path.resolve(expandTilde(arg)) : arg,
+  );
+  const args = [...resolvedProgramArgs, "orch", "daemon"];
   const stdoutLog = path.join(orchHome, "daemon.stdout.log");
   const stderrLog = path.join(orchHome, "daemon.stderr.log");
   const defaultPath = [
@@ -174,11 +211,13 @@ export async function installLaunchdService(
   const { home } = orchPaths(orchHome);
   await fs.mkdir(home, { recursive: true });
 
-  const homeDir = opts.homeDir ?? os.homedir();
+  const homeDir = path.resolve(expandTilde(opts.homeDir ?? os.homedir()));
   const plistPath = launchdPlistPath(homeDir);
   await fs.mkdir(path.dirname(plistPath), { recursive: true });
 
-  const programArgs = opts.programArgs ?? currentJeoCommand();
+  const programArgs = (opts.programArgs ?? currentJeoCommand()).map(arg =>
+    arg === "~" || arg.startsWith("~/") || arg.startsWith("~\\") ? path.resolve(expandTilde(arg)) : arg,
+  );
   const plistXml = buildLaunchdPlist({
     programArgs,
     orchHome,

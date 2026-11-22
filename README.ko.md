@@ -656,11 +656,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
-- **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

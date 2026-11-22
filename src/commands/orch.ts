@@ -4,6 +4,7 @@
 
 import * as path from "node:path";
 import {
+  expandTilde,
   getLaunchdStatus,
   initOrchConfig,
   installLaunchdService,
@@ -98,9 +99,10 @@ export function formatThreadsLines(state: OrchState): string[] {
   const lines = [`Tracked threads (${threads.length}):`];
   for (const t of threads) {
     const worker = t.assignedWorkerHandle ? ` worker=${t.assignedWorkerHandle}` : "";
+    const phase = t.lastWorkerPhase ? ` phase=${t.lastWorkerPhase}` : "";
     const gate = t.pendingGate?.status === "pending" ? ` gate=${t.pendingGate.id}` : "";
     lines.push(
-      `  ${t.threadId} [${t.status}] (${t.routeId}) iter=${t.iteration} pending=${t.pendingMessages.length}${worker}${gate} — ${t.name}`,
+      `  ${t.threadId} [${t.status}] (${t.routeId}) iter=${t.iteration} pending=${t.pendingMessages.length}${worker}${phase}${gate} — ${t.name}`,
     );
     if (t.statusReason) lines.push(`        reason: ${t.statusReason}`);
   }
@@ -308,7 +310,7 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
     );
   }
 
-  const resolvedRepo = path.resolve(cwd, repo);
+  const resolvedRepo = path.resolve(cwd, expandTilde(repo));
   const parsedPrefixes = prefixes ? splitCsv(prefixes) : undefined;
   const parsedQaMarkers = qaMarkers ? splitCsv(qaMarkers) : undefined;
 
@@ -320,7 +322,7 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
     titleKeywords: keywords ? splitCsv(keywords) : [],
     ...(parsedPrefixes && parsedPrefixes.length > 0 ? { titlePrefixes: parsedPrefixes } : {}),
     repoPath: resolvedRepo,
-    ...(worktree ? { orcaWorktreePath: path.resolve(cwd, worktree) } : {}),
+    ...(worktree ? { orcaWorktreePath: path.resolve(cwd, expandTilde(worktree)) } : {}),
     maxIterations: maxIter,
     sameFailureLimit,
     maxWorkers,
@@ -338,7 +340,7 @@ export async function executeOrchAction(
 ): Promise<OrchActionResult> {
   const orchHome = resolveOrchHome(opts.orchHome);
   const prefix = opts.prefix ?? "jeo orch";
-  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const cwd = path.resolve(expandTilde(opts.cwd ?? process.cwd()));
   const [rawSub, ...rest] = args;
   const sub = rawSub?.toLowerCase();
 
@@ -510,12 +512,21 @@ export async function executeOrchAction(
   if (sub === "unassign") {
     const targetId = rest[0]?.trim();
     if (!targetId) return { lines: [`Usage: ${prefix} unassign <routeId>`], exitCode: 1 };
-    const { removed, config } = await removeRoute(targetId, orchHome);
+    const { removed, config, linkedConfigPath } = await removeRoute(targetId, orchHome);
+    const quotedLinked = linkedConfigPath
+      ? /\s/.test(linkedConfigPath)
+        ? JSON.stringify(linkedConfigPath)
+        : linkedConfigPath
+      : undefined;
     return {
       lines: [
         removed
-          ? `Removed route '${targetId}'. Remaining routes: ${config.routes.length}.`
-          : `Route '${targetId}' not found.`,
+          ? linkedConfigPath
+            ? `Removed route '${targetId}' from local routes.json, but it is still active via linked config ${linkedConfigPath}. Edit that file or run \`${prefix} unlink ${quotedLinked}\`.`
+            : `Removed route '${targetId}'. Remaining routes: ${config.routes.length}.`
+          : linkedConfigPath
+            ? `Route '${targetId}' is defined in linked local config ${linkedConfigPath}. Edit that file or run \`${prefix} unlink ${quotedLinked}\`.`
+            : `Route '${targetId}' not found.`,
       ],
       exitCode: removed ? 0 : 1,
     };
@@ -532,6 +543,7 @@ export async function executeOrchAction(
 
     if (sub === "pause") {
       thread.status = "PAUSED";
+      thread.lastWorkerPhase = undefined;
       thread.statusReason = "Paused via CLI/slash";
     } else if (sub === "resume") {
       if (thread.pendingGate?.status === "pending") {
@@ -546,11 +558,46 @@ export async function executeOrchAction(
       thread.status = "STOPPED";
       thread.pendingMessages = [];
       thread.assignedWorkerHandle = undefined;
+      {
+        const threadDyn = thread as unknown as Record<string, unknown>;
+        threadDyn.workerHandle = undefined;
+        threadDyn.lastDispatchedMessages = undefined;
+      }
+      if (thread.pendingGate?.status === "pending") {
+        const gate = state.gates[thread.pendingGate.id] ?? thread.pendingGate;
+        gate.status = "denied";
+        gate.resolvedAt = new Date().toISOString();
+        gate.resolvedBy = "cli (stop)";
+        state.gates[gate.id] = gate;
+        thread.pendingGate = undefined;
+      }
       thread.workerObservedBusy = undefined;
+      thread.lastWorkerPhase = undefined;
+      thread.statusMessageId = undefined;
+      thread.lastStatusContent = undefined;
       thread.statusReason = "Stopped via CLI/slash";
     } else {
+      if (thread.pendingGate?.status === "pending") {
+        return {
+          lines: [`Cannot retry '${threadId}': pending approval gate '${thread.pendingGate.id}' must be approved or denied first.`],
+          exitCode: 1,
+        };
+      }
       thread.iteration = 0;
       thread.consecutiveSameFailures = 0;
+      thread.lastFailureHash = undefined;
+      {
+        const threadDyn = thread as unknown as Record<string, unknown>;
+        threadDyn.consecutiveFailureCount = 0;
+        threadDyn.consecutiveFailureHash = undefined;
+        threadDyn.workerHandle = undefined;
+        threadDyn.lastDispatchedMessages = undefined;
+      }
+      thread.assignedWorkerHandle = undefined;
+      thread.workerObservedBusy = undefined;
+      thread.lastWorkerPhase = undefined;
+      thread.statusMessageId = undefined;
+      thread.lastStatusContent = undefined;
       thread.status = "QUEUED";
       thread.lastPendingAtMs = 0;
       thread.statusReason = "Manual retry via CLI/slash";
@@ -619,15 +666,16 @@ export async function executeOrchAction(
       lines: entries.map(e => `${e.ts} [${e.event}] route=${e.routeId ?? "-"} thread=${e.threadId ?? "-"} iter=${e.iteration ?? "-"} ${JSON.stringify(e.detail)}`),
     };
   }
-  if (sub === "install-launchd" || (sub === "daemon" && rest[0] === "install")) {
+  const daemonSub = sub === "daemon" ? rest[0]?.toLowerCase() : undefined;
+  if (sub === "install-launchd" || daemonSub === "install") {
     const res = await installLaunchdService({ orchHome });
     return { lines: [`launchd (${ORCH_LAUNCHD_LABEL}): ${res.detail}`, `plist: ${res.plistPath}`], exitCode: res.loaded || process.platform !== "darwin" ? 0 : 1 };
   }
-  if (sub === "uninstall-launchd" || (sub === "daemon" && rest[0] === "uninstall")) {
+  if (sub === "uninstall-launchd" || daemonSub === "uninstall") {
     const res = await uninstallLaunchdService();
     return { lines: [`launchd (${ORCH_LAUNCHD_LABEL}): ${res.detail}`] };
   }
-  if (sub === "launchd-status" || (sub === "daemon" && rest[0] === "status")) {
+  if (sub === "launchd-status" || daemonSub === "status") {
     const [daemon, launchd] = await Promise.all([isDaemonRunning(orchHome), getLaunchdStatus()]);
     return {
       lines: [
@@ -637,6 +685,15 @@ export async function executeOrchAction(
     };
   }
   if (sub === "daemon") {
+    if (daemonSub && !daemonSub.startsWith("--")) {
+      return {
+        lines: [
+          `Unknown daemon subcommand: ${rest[0]}.`,
+          `Usage: ${prefix} daemon [install | status | uninstall | --interval <ms>]`,
+        ],
+        exitCode: 1,
+      };
+    }
     const intervalIdx = rest.indexOf("--interval");
     const pollIntervalMs = intervalIdx >= 0 ? Number.parseInt(rest[intervalIdx + 1] ?? "", 10) : undefined;
     await runOrchDaemon({
@@ -645,7 +702,6 @@ export async function executeOrchAction(
     });
     return { lines: [] };
   }
-
   return {
     lines: [`Unknown orch subcommand: ${sub}`, ...orchUsageLines(prefix)],
     exitCode: 1,

@@ -5,11 +5,14 @@
 
 import * as fs from "node:fs/promises";
 import { compareSnowflakes } from "./matcher";
+import { expandTilde } from "./store";
 import type { DiscordChannel, DiscordMessage, DiscordThread } from "./types";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 const MAX_DISCORD_MESSAGE_LEN = 1900;
 const DISCORD_USER_AGENT = "DiscordBot (https://github.com/akillness/jeo-code, 1.0)";
+/** Discord message flags: SUPPRESS_EMBEDS (1<<2) | SUPPRESS_NOTIFICATIONS (1<<12) for quiet live status cards. */
+export const DISCORD_SILENT_FLAGS = (1 << 2) | (1 << 12);
 
 export interface RestDiscordClientOptions {
   fetchFn?: typeof fetch;
@@ -23,20 +26,25 @@ export interface DiscordClient {
   listGuildChannels(guildId: string): Promise<DiscordChannel[]>;
   listActiveThreads(guildId: string): Promise<DiscordThread[]>;
   listThreadMessages(threadId: string, opts?: { after?: string; limit?: number }): Promise<DiscordMessage[]>;
-  postMessage(channelId: string, content: string): Promise<string[]>;
+  postMessage(channelId: string, content: string, opts?: { flags?: number }): Promise<string[]>;
+  editMessage?(channelId: string, messageId: string, content: string): Promise<void>;
+  addReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
+  removeReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
+  triggerTyping?(channelId: string): Promise<void>;
   ensureDmChannel(userId: string): Promise<string>;
 }
 
 export async function resolveDiscordToken(tokenFile: string, tokenEnv = "JEO_DISCORD_BOT_TOKEN"): Promise<string> {
   const fromEnv = process.env[tokenEnv]?.trim();
   if (fromEnv) return fromEnv;
+  const resolvedFile = expandTilde(tokenFile);
   try {
-    const raw = (await fs.readFile(tokenFile, "utf8")).trim();
+    const raw = (await fs.readFile(resolvedFile, "utf8")).trim();
     if (raw) return raw;
   } catch {
     // Fall through to descriptive error.
   }
-  throw new Error(`Discord bot token not found in $${tokenEnv} or ${tokenFile}.`);
+  throw new Error(`Discord bot token not found in $${tokenEnv} or ${resolvedFile}.`);
 }
 
 export function chunkDiscordContent(content: string, maxLen = MAX_DISCORD_MESSAGE_LEN): string[] {
@@ -230,6 +238,10 @@ export class RestDiscordClient implements DiscordClient {
         throw new Error(`Discord API ${method} ${route} failed (${res.status}): ${text.slice(0, 240)}`);
       }
 
+      if (res.status === 204) {
+        return undefined as T;
+      }
+
       const raw = await res.text().catch(() => "");
       if (!raw) {
         return undefined as T;
@@ -253,13 +265,13 @@ export class RestDiscordClient implements DiscordClient {
   }
 
   async listGuildChannels(guildId: string): Promise<DiscordChannel[]> {
-    const all = await this.request<DiscordChannel[]>("GET", `/guilds/${guildId}/channels`);
+    const all = await this.request<DiscordChannel[]>("GET", `/guilds/${encodeURIComponent(guildId)}/channels`);
     // Type 0 = GUILD_TEXT, Type 15 = GUILD_FORUM, Type 5 = GUILD_ANNOUNCEMENT
     return all.filter(c => c.type === 0 || c.type === 5 || c.type === 15);
   }
 
   async listActiveThreads(guildId: string): Promise<DiscordThread[]> {
-    const data = await this.request<{ threads?: DiscordThread[] }>("GET", `/guilds/${guildId}/threads/active`);
+    const data = await this.request<{ threads?: DiscordThread[] }>("GET", `/guilds/${encodeURIComponent(guildId)}/threads/active`);
     return Array.isArray(data.threads) ? data.threads : [];
   }
 
@@ -267,24 +279,52 @@ export class RestDiscordClient implements DiscordClient {
     const qs = new URLSearchParams();
     qs.set("limit", String(opts?.limit ?? 50));
     if (opts?.after) qs.set("after", opts.after);
-    const msgs = await this.request<DiscordMessage[]>("GET", `/channels/${threadId}/messages?${qs.toString()}`);
+    const msgs = await this.request<DiscordMessage[]>("GET", `/channels/${encodeURIComponent(threadId)}/messages?${qs.toString()}`);
     // Explicitly sort messages by 64-bit snowflake ID (oldest first).
     return [...msgs].sort((a, b) => compareSnowflakes(a.id, b.id));
   }
 
-  async postMessage(channelId: string, content: string): Promise<string[]> {
+  async postMessage(channelId: string, content: string, opts?: { flags?: number }): Promise<string[]> {
     const chunks = chunkDiscordContent(content);
     const ids: string[] = [];
     for (const chunk of chunks) {
-      const sent = await this.request<{ id: string }>("POST", `/channels/${channelId}/messages`, {
+      const sent = await this.request<{ id: string }>("POST", `/channels/${encodeURIComponent(channelId)}/messages`, {
         content: chunk,
         allowed_mentions: { parse: [] },
+        ...(typeof opts?.flags === "number" ? { flags: opts.flags } : {}),
       });
       ids.push(sent.id);
     }
     return ids;
   }
 
+  async editMessage(channelId: string, messageId: string, content: string): Promise<void> {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    const clamped = trimmed.length <= MAX_DISCORD_MESSAGE_LEN ? trimmed : `${trimmed.slice(0, MAX_DISCORD_MESSAGE_LEN - 1)}…`;
+    await this.request("PATCH", `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`, {
+      content: clamped,
+      allowed_mentions: { parse: [] },
+    });
+  }
+
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    await this.request(
+      "PUT",
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}/@me`,
+    );
+  }
+
+  async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}/@me`,
+    );
+  }
+
+  async triggerTyping(channelId: string): Promise<void> {
+    await this.request("POST", `/channels/${encodeURIComponent(channelId)}/typing`);
+  }
   async ensureDmChannel(userId: string): Promise<string> {
     const cached = this.dmChannelCache.get(userId);
     if (cached) return cached;

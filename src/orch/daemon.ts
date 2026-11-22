@@ -9,7 +9,7 @@ import { resolveMessengerToken } from "../messenger/config";
 import { RestDiscordClient } from "./discord-api";
 import { OrchEngine, type TickSummary } from "./engine";
 import { CliOrcaClient } from "./orca";
-import { acquireInstanceLock, loadOrchConfig, orchPaths, resolveOrchHome } from "./store";
+import { acquireInstanceLock, expandTilde, loadOrchConfig, orchPaths, resolveOrchHome } from "./store";
 import { ShellGateVerifier } from "./verifier";
 
 export interface DaemonLockInfo {
@@ -36,14 +36,6 @@ async function readTokenFile(filePath: string): Promise<string | undefined> {
   }
 }
 
-function expandLeadingTilde(filePath: string): string {
-  if (filePath === "~") return os.homedir();
-  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
-    return path.join(os.homedir(), filePath.slice(2));
-  }
-  return filePath;
-}
-
 /**
  * Resolve Discord bot token from env vars, `<orchHome>/discord-token`, configured `tokenFile`,
  * or `~/.jeo/{discord,messenger}/discord-token`. Never logs the secret value.
@@ -52,7 +44,8 @@ export async function resolveDiscordToken(
   orchHome = resolveOrchHome(),
   env: Record<string, string | undefined> = process.env,
 ): Promise<string | undefined> {
-  const config = await loadOrchConfig(orchHome);
+  const resolvedHome = resolveOrchHome(orchHome);
+  const config = await loadOrchConfig(resolvedHome);
   const fromEnv =
     env.JEO_ORCH_DISCORD_TOKEN?.trim() ||
     resolveMessengerToken(config.tokenEnv, env)?.trim() ||
@@ -60,9 +53,9 @@ export async function resolveDiscordToken(
     env.DISCORD_BOT_TOKEN?.trim();
   if (fromEnv) return fromEnv;
 
-  const expandedTokenFile = config.tokenFile ? expandLeadingTilde(config.tokenFile) : undefined;
+  const expandedTokenFile = config.tokenFile ? expandTilde(config.tokenFile) : undefined;
   const candidates = [
-    path.join(orchHome, "discord-token"),
+    path.join(resolvedHome, "discord-token"),
     expandedTokenFile,
     path.join(os.homedir(), ".jeo", "discord", "discord-token"),
     path.join(os.homedir(), ".jeo", "messenger", "discord-token"),
@@ -76,13 +69,13 @@ export async function resolveDiscordToken(
   return undefined;
 }
 
-
 /** Save a Discord bot token into `<orchHome>/discord-token` with 0600 permissions. */
 export async function saveDiscordToken(token: string, orchHome = resolveOrchHome()): Promise<string> {
   const trimmed = token.trim();
   if (!trimmed) throw new Error("Discord bot token must not be empty.");
-  await fs.mkdir(orchHome, { recursive: true });
-  const target = path.join(orchHome, "discord-token");
+  const resolvedHome = resolveOrchHome(orchHome);
+  await fs.mkdir(resolvedHome, { recursive: true });
+  const target = path.join(resolvedHome, "discord-token");
   await fs.writeFile(target, `${trimmed}\n`, { encoding: "utf8", mode: 0o600 });
   await fs.chmod(target, 0o600).catch(() => undefined);
   return target;
@@ -91,7 +84,7 @@ export async function saveDiscordToken(token: string, orchHome = resolveOrchHome
 export async function isDaemonRunning(
   orchHome = resolveOrchHome(),
 ): Promise<{ running: boolean; lock?: DaemonLockInfo }> {
-  const { lockFile } = orchPaths(orchHome);
+  const { lockFile } = orchPaths(resolveOrchHome(orchHome));
   try {
     const raw = await fs.readFile(lockFile, "utf8");
     const parsed = JSON.parse(raw) as Partial<DaemonLockInfo>;
@@ -126,15 +119,20 @@ export async function runOrchOnce(opts: {
       "Discord bot token not found. Set JEO_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN, or run `jeo orch token --set <token>`.",
     );
   }
-  const config = await loadOrchConfig(orchHome);
-  const engine = new OrchEngine({
-    discord: new RestDiscordClient(token),
-    orca: new CliOrcaClient(undefined, config.orcaBin),
-    verifier: new ShellGateVerifier(),
-    orchHome,
-    log: opts.log,
-  });
-  return engine.tick({ dryRun: opts.dryRun });
+  const lock = opts.dryRun ? undefined : await acquireInstanceLock(orchHome);
+  try {
+    const config = await loadOrchConfig(orchHome);
+    const engine = new OrchEngine({
+      discord: new RestDiscordClient(token),
+      orca: new CliOrcaClient(undefined, config.orcaBin),
+      verifier: new ShellGateVerifier(),
+      orchHome,
+      log: opts.log,
+    });
+    return await engine.tick({ dryRun: opts.dryRun });
+  } finally {
+    await lock?.release();
+  }
 }
 
 

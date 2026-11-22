@@ -16,12 +16,10 @@ export const DEFAULT_MAX_WORKERS = 3;
 export const LOCAL_ORCH_CONFIG_RELPATH = path.join(".jeo", "orch.json");
 
 export function resolveOrchHome(override?: string): string {
-
-  if (override) return path.resolve(override);
-  if (process.env.JEO_ORCH_HOME?.trim()) return path.resolve(process.env.JEO_ORCH_HOME.trim());
+  if (override?.trim()) return path.resolve(expandTilde(override.trim()));
+  if (process.env.JEO_ORCH_HOME?.trim()) return path.resolve(expandTilde(process.env.JEO_ORCH_HOME.trim()));
   return path.join(os.homedir(), ".jeo", "thread-orchestrator");
 }
-
 export function orchPaths(orchHome = resolveOrchHome()) {
   return {
     home: orchHome,
@@ -95,9 +93,8 @@ export async function createDefaultOrchConfig(
 }
 
 function isDefaultUserOrchHome(orchHome: string): boolean {
-  return path.resolve(orchHome) === path.join(os.homedir(), ".jeo", "thread-orchestrator");
+  return path.resolve(expandTilde(orchHome)) === path.join(os.homedir(), ".jeo", "thread-orchestrator");
 }
-
 export function createEmptyOrchState(): OrchState {
   return {
     version: 1,
@@ -116,27 +113,37 @@ async function writeAtomicJson(filePath: string, data: unknown, mode?: number): 
   await fs.rename(tmp, filePath);
 }
 
+/** Expand a leading `~`, `~/`, or `~\` path segment against `homeDir`. */
+export function expandTilde(value: string, homeDir = os.homedir()): string {
+  const trimmed = value.trim();
+  if (trimmed === "~") return homeDir;
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    return path.join(homeDir, trimmed.slice(2));
+  }
+  return trimmed;
+}
+
 /** Resolve the repo-local hidden config file path (defaults to `<cwd>/.jeo/orch.json`). */
 export function resolveLocalOrchConfigPath(cwd = process.cwd(), explicitPath?: string): string {
-  const base = path.resolve(cwd);
+  const base = path.resolve(expandTilde(cwd));
   if (explicitPath?.trim()) {
-    return path.resolve(base, explicitPath.trim());
+    const expanded = expandTilde(explicitPath);
+    return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(base, expanded);
   }
   return path.join(base, LOCAL_ORCH_CONFIG_RELPATH);
 }
 
 function configFileBaseDir(configPath: string): string {
-  const resolved = path.resolve(configPath);
+  const resolved = path.resolve(expandTilde(configPath));
   const dir = path.dirname(resolved);
   return path.basename(dir) === ".jeo" ? path.dirname(dir) : dir;
 }
 
 function resolveMaybeRelativePath(value: string, baseDir: string): string {
-  const trimmed = value.trim();
-  if (!trimmed || trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\") || path.isAbsolute(trimmed)) {
-    return trimmed;
-  }
-  return path.resolve(baseDir, trimmed);
+  const expanded = expandTilde(value);
+  if (!expanded) return "";
+  if (path.isAbsolute(expanded)) return path.resolve(expanded);
+  return path.resolve(baseDir, expanded);
 }
 
 export interface LoadedOrchConfigFile {
@@ -151,7 +158,7 @@ export interface LoadedOrchConfigFile {
  * Returns `undefined` if the file does not exist; throws on invalid JSON or non-object content.
  */
 export async function readOrchConfigFile(filePath: string): Promise<LoadedOrchConfigFile | undefined> {
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(expandTilde(filePath));
   let raw: string;
   try {
     raw = await fs.readFile(resolved, "utf8");
@@ -202,7 +209,9 @@ export async function readOrchConfigFile(filePath: string): Promise<LoadedOrchCo
       ? { tokenFile: resolveMaybeRelativePath(data.tokenFile, baseDir) }
       : {}),
     ...(typeof data.tokenEnv === "string" && data.tokenEnv.trim() ? { tokenEnv: data.tokenEnv.trim() } : {}),
-    ...(typeof data.orcaBin === "string" && data.orcaBin.trim() ? { orcaBin: data.orcaBin.trim() } : {}),
+    ...(typeof data.orcaBin === "string" && data.orcaBin.trim()
+      ? { orcaBin: data.orcaBin.trim().startsWith("~") ? expandTilde(data.orcaBin) : data.orcaBin.trim() }
+      : {}),
     ...(typeof data.pollIntervalMs === "number" && data.pollIntervalMs >= 2000 ? { pollIntervalMs: data.pollIntervalMs } : {}),
     ...(typeof data.debounceMs === "number" && data.debounceMs >= 0 ? { debounceMs: data.debounceMs } : {}),
     ...(data.route && typeof data.route === "object" && !Array.isArray(data.route) ? { route: data.route } : {}),
@@ -212,10 +221,9 @@ export async function readOrchConfigFile(filePath: string): Promise<LoadedOrchCo
   return { path: resolved, baseDir, data: normalizedData, routes };
 }
 
-
 /** Write a repo-local hidden orchestrator config file with 0600 permissions. */
 export async function writeLocalOrchConfigFile(filePath: string, data: OrchConfigFile): Promise<string> {
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(expandTilde(filePath));
   await writeAtomicJson(resolved, data, 0o600);
   return resolved;
 }
@@ -230,16 +238,18 @@ export async function loadStoredOrchConfig(orchHome = resolveOrchHome()): Promis
     const raw = await fs.readFile(routesFile, "utf8");
     const parsed = JSON.parse(raw) as Partial<OrchConfig>;
     const configFiles = Array.isArray(parsed.configFiles)
-      ? [...new Set(parsed.configFiles.map(s => String(s).trim()).filter(Boolean).map(p => path.resolve(p)))]
+      ? [...new Set(parsed.configFiles.map(s => String(s).trim()).filter(Boolean).map(p => path.resolve(expandTilde(p))))]
       : undefined;
     return {
       version: 1,
       guildId: typeof parsed.guildId === "string" ? parsed.guildId : defaults.guildId,
       ownerUserIds: Array.isArray(parsed.ownerUserIds) ? parsed.ownerUserIds.map(String) : defaults.ownerUserIds,
       ownerDmChannelId: typeof parsed.ownerDmChannelId === "string" && parsed.ownerDmChannelId.trim() ? parsed.ownerDmChannelId.trim() : undefined,
-      tokenFile: typeof parsed.tokenFile === "string" && parsed.tokenFile.trim() ? parsed.tokenFile.trim() : defaults.tokenFile,
+      tokenFile: typeof parsed.tokenFile === "string" && parsed.tokenFile.trim() ? expandTilde(parsed.tokenFile) : defaults.tokenFile,
       tokenEnv: typeof parsed.tokenEnv === "string" && parsed.tokenEnv.trim() ? parsed.tokenEnv.trim() : defaults.tokenEnv,
-      ...(typeof parsed.orcaBin === "string" && parsed.orcaBin.trim() ? { orcaBin: parsed.orcaBin.trim() } : {}),
+      ...(typeof parsed.orcaBin === "string" && parsed.orcaBin.trim()
+        ? { orcaBin: parsed.orcaBin.trim().startsWith("~") ? expandTilde(parsed.orcaBin) : parsed.orcaBin.trim() }
+        : {}),
       pollIntervalMs: typeof parsed.pollIntervalMs === "number" && parsed.pollIntervalMs >= 2000 ? parsed.pollIntervalMs : DEFAULT_POLL_INTERVAL_MS,
       debounceMs: typeof parsed.debounceMs === "number" && parsed.debounceMs >= 0 ? parsed.debounceMs : DEFAULT_DEBOUNCE_MS,
       ...(configFiles && configFiles.length > 0 ? { configFiles } : {}),
@@ -344,7 +354,7 @@ export async function loadOrchConfig(
 }
 
 export function normalizeRoute(raw: Partial<ProjectRoute>): ProjectRoute {
-  const repoPath = path.resolve(raw.repoPath ?? process.cwd());
+  const repoPath = path.resolve(expandTilde(raw.repoPath ?? process.cwd()));
   const id = slugifyRouteId(raw.id || raw.name || path.basename(repoPath));
   return {
     id,
@@ -354,7 +364,7 @@ export function normalizeRoute(raw: Partial<ProjectRoute>): ProjectRoute {
     titleKeywords: Array.isArray(raw.titleKeywords) ? raw.titleKeywords.map(s => String(s).trim()).filter(Boolean) : [],
     titlePrefixes: Array.isArray(raw.titlePrefixes) ? raw.titlePrefixes.map(s => String(s).trim()).filter(Boolean) : undefined,
     repoPath,
-    orcaWorktreePath: raw.orcaWorktreePath ? path.resolve(raw.orcaWorktreePath) : undefined,
+    orcaWorktreePath: raw.orcaWorktreePath ? path.resolve(expandTilde(raw.orcaWorktreePath)) : undefined,
     maxIterations: clampInt(raw.maxIterations, 1, 10, DEFAULT_MAX_ITERATIONS),
     sameFailureLimit: clampInt(raw.sameFailureLimit, 1, 5, DEFAULT_SAME_FAILURE_LIMIT),
     maxWorkers: clampInt(raw.maxWorkers, 1, 8, DEFAULT_MAX_WORKERS),
@@ -392,10 +402,12 @@ export function slugifyRouteId(input: string): string {
 export async function saveOrchConfig(config: OrchConfig, orchHome = resolveOrchHome()): Promise<void> {
   const { routesFile } = orchPaths(orchHome);
   const configFiles = Array.isArray(config.configFiles)
-    ? [...new Set(config.configFiles.map(s => String(s).trim()).filter(Boolean).map(p => path.resolve(p)))]
+    ? [...new Set(config.configFiles.map(s => String(s).trim()).filter(Boolean).map(p => path.resolve(expandTilde(p))))]
     : undefined;
   await writeAtomicJson(routesFile, {
     ...config,
+    tokenFile: config.tokenFile ? expandTilde(config.tokenFile) : config.tokenFile,
+    orcaBin: config.orcaBin ? expandTilde(config.orcaBin) : config.orcaBin,
     version: 1,
     ...(configFiles && configFiles.length > 0 ? { configFiles } : { configFiles: undefined }),
     routes: config.routes.map(normalizeRoute),
@@ -407,7 +419,7 @@ export async function linkOrchConfigFile(
   filePath: string,
   orchHome = resolveOrchHome(),
 ): Promise<{ config: OrchConfig; linkedPath: string; added: boolean; loaded: LoadedOrchConfigFile }> {
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(expandTilde(filePath));
   const loaded = await readOrchConfigFile(resolved);
   if (!loaded) {
     throw new Error(`Orchestrator config file not found: ${resolved}`);
@@ -428,10 +440,10 @@ export async function unlinkOrchConfigFile(
   filePath: string,
   orchHome = resolveOrchHome(),
 ): Promise<{ config: OrchConfig; unlinkedPath: string; removed: boolean }> {
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(expandTilde(filePath));
   const stored = await loadStoredOrchConfig(orchHome);
   const before = stored.configFiles ?? [];
-  const after = before.filter(p => path.resolve(p) !== resolved);
+  const after = before.filter(p => path.resolve(expandTilde(p)) !== resolved);
   const removed = after.length !== before.length;
   if (removed) {
     stored.configFiles = after.length > 0 ? after : undefined;
@@ -453,16 +465,36 @@ export async function upsertRoute(route: Partial<ProjectRoute>, orchHome = resol
   return { config, route: normalized, created };
 }
 
-export async function removeRoute(routeId: string, orchHome = resolveOrchHome()): Promise<{ config: OrchConfig; removed: boolean }> {
+export async function removeRoute(
+  routeId: string,
+  orchHome = resolveOrchHome(),
+): Promise<{ config: OrchConfig; removed: boolean; linkedConfigPath?: string }> {
   const stored = await loadStoredOrchConfig(orchHome);
   const before = stored.routes.length;
   stored.routes = stored.routes.filter(r => r.id !== routeId);
   const removed = stored.routes.length !== before;
   if (removed) await saveOrchConfig(stored, orchHome);
   const config = await loadOrchConfig(orchHome);
-  return { config, removed };
+  let linkedConfigPath: string | undefined;
+  if (config.routes.some(r => r.id === routeId)) {
+    const candidateFiles = [
+      ...(stored.configFiles ?? []),
+      ...(process.env.JEO_ORCH_CONFIG?.trim() ? [process.env.JEO_ORCH_CONFIG.trim()] : []),
+    ];
+    for (const filePath of candidateFiles) {
+      try {
+        const loaded = await readOrchConfigFile(filePath);
+        if (loaded?.routes.some(r => r.id === routeId)) {
+          linkedConfigPath = loaded.path;
+          break;
+        }
+      } catch {
+        // ignore unreadable linked config
+      }
+    }
+  }
+  return { config, removed, linkedConfigPath };
 }
-
 
 export async function loadOrchState(orchHome = resolveOrchHome()): Promise<OrchState> {
   const { stateFile } = orchPaths(orchHome);

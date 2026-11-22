@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.13] - 2026-11-23
+_Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes._
+
+### Added
+- **Discord Reaction Lifecycle & Live Thinking Status (`src/orch/engine.ts`, `src/orch/discord-api.ts`, `src/orch/orca.ts`, `src/orch/types.ts`):** Acknowledge queued messages and cycle transitions via Discord emoji reactions (`👀` queued → `🧠` thinking/dispatched → `🔍` verifying → `✅`/`🔄`/`❌`/`🛑` outcomes, plus `!orch` command reactions), emit periodic Discord `typing` indicators while workers are active, extract live `thinking`/`planning`/`executing`/`reporting` phases from ANSI-colored Orca `jeo` screens, and update a single editable live status card in-place (`PATCH` + silent `DISCORD_SILENT_FLAGS`) with dedup and transient-error protection.
+
+### Fixed
+- **Orca CLI Worker Spawn & Screen Classification (`src/orch/orca.ts`):** Pass `--worktree path:<absPath>` and `--title` (replacing invalid `--worktree-path`), parse nested `result.terminal.handle` and object-shaped `{ code, message }` errors, strip ANSI sequences before matching, and prioritize explicit bottom `◆ hud ... ● done` footers over older scrollback output.
+- **Tilde (`~`) Path Expansion & Linked Config Ergonomics (`src/orch/store.ts`, `src/orch/daemon.ts`, `src/orch/launchd.ts`, `src/commands/orch.ts`):** Expand `~` consistently across `tokenFile`, `repoPath`, `orcaWorktreePath`, `orcaBin`, `configFiles`, `orchHome`, CLI `assign`, and macOS `launchd` plists; report linked `.jeo/orch.json` ownership when unassigning linked or shadowed routes; and fix `currentJeoCommand()` for compiled `./dist/jeo` and `/$bunfs/` binaries.
+- **Orchestrator State & Safety Guards (`src/orch/engine.ts`, `src/orch/daemon.ts`, `src/commands/orch.ts`, `src/commands/launch/orch-slash.ts`):** Auto-stop deleted Discord threads (HTTP 404 / code `10003`) with `thread_deleted` ledger entries, prevent mid-turn messages from hijacking active reactions or overwriting pending risk gates, enforce per-thread scope on `!orch approve`/`!orch deny`, acquire instance lock in `runOrchOnce`, support live `orcaBin` reload/reset, and reject unknown `daemon` subcommands in CLI and `/orch` without blocking the TUI.
+
 ## [1.0.12] - 2026-11-23
 _Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools._
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { DiscordClient } from "../../src/orch/discord-api";
+import { DISCORD_SILENT_FLAGS, type DiscordClient } from "../../src/orch/discord-api";
 import { buildWorkerPrompt, OrchEngine } from "../../src/orch/engine";
 import { compareSnowflakes } from "../../src/orch/matcher";
 import type { OrcaClient, OrcaTerminalInfo, WorkerTerminalState } from "../../src/orch/orca";
@@ -14,6 +14,7 @@ import type {
   OrchConfig,
   ProjectRoute,
   VerificationSummary,
+  WorkerActivityPhase,
 } from "../../src/orch/types";
 import type { GateVerifier } from "../../src/orch/verifier";
 
@@ -25,7 +26,12 @@ class FakeDiscordClient implements DiscordClient {
   public selfUser = { id: "orch-bot-user", username: "JeoOrch" };
   public threads: DiscordThread[] = [];
   public messagesByThread = new Map<string, DiscordMessage[]>();
-  public postedMessages: Array<{ channelId: string; content: string }> = [];
+  public postedMessages: Array<{ id: string; channelId: string; content: string; flags?: number }> = [];
+  public editedMessages: Array<{ channelId: string; messageId: string; content: string }> = [];
+  public addedReactions: Array<{ channelId: string; messageId: string; emoji: string }> = [];
+  public removedReactions: Array<{ channelId: string; messageId: string; emoji: string }> = [];
+  public typingTriggers: string[] = [];
+  public editError?: Error;
   public dmChannels = new Map<string, string>();
   private nextMessageId = 2000n;
 
@@ -57,9 +63,27 @@ class FakeDiscordClient implements DiscordClient {
     return filtered.slice(-limit);
   }
 
-  async postMessage(channelId: string, content: string): Promise<string[]> {
-    this.postedMessages.push({ channelId, content });
-    return [`msg-${this.nextMessageId++}`];
+  async postMessage(channelId: string, content: string, opts?: { flags?: number }): Promise<string[]> {
+    const id = `msg-${this.nextMessageId++}`;
+    this.postedMessages.push({ id, channelId, content, ...(opts?.flags !== undefined ? { flags: opts.flags } : {}) });
+    return [id];
+  }
+
+  async editMessage(channelId: string, messageId: string, content: string): Promise<void> {
+    if (this.editError) throw this.editError;
+    this.editedMessages.push({ channelId, messageId, content });
+  }
+
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    this.addedReactions.push({ channelId, messageId, emoji });
+  }
+
+  async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    this.removedReactions.push({ channelId, messageId, emoji });
+  }
+
+  async triggerTyping(channelId: string): Promise<void> {
+    this.typingTriggers.push(channelId);
   }
 
   async ensureDmChannel(userId: string): Promise<string> {
@@ -114,11 +138,18 @@ class FakeOrcaClient implements OrcaClient {
     info: OrcaTerminalInfo;
     state: WorkerTerminalState;
     tail: string[];
+    phase?: WorkerActivityPhase;
+    activity?: string;
   }>();
 
   public dispatched: Array<{ handle: string; prompt: string }> = [];
   public spawned: Array<{ repoPath: string; title: string; prompt: string }> = [];
+  public orcaBinCalls: Array<string | undefined> = [];
   private nextSpawnId = 1;
+
+  setOrcaBin(bin?: string): void {
+    this.orcaBinCalls.push(bin);
+  }
 
   addWorker(
     handle: string,
@@ -140,10 +171,18 @@ class FakeOrcaClient implements OrcaClient {
     });
   }
 
-  setWorkerState(handle: string, state: WorkerTerminalState, tail?: string[]): void {
+  setWorkerState(
+    handle: string,
+    state: WorkerTerminalState,
+    tail?: string[],
+    phase?: WorkerActivityPhase,
+    activity?: string,
+  ): void {
     const w = this.workers.get(handle);
     if (!w) throw new Error(`Unknown worker handle: ${handle}`);
     w.state = state;
+    w.phase = state === "BUSY" ? (phase ?? "thinking") : undefined;
+    w.activity = state === "BUSY" ? activity : undefined;
     if (tail) {
       w.tail = tail;
     } else if (state === "BUSY") {
@@ -165,10 +204,20 @@ class FakeOrcaClient implements OrcaClient {
     return res;
   }
 
-  async inspectWorkerState(handle: string): Promise<{ state: WorkerTerminalState; tail: string[] }> {
+  async inspectWorkerState(handle: string): Promise<{
+    state: WorkerTerminalState;
+    tail: string[];
+    phase?: WorkerActivityPhase;
+    activity?: string;
+  }> {
     const w = this.workers.get(handle);
     if (!w) return { state: "UNKNOWN", tail: [] };
-    return { state: w.state, tail: [...w.tail] };
+    return {
+      state: w.state,
+      tail: [...w.tail],
+      ...(w.phase ? { phase: w.phase } : {}),
+      ...(w.activity ? { activity: w.activity } : {}),
+    };
   }
 
   async dispatchToWorker(handle: string, prompt: string): Promise<{ ok: boolean; detail: string }> {
@@ -180,6 +229,7 @@ class FakeOrcaClient implements OrcaClient {
     this.dispatched.push({ handle, prompt });
     // In real life, dispatch immediately transitions the worker terminal to BUSY
     w.state = "BUSY";
+    w.phase = "thinking";
     w.tail = ["Thinking · dispatched task", "esc to interrupt"];
     return { ok: true, detail: `dispatched to ${handle}` };
   }
@@ -1060,9 +1110,236 @@ describe("OrchEngine", () => {
     expect(polledArchived).toBe(0); // DISCOVERED inactive thread was skipped
     expect(tickRes.errors.length).toBe(0); // 404 auto-stopped without polluting errors / backoff
 
-    const { loadOrchState } = await import("../../src/orch/store");
+    const { loadOrchState, readRecentLedger } = await import("../../src/orch/store");
     const state = await loadOrchState(tmpHome);
     expect(state.threads[threadDeleted]!.status).toBe("STOPPED");
     expect(state.threads[threadDeleted]!.statusReason).toContain("404");
+    const ledger = await readRecentLedger(10, tmpHome);
+    expect(ledger.some(e => e.event === "thread_deleted" && e.threadId === threadDeleted)).toBe(true);
+  });
+
+  it("Test 13: Discord reaction lifecycle (👀 -> 🧠 -> 🔍 -> ✅), typing indicator, editable live Thinking status, and mid-turn follow-up preservation", async () => {
+    const threadId = "thread-1301";
+    fakeDiscord.addThread({
+      id: threadId,
+      parent_id: "channel-sample-parent",
+      name: "샘플앱 리액션+Thinking 테스트",
+      last_message_id: "1000",
+    });
+    fakeOrca.addWorker("worker-rx", defaultRoute.repoPath, "IDLE");
+
+    const engine = createEngine();
+    await engine.tick(); // Discover
+
+    // 1. User message arrives -> immediately receives 👀 reaction
+    const msg1 = fakeDiscord.addMessage(threadId, "로그인 화면 버튼 정렬 수정해줘", undefined, "1001");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "👀" });
+
+    // 2. After debounce -> dispatches worker, swaps 👀 -> 🧠, triggers typing, posts live Thinking card
+    advanceTime(20_000);
+    await engine.tick();
+    expect(fakeDiscord.removedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "👀" });
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "🧠" });
+    expect(fakeDiscord.typingTriggers).toContain(threadId);
+    const statusPost = fakeDiscord.postedMessages.find(m => m.channelId === threadId && m.content.includes("Thinking..."));
+    expect(statusPost).toBeDefined();
+
+    // 3. Worker transitions through planning -> executing -> reporting -> edits SAME status message in place
+    fakeOrca.setWorkerState("worker-rx", "BUSY", ["◆ hud · planning ● planning"], "planning", "◱ planning layout");
+    advanceTime(20_000);
+    await engine.tick();
+    expect(fakeDiscord.editedMessages.some(e => e.messageId === statusPost!.id && e.content.includes("Planning..."))).toBe(true);
+
+    // Mid-turn human message arrives -> gets 👀 WITHOUT hijacking msg1's active reactionMessageId
+    const msg2 = fakeDiscord.addMessage(threadId, "다크모드 색상도 같이 맞춰줘", undefined, "1002");
+    fakeOrca.setWorkerState("worker-rx", "BUSY", ["◆ hud · executing ● executing"], "executing", "Running edit src/login.tsx");
+    advanceTime(20_000);
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "👀" });
+    expect(fakeDiscord.editedMessages.some(e => e.messageId === statusPost!.id && e.content.includes("Executing..."))).toBe(true);
+    // Still only 1 live status message posted (all updates via PATCH)
+    expect(fakeDiscord.postedMessages.filter(m => m.channelId === threadId).length).toBe(1);
+
+    // 4. Worker finishes -> 🔍 during verify -> ✅ on msg1 (NOT msg2!), status finalized cleanly
+    fakeOrca.setWorkerState("worker-rx", "IDLE");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "🔍" });
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "✅" });
+    expect(fakeDiscord.editedMessages.some(e => e.messageId === statusPost!.id && e.content.includes("Thinking 완료"))).toBe(true);
+
+    // 5. Follow-up batch (msg2) dispatches -> preserves ✅ on msg1, cleans 👀 on msg2, sets 🧠 on msg2
+    advanceTime(20_000);
+    await engine.tick();
+    expect(fakeDiscord.removedReactions).not.toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "✅" });
+    expect(fakeDiscord.removedReactions).toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "👀" });
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "🧠" });
+  });
+
+  it("Test 14: Fail retry (🔄), escalation (❌), command reactions, and dry-run zero Discord side effects", async () => {
+    const threadId = "thread-1401";
+    fakeDiscord.addThread({
+      id: threadId,
+      parent_id: "channel-sample-parent",
+      name: "샘플앱 실패+명령 리액션 테스트",
+      last_message_id: "1000",
+    });
+    fakeOrca.addWorker("worker-fail", defaultRoute.repoPath, "IDLE");
+
+    const engine = createEngine();
+    await engine.tick();
+
+    // Dry-run message polling should NOT send reactions, typing, or posts
+    fakeDiscord.addMessage(threadId, "빌드 오류 고쳐줘", undefined, "1001");
+    await engine.tick({ dryRun: true });
+    expect(fakeDiscord.addedReactions.length).toBe(0);
+    expect(fakeDiscord.typingTriggers.length).toBe(0);
+    expect(fakeDiscord.postedMessages.length).toBe(0);
+
+    // Real tick queues and dispatches
+    await engine.tick();
+    advanceTime(20_000);
+    await engine.tick();
+    fakeOrca.setWorkerState("worker-fail", "BUSY");
+    await engine.tick();
+
+    // First failure -> 🔄 reaction and re-queue
+    fakeVerifier.nextResults.push({
+      passed: false,
+      failureHash: "hash-same",
+      summaryText: "tsc failed",
+      results: [{ name: "typecheck", command: "tsc", exitCode: 1, passed: false, durationMs: 50, outputExcerpt: "TS error" }],
+    });
+    fakeOrca.setWorkerState("worker-fail", "IDLE");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: "1001", emoji: "🔄" });
+
+    // Second identical failure -> escalation with ❌ reaction
+    advanceTime(20_000);
+    await engine.tick();
+    fakeOrca.setWorkerState("worker-fail", "BUSY");
+    await engine.tick();
+    fakeVerifier.nextResults.push({
+      passed: false,
+      failureHash: "hash-same",
+      summaryText: "tsc failed",
+      results: [{ name: "typecheck", command: "tsc", exitCode: 1, passed: false, durationMs: 50, outputExcerpt: "TS error" }],
+    });
+    fakeOrca.setWorkerState("worker-fail", "IDLE");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: "1001", emoji: "❌" });
+
+    // !orch stop command gets 🛑 command reaction and clears worker phase/status
+    const stopMsg = fakeDiscord.addMessage(threadId, "!orch stop", undefined, "1002");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: stopMsg.id, emoji: "🛑" });
+  });
+
+  it("Test 15: Thinking status deduplicates identical edits, ignores transient edit errors without duplicating cards, and reposts only on 404/10008", async () => {
+    const threadId = "thread-1501";
+    fakeDiscord.addThread({
+      id: threadId,
+      parent_id: "channel-sample-parent",
+      name: "샘플앱 상태편집 내성 테스트",
+      last_message_id: "1000",
+    });
+    fakeOrca.addWorker("worker-edit", defaultRoute.repoPath, "IDLE");
+
+    const engine = createEngine();
+    await engine.tick();
+
+    fakeDiscord.addMessage(threadId, "테스트 실행해줘", undefined, "1001");
+    await engine.tick();
+    advanceTime(20_000);
+    await engine.tick(); // Dispatches and posts 1 status card
+    const postsAfterDispatch = fakeDiscord.postedMessages.filter(m => m.channelId === threadId).length;
+    expect(postsAfterDispatch).toBe(1);
+
+    // Same phase & same compact elapsed bucket -> only 1 edit, second tick is deduped
+    fakeOrca.setWorkerState("worker-edit", "BUSY", ["◆ hud · executing ● executing"], "executing", "Running bun test");
+    advanceTime(10_000);
+    await engine.tick();
+    const editsAfterFirst = fakeDiscord.editedMessages.length;
+    advanceTime(10_000);
+    await engine.tick();
+    expect(fakeDiscord.editedMessages.length).toBe(editsAfterFirst);
+
+    // Transient 429 error on editMessage must NOT post a duplicate status card
+    fakeDiscord.editError = new Error("Discord API PATCH failed (429): rate limited");
+    fakeOrca.setWorkerState("worker-edit", "BUSY", ["◆ hud · reporting ● reporting"], "reporting", "Writing summary");
+    advanceTime(10_000);
+    await engine.tick();
+    expect(fakeDiscord.postedMessages.filter(m => m.channelId === threadId).length).toBe(postsAfterDispatch);
+
+    // 404 Unknown Message (10008) DOES recover by posting a fresh silent status card
+    fakeDiscord.editError = new Error('Discord API PATCH failed (404): {"message": "Unknown Message", "code": 10008}');
+    advanceTime(10_000);
+    await engine.tick();
+    fakeDiscord.editError = undefined;
+    const allPosts = fakeDiscord.postedMessages.filter(m => m.channelId === threadId);
+    expect(allPosts.length).toBe(postsAfterDispatch + 1);
+    expect(allPosts[allPosts.length - 1]!.flags).toBe(DISCORD_SILENT_FLAGS);
+  });
+
+  it("Test 16: Pending risk gate ignores plain follow-up messages with 🛑 instead of clobbering the gate, and live orcaBin reload resets when cleared", async () => {
+    const threadId = "thread-1601";
+    fakeDiscord.addThread({
+      id: threadId,
+      parent_id: "channel-sample-parent",
+      name: "샘플앱 위험게이트 보호 테스트",
+      last_message_id: "1000",
+    });
+    fakeOrca.addWorker("worker-gate", defaultRoute.repoPath, "IDLE");
+
+    const engine = createEngine();
+    await engine.tick();
+
+    // Risky message creates pendingGate
+    fakeDiscord.addMessage(threadId, "git push --force origin main 실행해줘", undefined, "1001");
+    await engine.tick();
+    advanceTime(20_000);
+    await engine.tick();
+
+    const { loadOrchState } = await import("../../src/orch/store");
+    const gateBefore = (await loadOrchState(tmpHome)).threads[threadId]!.pendingGate;
+    expect(gateBefore?.status).toBe("pending");
+    const postsBefore = fakeDiscord.postedMessages.length;
+
+    // Plain user message while pendingGate is active gets 🛑 and does NOT clobber gate or spam alerts
+    const plainMsg = fakeDiscord.addMessage(threadId, "잠깐만 기다려봐", undefined, "1002");
+    await engine.tick();
+    const gateAfter = (await loadOrchState(tmpHome)).threads[threadId]!.pendingGate;
+    expect(gateAfter?.id).toBe(gateBefore?.id);
+    expect(fakeDiscord.postedMessages.length).toBe(postsBefore);
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: plainMsg.id, emoji: "🛑" });
+
+    // !orch retry while pendingGate is active is rejected with ⚠️ and keeps gate intact
+    const retryMsg = fakeDiscord.addMessage(threadId, "!orch retry", undefined, "1003");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: retryMsg.id, emoji: "⚠️" });
+    expect((await loadOrchState(tmpHome)).threads[threadId]!.pendingGate?.status).toBe("pending");
+
+    // Cross-thread !orch approve <gateId> from another thread MUST be rejected with ❌
+    const otherThreadId = "thread-1602";
+    fakeDiscord.addThread({
+      id: otherThreadId,
+      parent_id: "channel-sample-parent",
+      name: "샘플앱 다른 쓰레드",
+      last_message_id: "2000",
+    });
+    await engine.tick();
+    const crossApprove = fakeDiscord.addMessage(otherThreadId, `!orch approve ${gateBefore!.id}`, undefined, "2001");
+    await engine.tick();
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: otherThreadId, messageId: crossApprove.id, emoji: "❌" });
+    expect((await loadOrchState(tmpHome)).gates[gateBefore!.id]!.status).toBe("pending");
+
+    // Live orcaBin reload: setting and clearing orcaBin in config propagates to orca.setOrcaBin
+    await saveOrchConfig({ ...baseConfig, orcaBin: "/custom/bin/orca" }, tmpHome);
+    await engine.tick();
+    expect(fakeOrca.orcaBinCalls[fakeOrca.orcaBinCalls.length - 1]).toBe("/custom/bin/orca");
+
+    await saveOrchConfig({ ...baseConfig, orcaBin: undefined }, tmpHome);
+    await engine.tick();
+    expect(fakeOrca.orcaBinCalls[fakeOrca.orcaBinCalls.length - 1]).toBeUndefined();
   });
 });

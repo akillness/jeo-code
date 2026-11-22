@@ -6,7 +6,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { DiscordClient } from "./discord-api";
+import { DISCORD_SILENT_FLAGS, type DiscordClient } from "./discord-api";
 import { classifyMessage, compareSnowflakes, detectRiskyOperation, matchRoute, type OrchThreadCommand } from "./matcher";
 import type { OrcaClient } from "./orca";
 import { appendLedger, loadOrchConfig, loadOrchState, resolveOrchHome, saveOrchState } from "./store";
@@ -18,6 +18,7 @@ import type {
   ProjectRoute,
   QueuedMessage,
   ThreadLoopState,
+  WorkerActivityPhase,
 } from "./types";
 import type { GateVerifier } from "./verifier";
 
@@ -45,6 +46,57 @@ function makeGateId(): string {
   return `gate_${randomBytes(3).toString("hex")}`;
 }
 
+function formatElapsedCompact(startIso: string | undefined, nowMs: number): string {
+  if (!startIso) return "진행 중";
+  const startMs = Date.parse(startIso);
+  if (!Number.isFinite(startMs)) return "진행 중";
+  const secs = Math.max(0, Math.floor((nowMs - startMs) / 1000));
+  if (secs < 60) return "1분 미만";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}분 경과`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hrs}시간 ${remMins}분 경과` : `${hrs}시간 경과`;
+}
+
+function formatElapsedExact(startIso: string | undefined, nowMs: number): string {
+  if (!startIso) return "0초";
+  const startMs = Date.parse(startIso);
+  if (!Number.isFinite(startMs)) return "0초";
+  const secs = Math.max(0, Math.floor((nowMs - startMs) / 1000));
+  if (secs < 60) return `${secs}초`;
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  return remSecs > 0 ? `${mins}분 ${remSecs}초` : `${mins}분`;
+}
+
+function phaseBadge(phase: WorkerActivityPhase): { emoji: string; label: string } {
+  switch (phase) {
+    case "thinking":
+      return { emoji: "🧠", label: "Thinking..." };
+    case "planning":
+      return { emoji: "🗺️", label: "Planning..." };
+    case "executing":
+      return { emoji: "⚙️", label: "Executing..." };
+    case "reporting":
+      return { emoji: "📝", label: "Reporting..." };
+    default:
+      return { emoji: "⏳", label: "Working..." };
+  }
+}
+
+export function formatThinkingStatus(params: {
+  route: ProjectRoute;
+  iteration: number;
+  workerHandle: string;
+  phase: WorkerActivityPhase;
+  elapsedLabel: string;
+  activity?: string;
+}): string {
+  const badge = phaseBadge(params.phase);
+  const detail = params.activity?.trim() ? `\n> \`${params.activity.trim().replace(/`/g, "'")}\`` : "";
+  return `${badge.emoji} **[사이클 ${params.iteration}/${params.route.maxIterations} · ${badge.label}]** \`${params.route.name}\` — 워커 \`${params.workerHandle}\` · ${params.elapsedLabel}${detail}`;
+}
 export function buildWorkerPrompt(route: ProjectRoute, thread: ThreadLoopState, nextIter: number): string {
   const userMsgs = thread.pendingMessages
     .map(m => `- [${m.kind === "qa_fail_trigger" ? "QA_FAIL" : m.authorName}] ${m.content}`)
@@ -99,13 +151,13 @@ export class OrchEngine {
     const dryRun = !!opts.dryRun;
     const summary: TickSummary = { discovered: 0, queued: 0, dispatched: 0, verified: 0, escalated: 0, errors: [] };
     const config = await loadOrchConfig(this.orchHome);
+    this.deps.orca.setOrcaBin?.(config.orcaBin);
     const state = await loadOrchState(this.orchHome);
 
     if (!config.guildId) {
       summary.errors.push("No guildId configured (run `jeo orch init --guild <id>` or link `.jeo/orch.json`).");
       return summary;
     }
-
 
     if (!this.botUserRefreshed) {
       try {
@@ -164,10 +216,28 @@ export class OrchEngine {
         const message = err instanceof Error ? err.message : String(err);
         if (/\b404\b|Unknown Channel|"code"\s*:\s*10003/.test(message)) {
           threadState.status = "STOPPED";
+          threadState.assignedWorkerHandle = undefined;
+          {
+            const threadDyn = threadState as unknown as Record<string, unknown>;
+            threadDyn.workerHandle = undefined;
+            threadDyn.lastDispatchedMessages = undefined;
+          }
+          if (threadState.pendingGate?.status === "pending") {
+            const gate = state.gates[threadState.pendingGate.id] ?? threadState.pendingGate;
+            gate.status = "denied";
+            gate.resolvedAt = new Date(this.now()).toISOString();
+            gate.resolvedBy = "system (thread_deleted)";
+            state.gates[gate.id] = gate;
+            threadState.pendingGate = undefined;
+          }
+          threadState.workerObservedBusy = undefined;
+          threadState.statusMessageId = undefined;
+          threadState.lastStatusContent = undefined;
+          threadState.lastWorkerPhase = undefined;
           threadState.statusReason = "Discord thread deleted or inaccessible (404)";
           threadState.updatedAt = new Date(this.now()).toISOString();
           await this.persist(state, dryRun);
-          await this.record("error", threadState, { phase: "poll", autoStopped: true, message }, dryRun);
+          await this.record("thread_deleted", threadState, { phase: "poll", autoStopped: true, message }, dryRun);
           continue;
         }
         summary.errors.push(`poll ${threadState.threadId}: ${message}`);
@@ -293,7 +363,7 @@ export class OrchEngine {
       }
 
       if (verdict.kind === "command") {
-        await this.executeThreadCommand(config, state, thread, route, verdict.command, msg.author.username, dryRun);
+        await this.executeThreadCommand(config, state, thread, route, verdict.command, msg.author.username, msg.id, dryRun);
         await this.persist(state, dryRun);
         continue;
       }
@@ -301,6 +371,14 @@ export class OrchEngine {
       // when thread.status === "PAUSED" || thread.status === "STOPPED", still advance lastSeenMessageId
       // and still process !orch commands, but do NOT append regular/qa messages to thread.pendingMessages
       if (thread.status === "PAUSED" || thread.status === "STOPPED") {
+        await this.persist(state, dryRun);
+        continue;
+      }
+
+      // When a risky-operation approval gate is pending, require explicit !orch approve/deny/stop
+      // instead of clobbering the pending gate with a duplicate alert on plain messages.
+      if (thread.status === "PAUSED_NEEDS_HUMAN" && thread.pendingGate?.status === "pending") {
+        await this.reactOnce(thread.threadId, msg.id, "🛑", dryRun);
         await this.persist(state, dryRun);
         continue;
       }
@@ -330,6 +408,13 @@ export class OrchEngine {
         thread.status = "QUEUED";
         thread.statusReason = "Queued from user message";
       } else if (verdict.kind === "qa_fail_trigger" && (thread.status === "DISCOVERED" || thread.status === "IDLE")) {
+        thread.iteration = 0;
+        thread.consecutiveSameFailures = 0;
+        const threadDyn = thread as unknown as Record<string, unknown>;
+        threadDyn.consecutiveFailureCount = 0;
+        thread.lastFailureHash = undefined;
+        threadDyn.consecutiveFailureHash = undefined;
+        thread.lastFailureSummary = undefined;
         thread.status = "QUEUED";
         thread.statusReason = `Queued from QA failure marker (${verdict.marker})`;
       } else if (thread.status === "PAUSED_NEEDS_HUMAN" && verdict.kind === "human_trigger") {
@@ -342,6 +427,14 @@ export class OrchEngine {
         thread.iteration = 0;
         thread.status = "QUEUED";
         thread.statusReason = "Resumed by new human instructions";
+      }
+
+      // Immediately acknowledge receipt with 👀 reaction on the triggering Discord message.
+      // While a prior turn is still DISPATCHED/VERIFYING, react without hijacking reactionMessageId.
+      if (thread.status === "DISPATCHED" || thread.status === "VERIFYING") {
+        await this.reactOnce(thread.threadId, msg.id, "👀", dryRun);
+      } else {
+        await this.setThreadReaction(thread, "👀", dryRun, msg.id);
       }
 
       await this.persist(state, dryRun);
@@ -363,14 +456,16 @@ export class OrchEngine {
     route: ProjectRoute,
     command: OrchThreadCommand,
     actor: string,
+    commandMessageId: string,
     dryRun: boolean,
   ): Promise<void> {
     let reply = "";
+    let commandReaction = "✅";
     switch (command.verb) {
       case "status":
         reply = [
           `**[orch status]** \`${route.name}\` (\`${route.id}\`)`,
-          `- 상태: \`${thread.status}\` | 사이클: \`${thread.iteration}/${route.maxIterations}\` | 동일실패: \`${thread.consecutiveSameFailures}/${route.sameFailureLimit}\``,
+          `- 상태: \`${thread.status}\`${thread.lastWorkerPhase ? ` (\`${thread.lastWorkerPhase}\`)` : ""} | 사이클: \`${thread.iteration}/${route.maxIterations}\` | 동일실패: \`${thread.consecutiveSameFailures}/${route.sameFailureLimit}\``,
           `- 워커: ${thread.assignedWorkerHandle ? `\`${thread.assignedWorkerHandle}\`` : "없음"} | 대기 메시지: ${thread.pendingMessages.length}건`,
           ...(thread.pendingGate ? [`- 승인 대기 게이트: \`${thread.pendingGate.id}\` (${thread.pendingGate.reason})`] : []),
           ...(thread.statusReason ? [`- 사유: ${thread.statusReason}`] : []),
@@ -379,10 +474,13 @@ export class OrchEngine {
       case "pause":
         thread.status = "PAUSED";
         thread.statusReason = `Paused by ${actor}`;
+        commandReaction = "⏸️";
+        await this.finalizeThinkingStatus(thread, `⏸️ **[일시중지됨]** \`${route.name}\` — ${actor} 요청`, dryRun);
         reply = `⏸️ **일시중지됨** (\`${route.name}\`). 재개하려면 \`!orch resume\`을 입력하세요.`;
         break;
       case "resume":
         if (thread.pendingGate?.status === "pending") {
+          commandReaction = "⚠️";
           reply = `⚠️ 승인 대기 중인 위험 작업 게이트(\`${thread.pendingGate.id}\`)가 있습니다. \`!orch approve ${thread.pendingGate.id}\` 또는 \`!orch deny ${thread.pendingGate.id}\`로 먼저 결정해 주세요.`;
         } else {
           thread.status = thread.pendingMessages.length > 0 || thread.lastFailureSummary ? "QUEUED" : "IDLE";
@@ -394,29 +492,60 @@ export class OrchEngine {
         thread.status = "STOPPED";
         thread.pendingMessages = [];
         thread.assignedWorkerHandle = undefined;
-        (thread as unknown as Record<string, unknown>).workerHandle = undefined;
+        {
+          const threadDyn = thread as unknown as Record<string, unknown>;
+          threadDyn.workerHandle = undefined;
+          threadDyn.lastDispatchedMessages = undefined;
+        }
+        if (thread.pendingGate?.status === "pending") {
+          const gate = state.gates[thread.pendingGate.id] ?? thread.pendingGate;
+          gate.status = "denied";
+          gate.resolvedAt = new Date(this.now()).toISOString();
+          gate.resolvedBy = `${actor} (stop)`;
+          state.gates[gate.id] = gate;
+          thread.pendingGate = undefined;
+        }
         thread.workerObservedBusy = undefined;
+        thread.lastWorkerPhase = undefined;
         thread.statusReason = `Stopped by ${actor}`;
+        commandReaction = "🛑";
+        await this.setThreadReaction(thread, "🛑", dryRun);
+        await this.finalizeThinkingStatus(thread, `⏹️ **[루프 중지됨]** \`${route.name}\` — ${actor} 요청`, dryRun);
         reply = `⏹️ **루프 중지됨** (\`${route.name}\`). 대기 큐를 비웠습니다.`;
         break;
       case "retry":
+        if (thread.pendingGate?.status === "pending") {
+          commandReaction = "⚠️";
+          reply = `⚠️ 승인 대기 중인 위험 작업 게이트(\`${thread.pendingGate.id}\`)가 있습니다. \`!orch approve ${thread.pendingGate.id}\` 또는 \`!orch deny ${thread.pendingGate.id}\`로 먼저 결정해 주세요.`;
+          break;
+        }
         thread.consecutiveSameFailures = 0;
         {
           const threadDyn = thread as unknown as Record<string, unknown>;
           threadDyn.consecutiveFailureCount = 0;
           thread.lastFailureHash = undefined;
           threadDyn.consecutiveFailureHash = undefined;
+          threadDyn.workerHandle = undefined;
+          threadDyn.lastDispatchedMessages = undefined;
         }
+        thread.assignedWorkerHandle = undefined;
+        thread.workerObservedBusy = undefined;
+        thread.lastWorkerPhase = undefined;
+        thread.statusMessageId = undefined;
+        thread.lastStatusContent = undefined;
         thread.iteration = 0;
         thread.status = "QUEUED";
         thread.lastPendingAtMs = 0;
         thread.statusReason = `Manual retry by ${actor}`;
+        commandReaction = "🔁";
+        await this.setThreadReaction(thread, "👀", dryRun);
         reply = `🔁 **재시도 큐 등록됨** (\`${route.name}\`). 유휴 Orca 워커에 배정됩니다.`;
         break;
       case "approve": {
         const gate = state.gates[command.gateId] ?? (thread.pendingGate?.id === command.gateId ? thread.pendingGate : undefined);
-        if (!gate || gate.status !== "pending") {
-          reply = `⚠️ 대기 중인 게이트 \`${command.gateId}\`를 찾을 수 없습니다.`;
+        if (!gate || gate.status !== "pending" || gate.threadId !== thread.threadId) {
+          commandReaction = "❌";
+          reply = `⚠️ 이 쓰레드에서 대기 중인 게이트 \`${command.gateId}\`를 찾을 수 없습니다.`;
         } else {
           gate.status = "approved";
           gate.resolvedAt = new Date(this.now()).toISOString();
@@ -426,6 +555,7 @@ export class OrchEngine {
           thread.status = "QUEUED";
           thread.lastPendingAtMs = 0;
           thread.statusReason = `Approved gate ${gate.id} by ${actor}`;
+          await this.setThreadReaction(thread, "👀", dryRun);
           await this.record("risk_gate_resolved", thread, { gateId: gate.id, decision: "approved", actor }, dryRun);
           reply = `✅ 위험 작업 게이트 \`${gate.id}\` 승인됨. 작업을 재개합니다.`;
         }
@@ -433,8 +563,9 @@ export class OrchEngine {
       }
       case "deny": {
         const gate = state.gates[command.gateId] ?? (thread.pendingGate?.id === command.gateId ? thread.pendingGate : undefined);
-        if (!gate || gate.status !== "pending") {
-          reply = `⚠️ 대기 중인 게이트 \`${command.gateId}\`를 찾을 수 없습니다.`;
+        if (!gate || gate.status !== "pending" || gate.threadId !== thread.threadId) {
+          commandReaction = "❌";
+          reply = `⚠️ 이 쓰레드에서 대기 중인 게이트 \`${command.gateId}\`를 찾을 수 없습니다.`;
         } else {
           gate.status = "denied";
           gate.resolvedAt = new Date(this.now()).toISOString();
@@ -442,19 +573,24 @@ export class OrchEngine {
           state.gates[gate.id] = gate;
           if (thread.pendingGate?.id === gate.id) thread.pendingGate = undefined;
           thread.pendingMessages = [];
+          (thread as unknown as Record<string, unknown>).lastDispatchedMessages = undefined;
           thread.status = "IDLE";
           thread.statusReason = `Denied gate ${gate.id} by ${actor}`;
+          commandReaction = "🛑";
+          await this.setThreadReaction(thread, "🛑", dryRun);
           await this.record("risk_gate_resolved", thread, { gateId: gate.id, decision: "denied", actor }, dryRun);
           reply = `🛑 위험 작업 게이트 \`${gate.id}\` 거절됨. 해당 요청을 취소하고 대기 상태로 돌아갑니다.`;
         }
         break;
       }
       default:
+        commandReaction = "❓";
         reply = "사용법: `!orch status | pause | resume | stop | retry | approve <gate_id> | deny <gate_id>`";
         break;
     }
 
     thread.updatedAt = new Date(this.now()).toISOString();
+    await this.reactOnce(thread.threadId, commandMessageId, commandReaction, dryRun);
     await this.persist(state, dryRun);
     await this.record("command_executed", thread, { verb: command.verb, actor }, dryRun);
     if (!dryRun && reply) {
@@ -511,6 +647,8 @@ export class OrchEngine {
       thread.statusReason = `Risky operation blocked: ${gate.reason}`;
       thread.updatedAt = gate.createdAt;
 
+      await this.setThreadReaction(thread, "🛑", dryRun);
+      await this.finalizeThinkingStatus(thread, `🛑 **[승인 대기]** \`${route.name}\` — 위험 작업 감지 (\`${gate.id}\`)`, dryRun);
       await this.persist(state, dryRun);
       await this.record("risk_gate_created", thread, { gateId: gate.id, reason: gate.reason, excerpt: gate.excerpt }, dryRun);
       const alert = [
@@ -564,6 +702,13 @@ export class OrchEngine {
       }
       chosenHandle = spawned.handle;
     } else {
+      await this.upsertThinkingStatus(
+        thread,
+        `⏳ **[워커 대기 중]** \`${route.name}\` — 모든 Orca 워커(${workers.length}/${route.maxWorkers})가 작업 중입니다. 유휴 워커가 생기면 즉시 시작합니다.`,
+        false,
+        { silent: true },
+      );
+      await this.persist(state, false);
       await this.record("worker_deferred_busy", thread, { openWorkers: workers.length, maxWorkers: route.maxWorkers }, false);
       return "waiting";
     }
@@ -575,6 +720,8 @@ export class OrchEngine {
     (thread as unknown as Record<string, unknown>).workerHandle = chosenHandle;
     thread.dispatchedAt = new Date(this.now()).toISOString();
     thread.workerObservedBusy = false;
+    thread.lastWorkerPhase = "thinking";
+    const batchTargetMessageId = thread.pendingMessages[thread.pendingMessages.length - 1]?.id;
     if (thread.pendingMessages.length > 0) {
       (thread as unknown as Record<string, unknown>).lastDispatchedMessages = [...thread.pendingMessages];
     }
@@ -587,10 +734,18 @@ export class OrchEngine {
     await this.persist(state, false);
 
     await this.record("worker_dispatched", thread, { handle: chosenHandle, iteration: nextIter }, false);
-    await this.deps.discord.postMessage(
-      thread.threadId,
-      `🚀 **[사이클 ${nextIter}/${route.maxIterations} 시작]** \`${route.name}\` — Orca 워커(\`${chosenHandle}\`)에 배정했습니다. 완료 후 자동 검증 게이트를 실행합니다.`,
-    );
+    if (batchTargetMessageId && batchTargetMessageId !== thread.reactionMessageId && this.deps.discord.removeReaction) {
+      try {
+        await this.deps.discord.removeReaction(thread.threadId, batchTargetMessageId, "👀");
+      } catch {
+        // best-effort cleanup of mid-turn 👀 acknowledgement
+      }
+    }
+    await this.setThreadReaction(thread, "🧠", false, batchTargetMessageId);
+    await this.emitTyping(thread.threadId, false);
+    const dispatchMsg = `🧠 **[사이클 ${nextIter}/${route.maxIterations} 시작 · Thinking...]** \`${route.name}\` — Orca 워커(\`${chosenHandle}\`)에 배정했습니다. 완료 후 자동 검증 게이트를 실행합니다.`;
+    await this.upsertThinkingStatus(thread, dispatchMsg, false, { silent: false });
+    await this.persist(state, false);
     return "dispatched";
   }
 
@@ -611,9 +766,21 @@ export class OrchEngine {
     const inspected = await this.deps.orca.inspectWorkerState(handle);
     if (inspected.state === "BUSY") {
       thread.workerObservedBusy = true;
+      const phase: WorkerActivityPhase = inspected.phase ?? "thinking";
+      thread.lastWorkerPhase = phase;
+      await this.emitTyping(thread.threadId, dryRun);
+      const statusText = formatThinkingStatus({
+        route,
+        iteration: thread.iteration,
+        workerHandle: handle,
+        phase,
+        elapsedLabel: formatElapsedCompact(thread.dispatchedAt, this.now()),
+        activity: inspected.activity,
+      });
+      await this.upsertThinkingStatus(thread, statusText, dryRun, { silent: true });
+      await this.persist(state, dryRun);
       return "running";
     }
-
     const elapsedMs = thread.dispatchedAt ? this.now() - Date.parse(thread.dispatchedAt) : DISPATCH_MIN_GRACE_MS;
 
     if (inspected.state === "UNKNOWN") {
@@ -627,6 +794,7 @@ export class OrchEngine {
           (thread as unknown as Record<string, unknown>).workerHandle = undefined;
           thread.dispatchedAt = undefined;
           thread.workerObservedBusy = undefined;
+          thread.lastWorkerPhase = undefined;
 
           if (thread.iteration < route.maxIterations) {
             const threadDyn = thread as unknown as Record<string, unknown>;
@@ -638,6 +806,12 @@ export class OrchEngine {
             thread.lastPendingAtMs = 0;
             thread.statusReason = `Worker ${disappearedHandle} disappeared/terminated unexpectedly; re-queued cycle ${thread.iteration}/${route.maxIterations}`;
             thread.updatedAt = new Date(this.now()).toISOString();
+            await this.setThreadReaction(thread, "🔄", dryRun);
+            await this.finalizeThinkingStatus(
+              thread,
+              `⚠️ **[사이클 ${thread.iteration}/${route.maxIterations} 워커 종료]** \`${route.name}\` — 워커 \`${disappearedHandle}\` 비정상 종료로 재배정 예약`,
+              dryRun,
+            );
             await this.persist(state, dryRun);
             await this.record("worker_disappeared", thread, { handle: disappearedHandle, action: "requeued" }, dryRun);
             if (!dryRun) {
@@ -652,6 +826,12 @@ export class OrchEngine {
             const reason = `배정 워커(\`${disappearedHandle}\`)가 예기치 않게 종료되었으며 최대 자율 횟수(${route.maxIterations}회)에 도달했습니다.`;
             thread.statusReason = reason;
             thread.updatedAt = new Date(this.now()).toISOString();
+            await this.setThreadReaction(thread, "❌", dryRun);
+            await this.finalizeThinkingStatus(
+              thread,
+              `❌ **[사이클 ${thread.iteration}/${route.maxIterations} 중단]** \`${route.name}\` — 워커 \`${disappearedHandle}\` 종료 (사람 확인 필요)`,
+              dryRun,
+            );
             await this.persist(state, dryRun);
             await this.record("escalated_human", thread, { reason, handle: disappearedHandle }, dryRun);
             const alert = [
@@ -669,9 +849,9 @@ export class OrchEngine {
       }
       return "running";
     }
-
     // Prevent false completion right after dispatch before the agent screen refreshes to BUSY
     if (!thread.workerObservedBusy && elapsedMs < DISPATCH_MIN_GRACE_MS) {
+      await this.emitTyping(thread.threadId, dryRun);
       return "running";
     }
 
@@ -689,11 +869,21 @@ export class OrchEngine {
     dryRun: boolean,
   ): Promise<"verified" | "escalated"> {
     thread.status = "VERIFYING";
+    thread.lastWorkerPhase = undefined;
     thread.updatedAt = new Date(this.now()).toISOString();
+    await this.setThreadReaction(thread, "🔍", dryRun);
+    await this.emitTyping(thread.threadId, dryRun);
+    await this.upsertThinkingStatus(
+      thread,
+      `🔍 **[사이클 ${thread.iteration}/${route.maxIterations} · 검증 게이트 실행 중...]** \`${route.name}\` — 게이트 ${route.verificationGates.length}개 확인 중...`,
+      dryRun,
+      { silent: true },
+    );
     await this.persist(state, dryRun);
 
     const verification = await this.deps.verifier.verifyRoute(route);
     const workerHandle = thread.assignedWorkerHandle ?? ((thread as unknown as Record<string, unknown>).workerHandle as string | undefined);
+    const elapsedExact = formatElapsedExact(thread.dispatchedAt, this.now());
     thread.assignedWorkerHandle = undefined;
     (thread as unknown as Record<string, unknown>).workerHandle = undefined;
     thread.workerObservedBusy = undefined;
@@ -705,13 +895,14 @@ export class OrchEngine {
         threadDyn.consecutiveFailureCount = 0;
         thread.lastFailureHash = undefined;
         threadDyn.consecutiveFailureHash = undefined;
+        threadDyn.lastDispatchedMessages = undefined;
       }
       thread.lastFailureSummary = undefined;
 
       const completedIter = thread.iteration;
       const hasFollowUp = thread.pendingMessages.length > 0;
       const hasHumanFollowUp = thread.pendingMessages.some(m => m.kind === "human_trigger");
-      if (hasHumanFollowUp) {
+      if (hasHumanFollowUp || (hasFollowUp && thread.iteration >= route.maxIterations)) {
         thread.iteration = 0;
         thread.consecutiveSameFailures = 0;
         const threadDyn = thread as unknown as Record<string, unknown>;
@@ -726,6 +917,12 @@ export class OrchEngine {
         ? "Passed verification; processing live user feedback received mid-turn"
         : `Cycle ${completedIter} passed all verification gates`;
       thread.updatedAt = new Date(this.now()).toISOString();
+      await this.setThreadReaction(thread, "✅", dryRun);
+      await this.finalizeThinkingStatus(
+        thread,
+        `✅ **[사이클 ${completedIter}/${route.maxIterations} Thinking 완료]** \`${route.name}\` — 검증 통과 (소요 ${elapsedExact})`,
+        dryRun,
+      );
       await this.persist(state, dryRun);
 
       await this.record("verification_passed", thread, { workerHandle, iteration: completedIter, gates: verification.results.length }, dryRun);
@@ -784,6 +981,12 @@ export class OrchEngine {
         // Do NOT zero thread.lastPendingAtMs (preserve debounce)
         thread.statusReason = `Verification failed (${hash}), but fresh human instructions arrived; starting fresh cycle`;
         thread.updatedAt = new Date(this.now()).toISOString();
+        await this.setThreadReaction(thread, "🔄", dryRun);
+        await this.finalizeThinkingStatus(
+          thread,
+          `🔁 **[사이클 ${completedIter}/${route.maxIterations} Thinking 완료]** \`${route.name}\` — 새 지침 반영 재시도 (소요 ${elapsedExact})`,
+          dryRun,
+        );
         await this.persist(state, dryRun);
 
         await this.record("recursive_requeued", thread, {
@@ -810,6 +1013,12 @@ export class OrchEngine {
       thread.status = "PAUSED_NEEDS_HUMAN";
       thread.statusReason = reason;
       thread.updatedAt = new Date(this.now()).toISOString();
+      await this.setThreadReaction(thread, "❌", dryRun);
+      await this.finalizeThinkingStatus(
+        thread,
+        `❌ **[사이클 ${completedIter}/${route.maxIterations} 에스컬레이션]** \`${route.name}\` — 사람 확인 필요 (소요 ${elapsedExact})`,
+        dryRun,
+      );
       await this.persist(state, dryRun);
 
       await this.record("escalated_human", thread, { reason, failureHash: hash }, dryRun);
@@ -834,6 +1043,12 @@ export class OrchEngine {
     // Note: if hasLiveFeedback, do NOT zero thread.lastPendingAtMs (preserve debounce)
     thread.statusReason = `Verification failed (${hash}); auto-requeued cycle ${completedIter + 1}/${route.maxIterations}`;
     thread.updatedAt = new Date(this.now()).toISOString();
+    await this.setThreadReaction(thread, "🔄", dryRun);
+    await this.finalizeThinkingStatus(
+      thread,
+      `🔁 **[사이클 ${completedIter}/${route.maxIterations} 검증 미달]** \`${route.name}\` — 자동 재수정 예약 (소요 ${elapsedExact})`,
+      dryRun,
+    );
     await this.persist(state, dryRun);
 
     await this.record("recursive_requeued", thread, {
@@ -852,6 +1067,123 @@ export class OrchEngine {
     }
     return "verified";
   }
+  private async reactOnce(channelId: string, messageId: string, emoji: string, dryRun: boolean): Promise<void> {
+    if (dryRun || !messageId || !this.deps.discord.addReaction) return;
+    try {
+      await this.deps.discord.addReaction(channelId, messageId, emoji);
+    } catch (err) {
+      this.log(`Reaction skipped (${emoji}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async setThreadReaction(
+    thread: ThreadLoopState,
+    emoji: string,
+    dryRun: boolean,
+    messageId?: string,
+  ): Promise<void> {
+    if (dryRun) return;
+    const targetMessageId = messageId ?? thread.reactionMessageId;
+    if (!targetMessageId) return;
+    if (thread.reactionMessageId === targetMessageId && thread.activeReactionEmoji === emoji) {
+      return;
+    }
+    const prevMessageId = thread.reactionMessageId;
+    const prevEmoji = thread.activeReactionEmoji;
+    const nonTerminal = prevEmoji === "👀" || prevEmoji === "🧠" || prevEmoji === "🔍" || prevEmoji === "🔄";
+    if (
+      prevMessageId &&
+      prevEmoji &&
+      (prevMessageId === targetMessageId || nonTerminal) &&
+      this.deps.discord.removeReaction
+    ) {
+      try {
+        await this.deps.discord.removeReaction(thread.threadId, prevMessageId, prevEmoji);
+        thread.activeReactionEmoji = undefined;
+      } catch {
+        // best-effort cleanup of previous lifecycle emoji
+      }
+    }
+    if (this.deps.discord.addReaction) {
+      try {
+        await this.deps.discord.addReaction(thread.threadId, targetMessageId, emoji);
+        thread.reactionMessageId = targetMessageId;
+        thread.activeReactionEmoji = emoji;
+      } catch (err) {
+        this.log(`Thread reaction skipped (${emoji}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      thread.reactionMessageId = targetMessageId;
+      thread.activeReactionEmoji = emoji;
+    }
+  }
+
+  private async emitTyping(threadId: string, dryRun: boolean): Promise<void> {
+    if (dryRun || !this.deps.discord.triggerTyping) return;
+    try {
+      await this.deps.discord.triggerTyping(threadId);
+    } catch {
+      // best-effort typing indicator
+    }
+  }
+
+  private async upsertThinkingStatus(
+    thread: ThreadLoopState,
+    content: string,
+    dryRun: boolean,
+    opts?: { silent?: boolean },
+  ): Promise<void> {
+    if (dryRun || !content.trim()) return;
+    if (thread.statusMessageId && thread.lastStatusContent === content) {
+      return;
+    }
+    if (thread.statusMessageId) {
+      if (!this.deps.discord.editMessage) {
+        return;
+      }
+      try {
+        await this.deps.discord.editMessage(thread.threadId, thread.statusMessageId, content);
+        thread.lastStatusContent = content;
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/\b404\b|Unknown Message|"code"\s*:\s*10008/.test(message)) {
+          this.log(`Status message deleted; posting fresh status: ${message}`);
+          thread.statusMessageId = undefined;
+          thread.lastStatusContent = undefined;
+        } else {
+          this.log(`Status edit skipped (transient error): ${message}`);
+          return;
+        }
+      }
+    }
+    try {
+      const ids = await this.deps.discord.postMessage(
+        thread.threadId,
+        content,
+        opts?.silent ? { flags: DISCORD_SILENT_FLAGS } : undefined,
+      );
+      if (ids[0]) {
+        thread.statusMessageId = ids[0];
+        thread.lastStatusContent = content;
+      }
+    } catch (err) {
+      this.log(`Status post skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  private async finalizeThinkingStatus(thread: ThreadLoopState, content: string, dryRun: boolean): Promise<void> {
+    if (dryRun) return;
+    if (thread.statusMessageId && this.deps.discord.editMessage) {
+      try {
+        await this.deps.discord.editMessage(thread.threadId, thread.statusMessageId, content);
+      } catch {
+        // best-effort final edit
+      }
+    }
+    thread.statusMessageId = undefined;
+    thread.lastStatusContent = undefined;
+    thread.lastWorkerPhase = undefined;
+  }
 
   private async notifyOwnerDm(config: OrchConfig, content: string): Promise<void> {
     try {
@@ -865,7 +1197,6 @@ export class OrchEngine {
       this.log(`DM notify skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
   private async record(
     event: Parameters<typeof appendLedger>[0]["event"],
     thread: ThreadLoopState,

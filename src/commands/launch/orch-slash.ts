@@ -41,15 +41,25 @@ export async function runOrchSlash(
   const args = splitSlashArgs(rest);
 
   // Never block the interactive TUI with an infinite foreground daemon loop
-  if (args[0]?.toLowerCase() === "daemon" && (!args[1] || args[1].startsWith("--"))) {
-    return {
-      lines: [
-        "Foreground daemon cannot run inside the interactive TUI.",
-        "Use `/orch daemon install` to start the background launchd service, or run `jeo orch daemon` in a dedicated terminal.",
-      ],
-    };
+  if (args[0]?.toLowerCase() === "daemon") {
+    const daemonSub = (args[1] ?? "").toLowerCase();
+    if (!daemonSub || daemonSub.startsWith("--")) {
+      return {
+        lines: [
+          "Foreground daemon cannot run inside the interactive TUI.",
+          "Use `/orch daemon install` to start the background launchd service, or run `jeo orch daemon` in a dedicated terminal.",
+        ],
+      };
+    }
+    if (daemonSub !== "install" && daemonSub !== "uninstall" && daemonSub !== "status") {
+      return {
+        lines: [
+          `Unknown daemon subcommand: ${args[1]}.`,
+          "Usage: `/orch daemon install | status | uninstall` (or run `jeo orch daemon` in a dedicated terminal).",
+        ],
+      };
+    }
   }
-
   try {
     const res = await executeOrchAction(args, {
       orchHome: opts.orchHome,

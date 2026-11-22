@@ -8,6 +8,8 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { expandTilde } from "./store";
+import type { WorkerActivityPhase } from "./types";
 
 export interface OrcaTerminalInfo {
   handle: string;
@@ -22,9 +24,19 @@ export interface OrcaTerminalInfo {
 
 export type WorkerTerminalState = "IDLE" | "BUSY" | "UNKNOWN";
 
+export interface WorkerActivityInfo {
+  phase: WorkerActivityPhase;
+  detail?: string;
+}
+
 export interface OrcaClient {
   listRepoWorkers(repoPath: string): Promise<OrcaTerminalInfo[]>;
-  inspectWorkerState(handle: string): Promise<{ state: WorkerTerminalState; tail: string[] }>;
+  inspectWorkerState(handle: string): Promise<{
+    state: WorkerTerminalState;
+    tail: string[];
+    phase?: WorkerActivityPhase;
+    activity?: string;
+  }>;
   dispatchToWorker(handle: string, prompt: string): Promise<{ ok: boolean; detail: string }>;
   spawnWorker(
     repoPath: string,
@@ -32,13 +44,13 @@ export interface OrcaClient {
     prompt: string,
     agent?: string,
   ): Promise<{ ok: boolean; handle?: string; detail: string; error?: string }>;
+  setOrcaBin?(bin?: string): void;
 }
-
 export const MAC_ORCA_APP_BIN = "/Applications/Orca.app/Contents/Resources/bin/orca";
 
 export function resolveOrcaBin(customPath?: string, env: Record<string, string | undefined> = process.env): string {
-  if (customPath?.trim()) return customPath.trim();
-  if (env.JEO_ORCA_BIN?.trim()) return env.JEO_ORCA_BIN.trim();
+  if (customPath?.trim()) return expandTilde(customPath.trim());
+  if (env.JEO_ORCA_BIN?.trim()) return expandTilde(env.JEO_ORCA_BIN.trim());
   if (typeof Bun !== "undefined" && typeof Bun.which === "function") {
     const onPath = Bun.which("orca");
     if (onPath) return onPath;
@@ -56,6 +68,9 @@ export function resolveOrcaBin(customPath?: string, env: Record<string, string |
   return "orca";
 }
 
+function stripAnsi(raw: string): string {
+  return raw.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, "");
+}
 
 /**
  * Conservatively classify an Orca `jeo` terminal screen tail as IDLE, BUSY, or UNKNOWN.
@@ -63,14 +78,14 @@ export function resolveOrcaBin(customPath?: string, env: Record<string, string |
  * treat as BUSY/UNKNOWN so we NEVER interrupt an in-flight worker turn.
  */
 export function classifyTerminalScreen(tail: readonly string[], title = ""): WorkerTerminalState {
-  const nonEmpty = tail.map(l => l.trim()).filter(Boolean);
+  const nonEmpty = tail.map(l => stripAnsi(l).trim()).filter(Boolean);
   const busyWindow = nonEmpty.slice(-18).join("\n");
   const idleWindow = nonEmpty.slice(-6).join("\n");
 
   // Active turn / spinner / HUD indicators in jeo / Claude / Codex / Pi TUIs
   const busyPatterns = [
     /Thinking\s*·/i,
-    /◰\s*thinking/i,
+    /[◰◱◲◳▲]\s*(?:thinking|planning|executing|reporting)\b/i,
     /◆\s*hud\b.*●\s*(?:thinking|planning|executing|reporting)\b/i,
     /\besc\s+to\s+interrupt\b/i,
     /⟦esc⟧|\[esc\]/i,
@@ -78,6 +93,20 @@ export function classifyTerminalScreen(tail: readonly string[], title = ""): Wor
     /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/,
     /[⠁-⣿]\s*(?:thinking|planning|executing|reporting|running|streaming|loading|connecting)\b/i,
   ];
+  // Active indicators in the live bottom viewport always win immediately.
+  if (busyPatterns.some(re => re.test(idleWindow))) {
+    return "BUSY";
+  }
+
+  // An explicit completed HUD footer (`◆ hud ... ● done`) in the bottom 6 lines is authoritative
+  // even if earlier inline scrollback lines above it still show `Running bash` or a spinner.
+  if (/◆\s*hud\s*.*●\s*done\b/i.test(idleWindow)) {
+    if (title && !/jeo/i.test(title)) {
+      return "UNKNOWN";
+    }
+    return "IDLE";
+  }
+
   if (busyPatterns.some(re => re.test(busyWindow))) {
     return "BUSY";
   }
@@ -97,6 +126,85 @@ export function classifyTerminalScreen(tail: readonly string[], title = ""): Wor
   }
 
   return "UNKNOWN";
+}
+
+function sanitizeActivityLine(raw: string): string {
+  return stripAnsi(raw)
+    .replace(/[│╭╮╰╯─━┃┌┐└┘├┤┬┴┼]+/g, " ")
+    .replace(/⟦esc⟧|\[esc\]|\besc\s+to\s+interrupt\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 96);
+}
+
+/**
+ * Extract the live thinking/execution phase and a short sanitized status line from
+ * a BUSY Orca `jeo` terminal screen tail (used for Discord live thinking visibility).
+ */
+export function extractWorkerActivity(tail: readonly string[]): WorkerActivityInfo | undefined {
+  const recent = tail
+    .map(l => stripAnsi(l).trim())
+    .filter(Boolean)
+    .slice(-18);
+  if (recent.length === 0) return undefined;
+
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const line = recent[i]!;
+    const hudMatch = line.match(/◆\s*hud\b.*●\s*(thinking|planning|executing|reporting)\b/i);
+    if (hudMatch?.[1]) {
+      const phase = hudMatch[1].toLowerCase() as WorkerActivityPhase;
+      const spinnerLine = [...recent]
+        .reverse()
+        .find(l =>
+          /[◰◱◲◳▲⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠁-⣿]\s*(?:thinking|planning|executing|reporting)\b|Thinking\s*·|\bRunning\s+(?:bash|read|edit|write|tool)\b/i.test(
+            l,
+          ),
+        );
+      const detail = spinnerLine ? sanitizeActivityLine(spinnerLine) : undefined;
+      return { phase, ...(detail ? { detail } : {}) };
+    }
+    const spinnerMatch = line.match(/[◰◱◲◳▲⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠁-⣿]\s*(thinking|planning|executing|reporting)\b/i);
+    if (spinnerMatch?.[1]) {
+      return {
+        phase: spinnerMatch[1].toLowerCase() as WorkerActivityPhase,
+        detail: sanitizeActivityLine(line),
+      };
+    }
+    if (/Thinking\s*·/i.test(line)) {
+      return { phase: "thinking", detail: sanitizeActivityLine(line) };
+    }
+    if (/\bRunning\s+(?:bash|read|edit|write|tool)\b/i.test(line)) {
+      return { phase: "executing", detail: sanitizeActivityLine(line) };
+    }
+  }
+
+  return { phase: "working" };
+}
+
+function extractOrcaError(parsed: unknown, fallback: string): string {
+  if (!parsed || typeof parsed !== "object") return fallback;
+  const obj = parsed as { error?: unknown; detail?: unknown; message?: unknown };
+  if (typeof obj.error === "string" && obj.error.trim()) return obj.error.trim();
+  if (obj.error && typeof obj.error === "object") {
+    const errObj = obj.error as { message?: unknown; code?: unknown };
+    if (typeof errObj.message === "string" && errObj.message.trim()) return errObj.message.trim();
+    if (typeof errObj.code === "string" && errObj.code.trim()) return errObj.code.trim();
+  }
+  if (typeof obj.detail === "string" && obj.detail.trim()) return obj.detail.trim();
+  if (typeof obj.message === "string" && obj.message.trim()) return obj.message.trim();
+  return fallback;
+}
+
+function extractCommandError(res: { stdout: string; stderr: string }, fallback: string): string {
+  const raw = (res.stderr || res.stdout).trim().slice(0, 240);
+  if (res.stdout.trim()) {
+    try {
+      return extractOrcaError(JSON.parse(res.stdout), raw || fallback);
+    } catch {
+      // fall back to stderr/stdout text
+    }
+  }
+  return raw || fallback;
 }
 
 function isJeoAgentTerminal(term: OrcaTerminalInfo): boolean {
@@ -119,7 +227,7 @@ async function defaultExecCommand(cmd: string[]): Promise<{ exitCode: number; st
 }
 
 export class CliOrcaClient implements OrcaClient {
-  private readonly orcaBin: string;
+  private orcaBin: string;
   private readonly bootTimeoutMs: number;
   private readonly bootPollIntervalMs: number;
 
@@ -131,6 +239,10 @@ export class CliOrcaClient implements OrcaClient {
     this.orcaBin = resolveOrcaBin(orcaBin);
     this.bootTimeoutMs = options?.bootTimeoutMs ?? 15_000;
     this.bootPollIntervalMs = options?.bootPollIntervalMs ?? 500;
+  }
+
+  setOrcaBin(bin?: string): void {
+    this.orcaBin = resolveOrcaBin(bin);
   }
 
   async listRepoWorkers(repoPath: string): Promise<OrcaTerminalInfo[]> {
@@ -146,7 +258,7 @@ export class CliOrcaClient implements OrcaClient {
     } catch {
       return [];
     }
-    const target = path.resolve(repoPath);
+    const target = path.resolve(expandTilde(repoPath));
     const terminals = parsed?.result?.terminals ?? parsed?.data?.terminals ?? [];
     return terminals.filter(t => {
       if (!t.worktreePath) return false;
@@ -155,7 +267,12 @@ export class CliOrcaClient implements OrcaClient {
     });
   }
 
-  async inspectWorkerState(handle: string): Promise<{ state: WorkerTerminalState; tail: string[] }> {
+  async inspectWorkerState(handle: string): Promise<{
+    state: WorkerTerminalState;
+    tail: string[];
+    phase?: WorkerActivityPhase;
+    activity?: string;
+  }> {
     const res = await this.exec([this.orcaBin, "terminal", "read", "--terminal", handle, "--screen", "--json"]);
     if (res.exitCode !== 0) return { state: "UNKNOWN", tail: [] };
     try {
@@ -175,7 +292,17 @@ export class CliOrcaClient implements OrcaClient {
         parsed?.data?.terminal?.title ??
         parsed?.data?.title ??
         "";
-      return { state: classifyTerminalScreen(tail, title), tail };
+      const state = classifyTerminalScreen(tail, title);
+      if (state === "BUSY") {
+        const info = extractWorkerActivity(tail);
+        return {
+          state,
+          tail,
+          phase: info?.phase ?? "working",
+          ...(info?.detail ? { activity: info.detail } : {}),
+        };
+      }
+      return { state, tail };
     } catch {
       return { state: "UNKNOWN", tail: [] };
     }
@@ -202,12 +329,12 @@ export class CliOrcaClient implements OrcaClient {
       "--json",
     ]);
     if (res.exitCode !== 0) {
-      return { ok: false, detail: (res.stderr || res.stdout).trim().slice(0, 240) };
+      return { ok: false, detail: extractCommandError(res, "orca terminal send failed") };
     }
     try {
-      const parsed = JSON.parse(res.stdout) as { ok?: boolean; error?: string; detail?: string };
+      const parsed = JSON.parse(res.stdout) as { ok?: boolean; error?: unknown; detail?: string };
       if (parsed?.ok === false) {
-        return { ok: false, detail: parsed.error ?? parsed.detail ?? "orca terminal send failed" };
+        return { ok: false, detail: extractOrcaError(parsed, "orca terminal send failed") };
       }
     } catch {
       // Non-JSON with exitCode 0 is treated as ok
@@ -221,25 +348,39 @@ export class CliOrcaClient implements OrcaClient {
     prompt: string,
     agent?: string,
   ): Promise<{ ok: boolean; handle?: string; detail: string; error?: string }> {
+    const resolvedRepoPath = path.resolve(expandTilde(repoPath));
     const normalizedAgent = (agent ?? "jeo").toLowerCase();
-    const recognizedAgents = new Set(["claude", "codex", "opencode", "gemini"]);
+    const recognizedAgents = new Set([
+      "claude",
+      "codex",
+      "cursor",
+      "antigravity",
+      "opencode",
+      "opencode2",
+      "gemini",
+      "muse",
+      "zcode",
+    ]);
 
     if (normalizedAgent === "jeo") {
+      const tabTitle = (title.trim() ? `jeo: ${title.trim()}` : "jeo").slice(0, 80);
       const createRes = await this.exec([
         this.orcaBin,
         "terminal",
         "create",
-        "--worktree-path",
-        path.resolve(repoPath),
+        "--worktree",
+        `path:${resolvedRepoPath}`,
+        "--title",
+        tabTitle,
         "--json",
       ]);
       if (createRes.exitCode !== 0) {
-        const error = (createRes.stderr || createRes.stdout).trim().slice(0, 240);
+        const error = extractCommandError(createRes, "orca terminal create failed");
         return { ok: false, detail: error, error };
       }
       let parsed: {
         ok?: boolean;
-        error?: string;
+        error?: unknown;
         result?: { handle?: string; terminal?: { handle?: string } };
         data?: { handle?: string };
       };
@@ -250,12 +391,12 @@ export class CliOrcaClient implements OrcaClient {
         return { ok: false, detail: error, error };
       }
       if (parsed?.ok === false) {
-        const error = parsed.error ?? "orca terminal create returned ok: false";
+        const error = extractOrcaError(parsed, "orca terminal create returned ok: false");
         return { ok: false, detail: error, error };
       }
       const handle = parsed?.result?.handle ?? parsed?.result?.terminal?.handle ?? parsed?.data?.handle;
       if (!handle) {
-        const error = parsed?.error ?? "No terminal handle returned by orca terminal create";
+        const error = extractOrcaError(parsed, "No terminal handle returned by orca terminal create");
         return { ok: false, detail: error, error };
       }
 
@@ -271,13 +412,13 @@ export class CliOrcaClient implements OrcaClient {
         "--json",
       ]);
       if (sendRes.exitCode !== 0) {
-        const error = (sendRes.stderr || sendRes.stdout).trim().slice(0, 240);
+        const error = extractCommandError(sendRes, "orca terminal send failed");
         return { ok: false, handle, detail: error, error };
       }
       try {
-        const sendParsed = JSON.parse(sendRes.stdout) as { ok?: boolean; error?: string };
+        const sendParsed = JSON.parse(sendRes.stdout) as { ok?: boolean; error?: unknown };
         if (sendParsed?.ok === false) {
-          const error = sendParsed.error ?? "orca terminal send failed";
+          const error = extractOrcaError(sendParsed, "orca terminal send failed");
           return { ok: false, handle, detail: error, error };
         }
       } catch {
@@ -324,7 +465,7 @@ export class CliOrcaClient implements OrcaClient {
         "orchestration",
         "worker-start",
         "--worktree",
-        `path:${path.resolve(repoPath)}`,
+        `path:${resolvedRepoPath}`,
         "--agent",
         normalizedAgent,
         "--task-title",
@@ -335,14 +476,20 @@ export class CliOrcaClient implements OrcaClient {
         "--json",
       ]);
       if (res.exitCode !== 0) {
-        const error = (res.stderr || res.stdout).trim().slice(0, 240);
+        const error = extractCommandError(res, "orca orchestration worker-start failed");
         return { ok: false, detail: error, error };
       }
       try {
         const parsed = JSON.parse(res.stdout) as {
+          ok?: boolean;
+          error?: unknown;
           result?: { terminalHandle?: string; dispatch?: { terminalHandle?: string } };
           data?: { terminalHandle?: string };
         };
+        if (parsed?.ok === false) {
+          const error = extractOrcaError(parsed, "orca orchestration worker-start returned ok: false");
+          return { ok: false, detail: error, error };
+        }
         const handle = parsed?.result?.terminalHandle ?? parsed?.result?.dispatch?.terminalHandle ?? parsed?.data?.terminalHandle;
         return { ok: true, handle, detail: handle ? `spawned worker ${handle}` : "spawned supervised worker" };
       } catch {

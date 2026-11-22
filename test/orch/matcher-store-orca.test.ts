@@ -11,17 +11,20 @@ import {
   matchRoute,
   parseOrchCommand,
 } from "../../src/orch/matcher";
-import { RestDiscordClient } from "../../src/orch/discord-api";
-import { classifyTerminalScreen, CliOrcaClient } from "../../src/orch/orca";
+import { resolveDiscordToken } from "../../src/orch/daemon";
+import { DISCORD_SILENT_FLAGS, RestDiscordClient } from "../../src/orch/discord-api";
+import { classifyTerminalScreen, CliOrcaClient, extractWorkerActivity, resolveOrcaBin } from "../../src/orch/orca";
 
 import {
   appendLedger,
   createDefaultOrchConfig,
   createEmptyOrchState,
+  expandTilde,
   loadOrchConfig,
   loadOrchState,
   readRecentLedger,
   removeRoute,
+  resolveOrchHome,
   saveOrchConfig,
   saveOrchState,
   upsertRoute,
@@ -790,5 +793,191 @@ describe("CliOrcaClient.spawnWorker", () => {
     expect(res.handle).toBe("term_slow_1");
     // Prompt should NOT have been dispatched while jeo was still booting
     expect(calls.some(c => c.includes("send") && c.includes("fix the bug"))).toBe(false);
+  });
+
+  it("passes --worktree path:<absPath> and --title (never --worktree-path), parses nested terminal.handle and object error", async () => {
+    const calls: string[][] = [];
+    const fakeExec = async (cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd[1] === "terminal" && cmd[2] === "create") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ ok: true, result: { terminal: { handle: "term_nested_9" } } }),
+          stderr: "",
+        };
+      }
+      if (cmd[1] === "terminal" && cmd[2] === "read") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: { terminal: { handle: "term_nested_9", title: "jeo: test", tail: ["◆ hud 0 turns ● done", "Type your next message..."] } },
+          }),
+          stderr: "",
+        };
+      }
+      return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+    };
+
+    const client = new CliOrcaClient(fakeExec, "/usr/local/bin/orca", {
+      bootTimeoutMs: 200,
+      bootPollIntervalMs: 5,
+    });
+    const res = await client.spawnWorker("~/my-repo", "Fix login", "please fix", "jeo");
+    expect(res.ok).toBe(true);
+    expect(res.handle).toBe("term_nested_9");
+    const createCall = calls.find(c => c[1] === "terminal" && c[2] === "create")!;
+    expect(createCall).not.toContain("--worktree-path");
+    expect(createCall).toContain("--worktree");
+    expect(createCall[createCall.indexOf("--worktree") + 1]).toBe(`path:${path.join(os.homedir(), "my-repo")}`);
+    expect(createCall).toContain("--title");
+    expect(createCall[createCall.indexOf("--title") + 1]).toBe("jeo: Fix login");
+
+    // Object-shaped error on non-zero exit AND ok:false in non-jeo worker-start
+    const failExec = async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ ok: false, error: { code: "E_WORKTREE", message: "Worktree not registered" } }),
+      stderr: "",
+    });
+    const failClient = new CliOrcaClient(failExec, "/usr/local/bin/orca");
+    const jeoFail = await failClient.spawnWorker("/tmp/repo", "t", "p", "jeo");
+    expect(jeoFail.ok).toBe(false);
+    expect(jeoFail.error).toBe("Worktree not registered");
+    const claudeFail = await failClient.spawnWorker("/tmp/repo", "t", "p", "claude");
+    expect(claudeFail.ok).toBe(false);
+    expect(claudeFail.error).toBe("Worktree not registered");
+  });
+});
+
+describe("ANSI-safe classifier, extractWorkerActivity, tilde expansion, and Discord REST v10 endpoints", () => {
+  it("strips ANSI escapes, lets bottom `◆ hud ... ● done` override stale scrollback busy lines, and extracts live phases", () => {
+    const ansiBusy = [
+      "\x1b[36m◱ planning\x1b[0m · inspecting router",
+      "\x1b[1m◆ hud\x1b[0m · 2 steps · \x1b[33m● planning\x1b[0m",
+    ];
+    expect(classifyTerminalScreen(ansiBusy, "jeo: repo")).toBe("BUSY");
+    const planInfo = extractWorkerActivity(ansiBusy);
+    expect(planInfo?.phase).toBe("planning");
+    expect(planInfo?.detail).toContain("planning");
+
+    // Stale scrollback `Running bash` 8 lines above an explicit bottom `◆ hud ... ● done` footer is IDLE
+    const completedScrollback = [
+      "\x1b[2mRunning bash `bun test`\x1b[0m",
+      "⠋ checking results",
+      "line 3",
+      "line 4",
+      "line 5",
+      "line 6",
+      "line 7",
+      "line 8",
+      "\x1b[32m◆ hud\x1b[0m · 4 steps · \x1b[32m● done\x1b[0m",
+      "│> Type your next message... │",
+    ];
+    expect(classifyTerminalScreen(completedScrollback, "jeo: repo")).toBe("IDLE");
+
+    expect(extractWorkerActivity(["Thinking · analyzing auth flow"])?.phase).toBe("thinking");
+    expect(extractWorkerActivity(["Running edit src/app.ts"])?.phase).toBe("executing");
+    expect(extractWorkerActivity(["◆ hud · ● reporting", "◳ reporting summary"])?.phase).toBe("reporting");
+  });
+
+  it("expands tilde (~) in store paths, resolveOrcaBin, and resolveDiscordToken", async () => {
+    const home = os.homedir();
+    expect(expandTilde("~/foo/bar")).toBe(path.join(home, "foo/bar"));
+    expect(expandTilde("~")).toBe(home);
+    expect(resolveOrchHome("~/.jeo/custom-orch")).toBe(path.join(home, ".jeo/custom-orch"));
+    expect(resolveOrcaBin("~/bin/orca")).toBe(path.join(home, "bin/orca"));
+
+    // Verify tokenFile with ~/... resolves relative to home via resolveDiscordToken
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "orch-tilde-tok-"));
+    const relUnderHome = path.relative(home, path.join(tmpHome, "my-secret-token"));
+    try {
+      await fs.writeFile(path.join(tmpHome, "my-secret-token"), "tilde-token-xyz\n", "utf8");
+      const tokenFileSpec = relUnderHome.startsWith("..") ? path.join(tmpHome, "my-secret-token") : `~/${relUnderHome}`;
+      const cfg = createDefaultOrchConfig();
+      cfg.tokenFile = tokenFileSpec;
+      cfg.orcaBin = "~/custom/orca";
+      cfg.routes = [{ id: "r1", name: "R1", enabled: true, parentChannelIds: ["p1"], titleKeywords: ["k"], repoPath: "~/proj/r1", maxIterations: 3, sameFailureLimit: 2, maxWorkers: 1, spawnIfBusy: false, verificationGates: [] }];
+      await saveOrchConfig(cfg, tmpHome);
+
+      const reloaded = await loadOrchConfig(tmpHome);
+      expect(reloaded.orcaBin).toBe(path.join(home, "custom/orca"));
+      expect(reloaded.routes[0]!.repoPath).toBe(path.join(home, "proj/r1"));
+
+      const tok = await resolveDiscordToken(tmpHome, {});
+      expect(tok).toBe("tilde-token-xyz");
+    } finally {
+      await fs.rm(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it("exercises RestDiscordClient postMessage(flags), editMessage(PATCH+clamp), addReaction(PUT), removeReaction(DELETE), triggerTyping(POST) over real HTTP", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        const text = await req.text();
+        let body: unknown;
+        if (text) {
+          try {
+            body = JSON.parse(text);
+          } catch {
+            body = text;
+          }
+        }
+        requests.push({ method: req.method, path: url.pathname, body });
+
+        if (req.method === "POST" && url.pathname.endsWith("/messages")) {
+          return Response.json({ id: "msg_live_1" });
+        }
+        if (req.method === "PATCH" && url.pathname.includes("/messages/")) {
+          return Response.json({ id: "msg_live_1" });
+        }
+        if (req.method === "PUT" && url.pathname.includes("/reactions/")) {
+          return new Response(null, { status: 204 });
+        }
+        if (req.method === "DELETE" && url.pathname.includes("/reactions/")) {
+          return new Response(null, { status: 204 });
+        }
+        if (req.method === "POST" && url.pathname.endsWith("/typing")) {
+          return new Response(null, { status: 204 });
+        }
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+
+    try {
+      const baseUrl = `http://127.0.0.1:${server.port}/api/v10`;
+      const routedFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const rewritten = raw.replace("https://discord.com/api/v10", baseUrl);
+        return fetch(rewritten, init);
+      }) as typeof fetch;
+
+      const client = new RestDiscordClient("live-http-token", routedFetch);
+      const ids = await client.postMessage("chan-1", "🧠 Thinking...", { flags: DISCORD_SILENT_FLAGS });
+      expect(ids).toEqual(["msg_live_1"]);
+
+      await client.editMessage("chan-1", "msg_live_1", "x".repeat(2500));
+      await client.addReaction("chan-1", "msg_live_1", "🧠");
+      await client.removeReaction("chan-1", "msg_live_1", "🧠");
+      await client.triggerTyping("chan-1");
+
+      const postReq = requests.find(r => r.method === "POST" && r.path.endsWith("/messages"))!;
+      expect((postReq.body as { flags?: number }).flags).toBe(DISCORD_SILENT_FLAGS);
+
+      const patchReq = requests.find(r => r.method === "PATCH")!;
+      expect((patchReq.body as { content: string }).content.length).toBeLessThanOrEqual(1900);
+
+      const putReq = requests.find(r => r.method === "PUT")!;
+      expect(putReq.path).toContain(encodeURIComponent("🧠"));
+
+      const delReq = requests.find(r => r.method === "DELETE")!;
+      expect(delReq.path).toContain(encodeURIComponent("🧠"));
+
+      expect(requests.some(r => r.method === "POST" && r.path.endsWith("/typing"))).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 });

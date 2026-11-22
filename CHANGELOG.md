@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.12] - 2026-11-23
+_Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools._
+
+### Added
+- **Multi-Project Discord Thread Orchestrator (`src/orch/*`, `src/commands/orch.ts`, `src/commands/launch/orch-slash.ts`, `test/orch/*`):** Route active Discord threads across multiple repositories to IDLE `jeo` workers inside Orca terminals without interrupting BUSY workers; supports debounce coalescing, recursive verification gates with same-failure circuit breaking (`PAUSED_NEEDS_HUMAN`), live mid-run human feedback capture, risky-operation approval gates (`!orch approve` / `!orch deny`) with owner DM alerts, and macOS `launchd` daemon management (`jeo orch daemon install|uninstall|status`).
+- **Repo-Local Hidden Configs & Full Configurability (`src/orch/store.ts`, `src/orch/types.ts`, `src/commands/orch.ts`):** Support linking gitignored per-repo `.jeo/orch.json` (`0600`) files (`jeo orch link` / `unlink` / `init --local` / `assign --local`) and `JEO_ORCH_CONFIG` env overlays with live reload on every tick, relative path resolution, and configurable guild, owner, DM channel, token, verification gates, and Orca binary (`--orca-bin` / `JEO_ORCA_BIN`).
+- **Interactive `/orch` Slash Command & Architecture Diagram (`src/tui/components/slash.ts`, `src/tui/components/autocomplete.ts`, `assets/orch-flow.png`, `README*.md`):** Register `/orch` in REPL slash commands and Tab autocomplete with workspace `cwd` resolution, and document the orchestrator workflow with an architecture diagram across English, Korean, Japanese, and Chinese READMEs.
+
 ## [1.0.11] - 2026-11-22
 _Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation._
 

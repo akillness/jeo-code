@@ -309,6 +309,23 @@ jeo ultragoal
 - **连接正在运行的终端会话（默认）：** 执行一次 `jeo discord setup` 或 `jeo messenger setup` 后，在运行中的 `jeo` 会话里执行 `/discord live --allow-full-control`（`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` 也无需沙箱即可使用）。两种方式均直接使用当前终端会话的工具、审批策略与工作目录，可通过 `/discord status`、`/discord relay <channel-id|off>`、`/discord stop`、`/discord control off` 查看或撤销访问。
 - **独立网关（`jeo messenger run`）：** 在主机上为每个线程或 DM 运行一个持久会话（默认 `toolNames: []`，无沙箱）。启用 `--tools read,grep,glob,bash,edit,write` 会向白名单用户授予本地机器权限，`cwd` 并非 chroot 或文件系统隔离。常规 `jeo` 会话的可选 `~/.jeo/config.json` `sandbox` 隔离（`/sandbox status|approve|deny|revoke`）仍然保留。
 
+### 多项目 Discord 线程编排器 (`jeo orch` / `/orch`)
+
+将多个仓库的活跃 Discord 线程路由至 Orca 终端中处于 IDLE 状态的 `jeo` 工作节点，在不中断 BUSY 节点的前提下执行递归 **派发 → 验证门禁 → 自动重试/通过** 循环。支持连续消息防抖合并、执行中实时反馈自动进入下一轮、连续相同验证失败触发熔断 (`PAUSED_NEEDS_HUMAN`)，以及风险操作的人工审批门禁 (`!orch approve` / `!orch deny`) 与所有者 DM 通知。
+
+<p align="center">
+  <img src="assets/orch-flow.png" alt="jeo orch — Discord 线程编排器与递归 Orca 循环架构" width="100%" />
+</p>
+
+所有 Guild/频道 ID、所有者、令牌路径、Orca 可执行路径与验证门禁均可配置，代码中不包含任何硬编码个人或服务器 ID。每个仓库均可放置受 `.gitignore` 保护的隐藏配置文件 **`.jeo/orch.json`** (`0600`)，每次轮询实时生效：
+
+```bash
+jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>]
+jeo orch link ./.jeo/orch.json           # 或设置 JEO_ORCH_CONFIG 环境变量
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch tick                            # 安装后台常驻服务：jeo orch daemon install
+```
+
 各平台详细独立指南：
 - 📖 [渠道集成概览与架构](docs/integrations/README.md) — 功能对比矩阵与架构图
 - 📱 [Telegram 集成指南](docs/integrations/telegram.md) — 内置后台守护进程、BotFather 交互配对、论坛主题与 `/steer` 命令
@@ -581,11 +598,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
-- **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

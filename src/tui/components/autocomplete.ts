@@ -349,6 +349,19 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return argIndex === 0 ? finish(OAUTH_CLOUD_PROVIDERS, "provider") : { completions: [], token, kind: "none" };
     case "/export":
       return argIndex <= 1 ? finish(["json", "markdown"], "subcommand") : { completions: [], token, kind: "none" };
+    case "/orch": {
+      if (argIndex === 0) {
+        return finish(
+          ["status", "routes", "init", "link", "unlink", "assign", "unassign", "threads", "pause", "resume", "stop", "retry", "approve", "deny", "dry-run", "tick", "daemon", "ledger", "token", "help"],
+          "subcommand",
+        );
+
+      }
+      if (argIndex === 1 && tokens[1]?.toLowerCase() === "daemon") {
+        return finish(["status", "install", "uninstall"], "subcommand");
+      }
+      return { completions: [], token, kind: "none" };
+    }
     default:
       return { completions: [], token, kind: "none" };
   }

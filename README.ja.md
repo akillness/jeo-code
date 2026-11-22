@@ -309,6 +309,23 @@ jeo ultragoal
 - **実行中のターミナルセッション接続（既定）:** `jeo discord setup` または `jeo messenger setup` を一度実行し、稼働中の `jeo` セッションで `/discord live --allow-full-control` を実行します(`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` もサンドボックス不要で動作します)。どちらもアクティブなセッションのツール・承認ポリシー・作業ディレクトリをそのまま使用し、`/discord status`・`/discord relay <channel-id|off>`・`/discord stop`・`/discord control off` で確認・解除できます。
 - **単独ゲートウェイ (`jeo messenger run`):** スレッド/DM ごとに 1 つの永続セッションをホスト上で実行します(`toolNames: []` が既定、サンドボックスなし)。`--tools read,grep,glob,bash,edit,write` を有効にすると許可ユーザーにローカルマシン権限が付与され、`cwd` は chroot やファイルシステム隔離ではありません。通常の `jeo` セッション向けの任意 `~/.jeo/config.json` `sandbox` 隔離(`/sandbox status|approve|deny|revoke`)は引き続き利用できます。
 
+### マルチプロジェクト Discord スレッドオーケストレーター (`jeo orch` / `/orch`)
+
+複数リポジトリのアクティブな Discord スレッドを Orca ターミナル上の IDLE `jeo` ワーカーへルーティングし、BUSY ワーカーを中断せずに再帰的な **ディスパッチ → 検証ゲート → 自動リトライ/通過** ループを実行します。連続メッセージのデバウンス集約、実行中フィードバックの次サイクル反映、同一失敗連続時のサーキットブレーカー (`PAUSED_NEEDS_HUMAN`)、危険操作の承認ゲート (`!orch approve` / `!orch deny`) とオーナー DM 通知を備えています。
+
+<p align="center">
+  <img src="assets/orch-flow.png" alt="jeo orch — Discord スレッドオーケストレーターと再帰 Orca ループ" width="100%" />
+</p>
+
+ギルド/チャンネル ID・オーナー・トークンパス・Orca バイナリパス・検証ゲートはすべて設定可能で、ハードコードは一切ありません。各リポジトリは `.gitignore` 対象の隠し設定ファイル **`.jeo/orch.json`** (`0600`) を保持でき、各ティックでライブ反映されます:
+
+```bash
+jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>]
+jeo orch link ./.jeo/orch.json           # または JEO_ORCH_CONFIG 環境変数で指定
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch tick                            # 常駐実行: jeo orch daemon install
+```
+
 プラットフォーム別詳細ガイド:
 - 📖 [チャネル連携概要 & アーキテクチャ](docs/integrations/README.md) — 機能マトリクスと全体構成
 - 📱 [Telegram 連携詳細ガイド](docs/integrations/telegram.md) — 内蔵バックグラウンドデーモン、BotFather ペアリング、フォーラムトピック、`/steer` コマンド
@@ -583,11 +600,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
-- **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

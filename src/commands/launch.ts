@@ -6925,6 +6925,12 @@ navMatches = [];
         for (const line of routeResult.lines) console.log(line);
         continue;
       }
+      if (input.startsWith("/orch") && (input === "/orch" || input[5] === " ")) {
+        const { runOrchSlash } = await import("./launch/orch-slash");
+        const orchResult = await runOrchSlash(input, { cwd });
+        for (const line of orchResult.lines) console.log(line);
+        continue;
+      }
       if (input.startsWith("/computer") && (input === "/computer" || input[9] === " ")) {
         const cfgNow = await readGlobalConfig();
         const computerResult = runComputerSlash(input, {

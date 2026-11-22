@@ -52,6 +52,8 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
   { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
   { command: "/discord", usage: "/discord live [<messenger.json>] --allow-full-control | stop | status | relay <allowed-channel-id|off> | control on --allow-full-control | control off", description: "Connect Discord to this terminal session or control relay", group: "session" },
+  { command: "/orch", usage: "/orch [status|routes|init [guildId|--local|--config]|link|unlink|assign <id> <parentCh> <repo> [kw]|unassign <id>|threads|pause|resume|stop|retry|approve|deny|dry-run|tick|daemon status|install|uninstall|ledger]", description: "Manage the multi-project Discord thread orchestrator & recursive Orca loop", group: "session" },
+
   { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
 

@@ -188,6 +188,7 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/computer [status\|on\|off]` | Toggle the fail-closed desktop-automation tool for this session |
+| `/orch [status\|init\|link\|assign\|routes\|approve\|daemon ...]` | Manage the multi-project Discord thread orchestrator & recursive Orca worker loop |
 | `/new` · `/sessions` | Start a fresh session or list saved sessions |
 | `/resume [id]` | Resume a saved Jeo session by id or unique id prefix; with no id, open the picker |
 | `/changelog [--full]` · `/jobs [list\|tail\|await\|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
@@ -235,6 +236,7 @@ When jeo session persistence is enabled, resume uses that session's saved CLI co
 | `jeo provider list\|add\|remove\|presets\|test` | Named custom OpenAI/Anthropic-compatible providers (same planners as `/provider`) |
 | `jeo deep-interview` → `ralplan` → `approve` → `team` → `ultragoal` | Spec-first workflow (see below); `jeo state <skill> read\|write\|clear\|handoff` inspects the receipts |
 | `jeo notify setup\|status\|health\|test` · `jeo daemon start\|stop\|status\|reload` | Telegram / Discord / Slack notifications and the shared control daemon |
+| `jeo orch init\|link\|unlink\|assign\|routes\|tick\|daemon` | Multi-project Discord thread orchestrator & recursive Orca worker loop (supports repo-local `.jeo/orch.json`) |
 | `jeo autopilot <subcommand>` · `jeo ledger <subcommand>` | Autonomous build loop with a score ratchet (`status` shows direction, keep/revert counts, next action) · cross-plan append-only ledger |
 | `jeo routine init …` | Generate a GitHub Actions workflow that runs jeo headlessly on a schedule or repo event |
 | `jeo skills list\|read\|sync\|lesson\|eval` | Bundled, user, and project skills; drift check; recorded lessons |
@@ -365,6 +367,46 @@ Opt-in: one shared daemon watches every live `jeo` session on the machine and pu
 
 - **Running terminal session (default):** run `jeo discord setup` (or `jeo messenger setup`) once, then run `/discord live --allow-full-control` inside any running `jeo` terminal session (or use `jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` — no sandbox required). Both modes expose the live session's active tools, approval policy, and working directory; use `/discord status`, `/discord relay <channel-id|off>`, `/discord stop`, or `/discord control off` to inspect or revoke access.
 - **Standalone gateway (`jeo messenger run`):** runs one persistent session per Discord thread or DM (`toolNames: []` by default, no sandbox). Enabling tools (`--tools read,grep,glob,bash,edit,write`) grants local machine authority to allowlisted users (`cwd` is a starting directory, not a chroot or filesystem jail). Optional `~/.jeo/config.json` `sandbox` isolation remains supported for general `jeo` sessions (`/sandbox status|approve|deny|revoke`).
+
+### Multi-project Discord Thread Orchestrator (`jeo orch` / `/orch`)
+
+Route active Discord threads across multiple repositories to IDLE `jeo` workers running inside Orca terminals, running a recursive **dispatch → verification gates → auto-retry / pass** loop without interrupting BUSY workers. Rapid human messages are debounce-coalesced, live feedback arriving mid-run is captured into the next cycle, consecutive identical verification failures trip a circuit breaker (`PAUSED_NEEDS_HUMAN`), and risky operations pause behind an approval gate (`!orch approve` / `!orch deny`) with owner DM alerts.
+
+<p align="center">
+  <img src="assets/orch-flow.png" alt="jeo orch — Discord Thread Orchestrator & Recursive Orca Loop architecture" width="100%" />
+</p>
+
+All guild IDs, channel IDs, owners, token paths, Orca binary paths, and verification gates are fully configurable — no hardcoded server IDs or personal paths. Each repository can keep its own private, gitignored **`.jeo/orch.json`** (`0600`) that is live-reloaded on every tick without duplicating routes into `~/.jeo/thread-orchestrator/routes.json`:
+
+```bash
+# 1. Configure globally or link a repo-local .jeo/orch.json (auto-detected when run with no flags)
+jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>] [--orca-bin /path/to/orca]
+jeo orch link ./.jeo/orch.json           # or set JEO_ORCH_CONFIG=/path/to/.jeo/orch.json
+
+# 2. Register a project route (add --local to write into <repo>/.jeo/orch.json and link it)
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+
+# 3. Run a single poll cycle or install the background macOS launchd daemon
+jeo orch tick
+jeo orch daemon install                  # manage from REPL via /orch status|routes|approve|daemon
+```
+
+```jsonc
+// <repo>/.jeo/orch.json (ignored by .gitignore, written with 0600 permissions)
+{
+  "guildId": "<discord-guild-id>",
+  "ownerUserIds": ["<owner-user-id>"],
+  "route": {
+    "id": "my-app",
+    "name": "My App",
+    "parentChannelIds": ["<parent-channel-id>"],
+    "titleKeywords": ["api", "auth"],
+    "repoPath": ".",
+    "maxIterations": 5,
+    "verificationGates": [{ "name": "test", "command": "bun test" }]
+  }
+}
+```
 
 Detailed standalone guides:
 - 📖 [Channel Integrations Overview](docs/integrations/README.md) — Feature matrix and architecture overview
@@ -627,11 +669,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
-- **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

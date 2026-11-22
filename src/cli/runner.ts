@@ -166,6 +166,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "orch",
+    summary: "Run or manage the multi-project Discord thread orchestrator and Orca recursive improvement daemon.",
+    usage: "orch [status|routes|init|link|unlink|assign|unassign|threads|pause|resume|stop|retry|approve|deny|tick [--dry-run]|daemon [install|uninstall|status]|ledger]",
+
+    loader: async () => {
+      const m = await import("../commands/orch");
+      return args => m.runOrch(args);
+    },
+  },
+  {
     name: "routine",
     summary: "Generate a GitHub Actions workflow that runs jeo headlessly on a schedule or repo event.",
     usage: 'routine init --trigger <schedule|issues|pull_request> --prompt "<task>" [--cron <expr>] [--name <name>] [--out <path>] [--no-pr] [--force] [--dry-run] [--json]',

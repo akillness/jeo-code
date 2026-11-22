@@ -364,6 +364,23 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 - **실행 중인 터미널 세션 연결(기본):** `jeo discord setup` 또는 `jeo messenger setup`으로 설정한 뒤, 실행 중인 `jeo` 세션에서 `/discord live --allow-full-control`을 실행하세요(`jeo notify setup --provider discord` + `jeo daemon start` + `/discord control on --allow-full-control` 방식도 샌드박스 없이 동작합니다). 두 방식 모두 활성 세션의 도구·승인 정책·작업 디렉터리를 그대로 사용하며 `/discord status`, `/discord relay <channel-id|off>`, `/discord stop`, `/discord control off`로 상태를 확인하거나 제어를 해제할 수 있습니다.
 - **단독 게이트웨이(`jeo messenger run`):** 스레드/DM당 영속 세션 하나를 호스트에서 실행합니다(`toolNames: []` 기본값, 샌드박스 없음). `--tools read,grep,glob,bash,edit,write`를 켜면 허용된 사용자에게 로컬 머신 권한이 부여되며 `cwd`는 chroot/파일시스템 격리가 아닙니다. 일반 `jeo` 세션용 선택적 `~/.jeo/config.json` `sandbox` 격리(`/sandbox status|approve|deny|revoke`)는 계속 유지됩니다.
 
+### 멀티 프로젝트 Discord 스레드 오케스트레이터 (`jeo orch` / `/orch`)
+
+여러 저장소의 활성 Discord 스레드를 Orca 터미널에서 실행 중인 IDLE `jeo` 워커에 라우팅하고, BUSY 워커를 중단하지 않은 채 재귀적인 **디스패치 → 검증 게이트 → 자동 재시도/통과** 루프를 실행합니다. 연속된 사용자 메시지는 디바운스 병합되고, 실행 중 도착한 실시간 피드백은 다음 사이클에 자동 반영되며, 동일 검증 실패가 연속되면 서킷 브레이커(`PAUSED_NEEDS_HUMAN`)로 일시 정지하고 위험 작업은 승인 게이트(`!orch approve` / `!orch deny`) 및 소유자 DM 알림을 거칩니다.
+
+<p align="center">
+  <img src="assets/orch-flow.png" alt="jeo orch — Discord 스레드 오케스트레이터 및 재귀 Orca 루프 아키텍처" width="100%" />
+</p>
+
+길드/채널 ID, 소유자, 토큰 경로, Orca 바이너리 경로, 검증 게이트는 모두 설정 가능하며 개인/서버 ID가 코드에 하드코딩되지 않습니다. 각 저장소는 `.gitignore`로 보호되는 로컬 숨김 파일 **`.jeo/orch.json`** (`0600`)을 둘 수 있으며 매 틱마다 실시간 반영됩니다:
+
+```bash
+jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>]
+jeo orch link ./.jeo/orch.json           # 또는 JEO_ORCH_CONFIG 환경변수 지정
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch tick                            # 백그라운드 상시 실행: jeo orch daemon install
+```
+
 플랫폼별 상세 단독 가이드:
 - 📖 [채널 연동 개요 & 아키텍처](docs/integrations/README.md) — 기능 매트릭스 및 구조 개요
 - 📱 [Telegram 연동 상세 가이드](docs/integrations/telegram.md) — 내장 백그라운드 데몬, BotFather 대화형 페어링, 포럼 토픽, `/steer` 원격 명령
@@ -639,11 +656,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
-- **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

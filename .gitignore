@@ -30,3 +30,12 @@ WATCHDOG.yml
 !.gitignore
 !.github/
 !.github/**
+
+!.agents/
+!.agents/**
+!.cursor/
+!.cursor/**
+!.mex/
+!.mex/**
+!.harness2/
+!.harness2/**

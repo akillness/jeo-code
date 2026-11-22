@@ -1,0 +1,64 @@
+{
+  "benchmarks": "on demand: need Vertex credentials, Docker and explicit approval",
+  "components": {
+    "c1_system_prompt": [
+      "AGENTS.md",
+      "CLAUDE.md"
+    ],
+    "c2_guardrails": [
+      ".agents/rules"
+    ],
+    "c3_memory": [
+      ".mex",
+      "knowledge"
+    ],
+    "c4_tool_guidance": [
+      ".agents/rules/jeo-workflows.md"
+    ],
+    "c5_subagents": [],
+    "c6_skills": [
+      ".agents/skills",
+      ".claude/skills"
+    ],
+    "c7_scripts": [
+      "scripts"
+    ],
+    "c8_plugins_hooks": [
+      ".git/hooks/post-commit"
+    ]
+  },
+  "mode": "method",
+  "preflight_method": "ok",
+  "project": "/Users/jangyoung/orca/jeo-code",
+  "updated": "2026-11-21T00:18:55Z",
+  "version": 1,
+  "workflow": {
+    "custom": false,
+    "inherits": "/Users/jangyoung/.agents/harness/workspace.json",
+    "jev_enabled": true,
+    "jev_profile": null,
+    "openspace_enabled": true,
+    "order": [
+      "openspace",
+      "rtk",
+      "semble",
+      "jev",
+      "memory"
+    ],
+    "skills_root": "/Users/jangyoung/.agents/skills"
+  },
+  "workflow_status": {
+    "host-isolation": "ok",
+    "jeox": "ok",
+    "jev": "ok",
+    "knowledge": "ok",
+    "mex": "ok",
+    "open-ontologies": "pending",
+    "openspace": "ok",
+    "refresh": "ok",
+    "rtk-semble": "ok",
+    "rules": "ok",
+    "second-brain": "failed",
+    "zvec": "ok"
+  }
+}

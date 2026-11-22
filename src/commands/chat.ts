@@ -1,4 +1,5 @@
-import { createModelManager, thinkingMaxTokens } from "../ai/model-manager";
+import { createModelManager, thinkingMaxTokens, thinkingToReasoningEffort } from "../ai/model-manager";
+import { isThinkingLevel } from "./launch/flags";
 import { friendlyProviderError } from "../util/provider-error";
 
 /**
@@ -46,8 +47,10 @@ export async function runChatCommand(args: string[] = []): Promise<void> {
   let any = false;
   let usage: { inputTokens?: number; outputTokens?: number; durationMs?: number } | undefined;
   try {
-    const effort = (thinking === "xhigh" ? "high" : thinking) as "low" | "medium" | "high" | undefined;
-    const maxTokens = explicitMaxTokens ?? (thinking ? thinkingMaxTokens(thinking as "low" | "medium" | "high" | "xhigh") : undefined);
+    const normalizedThinking = thinking?.toLowerCase();
+    const level = isThinkingLevel(normalizedThinking) ? normalizedThinking : undefined;
+    const effort = thinkingToReasoningEffort(level, model);
+    const maxTokens = explicitMaxTokens ?? (level ? thinkingMaxTokens(level) : undefined);
     for await (const chunk of manager.stream([{ role: "user", content: message }], { model, maxTokens, reasoningEffort: effort, onUsage: u => { usage = u; } })) {
       process.stdout.write(chunk);
       any = true;

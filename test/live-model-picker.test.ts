@@ -56,15 +56,22 @@ test("renderLiveModelPicker uses the generic select-list renderer with width fit
   expect(joined).toContain("gemini");
   expect(joined).toContain("#1 gemini/gemini-2.5-flash");
 });
-test("buildThinkingLevelChoices lists the four levels in order with the current one flagged", () => {
+test("buildThinkingLevelChoices lists the five levels in order with the current one flagged", () => {
   const choices = buildThinkingLevelChoices("high");
   expect(choices.map(c => c.value)).toEqual([...THINKING_LEVEL_ORDER]);
-  expect(choices.map(c => c.value)).toEqual(["low", "medium", "high", "xhigh"]);
+  expect(choices.map(c => c.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(choices.find(c => c.value === "high")?.hint).toBe("current");
   expect(choices.find(c => c.value === "low")?.hint).toBe("");
   // Labels use "<level> — <description>".
   expect(choices.find(c => c.value === "low")?.label).toBe("low — light reasoning");
-  expect(choices.find(c => c.value === "xhigh")?.label).toBe("xhigh — maximum reasoning");
+  expect(choices.find(c => c.value === "xhigh")?.label).toBe("xhigh — extra-high reasoning");
+  expect(choices.find(c => c.value === "max")?.label).toBe("max — maximum reasoning");
+});
+
+test("buildThinkingLevelChoices filters to model-supported levels when opts.levels is provided", () => {
+  const choices = buildThinkingLevelChoices("max", { levels: ["low", "medium", "high", "max"] });
+  expect(choices.map(c => c.value)).toEqual(["low", "medium", "high", "max"]);
+  expect(choices.find(c => c.value === "max")?.hint).toBe("current");
 });
 
 test("buildThinkingLevelChoices embeds token hints in every level's label", () => {
@@ -81,7 +88,7 @@ test("buildThinkingLevelChoices prepends an inherit row only when an inheritLabe
   expect(withInherit[0]?.label).toBe("inherit (default medium)");
   // current === undefined → the inherit row is the active one.
   expect(withInherit[0]?.hint).toBe("current");
-  expect(withInherit.map(c => c.value)).toEqual(["inherit", "low", "medium", "high", "xhigh"]);
+  expect(withInherit.map(c => c.value)).toEqual(["inherit", "low", "medium", "high", "xhigh", "max"]);
 
   const noInherit = buildThinkingLevelChoices("medium");
   expect(noInherit.some(c => c.value === "inherit")).toBe(false);

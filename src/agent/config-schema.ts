@@ -175,7 +175,7 @@ export const ConfigSchema = z
      *  regardless of project/cwd. A leading `~` is expanded; env `JEO_WIKI_ROOT`
      *  overrides. Consumed by `resolveWikiRoot` and injected into the prompt. */
     wikiRoot: z.string().optional(),
-    thinkingLevel: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+    thinkingLevel: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     modelAliases: z.record(z.string()).optional(),
     /** Most-recently-selected models, newest first (drives the default + pickers). */
     recentModels: z.array(z.string()).optional(),
@@ -226,7 +226,7 @@ export const ConfigSchema = z
           provider: z.enum(["anthropic", "openai", "gemini", "antigravity", "ollama"]).optional(),
           maxSteps: z.number().int().min(1).optional(),
           /** Per-role reasoning budget; absent = inherit the global thinkingLevel. */
-          thinking: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+          thinking: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
           // ─── Custom-role declaration (SYSTEM-driven registry) ───
           // An entry under a NON-bundled id that sets any of these becomes a
           // first-class subagent role at runtime — no code change required.
@@ -263,10 +263,10 @@ export const ConfigSchema = z
         confidenceThreshold: z.number().min(0).max(1).optional(),
         tiers: z
           .object({
-            trivial: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
-            standard: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
-            high: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
-            complex: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
+            trivial: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh", "max"]).optional() }).optional(),
+            standard: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh", "max"]).optional() }).optional(),
+            high: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh", "max"]).optional() }).optional(),
+            complex: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh", "max"]).optional() }).optional(),
           })
           .optional(),
         crossProviderPool: z.boolean().optional(),

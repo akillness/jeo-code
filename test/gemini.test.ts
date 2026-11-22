@@ -73,24 +73,32 @@ test("geminiThinkingBudget: effort maps to budget (gjc GOOGLE_THINKING tiers) an
   expect(geminiThinkingBudget("gemini-2.5-pro", "medium", 16)).toBe(128);
 });
 
-test("geminiThinkingConfig: gemini-3.x carries the thinkingLevel enum, never a numeric budget", () => {
+test("geminiThinkingConfig: gemini-3.x+ carries the thinkingLevel enum, never a numeric budget", () => {
   expect(geminiUsesThinkingLevel("gemini-3-pro")).toBe(true);
   expect(geminiUsesThinkingLevel("gemini-3.1-pro-preview")).toBe(true);
+  expect(geminiUsesThinkingLevel("gemini-4-hydrogen")).toBe(true);
+  expect(geminiUsesThinkingLevel("gemini-10-pro")).toBe(true);
   expect(geminiUsesThinkingLevel("gemini-2.5-flash")).toBe(false);
-  expect(geminiUsesThinkingLevel("gemini-10-pro")).toBe(false); // major 10 ≠ 3 → budget mode
 
   expect(geminiThinkingConfig("gemini-3-flash", "low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
   expect(geminiThinkingConfig("gemini-3.1-pro", "medium")).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
   expect(geminiThinkingConfig("gemini-3-pro", "high")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
+  // Gemini 3.x clamps xhigh/max to HIGH; Gemini 4 Hydrogen/Neon reach XHIGH.
+  expect(geminiThinkingConfig("gemini-3-flash", "xhigh")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
+  expect(geminiThinkingConfig("gemini-3-flash", "max")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
+  expect(geminiThinkingConfig("gemini-4-hydrogen", "xhigh")).toEqual({ includeThoughts: true, thinkingLevel: "XHIGH" });
+  expect(geminiThinkingConfig("gemini-4-hydrogen", "max")).toEqual({ includeThoughts: true, thinkingLevel: "XHIGH" });
+  expect(geminiThinkingConfig("gemini-4-carbon", "xhigh")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
   // In-name depth markers still select the level with no caller effort…
   expect(geminiThinkingConfig("gemini-3-pro-high")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
   expect(geminiThinkingConfig("gemini-3-pro-low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
+  expect(geminiThinkingConfig("gemini-4-hydrogen-xhigh")).toEqual({ includeThoughts: true, thinkingLevel: "XHIGH" });
   // …but an explicit caller effort wins.
   expect(geminiThinkingConfig("gemini-3-pro-high", "low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
   // No effort + unmarked gemini-3 → omit thinkingConfig (model default).
   expect(geminiThinkingConfig("gemini-3-flash")).toBeUndefined();
-  // Non-3 majors keep the numeric budget path; pre-2.5 stays omitted.
-  expect(geminiThinkingConfig("gemini-10-pro", "medium")).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
+  // Gemini 10+ uses thinkingLevel; 2.5 keeps the numeric budget path; pre-2.5 stays omitted.
+  expect(geminiThinkingConfig("gemini-10-pro", "medium")).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
   expect(geminiThinkingConfig("gemini-2.5-flash", "medium")).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
   expect(geminiThinkingConfig("gemini-2.0-flash", "high")).toBeUndefined();
 });

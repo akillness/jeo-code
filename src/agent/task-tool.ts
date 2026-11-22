@@ -32,7 +32,7 @@ import {
   validateSubagentDoneReason,
   type SubagentRole,
 } from "./subagents";
-import { resolveMaxOutputTokens, resolveProvider } from "../ai/model-manager";
+import { resolveMaxOutputTokens, resolveProvider, thinkingToReasoningEffort } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
 import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
 import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, strongestMidTierCredentialed, type RoutingConfig } from "./prompt-router";
@@ -569,8 +569,8 @@ export async function runSubagentOnce(
       model: activeModel,
       maxSteps,
       maxTokens: resolveMaxOutputTokens(activeModel, thinking),
+      reasoningEffort: thinking ? thinkingToReasoningEffort(thinking, activeModel) : undefined,
       sessionKey,
-      // Allow bounded step-budget extensions when a subagent is actively making
       // progress so multi-file edits + test verification do not get cut off mid-run.
       budget: { maxExtensions: role.readOnly ? 1 : 2 },
       signal,

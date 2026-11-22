@@ -56,9 +56,10 @@ test("parseFlags records invalid provider/thinking values as launch errors", () 
   expect(flags.thinking).toBeUndefined();
   expect(flags.errors).toEqual([
     "--provider must be one of: anthropic, openai, gemini, ollama",
-    "--thinking must be one of: low, medium, high, xhigh",
+    "--thinking must be one of: low, medium, high, xhigh, max",
   ]);
   expect(flags.message).toBe("hello");
+  expect(parseFlags(["--thinking", "max", "hi"]).thinking).toBe("max");
 });
 
 test("parseFlags treats -- as end-of-options and omits the sentinel", () => {

@@ -18,7 +18,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel, hasConfirmedCodexCatalog, isLiveProviderModel, setKimiAccountScope } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, isKimiCodeModel, findLiveCatalogModel, hasConfirmedCodexCatalog, isLiveProviderModel, setKimiAccountScope, clampThinkingLevel, type ThinkLevel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { customProviderDef, resolveCustomApiKey } from "./providers/custom-providers";
@@ -138,10 +138,11 @@ export function providerModelFor(model: string): string {
 }
 
 /** Map the configured thinking level to a default max-token budget. */
-export function thinkingMaxTokens(level?: "low" | "medium" | "high" | "xhigh"): number {
+export function thinkingMaxTokens(level?: ThinkLevel): number {
   if (level === "low") return 8000;
   if (level === "high") return 24000;
   if (level === "xhigh") return 31999;
+  if (level === "max") return 64000;
   return 16000;
 }
 
@@ -162,7 +163,7 @@ const DEFAULT_MAX_OUTPUT_CAP = 64_000;
  *  Uncatalogued models (local/live ids) keep the legacy thinking-table budget. */
 export function resolveMaxOutputTokens(
   model?: string,
-  level?: "low" | "medium" | "high" | "xhigh",
+  level?: ThinkLevel,
 ): number {
   const meta = model ? findCatalogEntry(expandAlias(model, BUILTIN_ALIASES)) : undefined;
   if (!meta) return thinkingMaxTokens(level);
@@ -171,15 +172,17 @@ export function resolveMaxOutputTokens(
   return Math.min(findCatalogModel(meta.id)?.maxOutputTokens ?? cap, cap);
 }
 
-/** Map the thinking level to an OpenAI reasoning-effort tier. low/medium/high pass
- *  through unchanged and xhigh folds to high (the deepest tier the provider APIs accept), so
- *  reasoning works at EVERY thinking level. Only an unset level returns
- *  undefined (reasoning off — the explicit /fast path). */
+/** Map the session thinking level to a provider reasoning-effort tier.
+ *  When `model` is provided, clamps the level to the highest effort `model`
+ *  actually supports (per live metadata → catalog → family inference) so
+ *  unsupported tiers (e.g. `xhigh` on `claude-opus-4-6`, `max` on `gpt-5.4`)
+ *  never reach the wire. Only an unset level returns undefined (/fast). */
 export function thinkingToReasoningEffort(
-  level?: "low" | "medium" | "high" | "xhigh",
-): "low" | "medium" | "high" | undefined {
+  level?: ThinkLevel,
+  model?: string,
+): ThinkLevel | undefined {
   if (!level) return undefined;
-  return level === "xhigh" ? "high" : level;
+  return model ? clampThinkingLevel(model, level) : level;
 }
 
 /** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics.
@@ -560,7 +563,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     signal: options.signal,
     reasoningEffort: options.reasoningEffort === "none"
       ? undefined
-      : (options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel)),
+      : thinkingToReasoningEffort(options.reasoningEffort ?? config.thinkingLevel, model),
     onReasoning: options.onReasoning,
     onReasoningStart: options.onReasoningStart,
     onReasoningArtifact: options.onReasoningArtifact,
@@ -917,15 +920,16 @@ export function streamMaxMs(env?: Record<string, string | undefined>): number | 
 }
 
 /** Per-chunk idle cap (ms) from the environment, falling back to a thinking-aware
- *  built-in default (300s baseline, 600s for `high`, 900s for `xhigh`). Explicit
- *  positive `JEO_STREAM_IDLE_MS` always overrides. */
+ *  built-in default (300s baseline, 600s for `high`, 900s for `xhigh`, 1200s for `max`).
+ *  Explicit positive `JEO_STREAM_IDLE_MS` always overrides. */
 export function streamIdleMs(
   env?: Record<string, string | undefined>,
-  reasoningEffort?: CallOptions["reasoningEffort"] | "xhigh",
+  reasoningEffort?: CallOptions["reasoningEffort"] | ThinkLevel,
 ): number {
   const raw = jeoEnv("STREAM_IDLE_MS", env);
   const n = raw !== undefined ? parseInt(raw, 10) : NaN;
   if (Number.isFinite(n) && n > 0) return n;
+  if (reasoningEffort === "max") return 1_200_000;
   if (reasoningEffort === "xhigh") return 900_000;
   if (reasoningEffort === "high") return 600_000;
   return STREAM_IDLE_TIMEOUT_MS;
@@ -933,12 +937,16 @@ export function streamIdleMs(
 
 function stepDownReasoningEffort(
   effort: CallOptions["reasoningEffort"],
+  model?: string,
 ): CallOptions["reasoningEffort"] {
-  if (effort === "xhigh") return "high";
-  if (effort === "high") return "medium";
-  if (effort === "medium") return "low";
-  if (effort === undefined) return "low";
-  return effort;
+  let next: ThinkLevel | undefined;
+  if (effort === "max") next = "xhigh";
+  else if (effort === "xhigh") next = "high";
+  else if (effort === "high") next = "medium";
+  else if (effort === "medium") next = "low";
+  else if (effort === undefined) next = "low";
+  else return effort;
+  return model ? clampThinkingLevel(model, next) : next;
 }
 
 /** Hard wall-clock cap (ms) for a NON-streaming provider call, falling back to the
@@ -1181,7 +1189,7 @@ export function createModelManager(resolve = resolveCall): ModelManager {
             onRetry: (attempt, err, delayMs) => {
               if (isStreamIdleError(err)) {
                 const prevEffort = currentEffort;
-                currentEffort = stepDownReasoningEffort(currentEffort);
+                currentEffort = stepDownReasoningEffort(currentEffort, callOptions.model);
                 logOpsEvent({
                   level: "warn",
                   category: "stream",

@@ -212,7 +212,7 @@ test("staticCompletionContext is wired to the real registries", () => {
   expect(s.providers).toContain("anthropic");
   expect(s.roleIds).toContain("executor");
   expect(s.catalogModels).toContain("gpt-4o");
-  expect(s.thinkingLevels).toEqual(["low", "medium", "high", "xhigh"]);
+  expect(s.thinkingLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
 });
 
 test("/session completes its subcommands", () => {

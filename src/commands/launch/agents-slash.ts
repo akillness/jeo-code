@@ -21,6 +21,8 @@ import {
   resolveRoleModel,
   catalogByProvider,
   qualifyModelId,
+  supportedThinkingLevels,
+  clampThinkingLevel,
 } from "../../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ThinkLevel } from "../../ai";
 import {
@@ -42,7 +44,7 @@ import {
 } from "../../tui/components/config-panel";
 import type { SelectItem } from "../../tui/components/select-list";
 import { openaiCompatDef } from "../../ai/providers/openai-compatible-catalog";
-import { isProviderName, fastThinkingLevelForModel } from "./flags";
+import { isProviderName, isThinkingLevel, fastThinkingLevelForModel } from "./flags";
 
 // Per-provider starting model for provider pinning. Catalog OpenAI-compatible
 // providers supply their own default; built-ins use this map.
@@ -122,6 +124,7 @@ export interface AgentsSlashCtx {
     title: string,
     current: ThinkLevel | undefined,
     inheritLabel?: string,
+    modelId?: string,
   ) => Promise<ThinkLevel | "inherit" | undefined>;
 }
 
@@ -205,6 +208,7 @@ export async function runAgentsSlash(input: string, ctx: AgentsSlashCtx): Promis
         `Reasoning for ${editRole.title}`,
         cfgNow.subagents?.[editRole.id]?.thinking,
         `inherit — follow default (${cfgNow.thinkingLevel ?? "medium"})`,
+        resolveSubagentModel(editRole.id, cfgNow),
       );
       if (lvl) await setRoleThinking(editRole.id, lvl);
     }
@@ -481,16 +485,28 @@ export async function runThinkingSlash(input: string, ctx: AgentsSlashCtx): Prom
   });
 
   const arg = input.substring(9).trim().toLowerCase();
+  const cfgNow = await readGlobalConfig();
+  const activeModel = ctx.sessionModel || cfgNow.defaultModel;
+  const supported = activeModel ? supportedThinkingLevels(activeModel) : [];
+  const clampNote = (lvl: ThinkLevel): string => {
+    if (!activeModel || supported.length === 0) return "";
+    const eff = clampThinkingLevel(activeModel, lvl);
+    const list = supported.join("/");
+    return eff !== lvl
+      ? ` · effective for ${activeModel}: ${eff} (supported: ${list})`
+      : ` · supported: ${list}`;
+  };
   if (!arg) {
-    console.log(`Thinking level: ${sessionThinking ?? "medium"} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
+    const cur: ThinkLevel = sessionThinking ?? "medium";
+    console.log(`Thinking level: ${cur} (~${thinkingMaxTokens(cur)} max tokens/step)${clampNote(cur)}`);
     return result();
   }
-  if (arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh") {
+  if (isThinkingLevel(arg)) {
     sessionThinking = arg;
     sessionThinkingChanged = true;
-    console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)`);
+    console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)${clampNote(arg)}`);
   } else {
-    console.log(`Invalid level '${arg}'. Use: low | medium | high | xhigh.`);
+    console.log(`Invalid level '${arg}'. Use: low | medium | high | xhigh | max.`);
   }
   return result();
 }

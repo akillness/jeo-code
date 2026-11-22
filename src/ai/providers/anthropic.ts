@@ -9,6 +9,7 @@ import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/t
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { jeoEnv } from "../../util/env";
 import { getClaudeCodeVersion, parseRequiredClaudeCodeVersion, raiseClaudeCodeVersion } from "../claude-code-version";
+import { clampThinkingLevel, type ThinkLevel } from "../model-catalog";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
@@ -102,17 +103,16 @@ function anthropicSystemBlocks(
 }
 
 /** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens).
- *  low/medium/high ALL enable thinking with scaling
- *  depth — reasoning works at every thinking level.
- *  Only an UNSET effort stays non-thinking (the explicit /fast off path). The "xhigh" row is
- *  correct-by-table even though upstream currently folds xhigh→high before it arrives. */
-function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh", maxTokens: number): number | undefined {
+ *  low/medium/high/xhigh/max ALL enable thinking with scaling depth.
+ *  Only an UNSET effort stays non-thinking (the explicit /fast off path). */
+function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxTokens: number): number | undefined {
   let budget: number;
   switch (effort) {
     case "low": budget = 4096; break;
     case "medium": budget = 8192; break;
     case "high": budget = 16384; break;
     case "xhigh": budget = 32768; break;
+    case "max": budget = 65536; break;
     default: return undefined;
   }
   return Math.min(budget, Math.max(1024, maxTokens - 1024));
@@ -177,6 +177,7 @@ function supportsAdaptiveThinkingDisplay(model: string): boolean {
  *  sonnet/opus 4.5 siblings. */
 type AnthropicThinkingMode = "adaptive" | "budget-effort" | "budget";
 function anthropicThinkingMode(model: string): AnthropicThinkingMode {
+  if (/claude-mythos-preview/i.test(model)) return "adaptive";
   const v = parseAnthropicVersion(model);
   if (!v) return "budget";
   if (v.major > 4 || (v.major === 4 && v.minor >= 6)) return "adaptive";
@@ -184,15 +185,13 @@ function anthropicThinkingMode(model: string): AnthropicThinkingMode {
   return "budget";
 }
 
-/** Map jeo's reasoning effort to Anthropic's adaptive/output_config effort literal. jeo folds
- *  xhigh→high upstream, so only low/medium/high arrive here. */
-function anthropicAdaptiveEffort(effort: NonNullable<CallOptions["reasoningEffort"]>): "low" | "medium" | "high" {
-  switch (effort) {
-    case "low": return "low";
-    case "medium": return "medium";
-    case "high": return "high";
-    default: return "medium";
-  }
+/** Map jeo's reasoning effort to Anthropic's `output_config.effort` literal, clamped
+ *  to what `model` actually supports (live `/v1/models` capabilities → catalog → family):
+ *  - Opus 4.7+/4.8 / Claude 5.x: low/medium/high/xhigh/max
+ *  - Opus 4.6 / Sonnet 4.6 / Mythos preview: low/medium/high/max (xhigh clamps to high)
+ *  - Opus 4.5 / Sonnet 4.5 & unknown models: low/medium/high. */
+function anthropicAdaptiveEffort(effort: ThinkLevel, model: string): ThinkLevel {
+  return clampThinkingLevel(model, effort, ["low", "medium", "high"]);
 }
 
 type AnthropicContentBlock = Record<string, unknown>;
@@ -269,7 +268,8 @@ export function anthropicPayload(
   const NON_STREAM_MAX_TOKENS = 32_000;
   const requestedMax = options.maxTokens ?? 4000;
   const maxTokens = stream ? requestedMax : Math.min(requestedMax, NON_STREAM_MAX_TOKENS);
-  const effort = options.reasoningEffort;
+  const rawEffort = options.reasoningEffort;
+  const effort: ThinkLevel | undefined = rawEffort && rawEffort !== "none" ? rawEffort : undefined;
   const thinkingEnabled = effort !== undefined;
   // Pick the thinking transport per model. Adaptive (Opus/Sonnet 4.6+) carries NO
   // budget_tokens — depth rides output_config.effort. budget/budget-effort still use a budget.
@@ -317,14 +317,14 @@ export function anthropicPayload(
       payload.thinking = supportsAdaptiveThinkingDisplay(model)
         ? { type: "adaptive", display: "summarized" }
         : { type: "adaptive" };
-      if (!disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+      if (!disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort, model) };
     } else {
       // Budget-based extended thinking. `display: "summarized"` keeps human-readable thought
       // streaming. The 4.5 (budget-effort) transport also carries an output_config effort —
       // unless `disableEffort` is set (see the adaptive branch above for the same rationale;
       // this mirrors Haiku 4.5's already-proven-working budget_tokens-without-effort combination).
       payload.thinking = { type: "enabled", budget_tokens: thinkingBudget, display: "summarized" };
-      if (thinkingMode === "budget-effort" && !disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+      if (thinkingMode === "budget-effort" && !disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort, model) };
     }
   } else if (includeTemperature && options.temperature !== undefined) {
     // Opus/Sonnet 5.5 reject custom sampling even without explicit thinking.

@@ -45,7 +45,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/logout", usage: "/logout <provider> [index|email]", description: "Remove stored OAuth token(s) for a provider (or one account from its pool)", group: "models" },
   { command: "/auth", usage: "/auth [status|pool|next <provider>|use <provider> <N|email>|reset [provider]]", description: "Inspect or rotate multi-account login pools (circular failover on rate/usage limits)", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
-  { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (low/medium/high/xhigh)", group: "models" },
+  { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (low/medium/high/xhigh/max; auto-clamped per model)", group: "models" },
   { command: "/route", usage: "/route [on|off|why|history [n]|save|on save|off save]", description: "Show/toggle prompt-based model routing for this session, explain the last routing decision, or list recent routing history (add save to persist on/off)", group: "models" },
   { command: "/agents", usage: "/agents [edit|role] [model|#N|thinking L|maxSteps N|reset]", description: "List subagent roles; use /agents edit for the interactive picker or pin role model/settings", group: "subagents" },
   { command: "/subagent", usage: "/subagent [role]", description: "Show the current subagent composition (per-role model · thinking · steps); alias of /agents", group: "subagents" },

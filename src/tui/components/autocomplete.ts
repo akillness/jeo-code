@@ -73,7 +73,7 @@ const PREVIEW_LABEL: Record<string, string> = {
   path: "Paths",
 };
 const MAX_COMPLETIONS = 50;
-const THINKING_LEVELS = ["low", "medium", "high", "xhigh"];
+const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 
 /** Static half of a completion context (no network/config needed). */
 export function staticCompletionContext(): Omit<CompletionContext, "liveModels" | "aliases" | "modelsForProvider"> {

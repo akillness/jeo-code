@@ -19,7 +19,18 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { jeoEnv } from "../util/env";
-import { recordLiveCodexModels, recordLiveKimiCodeModels, recordLiveProviderModels, setAntigravityAccountScope, setOpenAIOauthAccountScope, setKimiAccountScope } from "./model-catalog";
+import {
+  normalizeThinkingLevels,
+  recordLiveCodexModels,
+  recordLiveKimiCodeModels,
+  recordLiveProviderModels,
+  registerLiveModelMetadata,
+  setAntigravityAccountScope,
+  setOpenAIOauthAccountScope,
+  setKimiAccountScope,
+  type LiveModelMetadata,
+} from "./model-catalog";
+import { parseModelsDevMetadata } from "./model-enrich";
 import type { Credential } from "../auth";
 import { getStoredOAuth, getStoredOAuthPool, snapshotProvider } from "../auth/storage";
 import { getAntigravityUserAgent } from "./providers/antigravity";
@@ -37,14 +48,52 @@ export interface CachedProviderModels {
   baseUrl?: string;
   /** Stable account scope for OAuth rows; required for OpenAI and Antigravity rows. */
   accountId?: string;
+  /** Per-model capability metadata reported directly by this provider's `/models` API. */
+  metadata?: Record<string, LiveModelMetadata>;
+}
+
+export interface CachedModelsDevMetadata {
+  updatedAt: number;
+  models: Record<string, LiveModelMetadata>;
 }
 
 export interface ModelCacheFile {
   version: 3;
   updatedAt: number;
   providers: CachedProviderModels[];
+  /** Optional public capability metadata snapshot fetched from `https://models.dev/api.json`. */
+  modelsDevMetadata?: CachedModelsDevMetadata;
 }
 
+const MODELS_DEV_API_URL = "https://models.dev/api.json";
+
+function sanitizeMetadataMap(
+  raw: unknown,
+  defaultSource: "provider" | "models.dev",
+): Record<string, LiveModelMetadata> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, LiveModelMetadata> = {};
+  for (const [id, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!id.trim() || !val || typeof val !== "object" || Array.isArray(val)) continue;
+    const row = val as Partial<LiveModelMetadata>;
+    const entry: LiveModelMetadata = {
+      source: row.source === "provider" || row.source === "models.dev" ? row.source : defaultSource,
+    };
+    if (Array.isArray(row.thinking)) {
+      entry.thinking = normalizeThinkingLevels((row.thinking as unknown[]).filter((v): v is string => typeof v === "string"));
+    }
+    if (typeof row.contextTokens === "number" && row.contextTokens > 0) {
+      entry.contextTokens = row.contextTokens;
+    }
+    if (typeof row.maxOutputTokens === "number" && row.maxOutputTokens > 0) {
+      entry.maxOutputTokens = row.maxOutputTokens;
+    }
+    if (entry.thinking !== undefined || entry.contextTokens !== undefined || entry.maxOutputTokens !== undefined) {
+      out[id] = entry;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 // Earlier snapshots could persist hidden or fabricated OpenAI entries.
 const CACHE_VERSION = 3;
 /** Refresh in the background once the cache is older than this (6h). */
@@ -142,12 +191,14 @@ export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
     const models = row.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
       .slice(0, provider === "openai" || provider === "antigravity" || provider === "kimi" ? undefined : MAX_MODELS_PER_PROVIDER);
     if (models.length === 0 && provider !== "openai" && provider !== "antigravity" && !(provider === "kimi" && source === "oauth")) continue;
+    const metadata = sanitizeMetadataMap(row.metadata, "provider");
     out.push({
       provider,
       models,
       source,
       ...(baseUrl ? { baseUrl } : {}),
       ...(isScopedOAuth ? { accountId } : {}),
+      ...(metadata ? { metadata } : {}),
     });
   }
   return out;
@@ -159,11 +210,22 @@ export async function readModelCache(): Promise<ModelCacheFile | null> {
     const parsed = JSON.parse(await readFile(cachePath(), "utf-8")) as Partial<ModelCacheFile>;
     if (!parsed || parsed.version !== CACHE_VERSION) return null;
     const providers = normalizeCacheEntries(parsed.providers);
-    if (providers.length === 0) return null;
+    const rawMd = parsed.modelsDevMetadata;
+    const mdModels = rawMd && typeof rawMd === "object"
+      ? sanitizeMetadataMap(rawMd.models, "models.dev")
+      : undefined;
+    const modelsDevMetadata: CachedModelsDevMetadata | undefined = mdModels
+      ? {
+          updatedAt: typeof rawMd?.updatedAt === "number" ? rawMd.updatedAt : 0,
+          models: mdModels,
+        }
+      : undefined;
+    if (providers.length === 0 && !modelsDevMetadata) return null;
     return {
       version: CACHE_VERSION,
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
       providers,
+      ...(modelsDevMetadata ? { modelsDevMetadata } : {}),
     };
   } catch {
     return null;
@@ -183,7 +245,16 @@ export function isModelCacheStale(cache: ModelCacheFile | null, now = Date.now()
  */
 export function mergeCacheEntries(
   previous: readonly CachedProviderModels[],
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource | "cli_session"; baseUrl?: string; accountId?: string; fallback?: boolean }[],
+  results: readonly {
+    provider: ProviderName;
+    models: readonly string[];
+    ok: boolean;
+    source?: ModelCacheSource | "cli_session";
+    baseUrl?: string;
+    accountId?: string;
+    fallback?: boolean;
+    metadata?: Record<string, LiveModelMetadata>;
+  }[],
 ): CachedProviderModels[] {
   const byKey = new Map<string, CachedProviderModels>();
   const isScopedOAuth = (provider: ProviderName, source: ModelCacheSource): boolean =>
@@ -205,12 +276,14 @@ export function mergeCacheEntries(
     const accountId = typeof result.accountId === "string" ? result.accountId.trim() : "";
     if ((scoped && !accountId) || (isAntigravity && source !== "oauth")) continue;
     if (!result.ok || result.fallback || (result.models.length === 0 && result.provider !== "openai" && !isAntigravity && !(result.provider === "kimi" && scoped))) continue;
+    const metadata = sanitizeMetadataMap(result.metadata, "provider");
     byKey.set(keyOf(result.provider, baseUrl, accountId, source), {
       provider: result.provider,
       models: [...result.models].slice(0, result.provider === "openai" || isAntigravity || result.provider === "kimi" ? undefined : MAX_MODELS_PER_PROVIDER),
       source,
       ...(baseUrl ? { baseUrl } : {}),
       ...(scoped ? { accountId } : {}),
+      ...(metadata ? { metadata } : {}),
     });
   }
   return [...byKey.values()];
@@ -218,7 +291,16 @@ export function mergeCacheEntries(
 
 /** Persist discovery results (best-effort; never throws, never blocks a turn). */
 export async function writeModelCache(
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource | "cli_session"; baseUrl?: string; accountId?: string; fallback?: boolean }[],
+  results: readonly {
+    provider: ProviderName;
+    models: readonly string[];
+    ok: boolean;
+    source?: ModelCacheSource | "cli_session";
+    baseUrl?: string;
+    accountId?: string;
+    fallback?: boolean;
+    metadata?: Record<string, LiveModelMetadata>;
+  }[],
 ): Promise<void> {
   // Same hermeticity rule as saveGlobalConfig: a test run may only write into an
   // explicitly sandboxed JEO_CONFIG_DIR, never the developer's real ~/.jeo.
@@ -237,11 +319,69 @@ export async function writeModelCache(
     const existing = await readModelCache();
     const providers = mergeCacheEntries(existing?.providers ?? [], results);
     if (providers.length === 0) return;
-    const payload: ModelCacheFile = { version: CACHE_VERSION, updatedAt: Date.now(), providers };
+    const payload: ModelCacheFile = {
+      version: CACHE_VERSION,
+      updatedAt: Date.now(),
+      providers,
+      ...(existing?.modelsDevMetadata ? { modelsDevMetadata: existing.modelsDevMetadata } : {}),
+    };
     await mkdir(cacheDir(), { recursive: true, mode: 0o700 });
     await writeFile(cachePath(), JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch {
     // A cache write failure must never surface to the user.
+  }
+}
+
+/** Fetch public per-model capability metadata (effort levels, token limits) from
+ *  `https://models.dev/api.json`, register it in memory, and persist it into the
+ *  model cache. Best-effort & fail-open: never throws, never overwrites
+ *  provider-native metadata, and respects the 6h cache TTL unless `force: true`. */
+export async function refreshModelsDevMetadata(opts?: {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  force?: boolean;
+  now?: number;
+}): Promise<Record<string, LiveModelMetadata>> {
+  const now = opts?.now ?? Date.now();
+  const existing = await readModelCache();
+  if (
+    !opts?.force
+    && existing?.modelsDevMetadata
+    && now - existing.modelsDevMetadata.updatedAt < MODEL_CACHE_TTL_MS
+  ) {
+    registerLiveModelMetadata(existing.modelsDevMetadata.models, "models.dev");
+    return existing.modelsDevMetadata.models;
+  }
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 4000);
+  try {
+    const res = await fetchImpl(MODELS_DEV_API_URL, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) return {};
+    const body = await res.json();
+    const models = parseModelsDevMetadata(body);
+    if (Object.keys(models).length === 0) return {};
+    registerLiveModelMetadata(models, "models.dev");
+    if (!(process.env.NODE_ENV === "test" && !jeoEnv("CONFIG_DIR"))) {
+      const latest = await readModelCache();
+      const payload: ModelCacheFile = {
+        version: CACHE_VERSION,
+        updatedAt: latest?.updatedAt ?? existing?.updatedAt ?? now,
+        providers: latest?.providers ?? existing?.providers ?? [],
+        modelsDevMetadata: { updatedAt: now, models },
+      };
+      await mkdir(cacheDir(), { recursive: true, mode: 0o700 });
+      await writeFile(cachePath(), JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
+    }
+    return models;
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -256,6 +396,11 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
   setAntigravityAccountScope(antigravityScope);
   setKimiAccountScope(kimiAccountId);
   if (!cache) return 0;
+  // Register public models.dev metadata first, then authoritative provider-native
+  // metadata per provider so provider `/models` responses always win.
+  if (cache.modelsDevMetadata?.models) {
+    registerLiveModelMetadata(cache.modelsDevMetadata.models, "models.dev");
+  }
   let applied = 0;
   for (const entry of cache.providers) {
     if (entry.provider === "agy") continue;
@@ -272,6 +417,9 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
       replace: entry.provider === "openai" || entry.provider === "antigravity" || isKimiOAuth,
       ...(isOpenAIOAuth || isAntigravityOAuth || isKimiOAuth ? { accountId: entry.accountId } : {}),
     });
+    if (entry.metadata) {
+      registerLiveModelMetadata(entry.metadata, "provider");
+    }
     if (isOpenAIOAuth && entry.accountId && !entry.baseUrl) {
       recordLiveCodexModels(entry.models, entry.accountId);
     }

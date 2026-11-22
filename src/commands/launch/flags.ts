@@ -52,7 +52,7 @@ export function isProviderName(input: string | undefined): input is ProviderName
 }
 
 export function isThinkingLevel(input: string | undefined): input is ThinkLevel {
-  return input === "low" || input === "medium" || input === "high" || input === "xhigh";
+  return input === "low" || input === "medium" || input === "high" || input === "xhigh" || input === "max";
 }
 
 
@@ -116,7 +116,7 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       const { value, nextIndex } = takeValue(args, i, "--thinking=");
       const normalized = value?.toLowerCase();
       if (isThinkingLevel(normalized)) flags.thinking = normalized;
-      else flags.errors.push("--thinking must be one of: low, medium, high, xhigh");
+      else flags.errors.push("--thinking must be one of: low, medium, high, xhigh, max");
       i = nextIndex;
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;

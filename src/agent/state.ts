@@ -138,7 +138,7 @@ export interface Config {
     };
   };
 
-  thinkingLevel?: "low" | "medium" | "high" | "xhigh";
+  thinkingLevel?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };
   /** Most-recently-selected models, newest first (MRU; head == defaultModel). */
@@ -181,7 +181,7 @@ export interface Config {
     [roleId: string]: {
       model?: string;
       maxSteps?: number;
-      thinking?: "low" | "medium" | "high" | "xhigh";
+      thinking?: "low" | "medium" | "high" | "xhigh" | "max";
       title?: string;
       description?: string;
       prompt?: string;
@@ -206,12 +206,12 @@ export interface Config {
     enabled?: boolean;
     confidenceThreshold?: number;
     tiers?: {
-      trivial?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
-      standard?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
+      trivial?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" | "max" };
+      standard?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" | "max" };
       /** A single borderline-complex signal (see prompt-router.ts's `classifyPromptHeuristically`)
        *  — routes to `roles.high` by default instead of jumping straight to `complex`/xhigh. */
-      high?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
-      complex?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
+      high?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" | "max" };
+      complex?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" | "max" };
     };
     /** Opt-in (default off): for `standard`/`high` tiers left unconfigured (no
      *  `routing.tiers.*.model`, no `roles.medium`/`roles.high`), pick a SESSION-STABLE

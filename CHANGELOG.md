@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.11] - 2026-11-22
+_Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation._
+
+### Added
+- **5-Level Thinking Ladder & Live Model Capability Metadata (`src/ai/model-catalog.ts`, `src/ai/model-discovery.ts`, `src/ai/model-cache.ts`, `src/ai/providers/*`, `src/agent/config-schema.ts`, `src/commands/launch/*`):** Add `max` to `THINK_LEVELS` (`low`..`max`), extract/persist per-model supported thinking levels and limits from live provider endpoints and `models.dev`, and auto-clamp unsupported thinking levels per model across `--thinking`, `/model`, subagent roles, and provider wire payloads.
+
+### Changed
+- **Web Search Documentation (`src/agent/web-search.ts`):** Align header and `resolveSearchChain` doc comments with runtime precedence (explicit `JEO_SEARCH_PROVIDER` → Perplexity when authenticated → active model's native search → DuckDuckGo).
+
 ## [1.0.10] - 2026-11-20
 _Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution._
 

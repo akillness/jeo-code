@@ -29,7 +29,7 @@ test("catalog: Opus 5.5 and Sonnet 5.5 are Anthropic rows whose canonical id IS 
     expect({ id, providerModel: m?.providerModel }).toEqual({ id, providerModel: id });
     expect(m?.contextTokens).toBe(1_000_000);
     expect(m?.maxOutputTokens).toBe(128_000);
-    expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(m?.images).toBe(true);
     // Hard ranking guard: an undated row sorts OLDEST in recency tiebreaks, and a date older
     // than Sonnet 5's would let the previous generation outrank 5.5 on a same-tier tie.

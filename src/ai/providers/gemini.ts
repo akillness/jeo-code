@@ -5,6 +5,7 @@ import { providerHttpError, fetchWithArtifactFailSafe, ProviderStreamError } fro
 import { jeoEnv } from "../../util/env";
 import { serializeToolCalls, sanitizeGeminiToolParameters } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
+import { clampThinkingLevel, type ThinkLevel } from "../model-catalog";
 
 /** Gemini 2.5+/latest models think by default and BILL thought tokens against
  *  `maxOutputTokens` — a small-budget call can burn its entire budget on thoughts
@@ -12,7 +13,7 @@ import { sanitizeJsonStrings } from "../../util/sanitize-json";
  *  Pin an explicit budget: off unless reasoning was requested. Pro-class models
  *  cannot disable thinking (API minimum 128), so they keep a floor instead of 0.
  *  Older models (1.5/2.0) reject `thinkingConfig` entirely → undefined (omit). */
-export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"] | "xhigh", maxTokens?: number): number | undefined {
+export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): number | undefined {
   const m = model.toLowerCase();
   // Reasoning-capable when Gemini >= 2.5 (any 2.5+ minor) or major >= 3 (digit-count
   // agnostic so gemini-10+ never silently loses thinking the way opus-4-8 did), plus
@@ -23,17 +24,19 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const thinkingCapable = (major >= 3 || (major === 2 && minor >= 5)) || /flash-latest|pro-latest/.test(m);
   if (!thinkingCapable) return undefined;
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
-  const effectiveEffort = effort ?? geminiNamedEffort(m);
+  const cleanEffort = effort && effort !== "none" ? effort : undefined;
+  const effectiveEffort = cleanEffort ?? geminiNamedEffort(m);
   let budget: number;
   switch (effectiveEffort) {
-    // low/medium/high ALL enable thinking with scaling depth — reasoning works at
+    // low/medium/high/xhigh/max ALL enable thinking with scaling depth — reasoning works at
     // every thinking level. Only an UNSET effort
     // (and no in-name depth marker) falls through to the floor.
-    // Tier values are thinking-token budgets per effort level.
+    // Tier values are thinking-token budgets per effort level (24575 = Gemini 2.5 cap).
     case "low": budget = 4096; break;
     case "medium": budget = 8192; break;
     case "high": budget = 16384; break;
-    case "xhigh": budget = 24575; break;
+    case "xhigh":
+    case "max": budget = 24575; break;
     default: budget = floor;
   }
   if (typeof maxTokens === "number") budget = Math.min(budget, Math.max(floor, maxTokens - 1024));
@@ -41,55 +44,62 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
 }
 
 /** In-name thinking depth marker. An UNSET effort normally falls to the floor (off for
- *  flash-class). But when the model VARIANT name itself encodes a depth — `-high`/`-low`
- *  (e.g. gemini-3-pro-high) or an explicit `-thinking` suffix (gemini-2.5-flash-thinking) —
- *  that selection IS the user's thinking opt-in. Unmarked ids (gemini-3-flash,
- *  gemini-2.5-flash) keep the off-by-default behavior (parity with the other providers +
- *  the documented thought-token burn protection). Expects a lowercased id. */
-function geminiNamedEffort(m: string): CallOptions["reasoningEffort"] | undefined {
-  return m.includes("-high") ? "high"
+ *  flash-class). But when the model VARIANT name itself encodes a depth — `-xhigh`/`-high`/`-low`
+ *  (e.g. gemini-4-hydrogen-xhigh, gemini-3-pro-high) or an explicit `-thinking` suffix
+ *  (gemini-2.5-flash-thinking) — that selection IS the user's thinking opt-in. Unmarked ids
+ *  (gemini-3-flash, gemini-2.5-flash) keep the off-by-default behavior (parity with the other
+ *  providers + the documented thought-token burn protection). Expects a lowercased id. */
+function geminiNamedEffort(m: string): ThinkLevel | undefined {
+  return m.includes("-xhigh") ? "xhigh"
+    : m.includes("-high") ? "high"
     : m.includes("-medium") ? "medium"
     : m.includes("-low") ? "low"
     : m.includes("thinking") ? "medium"
     : undefined;
 }
 
-/** Gemini 3.x is driven by the `thinkingLevel` ENUM, not a numeric budget (gemini
- *  family with version.major === 3 → "google-level"; everything else stays on the
- *  numeric thinkingBudget). */
+/** Gemini 3.x and 4.x+ are driven by the `thinkingLevel` ENUM, not a numeric budget
+ *  (Gemini 2.5 stays on the numeric thinkingBudget). */
 export function geminiUsesThinkingLevel(model: string): boolean {
   const ver = model.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
-  return !!ver && Number(ver[1]) === 3;
+  return !!ver && Number(ver[1]) >= 3;
 }
 
-/** Effort → Google `thinkingLevel` enum value:
- *  low→LOW, medium→MEDIUM, high/xhigh→HIGH. */
-export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEffort"]> | "xhigh"): "LOW" | "MEDIUM" | "HIGH" {
-  switch (effort) {
+/** Effort → Google `thinkingLevel` enum value, clamped to what `model` actually supports
+ *  (gemini-4-hydrogen / gemini-4-neon reach XHIGH; gemini-3.x / gemini-4-carbon / argon
+ *  cap at HIGH; gemini-3-pro-preview supports LOW/HIGH). */
+export function geminiThinkingLevel(
+  effort: ThinkLevel,
+  model?: string,
+): "LOW" | "MEDIUM" | "HIGH" | "XHIGH" {
+  const clamped = model ? clampThinkingLevel(model, effort, ["low", "medium", "high"]) : effort;
+  switch (clamped) {
     case "low": return "LOW";
     case "medium": return "MEDIUM";
-    case "high":
-    case "xhigh": return "HIGH";
+    case "high": return "HIGH";
+    case "xhigh":
+    case "max": return "XHIGH";
     default: return "MEDIUM";
   }
 }
 
 /** The `thinkingConfig` object for a Gemini request, or undefined to omit it entirely:
- *  gemini-3.x → thinkingLevel enum (numeric budgets are NOT sent — level XOR
+ *  gemini-3.x/4.x+ → thinkingLevel enum (numeric budgets are NOT sent — level XOR
  *  budget, never both); with no effort requested (and no in-name marker) the config is
  *  omitted so the model keeps its default (thinking not enabled → no config).
- *  Other thinking-capable models → numeric thinkingBudget; pre-2.5 → undefined. */
+ *  Other thinking-capable models (2.5) → numeric thinkingBudget; pre-2.5 → undefined. */
 export type GeminiThinkingConfig =
-  | { includeThoughts: true; thinkingLevel: "LOW" | "MEDIUM" | "HIGH" }
+  | { includeThoughts: true; thinkingLevel: "LOW" | "MEDIUM" | "HIGH" | "XHIGH" }
   | { includeThoughts: true; thinkingBudget: number };
 
 export function geminiThinkingConfig(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): GeminiThinkingConfig | undefined {
+  const cleanEffort: ThinkLevel | undefined = effort && effort !== "none" ? effort : undefined;
   if (geminiUsesThinkingLevel(model)) {
-    const effective = effort ?? geminiNamedEffort(model.toLowerCase());
+    const effective = cleanEffort ?? geminiNamedEffort(model.toLowerCase());
     if (effective === undefined) return undefined;
-    return { includeThoughts: true, thinkingLevel: geminiThinkingLevel(effective) };
+    return { includeThoughts: true, thinkingLevel: geminiThinkingLevel(effective, model) };
   }
-  const budget = geminiThinkingBudget(model, effort, maxTokens);
+  const budget = geminiThinkingBudget(model, cleanEffort, maxTokens);
   return budget === undefined ? undefined : { includeThoughts: true, thinkingBudget: budget };
 }
 

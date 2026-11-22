@@ -5,14 +5,16 @@
  *
  *   1. An explicitly preferred provider (`JEO_SEARCH_PROVIDER`) that is
  *      available is primary.
- *   2. Otherwise the ACTIVE MODEL's own native search provider is primary,
- *      but only when that provider's credentials are present (active-model
- *      gating — never credential scanning). Native providers today: Anthropic's
- *      server-side `web_search_20250305` tool, OpenAI's Responses API `web_search`
- *      hosted tool, and Gemini's `googleSearch` grounding tool (also used for
+ *   2. Otherwise, when Perplexity is authenticated (OAuth, macOS session,
+ *      cookies, or API key), Perplexity is tried first.
+ *   3. Otherwise (or as fallback after Perplexity) the ACTIVE MODEL's own
+ *      native search provider is used when its credentials are present
+ *      (active-model gating). Native providers today: Anthropic's server-side
+ *      `web_search_20250305` tool, OpenAI's Responses API `web_search` hosted
+ *      tool, and Gemini's `googleSearch` grounding tool (also used for
  *      `antigravity` sessions when a plain `GEMINI_API_KEY` happens to be set —
  *      Google/Gemini OAuth does not serve this endpoint, so it never qualifies).
- *   3. DuckDuckGo (keyless HTML scraping, no API key, no OAuth) is ALWAYS
+ *   4. DuckDuckGo (keyless HTML scraping, no API key, no OAuth) is ALWAYS
  *      appended as the terminal fallback, so a missing/failed primary still
  *      returns real results with zero configuration — results are always
  *      live provider data, never canned.
@@ -1912,8 +1914,9 @@ async function activeModelProviderName(): Promise<string | undefined> {
 
 /**
  * Resolve the ordered provider chain for a search request:
- * explicit preferred provider (when available) → active model's native search
- * (when ITS credentials exist) → DuckDuckGo as the always-on terminal fallback.
+ * explicit preferred provider (when available) → Perplexity (when authenticated)
+ * → active model's native search (when its credentials exist) → DuckDuckGo as
+ * the always-on terminal fallback.
  */
 export async function resolveSearchChain(opts: { preferred?: string; modelProvider?: string } = {}): Promise<SearchProviderDef[]> {
   const chain: SearchProviderDef[] = [];

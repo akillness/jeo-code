@@ -17,15 +17,17 @@ const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googlea
  *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers —
  *  low/medium/high ALL think (reasoning at every level); only an
  *  UNSET effort stays non-thinking. */
-function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh"): number | undefined {
+function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"]): number | undefined {
   switch (effort) {
     case "low": return 4000;
     case "medium": return 10000;
     case "high":
     case "xhigh": return 24000;
+    case "max": return 32000;
     default: return undefined;
   }
 }
+
 const ENDPOINTS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
 export function getAntigravityUserAgent(): string {

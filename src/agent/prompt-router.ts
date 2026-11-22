@@ -361,9 +361,9 @@ const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { triv
  *  as `strongestCredentialed`'s single-winner tiebreak, reused here to bucket
  *  UNCLASSIFIED (no size-suffix) models into a tercile fallback. */
 function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
-  const xhighA = a.thinking.includes("xhigh") ? 1 : 0;
-  const xhighB = b.thinking.includes("xhigh") ? 1 : 0;
-  if (xhighA !== xhighB) return xhighA - xhighB;
+  const deepA = (a.thinking.includes("xhigh") || a.thinking.includes("max")) ? 1 : 0;
+  const deepB = (b.thinking.includes("xhigh") || b.thinking.includes("max")) ? 1 : 0;
+  if (deepA !== deepB) return deepA - deepB;
   if (a.maxOutputTokens !== b.maxOutputTokens) return a.maxOutputTokens - b.maxOutputTokens;
   if (a.contextTokens !== b.contextTokens) return a.contextTokens - b.contextTokens;
   const recency = compareReleaseDate(a.releaseDate, b.releaseDate);
@@ -506,9 +506,9 @@ export function strongestCredentialed(
     // cheapestCredentialed above for the Antigravity/Gemini OAuth rationale).
     if (filter && !filter(m)) continue;
     if (!best) { best = m; continue; }
-    const xhighM = m.thinking.includes("xhigh") ? 1 : 0;
-    const xhighBest = best.thinking.includes("xhigh") ? 1 : 0;
-    if (xhighM !== xhighBest) { if (xhighM > xhighBest) best = m; continue; }
+    const deepM = (m.thinking.includes("xhigh") || m.thinking.includes("max")) ? 1 : 0;
+    const deepBest = (best.thinking.includes("xhigh") || best.thinking.includes("max")) ? 1 : 0;
+    if (deepM !== deepBest) { if (deepM > deepBest) best = m; continue; }
     if (m.maxOutputTokens !== best.maxOutputTokens) { if (m.maxOutputTokens > best.maxOutputTokens) best = m; continue; }
     if (m.contextTokens !== best.contextTokens) { if (m.contextTokens > best.contextTokens) best = m; continue; }
     const recency = compareReleaseDate(m.releaseDate, best.releaseDate);

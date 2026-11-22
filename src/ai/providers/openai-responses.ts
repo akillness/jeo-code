@@ -16,12 +16,13 @@ import { readSse } from "../sse";
 import { providerHttpError, fetchWithArtifactFailSafe, ProviderStreamError } from "./errors";
 import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
+import { clampThinkingLevel } from "../model-catalog";
 import os from "node:os";
 import pkg from "../../../package.json";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
-export const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+export const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 const CODEX_ORIGINATOR = "codex_cli_rs";
 
@@ -121,12 +122,14 @@ export function codexResponsesRequest(
     payload.tools = options.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: false }));
     payload.tool_choice = "auto";
   }
-  // Map thinkingLevel → reasoning effort for Codex reasoning models.
-  // Drop out-of-enum values instead of forwarding them — the backend 400s on unknown efforts.
-  if (options.reasoningEffort && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
+  // Map thinkingLevel → reasoning effort for Codex/Responses reasoning models,
+  // clamped per model (live Codex `/models` → models.dev → catalog → family) so
+  // unsupported tiers (e.g. `max` on gpt-5.4 or `xhigh` on gpt-5.1) never 400.
+  if (options.reasoningEffort && options.reasoningEffort !== "none" && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
+    const effort = clampThinkingLevel(model, options.reasoningEffort, ["low", "medium", "high"]);
     // `summary: "auto"` makes the backend stream reasoning-summary deltas so the live
     // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
-    payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
+    payload.reasoning = { effort, summary: "auto" };
   }
   // Cap the response length on the PUBLIC Responses API only. The ChatGPT/Codex
   // OAuth backend 400s on this parameter ({"detail":"Unsupported parameter: max_output_tokens"}),

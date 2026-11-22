@@ -10,9 +10,106 @@ import type { ProviderName } from "./types";
 import { openaiCompatDef, isBuiltinCompatProvider } from "./providers/openai-compatible-catalog";
 import { customProviderDef } from "./providers/custom-providers";
 
-export type ThinkLevel = "low" | "medium" | "high" | "xhigh";
+export type ThinkLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
-export const THINK_LEVELS: readonly ThinkLevel[] = ["low", "medium", "high", "xhigh"];
+export const THINK_LEVELS: readonly ThinkLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+const THINK_RANK: Record<ThinkLevel, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  xhigh: 3,
+  max: 4,
+};
+
+/** Filter and canonically order raw thinking/effort level names (e.g. from live
+ *  provider `/models` or models.dev metadata) into jeo's `ThinkLevel` scale. */
+export function normalizeThinkingLevels(levels: readonly string[]): ThinkLevel[] {
+  const seen = new Set<ThinkLevel>();
+  for (const raw of levels) {
+    const k = raw.trim().toLowerCase();
+    if (k === "low" || k === "medium" || k === "high" || k === "xhigh" || k === "max") {
+      seen.add(k);
+    }
+  }
+  return THINK_LEVELS.filter(l => seen.has(l));
+}
+
+export interface LiveModelMetadata {
+  /** Exact supported thinking/reasoning effort levels reported by provider or metadata catalog. */
+  thinking?: ThinkLevel[];
+  /** Context window in tokens when reported by live metadata. */
+  contextTokens?: number;
+  /** Max output tokens when reported by live metadata. */
+  maxOutputTokens?: number;
+  /** Precedence tier: `"provider"` (authoritative `/models` API) overrides `"models.dev"`. */
+  source?: "provider" | "models.dev";
+}
+
+const liveMetadataByKey = new Map<string, LiveModelMetadata>();
+
+function metadataKeysFor(id: string): string[] {
+  const raw = id.trim().toLowerCase();
+  if (!raw) return [];
+  const keys = [raw];
+  const bare = raw.replace(/^[a-z0-9._-]+\//, "");
+  if (bare && bare !== raw) keys.push(bare);
+  return keys;
+}
+
+function shouldReplaceLiveMetadata(existing: LiveModelMetadata | undefined, incoming: LiveModelMetadata): boolean {
+  if (!existing) return true;
+  const existingRank = existing.source === "provider" ? 2 : 1;
+  const incomingRank = incoming.source === "provider" ? 2 : 1;
+  return incomingRank >= existingRank;
+}
+
+/** Register dynamically fetched per-model capability metadata (from provider
+ *  `/models` responses or `models.dev/api.json`). Provider-native entries always
+ *  take precedence over public `models.dev` entries. */
+export function registerLiveModelMetadata(
+  entries: Record<string, LiveModelMetadata>,
+  defaultSource: "provider" | "models.dev" = "models.dev",
+): void {
+  for (const [rawId, meta] of Object.entries(entries)) {
+    if (!meta || typeof meta !== "object") continue;
+    const normalizedThinking = Array.isArray(meta.thinking)
+      ? normalizeThinkingLevels(meta.thinking)
+      : undefined;
+    const entry: LiveModelMetadata = {
+      ...(normalizedThinking !== undefined ? { thinking: normalizedThinking } : {}),
+      ...(typeof meta.contextTokens === "number" && meta.contextTokens > 0 ? { contextTokens: meta.contextTokens } : {}),
+      ...(typeof meta.maxOutputTokens === "number" && meta.maxOutputTokens > 0 ? { maxOutputTokens: meta.maxOutputTokens } : {}),
+      source: meta.source ?? defaultSource,
+    };
+    if (entry.thinking === undefined && entry.contextTokens === undefined && entry.maxOutputTokens === undefined) {
+      continue;
+    }
+    for (const key of metadataKeysFor(rawId)) {
+      const prev = liveMetadataByKey.get(key);
+      if (shouldReplaceLiveMetadata(prev, entry)) {
+        liveMetadataByKey.set(key, {
+          ...(prev ?? {}),
+          ...entry,
+        });
+      }
+    }
+  }
+}
+
+/** Look up live metadata registered for `modelId` (exact id first, then bare id). */
+export function getLiveModelMetadata(modelId: string): LiveModelMetadata | undefined {
+  for (const key of metadataKeysFor(modelId)) {
+    const hit = liveMetadataByKey.get(key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Test-only: clear dynamically registered live model metadata. */
+export function resetLiveModelMetadata(): void {
+  liveMetadataByKey.clear();
+}
 
 export interface CatalogModel {
   /** jeo-facing canonical id (what a user types). */
@@ -53,8 +150,11 @@ export interface CatalogModel {
   sizeClass?: "small" | "mid" | "large";
 }
 
+const MAX_ALL: ThinkLevel[] = ["low", "medium", "high", "xhigh", "max"];
+const NO_XHIGH_MAX: ThinkLevel[] = ["low", "medium", "high", "max"];
 const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["low", "medium", "high"];
+const HIGH_MAX: ThinkLevel[] = ["low", "high", "max"];
 
 // Antigravity (Cloud Code Assist) agent-mode model rows, mirroring the live
 // fetchAvailableModels agent list. `sizeClass` pins each row's routing tier
@@ -78,16 +178,16 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // `claude-opus-5-5` (released 2026-09-22) / `claude-sonnet-5-5` (2026-09-28), 1M ctx / 128k sync max output, adaptive
   // thinking (Opus 5.5 always on; Sonnet 5.5 on by default), text+image input. Canonical == wire id; anthropic.ts already
   // classifies major >= 5 as adaptive + display:"summarized".
-  { canonical: "claude-sonnet-5-5", provider: "anthropic", providerModel: "claude-sonnet-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-09" },
-  { canonical: "claude-opus-5-5", provider: "anthropic", providerModel: "claude-opus-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-09" },
-  { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
+  { canonical: "claude-sonnet-5-5", provider: "anthropic", providerModel: "claude-sonnet-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, releaseDate: "2026-09" },
+  { canonical: "claude-opus-5-5", provider: "anthropic", providerModel: "claude-opus-5-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, releaseDate: "2026-09" },
+  { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, releaseDate: "2026-06" },
   // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
   // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
-  { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
-  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, limitedAvailability: true, releaseDate: "2026-06" },
+  { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, releaseDate: "2026-06" },
+  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, limitedAvailability: true, releaseDate: "2026-06" },
 
   // OpenAI (newest first: gpt-5.6 > gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
-  { canonical: "gpt-5.6", provider: "openai", providerModel: "gpt-5.6", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
+  { canonical: "gpt-5.6", provider: "openai", providerModel: "gpt-5.6", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: MAX_ALL, images: true, releaseDate: "2026-06" },
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
   { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
   { canonical: "gpt-5.4-mini", provider: "openai", providerModel: "gpt-5.4-mini", contextTokens: 272_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
@@ -117,11 +217,11 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "kimi/kimi-k2-turbo-preview", provider: "kimi", providerModel: "kimi/kimi-k2-turbo-preview", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: false, company: "Moonshot (Kimi Code)", releaseDate: "2025-08" },
   { canonical: "kimi/kimi-k2", provider: "kimi", providerModel: "kimi/kimi-k2", contextTokens: 262_144, maxOutputTokens: 262_144, thinking: [], images: false, company: "Moonshot (Kimi Code)", releaseDate: "2025-07" },
   // Google (newest first: gemini-3.1-pro > gemini-3-* > gemini-2.5-* > gemini-2.0-flash > gemini-1.5-pro)
-  { canonical: "gemini-3.1-pro-high", provider: "gemini", providerModel: "gemini-3.1-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2026-02" },
-  { canonical: "gemini-3.1-pro-low", provider: "gemini", providerModel: "gemini-3.1-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2026-02" },
-  { canonical: "gemini-3-flash", provider: "gemini", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-12" },
-  { canonical: "gemini-3-pro-high", provider: "gemini", providerModel: "gemini-3-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-11" },
-  { canonical: "gemini-3-pro-low", provider: "gemini", providerModel: "gemini-3-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-11" },
+  { canonical: "gemini-3.1-pro-high", provider: "gemini", providerModel: "gemini-3.1-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2026-02" },
+  { canonical: "gemini-3.1-pro-low", provider: "gemini", providerModel: "gemini-3.1-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2026-02" },
+  { canonical: "gemini-3-flash", provider: "gemini", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-12" },
+  { canonical: "gemini-3-pro-high", provider: "gemini", providerModel: "gemini-3-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-11" },
+  { canonical: "gemini-3-pro-low", provider: "gemini", providerModel: "gemini-3-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-11" },
   { canonical: "gemini-2.5-flash", provider: "gemini", providerModel: "gemini-2.5-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-06" },
   { canonical: "gemini-2.5-pro", provider: "gemini", providerModel: "gemini-2.5-pro", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-03" },
   { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true, releaseDate: "2025-02" },
@@ -136,17 +236,17 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "antigravity/gemini-4-hydrogen-medium", provider: "antigravity", providerModel: "gemini-4-hydrogen-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "mid" },
   { canonical: "antigravity/gemini-4-hydrogen-low", provider: "antigravity", providerModel: "gemini-4-hydrogen-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-10", sizeClass: "small" },
   // Gemini 4 Carbon tiers:
-  { canonical: "antigravity/gemini-4-carbon-high", provider: "antigravity", providerModel: "gemini-4-carbon-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
-  { canonical: "antigravity/gemini-4-carbon-medium", provider: "antigravity", providerModel: "gemini-4-carbon-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
-  { canonical: "antigravity/gemini-4-carbon-low", provider: "antigravity", providerModel: "gemini-4-carbon-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "small" },
+  { canonical: "antigravity/gemini-4-carbon-high", provider: "antigravity", providerModel: "gemini-4-carbon-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-4-carbon-medium", provider: "antigravity", providerModel: "gemini-4-carbon-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-4-carbon-low", provider: "antigravity", providerModel: "gemini-4-carbon-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-09", sizeClass: "small" },
   // Gemini 3.8 Flash & Gemini 3 Flash tiers:
-  { canonical: "antigravity/gemini-3.8-flash-high", provider: "antigravity", providerModel: "gemini-3.8-flash-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
-  { canonical: "antigravity/gemini-3.8-flash-medium", provider: "antigravity", providerModel: "gemini-3.8-flash-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
-  { canonical: "antigravity/gemini-3.8-flash-low", provider: "antigravity", providerModel: "gemini-3.8-flash-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "small" },
-  { canonical: "antigravity/gemini-3-flash", provider: "antigravity", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2025-12", sizeClass: "small" },
+  { canonical: "antigravity/gemini-3.8-flash-high", provider: "antigravity", providerModel: "gemini-3.8-flash-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-3.8-flash-medium", provider: "antigravity", providerModel: "gemini-3.8-flash-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "mid" },
+  { canonical: "antigravity/gemini-3.8-flash-low", provider: "antigravity", providerModel: "gemini-3.8-flash-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2026-07", sizeClass: "small" },
+  { canonical: "antigravity/gemini-3-flash", provider: "antigravity", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, company: "Google Antigravity", releaseDate: "2025-12", sizeClass: "small" },
   // Anthropic via Antigravity (wire id claude-sonnet-4-6 IS the thinking variant per its displayName):
-  { canonical: "antigravity/claude-sonnet-4-6", provider: "antigravity", providerModel: "claude-sonnet-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Claude Sonnet 4.6 (Thinking)"
-  { canonical: "antigravity/claude-opus-4-6-thinking", provider: "antigravity", providerModel: "claude-opus-4-6-thinking", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "large" }, // "Claude Opus 4.6 (Thinking)"
+  { canonical: "antigravity/claude-sonnet-4-6", provider: "antigravity", providerModel: "claude-sonnet-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: NO_XHIGH_MAX, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Claude Sonnet 4.6 (Thinking)"
+  { canonical: "antigravity/claude-opus-4-6-thinking", provider: "antigravity", providerModel: "claude-opus-4-6-thinking", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: NO_XHIGH_MAX, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "large" }, // "Claude Opus 4.6 (Thinking)"
   // OpenAI OSS via Antigravity:
   { canonical: "antigravity/gpt-oss-120b-medium", provider: "antigravity", providerModel: "gpt-oss-120b-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: false, company: "OpenAI via Antigravity", releaseDate: "2025-08", sizeClass: "mid" }, // "GPT-OSS 120B (Medium)"
   // Tencent — hosts the same underlying models under its own cloud brand; dates
@@ -155,12 +255,12 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // a Tencent-specific snapshot (the two `-2026XX` suffixed DeepSeek ids). Newest first overall.
   { canonical: "glm-5.2", provider: "tencent", providerModel: "glm-5.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
   { canonical: "hy-mt2-plus", provider: "tencent", providerModel: "hy-mt2-plus", contextTokens: 128_000, maxOutputTokens: 8192, thinking: STD, images: false, company: "Tencent", releaseDate: "2026-06" },
-  { canonical: "deepseek-v4-pro-202606", provider: "tencent", providerModel: "deepseek-v4-pro-202606", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
+  { canonical: "deepseek-v4-pro-202606", provider: "tencent", providerModel: "deepseek-v4-pro-202606", contextTokens: 128_000, maxOutputTokens: 8192, thinking: HIGH_MAX, images: false, company: "Tencent", releaseDate: "2026-06" },
   { canonical: "minimax-m3", provider: "tencent", providerModel: "minimax-m3", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
-  { canonical: "deepseek-v4-flash-202605", provider: "tencent", providerModel: "deepseek-v4-flash-202605", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-05" },
+  { canonical: "deepseek-v4-flash-202605", provider: "tencent", providerModel: "deepseek-v4-flash-202605", contextTokens: 128_000, maxOutputTokens: 8192, thinking: HIGH_MAX, images: false, company: "Tencent", releaseDate: "2026-05" },
   { canonical: "glm-5v-turbo", provider: "tencent", providerModel: "glm-5v-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: true, company: "Tencent", releaseDate: "2026-04" },
-  { canonical: "deepseek-v4-pro", provider: "tencent", providerModel: "deepseek-v4-pro", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
-  { canonical: "deepseek-v4-flash", provider: "tencent", providerModel: "deepseek-v4-flash", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "deepseek-v4-pro", provider: "tencent", providerModel: "deepseek-v4-pro", contextTokens: 128_000, maxOutputTokens: 8192, thinking: HIGH_MAX, images: false, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "deepseek-v4-flash", provider: "tencent", providerModel: "deepseek-v4-flash", contextTokens: 128_000, maxOutputTokens: 8192, thinking: HIGH_MAX, images: false, company: "Tencent", releaseDate: "2026-04" },
   { canonical: "kimi-k2.6", provider: "tencent", providerModel: "kimi-k2.6", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
   { canonical: "minimax-m2.7", provider: "tencent", providerModel: "minimax-m2.7", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-03" },
   { canonical: "glm-5.1", provider: "tencent", providerModel: "glm-5.1", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-03" },
@@ -644,114 +744,244 @@ export function inferCatalogMetadata(modelId: string): CatalogModel | undefined 
   const raw = modelId.trim();
   if (!raw) return undefined;
   const antigravity = /^antigravity\//i.test(raw);
-  const id = raw.replace(/^antigravity\//i, "").toLowerCase();
+  const id = raw
+    .replace(/^(?:antigravity|anthropic|openai|gemini|google|xai|x-ai|kimi|moonshotai|deepseek|openrouter)\//i, "")
+    .replace(/^(?:anthropic|openai|google|x-ai|moonshotai|deepseek)\//i, "")
+    .toLowerCase();
 
-  // Anthropic Claude: opus/sonnet/haiku. Major version >= 4 ships extended
-  // thinking (mirrors every catalogued claude-4-x entry); claude-3-x does not.
-  const claude = id.match(/^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[-.](\d+))?/);
+  // Anthropic Claude: opus/sonnet/haiku/fable/mythos.
+  // Verified against platform.claude.com/docs/en/build-with-claude/effort:
+  // - 5.x (opus/sonnet/haiku/fable/mythos) & 4.7+ (opus-4-7, opus-4-8, …): low..max (incl. xhigh)
+  // - 4.6 (opus-4-6, sonnet-4-6) & mythos-preview: low/medium/high/max (no xhigh)
+  // - 4.5 / 4.0: low/medium/high; 3.x: none.
+  const claude = id.match(/^claude-(opus|sonnet|haiku|fable|mythos)(?:-(\d+)(?:[-.](\d+))?|-(preview))/);
   if (claude) {
-    const major = Number(claude[2]);
-    const thinking = major >= 4 ? FULL : [];
+    const family = claude[1]!;
+    const isPreview = Boolean(claude[4]);
+    const major = isPreview ? 5 : Number(claude[2]);
+    const minor = Number(claude[3] ?? 0);
+    let thinking: ThinkLevel[];
+    if (major < 4) {
+      thinking = [];
+    } else if (isPreview) {
+      thinking = NO_XHIGH_MAX;
+    } else if (major >= 5 || (major === 4 && minor >= 7)) {
+      thinking = MAX_ALL;
+    } else if (major === 4 && minor === 6) {
+      thinking = NO_XHIGH_MAX;
+    } else {
+      thinking = STD;
+    }
     return {
       canonical: raw,
       provider: antigravity ? "antigravity" : "anthropic",
       providerModel: id,
       contextTokens: major >= 5 ? 1_000_000 : 200_000,
-      maxOutputTokens: claude[1] === "haiku" ? 64_000 : major >= 5 ? 128_000 : 64_000,
+      maxOutputTokens: family === "haiku" ? 64_000 : major >= 5 ? 128_000 : 64_000,
       thinking,
       images: true,
       company: antigravity ? "Anthropic via Antigravity" : "Anthropic",
     };
   }
 
-  // OpenAI reasoning families: the o-series (o1, o3, … any major incl. o10+) and
-  // gpt-5+ (digit-count agnostic so gpt-6/o10 never silently lose reasoning the way
-  // opus-4-8 did). gpt-4 and earlier are non-reasoning. Mirrors the openai.ts gate.
-  const gptMajor = id.match(/^gpt-(\d+)/);
-  const openaiReasoner = /^o\d+(-|$)/.test(id) || (gptMajor ? Number(gptMajor[1]) >= 5 : false);
+  // OpenAI reasoning families: o-series (o1, o3, o4, …) and gpt-5+ / gpt-daybreak.
+  // Verified against developers.openai.com/api/docs/guides/reasoning & models.dev:
+  // - gpt-6+, gpt-5.6+, gpt-daybreak: low..max
+  // - gpt-5.2..5.5: low..xhigh (pro variants: medium..xhigh)
+  // - gpt-5 / 5.1 / o-series: low..high
+  const gptVer = id.match(/^gpt-(\d+)(?:\.(\d+))?/);
+  const isDaybreak = /^gpt-daybreak/.test(id);
+  const openaiReasoner = /^o\d+(-|$)/.test(id) || isDaybreak || (gptVer ? Number(gptVer[1]) >= 5 : false);
   if (openaiReasoner) {
-    const wide = gptMajor ? Number(gptMajor[1]) >= 5 : false;
+    const major = gptVer ? Number(gptVer[1]) : isDaybreak ? 6 : 0;
+    const minor = gptVer ? Number(gptVer[2] ?? 0) : 0;
+    const wide = isDaybreak || major >= 5;
+    let thinking: ThinkLevel[];
+    if (isDaybreak || major >= 6 || (major === 5 && minor >= 6)) {
+      thinking = MAX_ALL;
+    } else if (major === 5 && minor >= 2) {
+      thinking = id.includes("-pro") ? ["medium", "high", "xhigh"] : FULL;
+    } else {
+      thinking = STD;
+    }
     return {
       canonical: raw,
       provider: antigravity ? "antigravity" : "openai",
       providerModel: id,
       contextTokens: wide ? 400_000 : 200_000,
       maxOutputTokens: wide ? 128_000 : 100_000,
-      thinking: wide ? FULL : STD,
+      thinking,
       images: !id.includes("mini") || id.includes("o4-mini") || id.includes("o3"),
       company: antigravity ? "OpenAI via Antigravity" : "OpenAI",
     };
   }
 
-  // Google Gemini: 2.5+ and 3.x expose thinking; 1.5/2.0 do not.
+  // Google Gemini: 2.5+ and 3.x/4.x expose thinking; 1.5/2.0 do not.
+  // Verified against ai.google.dev/gemini-api/docs/thinking:
+  // - gemini-4-hydrogen / gemini-4-neon (and future 5+): low..xhigh
+  // - gemini-4-carbon / gemini-4-argon / gemini-3.x / gemini-2.5: low..high
   const gemini = id.match(/^gemini-(\d+)(?:\.(\d+))?/);
   if (gemini) {
     const major = Number(gemini[1]);
     const minor = Number(gemini[2] ?? 0);
     const reasons = major >= 3 || (major === 2 && minor >= 5);
-    const big3 = major >= 3;
+    const supportsXhigh = major >= 5 || (major === 4 && (id.includes("hydrogen") || id.includes("neon")));
+    const thinking: ThinkLevel[] = !reasons
+      ? []
+      : supportsXhigh
+        ? FULL
+        : id === "gemini-3-pro-preview"
+          ? ["low", "high"]
+          : STD;
     return {
       canonical: raw,
       provider: antigravity ? "antigravity" : "gemini",
       providerModel: id,
       contextTokens: 1_000_000,
       maxOutputTokens: 65_536,
-      thinking: !reasons ? [] : big3 || id.includes("thinking") || id.includes("-high") || id.includes("-medium") || id.includes("-low") ? FULL : STD,
+      thinking,
       images: true,
       company: antigravity ? "Google Antigravity" : "Google",
     };
   }
 
-  // xAI Grok 4+ reasoning variants.
-  const grok = id.match(/^grok-(\d+)/);
+  // xAI Grok 4+ reasoning variants: grok-4.20+ / grok-4.3+ / grok-5+ reach xhigh.
+  const grok = id.match(/^grok-(\d+)(?:\.(\d+))?/);
   if (grok && Number(grok[1]) >= 4) {
+    const major = Number(grok[1]);
+    const minor = Number(grok[2] ?? 0);
     const nonReasoning = id.includes("non-reasoning");
+    const supportsXhigh = major >= 5 || (major === 4 && minor >= 2);
     return {
       canonical: raw,
       provider: "xai",
       providerModel: id,
       contextTokens: id.includes("fast") ? 2_000_000 : 256_000,
       maxOutputTokens: 64_000,
-      thinking: nonReasoning ? [] : FULL,
+      thinking: nonReasoning ? [] : supportsXhigh ? FULL : STD,
       images: !id.includes("code"),
       company: "xAI",
     };
   }
-  // Kimi / Moonshot
-  const kimi = id.match(/^kimi-(k\d+|latest|for-coding)/);
+
+  // Kimi / Moonshot: kimi-k3+ supports low/high/max; k2 reasoning variants use std.
+  const kimi = id.match(/^kimi-(k(\d+)|latest|for-coding|thinking)/);
   if (kimi) {
+    const kMajor = kimi[2] ? Number(kimi[2]) : 0;
+    const thinking: ThinkLevel[] = kMajor >= 3
+      ? HIGH_MAX
+      : id === "kimi-latest" || id === "kimi-k2"
+        ? []
+        : STD;
     return {
       canonical: raw,
       provider: "kimi",
       providerModel: id,
       contextTokens: 256_000,
       maxOutputTokens: 16_384,
-      thinking: FULL,
+      thinking,
       images: false,
       company: "Moonshot",
     };
   }
 
+  // DeepSeek V4 / R1 reasoning variants.
+  const deepseek = id.match(/^deepseek-(v(\d+)|r(\d+)|flash|reasoner)/);
+  if (deepseek) {
+    const vMajor = deepseek[2] ? Number(deepseek[2]) : 0;
+    const isV4 = vMajor >= 4 || id.startsWith("deepseek-flash");
+    const isReasoner = Boolean(deepseek[3]) || id.includes("reasoner") || isV4;
+    if (isReasoner) {
+      return {
+        canonical: raw,
+        provider: "deepseek",
+        providerModel: id,
+        contextTokens: 128_000,
+        maxOutputTokens: 64_000,
+        thinking: isV4 ? HIGH_MAX : STD,
+        images: false,
+        company: "DeepSeek",
+      };
+    }
+  }
+
   return undefined;
 }
 
-/** Annotate a discovered/raw model id with catalog metadata, when known. */
+function applyLiveOverlay(modelId: string, base: CatalogModel | undefined): CatalogModel | undefined {
+  const live = getLiveModelMetadata(modelId);
+  if (!live) return base;
+  if (base) {
+    return {
+      ...base,
+      ...(live.thinking !== undefined ? { thinking: [...live.thinking] } : {}),
+      ...(live.contextTokens !== undefined ? { contextTokens: live.contextTokens } : {}),
+      ...(live.maxOutputTokens !== undefined ? { maxOutputTokens: live.maxOutputTokens } : {}),
+    };
+  }
+  const bare = modelId.trim().replace(/^[a-z0-9._-]+\//i, "");
+  return {
+    canonical: modelId.trim(),
+    provider: "openai",
+    providerModel: bare,
+    contextTokens: live.contextTokens ?? 128_000,
+    maxOutputTokens: live.maxOutputTokens ?? 16_384,
+    thinking: live.thinking ? [...live.thinking] : [],
+    images: false,
+  };
+}
+
+/** Annotate a discovered/raw model id with catalog + live metadata, when known. */
 export function catalogMetadata(modelId: string): CatalogModel | undefined {
   const direct = findCatalogModel(modelId);
-  if (direct) return direct;
+  if (direct) return applyLiveOverlay(modelId, direct);
   // Tolerate provider-prefixed or bare provider model ids.
   const bare = modelId.replace(/^[a-z-]+\//, "");
   const hit = MODEL_CATALOG.find(m =>
     m.canonical === bare
     || (!m.canonical.startsWith(`${m.provider}/`) && (m.providerModel === bare || m.providerModel.endsWith(`/${bare}`))),
   );
-  if (hit) return hit;
+  if (hit) return applyLiveOverlay(modelId, hit);
   // Last resort: infer capabilities from the model family so a brand-new
   // revision still surfaces reasoning/thinking like its catalogued siblings.
-  return inferCatalogMetadata(modelId);
+  return applyLiveOverlay(modelId, inferCatalogMetadata(modelId));
 }
 
-/** Whether a model supports a given thinking level (per the catalog). */
+/** Ordered list of thinking levels supported by `modelId` (live metadata → catalog → family inference). */
+export function supportedThinkingLevels(modelId: string): ThinkLevel[] {
+  const meta = catalogMetadata(modelId);
+  return meta ? [...meta.thinking] : [];
+}
+
+/** Highest supported thinking level for `modelId`, or `undefined` when non-reasoning / unknown. */
+export function maxThinkingLevel(modelId: string): ThinkLevel | undefined {
+  const levels = supportedThinkingLevels(modelId);
+  return levels.length > 0 ? levels[levels.length - 1] : undefined;
+}
+
+/** Clamp `requested` to the highest thinking level `modelId` actually supports
+ *  that is `<= requested` (never escalating above what the user asked for, and
+ *  never sending an unsupported level like `xhigh` to `claude-opus-4-6` or `max`
+ *  to `gpt-5.4`). If `requested` is below the model's minimum supported level
+ *  (e.g. `low` on `gpt-5.4-pro`), returns the model's minimum level. */
+export function clampThinkingLevel(
+  modelId: string,
+  requested: ThinkLevel,
+  fallback?: readonly ThinkLevel[],
+): ThinkLevel {
+  const known = supportedThinkingLevels(modelId);
+  const supported = known.length > 0 ? known : (fallback && fallback.length > 0 ? [...fallback] : []);
+  if (supported.length === 0) return requested;
+  if (supported.includes(requested)) return requested;
+  const reqRank = THINK_RANK[requested];
+  let best: ThinkLevel | undefined;
+  for (const lvl of supported) {
+    if (THINK_RANK[lvl] <= reqRank) best = lvl;
+  }
+  return best ?? supported[0]!;
+}
+
+/** Whether a model supports a given thinking level (per live metadata + catalog). */
 export function supportsThinking(modelId: string, level: ThinkLevel): boolean {
   const meta = catalogMetadata(modelId);
   return meta ? meta.thinking.includes(level) : false;

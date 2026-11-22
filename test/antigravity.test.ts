@@ -74,7 +74,7 @@ test("antigravityRequest: gemini-4-argon-medium honors in-name -medium effort wh
     cred,
   ).body);
   expect(payload.model).toBe("gemini-4-argon-medium");
-  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
 });
 
 test("antigravityRequest: Claude + reasoning enables thinking (includeThoughts) and the interleaved-thinking beta header", () => {

@@ -14,12 +14,16 @@ import type { ProviderName } from "./types";
 import { allProviderNames } from "./provider-status";
 import {
   catalogByProvider,
+  normalizeThinkingLevels,
   recordLiveCodexModels,
   recordLiveKimiCodeModels,
   recordLiveProviderModels,
+  registerLiveModelMetadata,
   setOpenAIOauthAccountScope,
   setAntigravityAccountScope,
   setKimiAccountScope,
+  THINK_LEVELS,
+  type LiveModelMetadata,
 } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { getStoredOAuth } from "../auth/storage";
@@ -46,6 +50,8 @@ export interface ProviderModelsResult {
   fallback?: boolean;
   /** Display names from the same live response, keyed by callable model id. */
   displayNames?: Record<string, string>;
+  /** Per-model capability metadata extracted from the live response (effort levels, token limits). */
+  metadata?: Record<string, LiveModelMetadata>;
 }
 
 export interface DiscoveryOptions {
@@ -234,8 +240,160 @@ function isGeminiChatModel(id: string): boolean {
   return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|lyria|nano-banana|deep-research|computer-use|antigravity)([-/]|$)/i.test(id);
 }
 
-type CodexModelRow = { slug?: string; id?: string; visibility?: string; supported_in_api?: boolean; priority?: number };
+type CodexReasoningLevelRow = string | { effort?: string; description?: string };
+type CodexModelRow = {
+  slug?: string;
+  id?: string;
+  visibility?: string;
+  supported_in_api?: boolean;
+  priority?: number;
+  supported_reasoning_levels?: CodexReasoningLevelRow[];
+  context_window?: number;
+};
 type AntigravityModelRow = { slug?: string; id?: string; name?: string; displayName?: string; isInternal?: boolean; model?: string };
+
+/** Extract per-model capability metadata (supported thinking/effort levels and
+ *  token limits) from a live provider `/models` response body when the provider
+ *  exposes it (Anthropic `capabilities.effort`, OpenAI Codex
+ *  `supported_reasoning_levels`, OpenRouter `reasoning.supported_efforts`,
+ *  Gemini token limits). Pure and side-effect free. */
+export function parseModelsMetadata(provider: ProviderName, body: unknown): Record<string, LiveModelMetadata> {
+  const out: Record<string, LiveModelMetadata> = {};
+  if (!body || typeof body !== "object") return out;
+
+  if (provider === "anthropic") {
+    const rows = (body as { data?: unknown }).data;
+    if (!Array.isArray(rows)) return out;
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as {
+        id?: unknown;
+        max_input_tokens?: unknown;
+        max_tokens?: unknown;
+        capabilities?: {
+          effort?: Record<string, unknown> & { supported?: unknown };
+          thinking?: { supported?: unknown };
+        };
+      };
+      if (typeof row.id !== "string" || !row.id.trim()) continue;
+      const id = row.id.trim();
+      const entry: LiveModelMetadata = { source: "provider" };
+      const effort = row.capabilities?.effort;
+      if (effort && typeof effort === "object") {
+        if (effort.supported === true) {
+          const levels: string[] = [];
+          for (const lvl of THINK_LEVELS) {
+            const cap = effort[lvl];
+            if (cap && typeof cap === "object" && (cap as { supported?: unknown }).supported === true) {
+              levels.push(lvl);
+            }
+          }
+          if (levels.length > 0) entry.thinking = normalizeThinkingLevels(levels);
+        } else if (effort.supported === false && row.capabilities?.thinking?.supported === false) {
+          entry.thinking = [];
+        }
+      }
+      if (typeof row.max_input_tokens === "number" && row.max_input_tokens > 0) {
+        entry.contextTokens = row.max_input_tokens;
+      }
+      if (typeof row.max_tokens === "number" && row.max_tokens > 0) {
+        entry.maxOutputTokens = row.max_tokens;
+      }
+      if (entry.thinking !== undefined || entry.contextTokens !== undefined || entry.maxOutputTokens !== undefined) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  }
+
+  if (provider === "openai") {
+    const models = (body as { models?: unknown }).models;
+    if (!Array.isArray(models)) return out;
+    for (const raw of models) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as CodexModelRow;
+      const id = (row.slug ?? row.id ?? "").trim();
+      if (!id) continue;
+      const entry: LiveModelMetadata = { source: "provider" };
+      if (Array.isArray(row.supported_reasoning_levels)) {
+        const rawEfforts = row.supported_reasoning_levels
+          .map(item => (typeof item === "string" ? item : item?.effort ?? ""))
+          .filter(Boolean);
+        entry.thinking = normalizeThinkingLevels(rawEfforts);
+      }
+      if (typeof row.context_window === "number" && row.context_window > 0) {
+        entry.contextTokens = row.context_window;
+      }
+      if (entry.thinking !== undefined || entry.contextTokens !== undefined) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  }
+
+  if (provider === "openrouter") {
+    const rows = (body as { data?: unknown }).data;
+    if (!Array.isArray(rows)) return out;
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as {
+        id?: unknown;
+        context_length?: unknown;
+        top_provider?: { max_completion_tokens?: unknown };
+        reasoning?: { supported_efforts?: unknown };
+      };
+      if (typeof row.id !== "string" || !row.id.trim()) continue;
+      const id = `openrouter/${row.id.trim()}`;
+      const entry: LiveModelMetadata = { source: "provider" };
+      if (Array.isArray(row.reasoning?.supported_efforts)) {
+        const rawEfforts = row.reasoning.supported_efforts.filter((v): v is string => typeof v === "string");
+        const normalized = normalizeThinkingLevels(rawEfforts);
+        if (normalized.length > 0) entry.thinking = normalized;
+      }
+      if (typeof row.context_length === "number" && row.context_length > 0) {
+        entry.contextTokens = row.context_length;
+      }
+      const maxOut = row.top_provider?.max_completion_tokens;
+      if (typeof maxOut === "number" && maxOut > 0) {
+        entry.maxOutputTokens = maxOut;
+      }
+      if (entry.thinking !== undefined || entry.contextTokens !== undefined || entry.maxOutputTokens !== undefined) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  }
+
+  if (provider === "gemini") {
+    const rows = (body as { models?: unknown }).models;
+    if (!Array.isArray(rows)) return out;
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as {
+        name?: unknown;
+        inputTokenLimit?: unknown;
+        outputTokenLimit?: unknown;
+        thinking?: unknown;
+      };
+      if (typeof row.name !== "string" || !row.name.trim()) continue;
+      const id = row.name.trim().replace(/^models\//, "");
+      const entry: LiveModelMetadata = { source: "provider" };
+      if (row.thinking === false) entry.thinking = [];
+      if (typeof row.inputTokenLimit === "number" && row.inputTokenLimit > 0) {
+        entry.contextTokens = row.inputTokenLimit;
+      }
+      if (typeof row.outputTokenLimit === "number" && row.outputTokenLimit > 0) {
+        entry.maxOutputTokens = row.outputTokenLimit;
+      }
+      if (entry.thinking !== undefined || entry.contextTokens !== undefined || entry.maxOutputTokens !== undefined) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  }
+
+  return out;
+}
 
 function normalizeAntigravityModelId(id: string): string {
   return id.replace(/^models\//, "").replace(/^antigravity\//, "");
@@ -623,6 +781,7 @@ export async function listProviderModels(
       }
     }
     let ids = parseModelsBody(provider, body, { openaiCompatible: provider === "openai" && !!baseUrl });
+    const metadata: Record<string, LiveModelMetadata> = parseModelsMetadata(provider, body);
     const displayNames: Record<string, string> = {};
     if (provider === "antigravity" && body && typeof body === "object" && "models" in body && body.models && typeof body.models === "object") {
       for (const [key, row] of Object.entries(body.models)) {
@@ -642,6 +801,7 @@ export async function listProviderModels(
         if (!pageRes.ok) break; // partial list beats a hard failure
         const pageBody = await pageRes.json() as { nextPageToken?: string };
         ids = ids.concat(parseModelsBody(provider, pageBody));
+        Object.assign(metadata, parseModelsMetadata(provider, pageBody));
         pageToken = pageBody.nextPageToken;
       }
     }
@@ -677,12 +837,14 @@ export async function listProviderModels(
     });
     if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthCatalogScope);
     if (provider === "kimi" && source === "oauth") recordLiveKimiCodeModels(allModels, oauthCatalogScope);
+    if (Object.keys(metadata).length > 0) registerLiveModelMetadata(metadata, "provider");
     return {
       provider,
       models,
       ok: true,
       source,
       ...(Object.keys(displayNames).length ? { displayNames } : {}),
+      ...(Object.keys(metadata).length ? { metadata } : {}),
       ...scope,
     };
   } catch (err) {

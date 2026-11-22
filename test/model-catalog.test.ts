@@ -16,8 +16,8 @@ import { formatCatalogTable, formatCapabilityLine } from "../src/tui/components/
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("THINK_LEVELS is the four-level gjc-parity ladder", () => {
-  expect(THINK_LEVELS).toEqual(["low", "medium", "high", "xhigh"]);
+test("THINK_LEVELS is the five-level ladder (low..max)", () => {
+  expect(THINK_LEVELS).toEqual(["low", "medium", "high", "xhigh", "max"]);
 });
 
 test("thinkingMaxTokens covers the extended levels additively", () => {
@@ -25,6 +25,7 @@ test("thinkingMaxTokens covers the extended levels additively", () => {
   expect(thinkingMaxTokens("medium")).toBe(16000);
   expect(thinkingMaxTokens("high")).toBe(24000);
   expect(thinkingMaxTokens("xhigh")).toBe(31999);
+  expect(thinkingMaxTokens("max")).toBe(64000);
   expect(thinkingMaxTokens(undefined)).toBe(16000);
 });
 
@@ -105,11 +106,12 @@ test("companyLabel maps built-ins, respects overrides, and falls back with capit
   expect(companyLabel("someprovider")).toBe("Someprovider");
 });
 
-test("opus-4-8 is catalogued with full thinking (matches 4-5/4-6 siblings)", () => {
+test("opus-4-8 is catalogued with full thinking (low..max)", () => {
   const m = catalogMetadata("claude-opus-4-8");
   expect(m?.provider).toBe("anthropic");
-  expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
+  expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(supportsThinking("claude-opus-4-8", "high")).toBe(true);
+  expect(supportsThinking("claude-opus-4-8", "max")).toBe(true);
   // antigravity thinking variant registered alongside 4-6
   expect(catalogMetadata("antigravity/claude-opus-4-8-thinking")?.thinking.length).toBeGreaterThan(0);
 });
@@ -140,14 +142,14 @@ test("inferCatalogMetadata: non-reasoning + unknown ids stay conservative", () =
   expect(inferCatalogMetadata("totally-unknown-model")).toBeUndefined();
   expect(catalogMetadata("totally-unknown-model")).toBeUndefined();
 });
-test("5.x+ Anthropic models are catalogued as 1M/128k with full thinking", () => {
+test("5.x+ Anthropic models are catalogued as 1M/128k with full thinking (low..max)", () => {
   for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5-5", "claude-opus-5-5"]) {
     const m = findCatalogModel(id);
     expect(m?.provider).toBe("anthropic");
     expect(m?.providerModel).toBe(id); // dateless pinned snapshot — canonical == wire id
     expect(m?.contextTokens).toBe(1_000_000);
     expect(m?.maxOutputTokens).toBe(128_000);
-    expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh", "max"]);
   }
   // claude-4.x and below removed from static catalog; live API discovery used instead.
   expect(findCatalogModel("claude-opus-4-6")).toBeUndefined();
@@ -206,8 +208,8 @@ test("antigravity sizeClass pins each live row's routing tier", () => {
   expect(sizeOf("antigravity/claude-opus-4-6-thinking")).toBe("large");
 });
 
-test("antigravity claude rows are FULL-thinking (both wire ids ARE the thinking variants per displayName)", () => {
+test("antigravity claude 4.6 rows expose low/medium/high/max (Anthropic 4.6 supports max, not xhigh)", () => {
   for (const id of ["antigravity/claude-sonnet-4-6", "antigravity/claude-opus-4-6-thinking"]) {
-    expect(findCatalogModel(id)?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(findCatalogModel(id)?.thinking).toEqual(["low", "medium", "high", "max"]);
   }
 });

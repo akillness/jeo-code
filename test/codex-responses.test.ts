@@ -18,11 +18,15 @@ test("codexResponsesRequest: forwards reasoningEffort as reasoning.effort", () =
   expect(without.reasoning).toBeUndefined();
 });
 
-test("codexResponsesRequest: drops out-of-enum reasoningEffort instead of forwarding it", () => {
+test("codexResponsesRequest: drops out-of-enum reasoningEffort and clamps max per model", () => {
   const invalid = JSON.parse(
-    codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", reasoningEffort: "max" } as any, oauth).body,
+    codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", reasoningEffort: "ultra" } as any, oauth).body,
   );
   expect(invalid.reasoning).toBeUndefined();
+  const clamped = JSON.parse(
+    codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", reasoningEffort: "max" } as any, oauth).body,
+  );
+  expect(clamped.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
 });
 
 test("parseResponsesEvent: captures usage on response.incomplete (not just completed)", () => {

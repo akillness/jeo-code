@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import { createApproveTool, APPROVE_TOOL_PROTOCOL_LINE } from "../agent/approve-tool";
 import { jeoEnv } from "../util/env";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot, globalConfigPath, type Config } from "../agent/state";
-import { describeModel, describeAllProviders, describeSearchProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable, type ProviderModelsResult, type PickEntry, type ProviderName, type ModelRole, type ThinkLevel } from "../ai";
+import { describeModel, describeAllProviders, describeSearchProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, isLocalProviderReachable, supportedThinkingLevels, clampThinkingLevel, type ProviderModelsResult, type PickEntry, type ProviderName, type ModelRole, type ThinkLevel } from "../ai";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
 import { sanitizeForTerminal } from "../tui/components/code-view";
 
@@ -757,7 +757,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     { rememberModelPatch, recentModelsForDisplay },
     { resolveStartupDefaultModel },
     { modelServableWithDiscovery },
-    { rehydrateLiveModels, writeModelCache },
+    { rehydrateLiveModels, writeModelCache, refreshModelsDevMetadata },
     { GoalStateCorruptError, readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate, applyPendingEvidence },
     { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel },
     { RouteHistory },
@@ -1132,7 +1132,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   };
   let sessionModel: string | undefined = initialSessionModel;
   // Session thinking-level override (`/thinking`); falls back to the config level.
-  let sessionThinking: "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
+  let sessionThinking: ThinkLevel | undefined = flags.thinking ?? cfg.thinkingLevel;
   // PromptRouter session override: undefined = follow config.routing.enabled, true/false = /route on|off wins this session.
   let sessionRouteOverride: boolean | undefined;
   // Last model that actually served a completed turn (routed or pinned) — the idle
@@ -1167,6 +1167,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     if (force || !liveModelsCache) {
       liveModelsCache = await discoverModels({ timeoutMs: 4000 });
       void writeModelCache(liveModelsCache);
+      void refreshModelsDevMetadata({ force });
     }
     return liveModelsCache;
   };
@@ -2787,7 +2788,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           ...(budget ? { budget } : {}),
           model,
           maxTokens: resolveMaxOutputTokens(model, thinking),
-          reasoningEffort: thinking ? thinkingToReasoningEffort(thinking) : undefined,
+          reasoningEffort: thinking ? thinkingToReasoningEffort(thinking, model) : undefined,
           signal: ac.signal,
           sessionKey: cacheKey,
           steer: drainSteer,
@@ -2938,7 +2939,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             budget: { maxExtensions: 0 },
             model: activeModel,
             maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
-            reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
+            reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking, activeModel) : undefined,
             signal: ac.signal,
             sessionKey: turnSessionKey,
             steer: drainSteer,
@@ -5017,9 +5018,16 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     title: string,
     current: ThinkLevel | undefined,
     inheritLabel?: string,
-    supportedLevels?: readonly ThinkLevel[],
+    supportedOrModel?: readonly ThinkLevel[] | string,
   ): Promise<ThinkLevel | "inherit" | undefined> => {
-    const levels = buildThinkingLevelChoices(current, {
+    const rawSupported = typeof supportedOrModel === "string"
+      ? supportedThinkingLevels(supportedOrModel)
+      : supportedOrModel;
+    const supportedLevels = rawSupported && rawSupported.length > 0 ? rawSupported : undefined;
+    const effectiveCurrent = current && supportedLevels && !supportedLevels.includes(current)
+      ? (typeof supportedOrModel === "string" ? clampThinkingLevel(supportedOrModel, current) : supportedLevels[supportedLevels.length - 1])
+      : current;
+    const levels = buildThinkingLevelChoices(effectiveCurrent, {
       inheritLabel,
       levels: supportedLevels,
       tokenHint: lvl => `~${Math.round(thinkingMaxTokens(lvl as ThinkLevel) / 1000)}k tokens`,
@@ -5039,11 +5047,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return true;
     }
     if (!isThinkingLevel(level)) {
-      console.log(`Usage: /model subagent ${role.id} thinking <inherit|low|medium|high|xhigh>`);
+      console.log(`Usage: /model subagent ${role.id} thinking <inherit|low|medium|high|xhigh|max>`);
       return true;
     }
     await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: level }) }));
-    console.log(`${role.title} thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
+    const roleModel = resolveSubagentModel(role.id, cfgForRole);
+    const supported = roleModel ? supportedThinkingLevels(roleModel) : [];
+    const eff = roleModel && supported.length > 0 ? clampThinkingLevel(roleModel, level) : level;
+    const clampSuffix = eff !== level ? ` (effective for ${roleModel}: ${eff}; supported: ${supported.join("/")})` : "";
+    console.log(`${role.title} thinking set to ${level}${clampSuffix} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
     return true;
   };
   const displayModelName = (model: string): string => {
@@ -5071,7 +5083,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
 
     if (targetId === "default") {
       const currentDefaultThinking = (sessionThinking ?? cfgForPick.thinkingLevel ?? "medium") as ThinkLevel;
-      const level = await pickThinkingLevel(`Reasoning for default: ${target}`, currentDefaultThinking);
+      const level = await pickThinkingLevel(`Reasoning for default: ${target}`, currentDefaultThinking, undefined, target);
       if (level === undefined) {
         console.log("(cancelled)");
         return true;
@@ -5095,8 +5107,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     if (targetId.startsWith("routing:")) {
       const tier = targetId.slice("routing:".length) as PromptTier;
       if (!PROMPT_TIERS.includes(tier)) return false;
-      const meta = catalogMetadata(target);
-      const supportedThinking = meta?.thinking ?? [];
+      const supportedThinking = supportedThinkingLevels(target);
       const currentRouteThinking = cfgForPick.routing?.tiers?.[tier]?.thinking;
       let thinking: ThinkLevel | undefined;
       if (supportedThinking.length > 0) {
@@ -5128,6 +5139,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       `Reasoning for ${role.title}: ${target}`,
       currentRoleThinking,
       `inherit (default ${cfgForPick.thinkingLevel ?? "medium"})`,
+      target,
     );
     if (level === undefined) {
       console.log("(cancelled)");

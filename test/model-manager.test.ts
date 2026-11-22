@@ -84,12 +84,19 @@ test("resolveMaxOutputTokens: JEO_MAX_OUTPUT_TOKENS raises/lowers the cap for ca
   }
 });
 
-test("thinkingToReasoningEffort: maps session level → provider reasoning tier", () => {
+test("thinkingToReasoningEffort: preserves full five-level ladder and clamps per model", () => {
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
-  // high AND xhigh both map to the deepest provider tier.
   expect(thinkingToReasoningEffort("high")).toBe("high");
-  expect(thinkingToReasoningEffort("xhigh")).toBe("high");
+  expect(thinkingToReasoningEffort("xhigh")).toBe("xhigh");
+  expect(thinkingToReasoningEffort("max")).toBe("max");
+  // Per-model clamping respects each model's true max and non-contiguous sets.
+  expect(thinkingToReasoningEffort("xhigh", "gpt-5.4")).toBe("xhigh");
+  expect(thinkingToReasoningEffort("max", "gpt-5.4")).toBe("xhigh");
+  expect(thinkingToReasoningEffort("max", "claude-opus-5-5")).toBe("max");
+  expect(thinkingToReasoningEffort("xhigh", "claude-opus-4-6")).toBe("high");
+  expect(thinkingToReasoningEffort("max", "claude-opus-4-6")).toBe("max");
+  expect(thinkingToReasoningEffort("xhigh", "o3")).toBe("high");
   // Unset → undefined so the caller falls back to the global config.
   expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
 });

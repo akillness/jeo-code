@@ -639,11 +639,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 - **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 - **[1.0.8]** (2026-11-19) — Fix launch paste-state leak and direct-prompt race across remote turn cancellation and Ctrl+C/paste-end cleanup.
 - **[1.0.7]** (2026-11-19) — TUI render/throttling optimization, `jeo-mem` incremental edges & watcher sync, MCP Buffer framing, skill catalog caching, and CLI cold-start / `--tmux` batching.
-- **[1.0.6]** (2026-11-19) — Fix Linux corrupt SQLite sidecar preservation in `jeo-mem`, `bisectTool` PID watch race, and launch TUI/paste-state cleanup across remote cancellation.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

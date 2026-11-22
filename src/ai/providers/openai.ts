@@ -8,13 +8,14 @@ import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/t
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { createThinkSplitter, stripLeakedReasoningTags } from "../think-tags";
 import { buildToolCallJsonSchema } from "./local-capabilities";
+import { clampThinkingLevel } from "../model-catalog";
 
-/** True for OpenAI reasoning models (o-series + gpt-5+ family). Digit-count agnostic
- *  (gpt-6/o10 stay reasoning). Strips the `openai/` routing prefix first. */
+/** True for OpenAI reasoning models (o-series + gpt-5+ / gpt-daybreak family).
+ *  Digit-count agnostic (gpt-6/o10 stay reasoning). Strips the `openai/` routing prefix first. */
 export function isOpenAIReasoningModel(model: string): boolean {
   const m = model.startsWith("openai/") ? model.slice(7) : model;
   const gptMajor = m.match(/^gpt-(\d+)/);
-  return /^o\d/.test(m) || (gptMajor ? Number(gptMajor[1]) >= 5 : false);
+  return /^o\d/.test(m) || /^gpt-daybreak/.test(m) || (gptMajor ? Number(gptMajor[1]) >= 5 : false);
 }
 
 /** Write the backend-specific param that turns NATIVE reasoning ON, so the
@@ -73,7 +74,9 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   };
   if (isReasoning) {
     payload.max_completion_tokens = options.maxTokens ?? defaultMaxTokens;
-    if (options.reasoningEffort) payload.reasoning_effort = options.reasoningEffort;
+    if (options.reasoningEffort && options.reasoningEffort !== "none") {
+      payload.reasoning_effort = clampThinkingLevel(model, options.reasoningEffort, ["low", "medium", "high"]);
+    }
   } else {
     payload.temperature = options.temperature ?? 0.2;
     payload.max_tokens = options.maxTokens ?? defaultMaxTokens;
@@ -83,8 +86,9 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   // actually emits reasoning (otherwise OpenRouter/Qwen/z.ai stay silent and the TUI has
   // nothing to show). `reasoning_effort` (OpenAI-style) only suits o-series/gpt-5; other
   // backends need their own param. Gated on a requested effort (off → no thinking).
-  if (options.reasoningEffort && !isReasoning) {
-    applyCompatThinking(payload, options.reasoningFormat, options.reasoningEffort);
+  if (options.reasoningEffort && options.reasoningEffort !== "none" && !isReasoning) {
+    const compatEffort = clampThinkingLevel(options.model, options.reasoningEffort, ["low", "medium", "high"]);
+    applyCompatThinking(payload, options.reasoningFormat, compatEffort);
   }
   if (stream) {
     payload.stream = true;

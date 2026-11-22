@@ -9,11 +9,14 @@ import { defaultRetryable } from "../src/util/retry";
 const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "k" };
 const anthropicOauth = { kind: "oauth" as const, provider: "anthropic" as const, token: "tok" };
 
-test("thinkingToReasoningEffort: maps levels to o-series-safe tiers", () => {
+test("thinkingToReasoningEffort: maps levels and clamps o-series to high", () => {
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
   expect(thinkingToReasoningEffort("high")).toBe("high");
-  expect(thinkingToReasoningEffort("xhigh")).toBe("high");
+  expect(thinkingToReasoningEffort("xhigh")).toBe("xhigh");
+  expect(thinkingToReasoningEffort("max")).toBe("max");
+  expect(thinkingToReasoningEffort("xhigh", "o3")).toBe("high");
+  expect(thinkingToReasoningEffort("max", "o3")).toBe("high");
   expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
 });
 

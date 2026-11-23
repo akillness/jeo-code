@@ -327,7 +327,7 @@ export class MonitorRegistry {
         shell.release();
         await shell.reaped;
         shell.dispose();
-        if (!entry.incomplete) this.active.delete(id);
+        this.active.delete(id);
         this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
         this.notify(this.onDone, record);
@@ -357,13 +357,14 @@ export class MonitorRegistry {
   }
 
   consumeMutations(ids?: string[]): boolean {
-    if (ids === undefined) {
-      const pending = this.pendingMutations.size > 0;
-      this.pendingMutations.clear();
-      return pending;
-    }
+    const targets = ids ?? [...this.pendingMutations];
     let pending = false;
-    for (const id of ids) pending = this.pendingMutations.delete(id) || pending;
+    for (const id of targets) {
+      if (this.pendingMutations.delete(id)) pending = true;
+      if (this.active.delete(id)) pending = true;
+      const entry = this.entries.get(id);
+      if (entry) entry.incomplete = false;
+    }
     return pending;
   }
 
@@ -397,7 +398,14 @@ export class MonitorRegistry {
     for (const id of ids) {
       const entry = this.entries.get(id);
       if (!entry) continue;
-      if (entry.incomplete) { out.push(entry.record); continue; }
+      if (entry.incomplete) {
+        entry.cancel?.();
+        this.active.delete(id);
+        this.pendingMutations.delete(id);
+        entry.incomplete = false;
+        out.push(entry.record);
+        continue;
+      }
       if (entry.record.status === "running") {
         const killed = entry.cancel?.();
         entry.record.status = killed ? "killed" : "failed";

@@ -61,7 +61,7 @@
 - **远程监控与控制(Telegram、Discord、Slack)** — 配对一次机器人(`jeo notify setup --provider telegram|discord|slack`)后，一个共享的 `jeo daemon start` 会在所有活跃会话中、子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受来自人类 allowlist 的 `/subagents`、`/steer`、`/cancel`(Discord/Slack 上还有 `/sessions` 和 `/send`)回传。Telegram 额外提供论坛主题、内联键盘和图片附件；Discord 使用 REST + Gateway WebSocket；Slack 使用 Web API + Socket Mode。附带各平台详细配置指南及可安装的 Agent Skill(`channel-notify`)。
 - **有边界的工作流门禁，不是证明** — `approve` 会重新校验其批准的确切计划摘要，`team` 会拒绝审核后摘要已变化的计划。调用 `done` 时，当前回合的变更与验证信号可以阻止或降级完成；`/goal` 另加一次基于对话/工具历史的 LLM 判断和确定性证据门禁。两者都不会独立重新读取工作区；工具/测试输出是证据，并不能证明运行器或结果可信。这些检查也不保证回合结束后后台任务不会修改文件。`autopilot` ratchet 会将回滚失败记为 `rollback_failed` 并以非零状态停止。
 - **不阻塞回合的会话级异步执行** — 通过 `task` 工具真实的 `tasks` 数组扇出独立工作，不阻塞父回合。detached 子代理、后台 job 和逐行 monitor 可在后续回合中继续使用 `subagent`/`job`/`monitor` 的 `list`、`inspect`、`await`、`cancel`、`tail` 控制。内联 TUI 为每个 worker 保留独立的实时 activity 槽位，并在会话退出或 Ctrl-C 时清理全部 registry。
-  本地单个任务接受 `detached: true`（或 `"true"`），拒绝 detached 扇出。尚未结束的 detached 执行最多4个，暂停或取消后仍计入，直到实际结束。请将返回的纯文本 ID 原样用于 `subagent` 控制。`monitor {action:"start", command, timeout:30}` 的 `timeout` 是有限正数，表示秒单位的生命周期；`await` 的 `timeoutMs` 则以毫秒计。monitor 输出是有界且不可信的观察数据，不是指令；持久化 TUI 事件会经过清理。沙箱客体的 push 观察和生命周期转发仍不受支持，此本地行为不增加特权 RPC。
+  本地单个任务接受 `detached: true`（或 `"true"`），拒绝 detached 扇出。尚未结束的 detached 执行最多6个，暂停或取消后仍计入，直到实际结束。请将返回的纯文本 ID 原样用于 `subagent` 控制。`monitor {action:"start", command, timeout:30}` 的 `timeout` 是有限正数，表示秒单位的生命周期；`await` 的 `timeoutMs` 则以毫秒计。monitor 输出是有界且不可信的观察数据，不是指令；持久化 TUI 事件会经过清理。沙箱客体的 push 观察和生命周期转发仍不受支持，此本地行为不增加特权 RPC。
 - **计划 critic 门禁** — 计划不能跳过 architect/critic 步骤：`PlanSchema` 会拒绝以未验证变更结束的计划(变更之前的 verifier 不算)，并在 `ralplan` 起草阶段以及 `team`/`approve` 执行阶段生效。critic 裁决需要观察到仓库读取/搜索证据；这提高可审查性，但不等于独立验证工作区。
 - **安全边界自动模型回退** — 未分类的安全拒绝(可能是分类器误报，而非真实的内容策略命中)现在会切换到真正不同提供商的模型，而不是在同一个模型上无限退让 — 与现有的 rate-limit 快速回退是同一套模式。`Refusal (<category>)` 这种形态的确定性拒绝不受影响，仍然零回退硬失败。
 - **内存: 应得的信任** — 概念的验证日期现在只在蒸馏阶段被明确标记为已验证时才会写入，而不是每次写入都记录；`isConceptStale` 把未验证(或超过 30 天过期)的概念视为需要重新验证，而不是信任一个被动的时间戳。
@@ -558,7 +558,7 @@ JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出
 ### 子代理扇出并发度
 
 ```jsonc
-{ "subagentConcurrency": 2 }   // 默认 4，限制在 1~16
+{ "subagentConcurrency": 2 }   // 默认 6，限制在 1~16
 ```
 
 Anthropic Tier-1 账号在 4 条并发流时会立刻触发限流，使扇出变成比顺序执行**更慢**的
@@ -598,11 +598,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
-- **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

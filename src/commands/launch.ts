@@ -116,6 +116,14 @@ import {
   mentionPaths as mentionPathsIn,
   currentAtLabel as currentAtLabelFn,
 } from "./launch/mentions";
+import {
+  DISCORD_THINKING_DEBOUNCE_MS,
+  extractThinkingExcerpt,
+  type ThinkingPhase,
+  type UnifiedCompletionReportInput,
+  type UnifiedTaskReportItem,
+} from "../agent/notify/discord-thinking";
+import { writeWorkerStatusSnapshot } from "../orch/backend";
 
 export const WORKFLOW_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"] as const;
 export function isWorkflowSkill(name: string): boolean {
@@ -2273,6 +2281,10 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       });
       await subagentWrites;
     };
+    let emitTurnCompletionTelemetry: (
+      status: UnifiedCompletionReportInput["status"],
+      summaryText?: string,
+    ) => void = () => undefined;
     let result;
     try {
       // Paint the live frame + spinner the INSTANT the turn is accepted, BEFORE the
@@ -2495,13 +2507,145 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       } else if (sessionNotifyEndpoint) {
         sessionNotifyEndpoint.sendContextUpdate("turn_start", "[redacted]", { model: activeModel });
       }
+      const turnStartedAtMs = Date.now();
+      const orchStatusFile = process.env.JEO_ORCH_STATUS_FILE?.trim() || undefined;
+      const orchWorkerHandle = process.env.JEO_ORCH_WORKER_HANDLE?.trim() || undefined;
+      let turnTodos: { title: string; status: string }[] = [];
+      let lastTelemetryPhase: ThinkingPhase = "thinking";
+      let lastTelemetryReasoning = "";
+      let lastTelemetryTool: string | undefined;
+      let lastTelemetryEmitMs = 0;
+      const redactTurnTelemetry = Boolean(notifyRedact || opts?.trustedContext);
+      const turnTitle = redactTurnTelemetry
+        ? "현재 세션 작업"
+        : (userInput.replace(/\s+/g, " ").trim().slice(0, 72) || "현재 세션 작업");
+
+      const collectUnifiedTasks = (): { completed: UnifiedTaskReportItem[]; remaining: UnifiedTaskReportItem[] } => {
+        const completed: UnifiedTaskReportItem[] = [];
+        const remaining: UnifiedTaskReportItem[] = [];
+        for (const t of turnTodos) {
+          if (t.status === "done" || t.status === "completed") {
+            completed.push({ label: t.title, source: "todo" });
+          } else if (t.status !== "dropped" && t.status !== "cancelled") {
+            remaining.push({ label: t.title, source: "todo", detail: t.status });
+          }
+        }
+        for (const sub of subagentRegistry.list()) {
+          if (sub.finishedAt !== undefined && sub.finishedAt < turnStartedAtMs) continue;
+          if (sub.status === "completed" && sub.success !== false) {
+            completed.push({ label: `${sub.role} (${sub.id})`, source: "subagent", detail: sub.task.slice(0, 60) });
+          } else if (sub.status === "running" || sub.status === "paused") {
+            remaining.push({ label: `${sub.role} (${sub.id})`, source: "subagent", detail: sub.activity || sub.status });
+          } else if (sub.status === "failed") {
+            remaining.push({ label: `${sub.role} 실패 (${sub.id})`, source: "subagent" });
+          }
+        }
+        for (const job of jobRegistry.running()) {
+          remaining.push({ label: `백그라운드 잡 ${job.id}`, source: "job", detail: job.command.slice(0, 60) });
+        }
+        return { completed, remaining };
+      };
+
+      const emitLiveTelemetry = (
+        phase: ThinkingPhase,
+        optsEmit?: { reasoning?: string; currentTool?: string; force?: boolean },
+      ): void => {
+        const nowMs = Date.now();
+        const phaseChanged = phase !== lastTelemetryPhase;
+        lastTelemetryPhase = phase;
+        if (optsEmit?.reasoning !== undefined) lastTelemetryReasoning = optsEmit.reasoning;
+        if (optsEmit?.currentTool !== undefined) lastTelemetryTool = optsEmit.currentTool || undefined;
+        if (!optsEmit?.force && !phaseChanged && nowMs - lastTelemetryEmitMs < DISCORD_THINKING_DEBOUNCE_MS) {
+          return;
+        }
+        lastTelemetryEmitMs = nowMs;
+        const activeSubagents = subagentRegistry.running().length;
+        const reasoningExcerpt = redactTurnTelemetry
+          ? "[redacted]"
+          : extractThinkingExcerpt(lastTelemetryReasoning);
+        if (sessionNotifyEndpoint) {
+          sessionNotifyEndpoint.sendThinkingUpdate({
+            phase,
+            reasoning: reasoningExcerpt || undefined,
+            currentTool: redactTurnTelemetry ? undefined : lastTelemetryTool,
+            activeSubagents,
+            elapsedMs: Math.max(0, nowMs - turnStartedAtMs),
+          });
+        }
+        if (orchStatusFile) {
+          const { completed, remaining } = collectUnifiedTasks();
+          void writeWorkerStatusSnapshot(orchStatusFile, {
+            version: 1,
+            workerHandle: orchWorkerHandle ?? "jeo-worker",
+            pid: process.pid,
+            state: "BUSY",
+            phase: phase === "verifying" ? "executing" : phase,
+            thinkingExcerpt: reasoningExcerpt || undefined,
+            currentTool: redactTurnTelemetry ? undefined : lastTelemetryTool,
+            completedTasks: completed.map(c => c.label),
+            remainingTasks: remaining.map(r => r.label),
+            updatedAt: new Date(nowMs).toISOString(),
+          }).catch(() => undefined);
+        }
+      };
+
+      emitTurnCompletionTelemetry = (
+        status: UnifiedCompletionReportInput["status"],
+        summaryText?: string,
+      ): void => {
+        const elapsedMs = Math.max(0, Date.now() - turnStartedAtMs);
+        const { completed, remaining } = collectUnifiedTasks();
+        if (completed.length === 0 && status === "completed") {
+          completed.push({ label: turnTitle, source: "todo" });
+        }
+        const effectiveStatus: UnifiedCompletionReportInput["status"] =
+          status === "completed" && remaining.length > 0 ? "partial" : status;
+        if (sessionNotifyEndpoint) {
+          sessionNotifyEndpoint.sendCompletionReport({
+            status: effectiveStatus,
+            elapsedMs,
+            summary: redactTurnTelemetry ? "[redacted]" : summaryText?.slice(0, 300),
+            completed: redactTurnTelemetry ? [{ label: "작업 처리 완료", source: "todo" }] : completed,
+            remaining: redactTurnTelemetry ? [] : remaining,
+          });
+        }
+        if (orchStatusFile) {
+          void writeWorkerStatusSnapshot(orchStatusFile, {
+            version: 1,
+            workerHandle: orchWorkerHandle ?? "jeo-worker",
+            pid: process.pid,
+            state: "IDLE",
+            phase: "reporting",
+            summary: redactTurnTelemetry ? "[redacted]" : summaryText?.slice(0, 300),
+            completedTasks: completed.map(c => c.label),
+            remainingTasks: remaining.map(r => r.label),
+            updatedAt: new Date().toISOString(),
+          }).catch(() => undefined);
+        }
+      };
+
+      const withLiveTurnTelemetry = (base: AgentEventsLike): AgentEventsLike => ({
+        ...base,
+        onReasoningStream: (textSoFar: string) => {
+          emitLiveTelemetry("thinking", { reasoning: textSoFar });
+          base.onReasoningStream?.(textSoFar);
+        },
+        onAssistant: (raw: string, invocation: { tool: string; arguments?: unknown } | null) => {
+          if (invocation?.tool) {
+            emitLiveTelemetry("executing", { currentTool: invocation.tool });
+          }
+          base.onAssistant?.(raw, invocation);
+        },
+        onToolResult: (tool: string, success: boolean, output: string) => {
+          emitLiveTelemetry("thinking", { currentTool: "" });
+          base.onToolResult?.(tool, success, output);
+        },
+      });
+
       try {
         // Per-turn todo snapshot: drives the done-time reconciliation gate (the
-        // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
+        // Todos checklist used to end a finished turn stuck at "v0 ◐1 ·4 / 5"
         // because nothing ever forced the model to update item statuses).
-        let turnTodos: { title: string; status: string }[] = [];
-        // Evidence from earlier engine runs of THIS turn always counts; an earlier turn's
-        // unverified mutation counts only while a goal is active (valid or corrupt goal file).
         let turnPendingMutation = false;
         try {
           turnPendingMutation = (await readGoalState(cwd)) !== null && pendingMutationVerification;
@@ -2796,8 +2940,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           // Withheld when routing is off: the bail predicates only make sense paired
           // with the reroute loop below, which `routingEnabled` also gates.
           ...(routingEnabled ? { rateLimitFallbackAvailable, safetyFallbackAvailable } : {}),
-
-          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone, onEvidence, onBeforeTools }, persistTurnTail), opik),
+          events: wrapEvents(withStepPersistence({ ...withLiveTurnTelemetry(withToolDetailCapture(tui ? tui.events() : streamEvents)), onBeforeDone, onEvidence, onBeforeTools }, persistTurnTail), opik),
 
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
@@ -2984,6 +3127,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }
     } catch (err) {
       await subagentWrites;
+      emitTurnCompletionTelemetry("failed", friendlyProviderError(err));
       if (tui && !tuiFinished) {
         tui.finish(`! ${friendlyProviderError(err)}`, { ok: false });
         tuiFinished = true;
@@ -3025,6 +3169,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         sessionNotifyEndpoint.sendTurnStream(reply);
       }
     }
+    emitTurnCompletionTelemetry(result.done ? "completed" : "partial", reply);
     // Persist any messages this turn produced that onStep hasn't flushed yet (the
     // final step's tool-call/result + any retry-loop messages), then the reply.
     // Incremental onStep flushes already wrote the prompt and completed steps, so

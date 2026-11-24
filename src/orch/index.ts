@@ -8,6 +8,9 @@ export {
   type DiscordClient,
   type RestDiscordClientOptions,
 } from "./discord-api";
+export * from "./backend";
+export * from "./tmux-backend";
+export * from "./headless-backend";
 export * from "./orca";
 export * from "./verifier";
 export * from "./engine";
@@ -22,7 +25,8 @@ import {
   saveOrchConfig,
   writeLocalOrchConfigFile,
 } from "./store";
-import type { OrchConfig, OrchConfigFile } from "./types";
+import { normalizeOrchBackendKind } from "./backend";
+import type { OrchBackendKind, OrchConfig, OrchConfigFile } from "./types";
 
 export interface InitOrchConfigOptions {
   guildId?: string;
@@ -31,6 +35,7 @@ export interface InitOrchConfigOptions {
   tokenFile?: string;
   tokenEnv?: string;
   orcaBin?: string;
+  backend?: OrchBackendKind;
   pollIntervalMs?: number;
   debounceMs?: number;
   /** Optional path to an existing repo-local hidden config file (e.g. `.jeo/orch.json`) to link. */
@@ -66,6 +71,7 @@ export async function initOrchConfig(
       ...(opts.tokenFile?.trim() ? { tokenFile: opts.tokenFile.trim() } : {}),
       ...(opts.tokenEnv?.trim() ? { tokenEnv: opts.tokenEnv.trim() } : {}),
       ...(opts.orcaBin?.trim() ? { orcaBin: opts.orcaBin.trim() } : {}),
+      ...(normalizeOrchBackendKind(opts.backend) ? { backend: normalizeOrchBackendKind(opts.backend) } : {}),
       ...(typeof opts.pollIntervalMs === "number" && opts.pollIntervalMs >= 2000
         ? { pollIntervalMs: opts.pollIntervalMs }
         : {}),
@@ -105,6 +111,10 @@ export async function initOrchConfig(
   }
   if (opts.orcaBin?.trim()) {
     cfg.orcaBin = opts.orcaBin.trim();
+  }
+  const normalizedBackend = normalizeOrchBackendKind(opts.backend);
+  if (normalizedBackend) {
+    cfg.backend = normalizedBackend;
   }
   if (typeof opts.pollIntervalMs === "number" && opts.pollIntervalMs >= 2000) {
     cfg.pollIntervalMs = opts.pollIntervalMs;

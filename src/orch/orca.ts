@@ -8,43 +8,28 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { expandTilde } from "./store";
+import {
+  defaultExecCommand,
+  isWorkerStatusSnapshotFresh,
+  readWorkerStatusSnapshot,
+  shellQuote,
+  workerStatusFilePath,
+  type ExecCommandFn,
+  type OrchWorkerBackend,
+  type OrchWorkerInfo,
+  type OrchWorkerInspection,
+  type WorkerTerminalState,
+} from "./backend";
+import { expandTilde, resolveOrchHome } from "./store";
 import type { WorkerActivityPhase } from "./types";
 
-export interface OrcaTerminalInfo {
-  handle: string;
-  worktreePath: string;
-  title: string;
-  connected: boolean;
-  writable: boolean;
-  orphaned: boolean;
-  lastOutputAt?: number;
-  preview?: string;
-}
-
-export type WorkerTerminalState = "IDLE" | "BUSY" | "UNKNOWN";
+export type OrcaTerminalInfo = OrchWorkerInfo;
+export type OrcaClient = OrchWorkerBackend;
+export type { ExecCommandFn, WorkerTerminalState };
 
 export interface WorkerActivityInfo {
   phase: WorkerActivityPhase;
   detail?: string;
-}
-
-export interface OrcaClient {
-  listRepoWorkers(repoPath: string): Promise<OrcaTerminalInfo[]>;
-  inspectWorkerState(handle: string): Promise<{
-    state: WorkerTerminalState;
-    tail: string[];
-    phase?: WorkerActivityPhase;
-    activity?: string;
-  }>;
-  dispatchToWorker(handle: string, prompt: string): Promise<{ ok: boolean; detail: string }>;
-  spawnWorker(
-    repoPath: string,
-    title: string,
-    prompt: string,
-    agent?: string,
-  ): Promise<{ ok: boolean; handle?: string; detail: string; error?: string }>;
-  setOrcaBin?(bin?: string): void;
 }
 export const MAC_ORCA_APP_BIN = "/Applications/Orca.app/Contents/Resources/bin/orca";
 
@@ -214,33 +199,30 @@ function isJeoAgentTerminal(term: OrcaTerminalInfo): boolean {
   return false;
 }
 
-export type ExecCommandFn = (cmd: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-
-async function defaultExecCommand(cmd: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { exitCode, stdout, stderr };
-}
-
-export class CliOrcaClient implements OrcaClient {
+export class CliOrcaClient implements OrchWorkerBackend {
+  readonly kind = "orca" as const;
   private orcaBin: string;
   private readonly bootTimeoutMs: number;
   private readonly bootPollIntervalMs: number;
+  private readonly orchHome?: string;
+  private readonly snapshotMaxAgeMs: number;
 
   constructor(
     private readonly exec: ExecCommandFn = defaultExecCommand,
     orcaBin?: string,
-    options?: { bootTimeoutMs?: number; bootPollIntervalMs?: number },
+    options?: {
+      bootTimeoutMs?: number;
+      bootPollIntervalMs?: number;
+      orchHome?: string;
+      snapshotMaxAgeMs?: number;
+    },
   ) {
     this.orcaBin = resolveOrcaBin(orcaBin);
     this.bootTimeoutMs = options?.bootTimeoutMs ?? 15_000;
     this.bootPollIntervalMs = options?.bootPollIntervalMs ?? 500;
+    this.orchHome = options?.orchHome ? resolveOrchHome(options.orchHome) : undefined;
+    this.snapshotMaxAgeMs = options?.snapshotMaxAgeMs ?? 600_000;
   }
-
   setOrcaBin(bin?: string): void {
     this.orcaBin = resolveOrcaBin(bin);
   }
@@ -260,19 +242,16 @@ export class CliOrcaClient implements OrcaClient {
     }
     const target = path.resolve(expandTilde(repoPath));
     const terminals = parsed?.result?.terminals ?? parsed?.data?.terminals ?? [];
-    return terminals.filter(t => {
-      if (!t.worktreePath) return false;
-      const resolved = path.resolve(t.worktreePath);
-      return (resolved === target || resolved.startsWith(`${target}${path.sep}`)) && isJeoAgentTerminal(t);
-    });
+    return terminals
+      .filter(t => {
+        if (!t.worktreePath) return false;
+        const resolved = path.resolve(t.worktreePath);
+        return (resolved === target || resolved.startsWith(`${target}${path.sep}`)) && isJeoAgentTerminal(t);
+      })
+      .map(t => ({ ...t, backend: "orca" as const }));
   }
 
-  async inspectWorkerState(handle: string): Promise<{
-    state: WorkerTerminalState;
-    tail: string[];
-    phase?: WorkerActivityPhase;
-    activity?: string;
-  }> {
+  async inspectWorkerState(handle: string): Promise<OrchWorkerInspection> {
     const res = await this.exec([this.orcaBin, "terminal", "read", "--terminal", handle, "--screen", "--json"]);
     if (res.exitCode !== 0) return { state: "UNKNOWN", tail: [] };
     try {
@@ -293,13 +272,34 @@ export class CliOrcaClient implements OrcaClient {
         parsed?.data?.title ??
         "";
       const state = classifyTerminalScreen(tail, title);
+      const snapshot = this.orchHome
+        ? await readWorkerStatusSnapshot(workerStatusFilePath(this.orchHome, handle))
+        : undefined;
+      const freshSnapshot = isWorkerStatusSnapshotFresh(snapshot, this.snapshotMaxAgeMs) ? snapshot : undefined;
+
       if (state === "BUSY") {
         const info = extractWorkerActivity(tail);
         return {
           state,
           tail,
-          phase: info?.phase ?? "working",
+          phase: freshSnapshot?.phase ?? info?.phase ?? "working",
           ...(info?.detail ? { activity: info.detail } : {}),
+          ...(freshSnapshot?.thinkingExcerpt ? { thinkingExcerpt: freshSnapshot.thinkingExcerpt } : {}),
+          ...(freshSnapshot?.currentTool ? { currentTool: freshSnapshot.currentTool } : {}),
+          ...(freshSnapshot?.completedTasks ? { completedTasks: freshSnapshot.completedTasks } : {}),
+          ...(freshSnapshot?.remainingTasks ? { remainingTasks: freshSnapshot.remainingTasks } : {}),
+          ...(freshSnapshot?.summary ? { summary: freshSnapshot.summary } : {}),
+        };
+      }
+      if (state === "IDLE") {
+        const idleSnapshot = snapshot?.state === "IDLE" ? snapshot : freshSnapshot;
+        return {
+          state,
+          tail,
+          ...(idleSnapshot?.completedTasks ? { completedTasks: idleSnapshot.completedTasks } : {}),
+          ...(idleSnapshot?.remainingTasks ? { remainingTasks: idleSnapshot.remainingTasks } : {}),
+          ...(idleSnapshot?.summary ? { summary: idleSnapshot.summary } : {}),
+          ...(idleSnapshot?.thinkingExcerpt ? { thinkingExcerpt: idleSnapshot.thinkingExcerpt } : {}),
         };
       }
       return { state, tail };
@@ -400,6 +400,12 @@ export class CliOrcaClient implements OrcaClient {
         return { ok: false, detail: error, error };
       }
 
+      let launchText = "jeo";
+      if (this.orchHome) {
+        const statusFile = workerStatusFilePath(this.orchHome, handle);
+        await fs.mkdir(path.dirname(statusFile), { recursive: true });
+        launchText = `JEO_ORCH_STATUS_FILE=${shellQuote(statusFile)} JEO_ORCH_WORKER_HANDLE=${shellQuote(handle)} jeo`;
+      }
       const sendRes = await this.exec([
         this.orcaBin,
         "terminal",
@@ -407,7 +413,7 @@ export class CliOrcaClient implements OrcaClient {
         "--terminal",
         handle,
         "--text",
-        "jeo",
+        launchText,
         "--enter",
         "--json",
       ]);

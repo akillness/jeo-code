@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { LedgerEntry, OrchConfig, OrchConfigFile, OrchState, ProjectRoute } from "./types";
+import type { LedgerEntry, OrchBackendKind, OrchConfig, OrchConfigFile, OrchState, ProjectRoute } from "./types";
 
 export const DEFAULT_POLL_INTERVAL_MS = 10_000;
 export const DEFAULT_DEBOUNCE_MS = 12_000;
@@ -14,6 +14,13 @@ export const DEFAULT_MAX_ITERATIONS = 4;
 export const DEFAULT_SAME_FAILURE_LIMIT = 2;
 export const DEFAULT_MAX_WORKERS = 3;
 export const LOCAL_ORCH_CONFIG_RELPATH = path.join(".jeo", "orch.json");
+const VALID_ORCH_BACKENDS = new Set<OrchBackendKind>(["auto", "tmux", "headless", "orca"]);
+
+function normalizeOrchBackend(raw: unknown): OrchBackendKind | undefined {
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase() as OrchBackendKind;
+  return VALID_ORCH_BACKENDS.has(normalized) ? normalized : undefined;
+}
 
 export function resolveOrchHome(override?: string): string {
   if (override?.trim()) return path.resolve(expandTilde(override.trim()));
@@ -86,6 +93,7 @@ export async function createDefaultOrchConfig(
     ownerDmChannelId: undefined,
     tokenFile: hints.tokenFile,
     tokenEnv: hints.tokenEnv,
+    backend: "auto",
     pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
     debounceMs: DEFAULT_DEBOUNCE_MS,
     routes: [],
@@ -212,6 +220,7 @@ export async function readOrchConfigFile(filePath: string): Promise<LoadedOrchCo
     ...(typeof data.orcaBin === "string" && data.orcaBin.trim()
       ? { orcaBin: data.orcaBin.trim().startsWith("~") ? expandTilde(data.orcaBin) : data.orcaBin.trim() }
       : {}),
+    ...(normalizeOrchBackend(data.backend) ? { backend: normalizeOrchBackend(data.backend) } : {}),
     ...(typeof data.pollIntervalMs === "number" && data.pollIntervalMs >= 2000 ? { pollIntervalMs: data.pollIntervalMs } : {}),
     ...(typeof data.debounceMs === "number" && data.debounceMs >= 0 ? { debounceMs: data.debounceMs } : {}),
     ...(data.route && typeof data.route === "object" && !Array.isArray(data.route) ? { route: data.route } : {}),
@@ -250,6 +259,7 @@ export async function loadStoredOrchConfig(orchHome = resolveOrchHome()): Promis
       ...(typeof parsed.orcaBin === "string" && parsed.orcaBin.trim()
         ? { orcaBin: parsed.orcaBin.trim().startsWith("~") ? expandTilde(parsed.orcaBin) : parsed.orcaBin.trim() }
         : {}),
+      backend: normalizeOrchBackend(parsed.backend) ?? defaults.backend ?? "auto",
       pollIntervalMs: typeof parsed.pollIntervalMs === "number" && parsed.pollIntervalMs >= 2000 ? parsed.pollIntervalMs : DEFAULT_POLL_INTERVAL_MS,
       debounceMs: typeof parsed.debounceMs === "number" && parsed.debounceMs >= 0 ? parsed.debounceMs : DEFAULT_DEBOUNCE_MS,
       ...(configFiles && configFiles.length > 0 ? { configFiles } : {}),
@@ -297,6 +307,10 @@ function mergeConfigOverlay(
       : base.orcaBin
         ? { orcaBin: base.orcaBin }
         : {}),
+    backend:
+      data.backend && (overrideScalars || !base.backend || base.backend === "auto")
+        ? data.backend
+        : base.backend ?? "auto",
     pollIntervalMs:
       typeof data.pollIntervalMs === "number" && (overrideScalars || base.pollIntervalMs === DEFAULT_POLL_INTERVAL_MS)
         ? data.pollIntervalMs
@@ -382,6 +396,7 @@ export function normalizeRoute(raw: Partial<ProjectRoute>): ProjectRoute {
     allowBotQaMarkers: Array.isArray(raw.allowBotQaMarkers)
       ? raw.allowBotQaMarkers.map(String).filter(Boolean)
       : undefined,
+    ...(normalizeOrchBackend(raw.backend) ? { backend: normalizeOrchBackend(raw.backend) } : {}),
   };
 }
 
@@ -408,6 +423,7 @@ export async function saveOrchConfig(config: OrchConfig, orchHome = resolveOrchH
     ...config,
     tokenFile: config.tokenFile ? expandTilde(config.tokenFile) : config.tokenFile,
     orcaBin: config.orcaBin ? expandTilde(config.orcaBin) : config.orcaBin,
+    backend: normalizeOrchBackend(config.backend) ?? "auto",
     version: 1,
     ...(configFiles && configFiles.length > 0 ? { configFiles } : { configFiles: undefined }),
     routes: config.routes.map(normalizeRoute),

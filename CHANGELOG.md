@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.14] - 2026-11-24
+_Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix._
+
+### Added
+- **Role-Split Dynamic Subagent Scaler (`src/agent/subagent-scaler.ts`, `src/agent/task-tool.ts`, `src/agent/eval-tool.ts`, `src/agent/config-schema.ts`, `src/tui/app.ts`):** Scale read-only subagent concurrency dynamically (starting at 6, up to 16 via `subagentConcurrency`, with `subagentDynamicScaling`) while capping mutating executors conservatively (default 6, max 8 via `subagentExecutorConcurrency`), automatically halving live budgets on HTTP 429 pressure and stepping back up after cooldown recovery; raise `MAX_FANOUT` and `SUBAGENT_PANEL_MAX_ROWS` limits accordingly.
+- **Discord Live Thinking Cards & Unified Completion Reports (`src/agent/notify/discord-thinking.ts`, `src/agent/notify/discord-daemon.ts`, `src/agent/notify/discord-api.ts`, `src/agent/notify/session-endpoint.ts`, `src/commands/launch.ts`):** Stream secret-redacted, 1800ms-debounced live thinking/tool progress cards (`thinking_update`) and unified completed/remaining work summaries (`completion_report`) with Discord silent flags (`1 << 12`) across live sessions and orchestrator runs.
+- **Pluggable Orchestrator Worker Backends (`src/orch/backend.ts`, `src/orch/tmux-backend.ts`, `src/orch/headless-backend.ts`, `src/orch/engine.ts`, `src/orch/orca.ts`, `src/orch/store.ts`, `src/commands/orch.ts`):** Resolve worker backends cleanly (`auto` → `tmux` when available → `headless` fallback, with `orca` opt-in via `--backend`), supporting `jeo orch attach` and live thinking/task sidecar status snapshots.
+
+### Changed
+- **Bilingual Skill Router & Conversational Abstention (`src/agent/skill-router.ts`, `test/karpathy-skill-router.test.ts`):** Add Stage-0 conversational abstention, Korean/English boundary-aware lexical + IDF scoring, negated-phrase filtering, optional `routing-index.v1.json` enrichment, and raise `SKILL_ROUTE_TOP_K` from `3` to `8`.
+
+### Fixed
+- **Harness² Workspace Component Mapping (`.harness2/workspace.json`):** Map `c5_subagents` (`src/prompts/agents`, `src/agent/subagents.ts`) and `c8_plugins_hooks` (`src/agent/hooks.ts`) to real tracked repository paths so `test/harness2-evolution.test.ts` passes cleanly in fresh CI checkouts as well as locally.
+- **Monitor Registry Incomplete-Lease Invariant (`src/agent/monitor-registry.ts`):** Keep unconfirmed/incomplete monitor entries sticky in `active` / `unobserved()` until reaped cleanly, restoring `JobRegistry` parity and `test/shell-lease.test.ts` / `test/monitor-drain.test.ts` guarantees.
+
 ## [1.0.13] - 2026-11-23
 _Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes._
 

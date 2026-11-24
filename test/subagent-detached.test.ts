@@ -471,14 +471,14 @@ test("merge regression: detached string true returns a controllable handle befor
 });
 
 for (const heldState of ["running", "paused", "cancelled"] as const) {
-  test(`merge regression: fifth detached task is refused while four ${heldState} runners are unsettled`, async () => {
+  test(`merge regression: seventh detached task is refused while six ${heldState} runners are unsettled`, async () => {
     const cwd = await tmpDir();
     const reg = new SubagentRegistry();
     const response = Promise.withResolvers<string>();
     const entered = Promise.withResolvers<void>();
     let started = 0;
     const provider = spyOn(loop, "callLlm").mockImplementation(() => {
-      if (++started === 4) entered.resolve();
+      if (++started === 6) entered.resolve();
       return response.promise;
     });
     const control = createSubagentTool(reg);
@@ -489,19 +489,19 @@ for (const heldState of ["running", "paused", "cancelled"] as const) {
     reg.cancel([cancelled.id]);
     await reg.awaitIds([completed.id, failed.id, cancelled.id]);
     try {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 6; i++) {
         const receipt = await tool({ role: "executor", task: `held task ${i}`, detached: true }, cwd);
         expect(receipt.success).toBe(true);
       }
       await entered.promise;
       const activeIds = reg.pending().map(record => record.id);
-      expect(activeIds).toHaveLength(4);
+      expect(activeIds).toHaveLength(6);
       if (heldState === "paused") reg.pause([activeIds[0]!]);
       if (heldState === "cancelled") reg.cancel([activeIds[0]!]);
 
       const refused = await tool({ role: "executor", task: "must not launch yet", detached: true }, cwd);
       expect(refused.success).toBe(false);
-      expect(refused.error).toMatch(/(?:limit|cap|at most|maximum|already|active).*4|4.*(?:active|running|limit|cap)/i);
+      expect(refused.error).toMatch(/(?:limit|cap|at most|maximum|already|active).*6|6.*(?:active|running|limit|cap)/i);
       expect(reg.pending().map(record => record.id)).toEqual(activeIds);
       expect((await control({ action: "inspect", id: completed.id }, cwd)).output).toContain("completed report");
       expect((await control({ action: "inspect", id: failed.id }, cwd)).output).toContain("failed report");

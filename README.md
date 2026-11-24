@@ -119,7 +119,7 @@ jeo-code is a **local-first AI coding agent CLI** designed to safely drive entir
 - **Remote monitoring & control (Telegram, Discord, Slack)** — pair a bot once (`jeo notify setup --provider telegram|discord|slack`), then one shared `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) across every live session and accepts `/subagents`, `/steer`, `/cancel` (plus `/sessions` and `/send` on Discord/Slack) back from a human allowlist. Telegram adds forum topics, inline keyboards, and image attachments; Discord uses REST + Gateway WebSocket; Slack uses Web API + Socket Mode. Dedicated standalone setup guides and an installable Agent Skill (`channel-notify`) are included.
 - **Bounded workflow gates, not proof** — `approve` re-validates the exact plan digest it approves and `team` rejects a plan whose reviewed digest changed. At `done`, current-turn mutation and verification signals can block or downgrade completion; `/goal` adds a separate LLM judgment over conversation/tool history plus deterministic evidence gates. Neither mechanism independently re-reads the workspace, and tool/test output is evidence, not proof that the runner or result is trustworthy. These checks do not establish that background work cannot mutate files after the turn; the autopilot ratchet records a failed rollback as `rollback_failed` and halts non-zero.
 - **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions (`list`, `inspect`, `await`, `cancel`, `tail`). The inline TUI keeps each worker's live activity in its own slot and tears down every registry on session exit or Ctrl-C.
-  Locally, a single task accepts `detached: true` (or `"true"`); detached fan-out is rejected. At most four detached runs may remain unsettled, including paused or cancelled runners until they settle. Reuse the returned plain-text ID with `subagent` controls. For `monitor {action:"start", command, timeout:30}`, `timeout` is a finite positive lifetime in seconds; `await` uses `timeoutMs` in milliseconds. Monitor output is bounded, untrusted observation data, not instructions; durable TUI events are sanitized. Sandbox guest push observation and lifecycle forwarding remain unsupported; this local behavior adds no privileged RPC.
+  Locally, a single task accepts `detached: true` (or `"true"`); detached fan-out is rejected. At most six detached runs may remain unsettled, including paused or cancelled runners until they settle. Reuse the returned plain-text ID with `subagent` controls. For `monitor {action:"start", command, timeout:30}`, `timeout` is a finite positive lifetime in seconds; `await` uses `timeoutMs` in milliseconds. Monitor output is bounded, untrusted observation data, not instructions; durable TUI events are sanitized. Sandbox guest push observation and lifecycle forwarding remain unsupported; this local behavior adds no privileged RPC.
 - **Plan critic gate** — a plan cannot skip its architect/critic step: `PlanSchema` rejects plans ending with an unverified mutation (a verifier before the mutation does not count), at `ralplan` draft time and `team`/`approve` execution time. Critic verdicts require observed repository-read/search evidence; that supports reviewability, not independent validation of the workspace.
 - **Safety-boundary automatic model fallback** — an uncategorized safety refusal (a possible classifier false positive, not a genuine content-policy hit) now switches to a genuinely different-provider model instead of backing off forever on the same one — mirrors the existing rate-limit fast-fallback. A `Refusal (<category>)`-shaped deterministic hit is untouched and still hard-fails with zero fallback.
 - **Memory: earned confidence** — a concept's verification date is now written only when a distillation pass is explicitly marked verified, not on every write; `isConceptStale` treats an unverified (or >30-day-stale) concept as needing re-verification instead of trusting a passive timestamp.
@@ -627,7 +627,7 @@ provisioning scripts can gate on it.
 ### Subagent fan-out concurrency
 
 ```jsonc
-{ "subagentConcurrency": 2 }   // default 4, clamped to 1..16
+{ "subagentConcurrency": 2 }   // default 6, clamped to 1..16
 ```
 
 Four concurrent Anthropic streams trip a Tier-1 rate limit immediately, turning a
@@ -669,11 +669,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
-- **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

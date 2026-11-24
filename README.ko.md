@@ -96,7 +96,7 @@ jeo-code는 단순한 코드 완성을 넘어 실제 엔지니어링 사이클(�
 - **원격 모니터링 & 제어(Telegram, Discord, Slack)** — 봇을 한 번 페어링(`jeo notify setup --provider telegram|discord|slack`)하면, 공유 `jeo daemon start` 하나가 모든 활성 세션에 걸쳐 서브에이전트 상태 전환(시작 → 완료/실패/취소)마다 메시지를 보내고, 사람 allowlist로부터 `/subagents`, `/steer`, `/cancel`(Discord/Slack에서는 `/sessions`, `/send` 추가)을 되받습니다. Telegram은 포럼 토픽·인라인 키보드·이미지 첨부를 더하고, Discord는 REST + Gateway WebSocket, Slack은 Web API + Socket Mode를 사용합니다. 플랫폼별 상세 가이드 및 설치 가능한 에이전트 스킬(`channel-notify`)을 제공합니다.
 - **범위가 있는 워크플로 게이트, 증명은 아님** — `approve`는 승인 대상 플랜의 정확한 다이제스트를 재검증하고 `team`은 검토 후 다이제스트가 바뀐 플랜을 거부합니다. `done`에서는 현재 턴의 변경·검증 신호가 완료를 차단하거나 낮출 수 있고, `/goal`은 대화/도구 이력에 대한 별도 LLM 판단과 결정론적 증거 게이트를 더합니다. 어느 쪽도 워크스페이스를 독립적으로 다시 읽지 않으며, 도구·테스트 출력은 증거이지 실행기나 결과가 신뢰 가능하다는 증명은 아닙니다. 이 검사는 턴이 끝난 뒤 백그라운드 작업이 파일을 바꾸지 않는다는 보장도 아닙니다. `autopilot` ratchet은 실패한 롤백을 `rollback_failed`로 기록하고 0이 아닌 코드로 중단합니다.
 - **턴을 막지 않는 세션 범위 비동기 실행** — `task` 도구의 실제 `tasks` 배열로 독립 작업을 팬아웃해 부모 턴을 막지 않습니다. detached 서브에이전트, 백그라운드 job, 줄 단위 monitor는 이후 턴에서도 `subagent`/`job`/`monitor`의 `list`, `inspect`, `await`, `cancel`, `tail`로 계속 제어할 수 있습니다. 인라인 TUI는 각 워커의 실시간 activity를 별도 슬롯에 표시하고 세션 종료 또는 Ctrl-C에서 모든 레지스트리를 정리합니다.
-  로컬 단일 작업은 `detached: true`(또는 `"true"`)를 받으며 detached 팬아웃은 거부합니다. 아직 정리되지 않은 detached 실행은 최대 4개이며, 일시정지·취소된 실행도 실제 종료 전까지 포함합니다. 반환된 일반 텍스트 ID를 `subagent` 제어에 그대로 사용하세요. `monitor {action:"start", command, timeout:30}`의 `timeout`은 유한한 양수 초 단위 수명이며, `await`의 `timeoutMs`는 밀리초입니다. monitor 출력은 크기가 제한된 신뢰할 수 없는 관찰 데이터이지 지시가 아니며, 영구 저장되는 TUI 이벤트는 정제합니다. 샌드박스 게스트의 push 관찰·수명주기 전달은 기존대로 지원하지 않으며, 이 로컬 동작은 권한 있는 RPC를 추가하지 않습니다.
+  로컬 단일 작업은 `detached: true`(또는 `"true"`)를 받으며 detached 팬아웃은 거부합니다. 아직 정리되지 않은 detached 실행은 최대 6개이며, 일시정지·취소된 실행도 실제 종료 전까지 포함합니다. 반환된 일반 텍스트 ID를 `subagent` 제어에 그대로 사용하세요. `monitor {action:"start", command, timeout:30}`의 `timeout`은 유한한 양수 초 단위 수명이며, `await`의 `timeoutMs`는 밀리초입니다. monitor 출력은 크기가 제한된 신뢰할 수 없는 관찰 데이터이지 지시가 아니며, 영구 저장되는 TUI 이벤트는 정제합니다. 샌드박스 게스트의 push 관찰·수명주기 전달은 기존대로 지원하지 않으며, 이 로컬 동작은 권한 있는 RPC를 추가하지 않습니다.
 - **실제로 강제되는 독립 검증자** — 플랜은 이제 architect/critic 단계를 건너뛸 수 없습니다: `PlanSchema`는 미검증 변이로 끝나는 모든 플랜을 거부하며(검증 대상 변이보다 앞에 배치된 검증자도 인정하지 않음), `ralplan` 드래프트 시점과 `team`/`approve` 실행 시점 양쪽 모두에 적용됩니다. 모든 architect/critic 평결도 실제 증거를 제시해야 하며, 관찰된 `read`/`search`/`find`/`ast_grep`/`lsp` 호출이 0건이면 텍스트가 무엇을 주장하든 평결이 차단됩니다.
 - **안전 경계 자동 모델 폴백** — 미분류 안전 거부(실제 콘텐츠 정책 위반이 아니라 분류기의 오탐일 가능성)가 발생하면 이제 같은 모델에서 영원히 물러서는 대신 실제로 다른 프로바이더의 모델로 전환합니다 — 기존 rate-limit 빠른 폴백과 동일한 방식입니다. `Refusal (<category>)` 형태의 결정론적 거부는 영향받지 않고 여전히 폴백 없이 하드 실패합니다.
 - **메모리: 획득한 신뢰** — 개념의 검증 날짜는 이제 모든 쓰기 시점이 아니라 증류 패스가 명시적으로 검증됨으로 표시할 때만 기록됩니다. `isConceptStale`은 수동적인 타임스탬프를 신뢰하는 대신 미검증(또는 30일 초과) 개념을 재검증이 필요한 것으로 처리합니다.
@@ -615,7 +615,7 @@ JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아�
 ### 서브에이전트 팬아웃 동시성
 
 ```jsonc
-{ "subagentConcurrency": 2 }   // 기본 4, 1~16으로 클램프
+{ "subagentConcurrency": 2 }   // 기본 6, 1~16으로 클램프
 ```
 
 Anthropic Tier-1 계정은 동시 스트림 4개에서 곧바로 레이트 리밋에 걸려, 팬아웃이
@@ -656,11 +656,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
-- **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

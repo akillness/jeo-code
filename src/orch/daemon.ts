@@ -6,10 +6,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolveMessengerToken } from "../messenger/config";
+import { createOrchWorkerBackend } from "./backend";
 import { RestDiscordClient } from "./discord-api";
 import { OrchEngine, type TickSummary } from "./engine";
-import { CliOrcaClient } from "./orca";
 import { acquireInstanceLock, expandTilde, loadOrchConfig, orchPaths, resolveOrchHome } from "./store";
+import type { OrchBackendKind } from "./types";
 import { ShellGateVerifier } from "./verifier";
 
 export interface DaemonLockInfo {
@@ -102,6 +103,7 @@ export async function runOrchOnce(opts: {
   dryRun?: boolean;
   orchHome?: string;
   token?: string;
+  backend?: OrchBackendKind;
   log?: (msg: string) => void;
 } = {}): Promise<TickSummary> {
   const orchHome = resolveOrchHome(opts.orchHome);
@@ -122,9 +124,14 @@ export async function runOrchOnce(opts: {
   const lock = opts.dryRun ? undefined : await acquireInstanceLock(orchHome);
   try {
     const config = await loadOrchConfig(orchHome);
+    const workerBackend = await createOrchWorkerBackend({
+      backend: opts.backend ?? config.backend,
+      orchHome,
+      orcaBin: config.orcaBin,
+    });
     const engine = new OrchEngine({
       discord: new RestDiscordClient(token),
-      orca: new CliOrcaClient(undefined, config.orcaBin),
+      orca: workerBackend,
       verifier: new ShellGateVerifier(),
       orchHome,
       log: opts.log,
@@ -155,6 +162,7 @@ export async function runOrchDaemon(opts: {
   orchHome?: string;
   token?: string;
   pollIntervalMs?: number;
+  backend?: OrchBackendKind;
   log?: (msg: string) => void;
   signal?: AbortSignal;
 } = {}): Promise<void> {
@@ -186,18 +194,27 @@ export async function runOrchDaemon(opts: {
 
     const config = await loadOrchConfig(orchHome);
     const discord = new RestDiscordClient(token, { signal: controller.signal });
-    const engine = new OrchEngine({
+    const verifier = new ShellGateVerifier();
+    let activeBackendSetting: OrchBackendKind = opts.backend ?? config.backend ?? "auto";
+    let activeOrcaBin = config.orcaBin;
+    let workerBackend = await createOrchWorkerBackend({
+      backend: activeBackendSetting,
+      orchHome,
+      orcaBin: activeOrcaBin,
+    });
+    let engine = new OrchEngine({
       discord,
-      orca: new CliOrcaClient(undefined, config.orcaBin),
-      verifier: new ShellGateVerifier(),
+      orca: workerBackend,
+      verifier,
       orchHome,
       log,
     });
 
     const intervalMs = Math.max(2000, opts.pollIntervalMs ?? config.pollIntervalMs);
 
-    log(`Thread orchestrator daemon started (pid=${process.pid}, home=${orchHome}, interval=${intervalMs}ms)`);
-
+    log(
+      `Thread orchestrator daemon started (pid=${process.pid}, home=${orchHome}, backend=${workerBackend.kind}, interval=${intervalMs}ms)`,
+    );
     let consecutiveErrors = 0;
     while (!controller.signal.aborted) {
       let tickHadError = false;
@@ -225,6 +242,28 @@ export async function runOrchDaemon(opts: {
       }
 
       const latestConfig = await loadOrchConfig(orchHome).catch(() => config);
+      const nextBackendSetting: OrchBackendKind = opts.backend ?? latestConfig.backend ?? "auto";
+      if (nextBackendSetting !== activeBackendSetting) {
+        activeBackendSetting = nextBackendSetting;
+        activeOrcaBin = latestConfig.orcaBin;
+        workerBackend = await createOrchWorkerBackend({
+          backend: activeBackendSetting,
+          orchHome,
+          orcaBin: activeOrcaBin,
+        });
+        engine = new OrchEngine({
+          discord,
+          orca: workerBackend,
+          verifier,
+          orchHome,
+          log,
+        });
+        log(`Reloaded orchestrator worker backend -> ${workerBackend.kind}`);
+      } else if (latestConfig.orcaBin !== activeOrcaBin) {
+        activeOrcaBin = latestConfig.orcaBin;
+        workerBackend.setOrcaBin?.(activeOrcaBin);
+      }
+
       const baseWait = Math.max(2000, opts.pollIntervalMs ?? latestConfig.pollIntervalMs);
       const nextWait = consecutiveErrors > 0
         ? Math.min(60_000, baseWait * Math.pow(2, consecutiveErrors))

@@ -3,6 +3,9 @@
  * Persisted under `~/.jeo/thread-orchestrator/` (or `$JEO_ORCH_HOME`).
  */
 
+export type OrchBackendKind = "auto" | "tmux" | "headless" | "orca";
+export type ResolvedOrchBackendKind = "tmux" | "headless" | "orca";
+
 export interface VerificationGate {
   /** Short human-readable gate identifier (e.g. "pytest", "go-test", "static-preflight"). */
   name: string;
@@ -44,6 +47,8 @@ export interface ProjectRoute {
   verificationGates: VerificationGate[];
   /** Structured markers in bot messages that are allowed to trigger a recursive fix cycle. */
   allowBotQaMarkers?: string[];
+  /** Optional per-route worker backend override (`auto` | `tmux` | `headless` | `orca`). */
+  backend?: OrchBackendKind;
 }
 
 export interface OrchConfig {
@@ -60,6 +65,8 @@ export interface OrchConfig {
   tokenEnv: string;
   /** Optional `orca` CLI binary path override (falls back to `JEO_ORCA_BIN` and `PATH`). */
   orcaBin?: string;
+  /** Worker backend preference (`auto` resolves to `tmux` if installed else `headless`; `orca` is opt-in). */
+  backend?: OrchBackendKind;
   /** Polling interval in milliseconds (default: 10_000). */
   pollIntervalMs: number;
   /** Debounce window in milliseconds to coalesce consecutive user messages (default: 12_000). */
@@ -81,6 +88,7 @@ export interface OrchConfigFile {
   tokenFile?: string;
   tokenEnv?: string;
   orcaBin?: string;
+  backend?: OrchBackendKind;
   pollIntervalMs?: number;
   debounceMs?: number;
   /** Single project route definition (relative or omitted `repoPath` resolves to the repo root). */
@@ -160,6 +168,16 @@ export interface ThreadLoopState {
   lastStatusContent?: string;
   /** Last observed worker activity phase (`thinking` / `planning` / `executing` / `reporting` / `working`). */
   lastWorkerPhase?: WorkerActivityPhase;
+  /** Live thinking excerpt from sidecar status file (tail-biased, secret-redacted). */
+  lastThinkingExcerpt?: string;
+  /** Currently executing tool name reported by the worker. */
+  lastCurrentTool?: string;
+  /** Completed task items reported by the worker. */
+  lastCompletedTasks?: string[];
+  /** Remaining task items reported by the worker. */
+  lastRemainingTasks?: string[];
+  /** Resolved backend kind currently managing this thread's worker. */
+  activeBackend?: ResolvedOrchBackendKind;
   /** Human-readable reason for pause / escalation / last result. */
   statusReason?: string;
   /** Active user task or fix objective currently executing in this cycle. */

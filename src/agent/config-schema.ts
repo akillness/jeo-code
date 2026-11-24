@@ -213,11 +213,16 @@ export const ConfigSchema = z
      * step budget. Tolerant of unknown keys.
      */
     /** Max subagents a fan-out batch runs CONCURRENTLY (`task: {tasks:[...]}`) and the
-     *  bound the eval tool's `parallel`/`pipeline` helpers enforce. Default 4.
-     *  Lower it on a rate-limited account (4 concurrent Anthropic streams trips Tier-1
+     *  ceiling the eval tool's `parallel`/`pipeline` helpers enforce.
+     *  Lower it on a rate-limited account (concurrent Anthropic streams trip Tier-1
      *  limits immediately); raise it when the provider has headroom. Clamped to 1..16 —
      *  above that the parent turn is monopolized regardless of provider capacity. */
     subagentConcurrency: z.number().int().min(1).max(16).optional(),
+    /** Enable role-split dynamic subagent scaling (read-only scales up to ceiling,
+     *  backs off on HTTP 429 and recovers after cooldown). Default true. */
+    subagentDynamicScaling: z.boolean().optional(),
+    /** Conservative ceiling for concurrent mutating (executor) subagents (1..8, default 6). */
+    subagentExecutorConcurrency: z.number().int().min(1).max(8).optional(),
     subagents: z
       .record(
         z.object({

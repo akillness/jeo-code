@@ -48,6 +48,7 @@ import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
 import type { SandboxActor } from "../sandbox/authority";
 import type { ImageAttachment } from "../../ai/types";
 import { attachmentFromImageBytes, MAX_ATTACH_IMAGE_BYTES } from "../../util/file-attachment";
+import type { ThinkingPhase, UnifiedCompletionStatus, UnifiedTaskReportItem } from "./discord-thinking";
 
 const SNAPSHOT_POLL_MS = 1_200;
 const MAX_TEXT_FRAME_BYTES = 64 * 1024;
@@ -72,6 +73,27 @@ export interface RemoteUserMessage {
 export interface RemoteConfigCommand {
   verbosity?: "lean" | "verbose";
   redact?: boolean;
+}
+
+/** Live thinking/execution progress update streamed to connected daemons. */
+export interface SessionThinkingUpdate {
+  phase: ThinkingPhase;
+  reasoning?: string;
+  currentTool?: string;
+  activeSubagents?: number;
+  elapsedMs?: number;
+  turnId?: string;
+}
+
+/** Unified completed/remaining work report streamed at turn/task completion. */
+export interface SessionCompletionReport {
+  status: UnifiedCompletionStatus;
+  summary?: string;
+  elapsedMs?: number;
+  completed: UnifiedTaskReportItem[];
+  remaining: UnifiedTaskReportItem[];
+  changedFiles?: string[];
+  turnId?: string;
 }
 
 export class SessionNotifyEndpoint {
@@ -184,6 +206,18 @@ export class SessionNotifyEndpoint {
   /** Push the finalized reply text for a completed turn. */
   sendTurnStream(text: string): void {
     this.broadcast(JSON.stringify({ type: "turn_stream", sessionId: this.sessionId, phase: "finalized", text }));
+  }
+
+  /** Stream a live thinking/execution update to connected daemons (safe no-op if none). */
+  sendThinkingUpdate(update: SessionThinkingUpdate): void {
+    if (this.sockets.size === 0) return;
+    this.broadcast(JSON.stringify({ type: "thinking_update", sessionId: this.sessionId, ...update }));
+  }
+
+  /** Broadcast a unified completed/remaining completion report to connected daemons. */
+  sendCompletionReport(report: SessionCompletionReport): void {
+    if (this.sockets.size === 0) return;
+    this.broadcast(JSON.stringify({ type: "completion_report", sessionId: this.sessionId, ...report }));
   }
 
   /** Revoke current subscriptions before asking a daemon to change destination. */

@@ -6,6 +6,16 @@ import { isPidAlive } from "./daemon-control";
 import { parseSessionEndpoint } from "./session-discovery";
 import { createDiscordArtifactStage, type DiscordArtifactStage } from "./discord-artifacts";
 import { stageDiscordAttachments, type DiscordAttachmentStage } from "./discord-attachments";
+import {
+  DISCORD_SILENT_MESSAGE_FLAGS,
+  DISCORD_THINKING_DEBOUNCE_MS,
+  formatDiscordCompletionReport,
+  formatDiscordThinkingMessage,
+  type ThinkingPhase,
+  type UnifiedCompletionStatus,
+  type UnifiedTaskReportItem,
+  type UnifiedTaskReportSource,
+} from "./discord-thinking";
 
 export interface DiscordDaemonConfig {
   botToken: string;
@@ -14,7 +24,7 @@ export interface DiscordDaemonConfig {
 }
 
 export interface DiscordDaemonDependencies {
-  api?: Pick<DiscordApi, "getMe" | "getChannel" | "getGatewayBot" | "sendMessage" | "sendFile" | "createThread" | "addReaction" | "removeReaction" | "stop">;
+  api?: Pick<DiscordApi, "getMe" | "getChannel" | "getGatewayBot" | "sendMessage" | "sendFile" | "createThread" | "addReaction" | "removeReaction" | "stop"> & Partial<Pick<DiscordApi, "editMessage">>;
   WebSocketImpl?: typeof WebSocket;
   GatewayWebSocketImpl?: typeof WebSocket;
   readdir?: (dir: string) => Promise<string[]>;
@@ -42,11 +52,69 @@ interface DiscordSession {
   records: AgentState[];
   controlEnabled: boolean;
   controlGeneration: number;
+  thinkingMessageId?: string;
+  thinkingChannelId?: string;
+  thinkingTurnId?: string;
+  thinkingStartedAt?: number;
+  lastThinkingEditAt?: number;
+  lastThinkingContent?: string;
+  pendingThinkingTimer?: Timer;
+  pendingThinkingContent?: string;
+  thinkingInFlight?: boolean;
+  thinkingGeneration?: number;
 }
 interface RemoteResult { ok: boolean; text?: string; artifactsAllowed?: boolean; controlGeneration?: number }
 
 function object(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const VALID_THINKING_PHASES: Record<ThinkingPhase, true> = {
+  thinking: true,
+  planning: true,
+  executing: true,
+  verifying: true,
+  reporting: true,
+  working: true,
+};
+const VALID_COMPLETION_STATUSES: Record<UnifiedCompletionStatus, true> = {
+  completed: true,
+  partial: true,
+  failed: true,
+  escalated: true,
+  cancelled: true,
+};
+const VALID_REPORT_SOURCES: Record<UnifiedTaskReportSource, true> = {
+  todo: true,
+  subagent: true,
+  gate: true,
+  queue: true,
+  approval: true,
+  job: true,
+};
+
+function formatElapsedLabel(elapsedMs: number): string {
+  const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
+function parseReportItems(raw: unknown): UnifiedTaskReportItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: UnifiedTaskReportItem[] = [];
+  for (const entry of raw) {
+    if (!object(entry) || typeof entry.label !== "string" || typeof entry.source !== "string") continue;
+    if (!Object.hasOwn(VALID_REPORT_SOURCES, entry.source)) continue;
+    if (entry.detail !== undefined && typeof entry.detail !== "string") continue;
+    items.push({
+      label: entry.label,
+      source: entry.source as UnifiedTaskReportSource,
+      ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+    });
+  }
+  return items;
 }
 
 /** Only Discord's official gateway hosts may receive the bot token. */
@@ -355,6 +423,10 @@ export class DiscordDaemon {
   private disconnectSession(session: DiscordSession): void {
     if (this.sessions.get(session.sessionId) !== session) return;
     this.sessions.delete(session.sessionId);
+    this.clear(session.pendingThinkingTimer);
+    session.pendingThinkingTimer = undefined;
+    session.pendingThinkingContent = undefined;
+    session.thinkingGeneration = (session.thinkingGeneration ?? 0) + 1;
     for (const [controller, id] of this.staging) if (id === session.sessionId) controller.abort();
     this.relayDestinations.delete(session.sessionId);
     for (const request of this.pending.values()) if (request.sessionId === session.sessionId) request.finish(false);
@@ -409,7 +481,232 @@ export class DiscordDaemon {
     } else if (frame.type === "local_final" && typeof frame.text === "string" && frame.text.trim()) {
       const destination = this.relayDestinations.get(session.sessionId);
       if (destination) this.emit(`${header}\n${frame.text}`, session.sessionId, destination, this.relayVersions.get(session.sessionId));
+    } else if (frame.type === "thinking_update" && typeof frame.phase === "string" && Object.hasOwn(VALID_THINKING_PHASES, frame.phase)) {
+      this.handleThinkingUpdate(session, frame);
+    } else if (frame.type === "completion_report" && typeof frame.status === "string" && Object.hasOwn(VALID_COMPLETION_STATUSES, frame.status)) {
+      this.handleCompletionReport(session, frame);
     }
+  }
+
+  private handleThinkingUpdate(session: DiscordSession, frame: Record<string, unknown>): void {
+    const now = (this.deps.now ?? Date.now)();
+    const turnId = typeof frame.turnId === "string" ? frame.turnId : undefined;
+    if (turnId !== undefined && session.thinkingTurnId !== undefined && turnId !== session.thinkingTurnId) {
+      this.clear(session.pendingThinkingTimer);
+      session.pendingThinkingTimer = undefined;
+      session.pendingThinkingContent = undefined;
+      session.thinkingMessageId = undefined;
+      session.thinkingChannelId = undefined;
+      session.lastThinkingEditAt = undefined;
+      session.lastThinkingContent = undefined;
+      session.thinkingStartedAt = now;
+      session.thinkingGeneration = (session.thinkingGeneration ?? 0) + 1;
+    }
+    if (turnId !== undefined) session.thinkingTurnId = turnId;
+    if (session.thinkingStartedAt === undefined) session.thinkingStartedAt = now;
+
+    const elapsedMs = typeof frame.elapsedMs === "number" && Number.isFinite(frame.elapsedMs) && frame.elapsedMs >= 0
+      ? frame.elapsedMs
+      : Math.max(0, now - session.thinkingStartedAt);
+    const rawContent = formatDiscordThinkingMessage({
+      title: `[${session.sessionId}]`,
+      phase: frame.phase as ThinkingPhase,
+      elapsedLabel: formatElapsedLabel(elapsedMs),
+      reasoning: typeof frame.reasoning === "string" ? frame.reasoning : undefined,
+      currentTool: typeof frame.currentTool === "string" ? frame.currentTool : undefined,
+      activeSubagents: typeof frame.activeSubagents === "number" && Number.isFinite(frame.activeSubagents) ? frame.activeSubagents : undefined,
+    });
+    const content = this.config.botToken ? rawContent.split(this.config.botToken).join("[REDACTED_TOKEN]") : rawContent;
+
+    if (content === session.lastThinkingContent && session.pendingThinkingContent === undefined) return;
+    session.pendingThinkingContent = content;
+
+    const targetChannelId = session.thinkingChannelId ?? this.relayDestinations.get(session.sessionId) ?? this.config.channelId;
+    if (!session.thinkingMessageId) {
+      if (session.thinkingInFlight) return;
+      session.pendingThinkingContent = undefined;
+      session.lastThinkingContent = content;
+      session.lastThinkingEditAt = now;
+      this.postThinkingMessage(session, targetChannelId, content);
+      return;
+    }
+
+    if (!this.api.editMessage) return;
+    const elapsedSinceLast = now - (session.lastThinkingEditAt ?? 0);
+    if (!session.thinkingInFlight && elapsedSinceLast >= DISCORD_THINKING_DEBOUNCE_MS) {
+      this.clear(session.pendingThinkingTimer);
+      session.pendingThinkingTimer = undefined;
+      this.flushThinkingEdit(session);
+    } else if (session.pendingThinkingTimer === undefined) {
+      const waitMs = session.thinkingInFlight ? DISCORD_THINKING_DEBOUNCE_MS : Math.max(0, DISCORD_THINKING_DEBOUNCE_MS - elapsedSinceLast);
+      session.pendingThinkingTimer = this.later(() => {
+        session.pendingThinkingTimer = undefined;
+        this.flushThinkingEdit(session);
+      }, waitMs);
+    }
+  }
+
+  private postThinkingMessage(session: DiscordSession, channelId: string, content: string): void {
+    const gen = session.thinkingGeneration ?? 0;
+    session.thinkingInFlight = true;
+    const eligible = () => !this.stopped && this.sessions.get(session.sessionId) === session && (session.thinkingGeneration ?? 0) === gen;
+    void this.api.sendMessage(channelId, content, eligible, DISCORD_SILENT_MESSAGE_FLAGS).then(messages => {
+      session.thinkingInFlight = false;
+      if (!eligible()) return;
+      if (messages[0]?.id) {
+        session.thinkingMessageId = messages[0].id;
+        session.thinkingChannelId = channelId;
+        this.rememberReplies(messages, session.sessionId);
+      }
+      if (session.pendingThinkingContent !== undefined && session.pendingThinkingContent !== session.lastThinkingContent && session.pendingThinkingTimer === undefined) {
+        const now = (this.deps.now ?? Date.now)();
+        const waitMs = Math.max(0, DISCORD_THINKING_DEBOUNCE_MS - (now - (session.lastThinkingEditAt ?? 0)));
+        session.pendingThinkingTimer = this.later(() => {
+          session.pendingThinkingTimer = undefined;
+          this.flushThinkingEdit(session);
+        }, waitMs);
+      }
+    }).catch(error => {
+      session.thinkingInFlight = false;
+      if (this.stopped) return;
+      if (error instanceof DiscordApiError && error.status === 401) this.fail("Discord authentication denied");
+      else this.deps.onError?.("Discord thinking status delivery failed");
+    });
+  }
+
+  private flushThinkingEdit(session: DiscordSession): void {
+    if (this.stopped || this.sessions.get(session.sessionId) !== session) return;
+    const content = session.pendingThinkingContent;
+    if (!content || content === session.lastThinkingContent) {
+      session.pendingThinkingContent = undefined;
+      return;
+    }
+    const channelId = session.thinkingChannelId ?? this.relayDestinations.get(session.sessionId) ?? this.config.channelId;
+    if (!session.thinkingMessageId) {
+      if (session.thinkingInFlight) {
+        if (session.pendingThinkingTimer === undefined) {
+          session.pendingThinkingTimer = this.later(() => {
+            session.pendingThinkingTimer = undefined;
+            this.flushThinkingEdit(session);
+          }, DISCORD_THINKING_DEBOUNCE_MS);
+        }
+        return;
+      }
+      session.pendingThinkingContent = undefined;
+      session.lastThinkingContent = content;
+      session.lastThinkingEditAt = (this.deps.now ?? Date.now)();
+      this.postThinkingMessage(session, channelId, content);
+      return;
+    }
+    if (!this.api.editMessage) return;
+    if (session.thinkingInFlight) {
+      if (session.pendingThinkingTimer === undefined) {
+        session.pendingThinkingTimer = this.later(() => {
+          session.pendingThinkingTimer = undefined;
+          this.flushThinkingEdit(session);
+        }, DISCORD_THINKING_DEBOUNCE_MS);
+      }
+      return;
+    }
+    const msgId = session.thinkingMessageId;
+    const gen = session.thinkingGeneration ?? 0;
+    session.thinkingInFlight = true;
+    session.pendingThinkingContent = undefined;
+    session.lastThinkingContent = content;
+    session.lastThinkingEditAt = (this.deps.now ?? Date.now)();
+    const eligible = () => !this.stopped && this.sessions.get(session.sessionId) === session && session.thinkingMessageId === msgId && (session.thinkingGeneration ?? 0) === gen;
+    void this.api.editMessage(channelId, msgId, content, eligible).then(() => {
+      session.thinkingInFlight = false;
+      if (!eligible()) return;
+      if (session.pendingThinkingContent !== undefined && session.pendingThinkingContent !== session.lastThinkingContent && session.pendingThinkingTimer === undefined) {
+        const now = (this.deps.now ?? Date.now)();
+        const waitMs = Math.max(0, DISCORD_THINKING_DEBOUNCE_MS - (now - (session.lastThinkingEditAt ?? 0)));
+        session.pendingThinkingTimer = this.later(() => {
+          session.pendingThinkingTimer = undefined;
+          this.flushThinkingEdit(session);
+        }, waitMs);
+      }
+    }).catch(error => {
+      session.thinkingInFlight = false;
+      if (this.stopped) return;
+      if (error instanceof DiscordApiError && error.status === 401) {
+        this.fail("Discord authentication denied");
+      } else if (error instanceof DiscordApiError && error.status === 404 && (session.thinkingGeneration ?? 0) === gen) {
+        session.thinkingMessageId = undefined;
+        session.thinkingChannelId = undefined;
+        this.postThinkingMessage(session, channelId, content);
+      } else {
+        this.deps.onError?.("Discord thinking status update failed");
+      }
+    });
+  }
+
+  private handleCompletionReport(session: DiscordSession, frame: Record<string, unknown>): void {
+    const now = (this.deps.now ?? Date.now)();
+    this.clear(session.pendingThinkingTimer);
+    session.pendingThinkingTimer = undefined;
+    session.pendingThinkingContent = undefined;
+
+    const status = frame.status as UnifiedCompletionStatus;
+    const elapsedMs = typeof frame.elapsedMs === "number" && Number.isFinite(frame.elapsedMs) && frame.elapsedMs >= 0
+      ? frame.elapsedMs
+      : session.thinkingStartedAt !== undefined ? Math.max(0, now - session.thinkingStartedAt) : undefined;
+    const elapsedLabel = elapsedMs !== undefined ? formatElapsedLabel(elapsedMs) : undefined;
+
+    const msgId = session.thinkingMessageId;
+    const thinkingChannelId = session.thinkingChannelId;
+    session.thinkingMessageId = undefined;
+    session.thinkingChannelId = undefined;
+    session.thinkingTurnId = undefined;
+    session.thinkingStartedAt = undefined;
+    session.lastThinkingContent = undefined;
+    session.lastThinkingEditAt = undefined;
+    session.thinkingGeneration = (session.thinkingGeneration ?? 0) + 1;
+
+    if (msgId && thinkingChannelId && this.api.editMessage) {
+      const outcomeBadge = status === "completed"
+        ? "✅ Thinking 완료"
+        : status === "failed"
+          ? "❌ Thinking 실패"
+          : status === "cancelled"
+            ? "⏹ Thinking 중단"
+            : "⚠️ Thinking 종료";
+      const finalizedRaw = formatDiscordThinkingMessage({
+        title: `[${session.sessionId}]`,
+        phase: "reporting",
+        elapsedLabel: elapsedLabel ?? "0s",
+        finalized: true,
+        outcomeBadge,
+      });
+      const finalized = this.config.botToken ? finalizedRaw.split(this.config.botToken).join("[REDACTED_TOKEN]") : finalizedRaw;
+      void this.api.editMessage(
+        thinkingChannelId,
+        msgId,
+        finalized,
+        () => !this.stopped && this.sessions.get(session.sessionId) === session,
+      ).catch(error => {
+        if (!this.stopped && error instanceof DiscordApiError && error.status === 401) {
+          this.fail("Discord authentication denied");
+        }
+      });
+    }
+
+    const completed = parseReportItems(frame.completed);
+    const remaining = parseReportItems(frame.remaining);
+    const changedFiles = Array.isArray(frame.changedFiles)
+      ? frame.changedFiles.filter((f): f is string => typeof f === "string")
+      : undefined;
+    const reportText = formatDiscordCompletionReport({
+      title: `[${session.sessionId}]`,
+      status,
+      elapsedLabel,
+      summary: typeof frame.summary === "string" ? frame.summary : undefined,
+      completed,
+      remaining,
+      changedFiles,
+    });
+    const destination = thinkingChannelId ?? this.relayDestinations.get(session.sessionId) ?? this.config.channelId;
+    void this.emit(reportText, session.sessionId, destination);
   }
 
   private emit(text: string, sessionId?: string, destination = this.config.channelId, relayVersion?: number, guard?: () => boolean): Promise<boolean> {

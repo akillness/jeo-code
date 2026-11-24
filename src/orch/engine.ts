@@ -6,6 +6,16 @@
  */
 
 import { randomBytes } from "node:crypto";
+import {
+  DISCORD_THINKING_DEBOUNCE_MS,
+  extractThinkingExcerpt,
+  formatCompactDmCompletionSummary,
+  formatDiscordCompletionReport,
+  redactDiscordSecrets,
+  type UnifiedCompletionReportInput,
+  type UnifiedTaskReportItem,
+} from "../agent/notify/discord-thinking";
+import { createOrchWorkerBackend, type OrchWorkerBackend } from "./backend";
 import { DISCORD_SILENT_FLAGS, type DiscordClient } from "./discord-api";
 import { classifyMessage, compareSnowflakes, detectRiskyOperation, matchRoute, type OrchThreadCommand } from "./matcher";
 import type { OrcaClient } from "./orca";
@@ -13,10 +23,12 @@ import { appendLedger, loadOrchConfig, loadOrchState, resolveOrchHome, saveOrchS
 import type {
   ApprovalGate,
   DiscordThread,
+  OrchBackendKind,
   OrchConfig,
   OrchState,
   ProjectRoute,
   QueuedMessage,
+  ResolvedOrchBackendKind,
   ThreadLoopState,
   WorkerActivityPhase,
 } from "./types";
@@ -24,15 +36,25 @@ import type { GateVerifier } from "./verifier";
 
 const DISPATCH_MIN_GRACE_MS = 15_000;
 
+const BACKEND_LABELS: Record<ResolvedOrchBackendKind, string> = {
+  tmux: "tmux",
+  headless: "headless",
+  orca: "Orca",
+};
+
 export interface OrchEngineDeps {
   discord: DiscordClient;
-  orca: OrcaClient;
+  /** Preferred terminal-agnostic worker backend (defaults to `orca` for backward compatibility). */
+  backend?: OrchWorkerBackend;
+  /** Legacy alias for `backend` (preserved for existing callers and tests). */
+  orca?: OrcaClient;
+  /** Optional factory used when a ProjectRoute overrides `route.backend`. */
+  resolveBackend?: (kind: OrchBackendKind, config: OrchConfig) => Promise<OrchWorkerBackend>;
   verifier: GateVerifier;
   orchHome?: string;
   now?: () => number;
   log?: (msg: string) => void;
 }
-
 export interface TickSummary {
   discovered: number;
   queued: number;
@@ -92,10 +114,30 @@ export function formatThinkingStatus(params: {
   phase: WorkerActivityPhase;
   elapsedLabel: string;
   activity?: string;
+  thinkingExcerpt?: string;
+  currentTool?: string;
+  backendKind?: ResolvedOrchBackendKind;
 }): string {
   const badge = phaseBadge(params.phase);
-  const detail = params.activity?.trim() ? `\n> \`${params.activity.trim().replace(/`/g, "'")}\`` : "";
-  return `${badge.emoji} **[사이클 ${params.iteration}/${params.route.maxIterations} · ${badge.label}]** \`${params.route.name}\` — 워커 \`${params.workerHandle}\` · ${params.elapsedLabel}${detail}`;
+  const backendTag = params.backendKind ? ` [${BACKEND_LABELS[params.backendKind]}]` : "";
+  const lines: string[] = [
+    `${badge.emoji} **[사이클 ${params.iteration}/${params.route.maxIterations} · ${badge.label}]** \`${params.route.name}\`${backendTag} — 워커 \`${params.workerHandle}\` · ${params.elapsedLabel}`,
+  ];
+  if (params.currentTool?.trim()) {
+    const safeTool = redactDiscordSecrets(params.currentTool.trim()).replace(/`/g, "'");
+    lines.push(`🔧 실행 중: \`${safeTool}\``);
+  }
+  const rawThinking = params.thinkingExcerpt?.trim();
+  if (rawThinking) {
+    const excerpt = extractThinkingExcerpt(rawThinking).replace(/```/g, "'''");
+    if (excerpt) {
+      lines.push(excerpt.split("\n").map(line => `> ${line}`).join("\n"));
+    }
+  } else if (params.activity?.trim()) {
+    const safeActivity = redactDiscordSecrets(params.activity.trim()).replace(/`/g, "'");
+    lines.push(`> \`${safeActivity}\``);
+  }
+  return lines.join("\n").slice(0, 1_900);
 }
 export function buildWorkerPrompt(route: ProjectRoute, thread: ThreadLoopState, nextIter: number): string {
   const userMsgs = thread.pendingMessages
@@ -133,12 +175,39 @@ export class OrchEngine {
   private readonly orchHome: string;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
+  private readonly primaryBackend: OrchWorkerBackend;
+  private readonly routeBackends = new Map<string, OrchWorkerBackend>();
+  private readonly lastThinkingEditAtMs = new Map<string, number>();
   private botUserRefreshed = false;
 
   constructor(private readonly deps: OrchEngineDeps) {
+    const primary = deps.backend ?? deps.orca;
+    if (!primary) {
+      throw new Error("OrchEngine requires either `backend` or `orca` dependency.");
+    }
+    this.primaryBackend = primary;
     this.orchHome = resolveOrchHome(deps.orchHome);
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? (() => undefined);
+  }
+
+  private async resolveBackendForRoute(config: OrchConfig, route: ProjectRoute): Promise<OrchWorkerBackend> {
+    const override = route.backend;
+    if (!override || override === "auto" || override === this.primaryBackend.kind) {
+      return this.primaryBackend;
+    }
+    const cacheKey = `${override}:${config.orcaBin ?? ""}`;
+    const cached = this.routeBackends.get(cacheKey);
+    if (cached) return cached;
+    const created = this.deps.resolveBackend
+      ? await this.deps.resolveBackend(override, config)
+      : await createOrchWorkerBackend({
+          backend: override,
+          orchHome: this.orchHome,
+          orcaBin: config.orcaBin,
+        });
+    this.routeBackends.set(cacheKey, created);
+    return created;
   }
 
   private async persist(state: OrchState, dryRun: boolean): Promise<void> {
@@ -151,9 +220,8 @@ export class OrchEngine {
     const dryRun = !!opts.dryRun;
     const summary: TickSummary = { discovered: 0, queued: 0, dispatched: 0, verified: 0, escalated: 0, errors: [] };
     const config = await loadOrchConfig(this.orchHome);
-    this.deps.orca.setOrcaBin?.(config.orcaBin);
+    this.primaryBackend.setOrcaBin?.(config.orcaBin);
     const state = await loadOrchState(this.orchHome);
-
     if (!config.guildId) {
       summary.errors.push("No guildId configured (run `jeo orch init --guild <id>` or link `.jeo/orch.json`).");
       return summary;
@@ -668,12 +736,14 @@ export class OrchEngine {
     const nextIter = thread.iteration + 1;
     const prompt = buildWorkerPrompt(route, thread, nextIter);
     const worktree = route.orcaWorktreePath ?? route.repoPath;
-    const workers = await this.deps.orca.listRepoWorkers(worktree);
+    const workerBackend = await this.resolveBackendForRoute(config, route);
+    const backendName = workerBackend.kind ? BACKEND_LABELS[workerBackend.kind] : "워커";
+    const workers = await workerBackend.listRepoWorkers(worktree);
 
     let chosenHandle: string | undefined;
     for (const worker of workers) {
       if (busyHandlesInState.has(worker.handle)) continue;
-      const inspected = await this.deps.orca.inspectWorkerState(worker.handle);
+      const inspected = await workerBackend.inspectWorkerState(worker.handle);
       if (inspected.state === "IDLE") {
         chosenHandle = worker.handle;
         break;
@@ -681,35 +751,35 @@ export class OrchEngine {
     }
 
     if (dryRun) {
-      this.log(`[dry-run] Would dispatch #${thread.name} (iter ${nextIter}/${route.maxIterations}) to ${chosenHandle ?? (route.spawnIfBusy && workers.length < route.maxWorkers ? "new spawned worker" : "wait (all busy)")}`);
+      this.log(`[dry-run] Would dispatch #${thread.name} (iter ${nextIter}/${route.maxIterations}) to ${chosenHandle ?? (route.spawnIfBusy && workers.length < route.maxWorkers ? `new spawned ${backendName} worker` : "wait (all busy)")}`);
       return "waiting";
     }
 
     if (chosenHandle) {
-      const sent = await this.deps.orca.dispatchToWorker(chosenHandle, prompt);
+      const sent = await workerBackend.dispatchToWorker(chosenHandle, prompt);
       if (!sent.ok) {
-        await this.record("worker_deferred_busy", thread, { handle: chosenHandle, detail: sent.detail }, false);
+        await this.record("worker_deferred_busy", thread, { handle: chosenHandle, detail: sent.detail, backend: workerBackend.kind }, false);
         return "waiting";
       }
     } else if (route.spawnIfBusy && workers.length < route.maxWorkers) {
-      const spawned = await this.deps.orca.spawnWorker(worktree, `${route.name}: ${thread.name}`, prompt);
+      const spawned = await workerBackend.spawnWorker(worktree, `${route.name}: ${thread.name}`, prompt);
       if (!spawned.ok || !spawned.handle) {
         thread.status = "QUEUED";
         thread.statusReason = `Spawn worker failed: ${spawned.detail || "no handle returned"}`;
         await this.persist(state, false);
-        await this.record("worker_deferred_busy", thread, { detail: thread.statusReason, openWorkers: workers.length }, false);
+        await this.record("worker_deferred_busy", thread, { detail: thread.statusReason, openWorkers: workers.length, backend: workerBackend.kind }, false);
         return "waiting";
       }
       chosenHandle = spawned.handle;
     } else {
       await this.upsertThinkingStatus(
         thread,
-        `⏳ **[워커 대기 중]** \`${route.name}\` — 모든 Orca 워커(${workers.length}/${route.maxWorkers})가 작업 중입니다. 유휴 워커가 생기면 즉시 시작합니다.`,
+        `⏳ **[워커 대기 중]** \`${route.name}\` — 모든 ${backendName} 워커(${workers.length}/${route.maxWorkers})가 작업 중입니다. 유휴 워커가 생기면 즉시 시작합니다.`,
         false,
         { silent: true },
       );
       await this.persist(state, false);
-      await this.record("worker_deferred_busy", thread, { openWorkers: workers.length, maxWorkers: route.maxWorkers }, false);
+      await this.record("worker_deferred_busy", thread, { openWorkers: workers.length, maxWorkers: route.maxWorkers, backend: workerBackend.kind }, false);
       return "waiting";
     }
 
@@ -718,9 +788,14 @@ export class OrchEngine {
     thread.status = "DISPATCHED";
     thread.assignedWorkerHandle = chosenHandle;
     (thread as unknown as Record<string, unknown>).workerHandle = chosenHandle;
+    thread.activeBackend = workerBackend.kind;
     thread.dispatchedAt = new Date(this.now()).toISOString();
     thread.workerObservedBusy = false;
     thread.lastWorkerPhase = "thinking";
+    thread.lastThinkingExcerpt = undefined;
+    thread.lastCurrentTool = undefined;
+    thread.lastCompletedTasks = undefined;
+    thread.lastRemainingTasks = undefined;
     const batchTargetMessageId = thread.pendingMessages[thread.pendingMessages.length - 1]?.id;
     if (thread.pendingMessages.length > 0) {
       (thread as unknown as Record<string, unknown>).lastDispatchedMessages = [...thread.pendingMessages];
@@ -733,7 +808,7 @@ export class OrchEngine {
     // Immediately persist after dispatch succeeds, BEFORE posting Discord status
     await this.persist(state, false);
 
-    await this.record("worker_dispatched", thread, { handle: chosenHandle, iteration: nextIter }, false);
+    await this.record("worker_dispatched", thread, { handle: chosenHandle, iteration: nextIter, backend: workerBackend.kind }, false);
     if (batchTargetMessageId && batchTargetMessageId !== thread.reactionMessageId && this.deps.discord.removeReaction) {
       try {
         await this.deps.discord.removeReaction(thread.threadId, batchTargetMessageId, "👀");
@@ -743,8 +818,8 @@ export class OrchEngine {
     }
     await this.setThreadReaction(thread, "🧠", false, batchTargetMessageId);
     await this.emitTyping(thread.threadId, false);
-    const dispatchMsg = `🧠 **[사이클 ${nextIter}/${route.maxIterations} 시작 · Thinking...]** \`${route.name}\` — Orca 워커(\`${chosenHandle}\`)에 배정했습니다. 완료 후 자동 검증 게이트를 실행합니다.`;
-    await this.upsertThinkingStatus(thread, dispatchMsg, false, { silent: false });
+    const dispatchMsg = `🧠 **[사이클 ${nextIter}/${route.maxIterations} 시작 · Thinking...]** \`${route.name}\` — ${backendName} 워커(\`${chosenHandle}\`)에 배정했습니다. 완료 후 자동 검증 게이트를 실행합니다.`;
+    await this.upsertThinkingStatus(thread, dispatchMsg, false, { silent: false, force: true });
     await this.persist(state, false);
     return "dispatched";
   }
@@ -762,10 +837,23 @@ export class OrchEngine {
       await this.persist(state, dryRun);
       return "running";
     }
-
-    const inspected = await this.deps.orca.inspectWorkerState(handle);
+    const workerBackend = await this.resolveBackendForRoute(config, route);
+    const inspected = await workerBackend.inspectWorkerState(handle);
+    if (inspected.thinkingExcerpt) {
+      thread.lastThinkingExcerpt = extractThinkingExcerpt(inspected.thinkingExcerpt);
+    }
+    if (inspected.currentTool !== undefined) {
+      thread.lastCurrentTool = inspected.currentTool;
+    }
+    if (inspected.completedTasks) {
+      thread.lastCompletedTasks = inspected.completedTasks;
+    }
+    if (inspected.remainingTasks) {
+      thread.lastRemainingTasks = inspected.remainingTasks;
+    }
     if (inspected.state === "BUSY") {
       thread.workerObservedBusy = true;
+      const prevPhase = thread.lastWorkerPhase;
       const phase: WorkerActivityPhase = inspected.phase ?? "thinking";
       thread.lastWorkerPhase = phase;
       await this.emitTyping(thread.threadId, dryRun);
@@ -776,8 +864,14 @@ export class OrchEngine {
         phase,
         elapsedLabel: formatElapsedCompact(thread.dispatchedAt, this.now()),
         activity: inspected.activity,
+        thinkingExcerpt: inspected.thinkingExcerpt ?? thread.lastThinkingExcerpt,
+        currentTool: inspected.currentTool,
+        backendKind: workerBackend.kind,
       });
-      await this.upsertThinkingStatus(thread, statusText, dryRun, { silent: true });
+      await this.upsertThinkingStatus(thread, statusText, dryRun, {
+        silent: true,
+        force: prevPhase !== phase,
+      });
       await this.persist(state, dryRun);
       return "running";
     }
@@ -786,7 +880,7 @@ export class OrchEngine {
     if (inspected.state === "UNKNOWN") {
       if (elapsedMs > DISPATCH_MIN_GRACE_MS) {
         const repoPath = route.orcaWorktreePath ?? route.repoPath;
-        const activeRepoWorkers = await this.deps.orca.listRepoWorkers(repoPath);
+        const activeRepoWorkers = await workerBackend.listRepoWorkers(repoPath);
         const isStillPresent = activeRepoWorkers.some(w => w.handle === handle);
         if (!isStillPresent) {
           const disappearedHandle = handle;
@@ -887,6 +981,66 @@ export class OrchEngine {
     thread.assignedWorkerHandle = undefined;
     (thread as unknown as Record<string, unknown>).workerHandle = undefined;
     thread.workerObservedBusy = undefined;
+    const buildUnifiedReportInput = (
+      status: UnifiedCompletionReportInput["status"],
+      completedIter: number,
+      extraRemaining: UnifiedTaskReportItem[] = [],
+      summaryText?: string,
+    ): UnifiedCompletionReportInput => {
+      const completed: UnifiedTaskReportItem[] = [];
+      const remaining: UnifiedTaskReportItem[] = [];
+
+      for (const item of thread.lastCompletedTasks ?? []) {
+        completed.push({ label: item, source: "todo" });
+      }
+      for (const gateRes of verification.results) {
+        if (gateRes.passed) {
+          completed.push({
+            label: gateRes.name,
+            source: "gate",
+            detail: `${gateRes.durationMs}ms`,
+          });
+        } else {
+          remaining.push({
+            label: `${gateRes.name} (exit ${gateRes.exitCode})`,
+            source: "gate",
+            detail: gateRes.outputExcerpt?.slice(0, 120),
+          });
+        }
+      }
+      if (completed.length === 0 && verification.passed) {
+        completed.push({
+          label: `사이클 ${completedIter}/${route.maxIterations} 처리 완료`,
+          source: "todo",
+        });
+      }
+      for (const item of thread.lastRemainingTasks ?? []) {
+        remaining.push({ label: item, source: "todo" });
+      }
+      if (thread.pendingMessages.length > 0) {
+        remaining.push({
+          label: `작업 중 도착한 후속 요청 ${thread.pendingMessages.length}건`,
+          source: "queue",
+        });
+      }
+      if (thread.pendingGate?.status === "pending") {
+        remaining.push({
+          label: `위험 작업 승인 대기 (\`${thread.pendingGate.id}\`)`,
+          source: "approval",
+          detail: thread.pendingGate.reason,
+        });
+      }
+      remaining.push(...extraRemaining);
+
+      return {
+        title: `${route.name} (#${thread.name}) · 사이클 ${completedIter}/${route.maxIterations}`,
+        status,
+        elapsedLabel: elapsedExact,
+        summary: summaryText,
+        completed,
+        remaining,
+      };
+    };
 
     if (verification.passed) {
       thread.consecutiveSameFailures = 0;
@@ -902,6 +1056,13 @@ export class OrchEngine {
       const completedIter = thread.iteration;
       const hasFollowUp = thread.pendingMessages.length > 0;
       const hasHumanFollowUp = thread.pendingMessages.some(m => m.kind === "human_trigger");
+      const unifiedInput = buildUnifiedReportInput(
+        hasFollowUp || (thread.lastRemainingTasks?.length ?? 0) > 0 ? "partial" : "completed",
+        completedIter,
+      );
+      const unifiedReport = formatDiscordCompletionReport(unifiedInput);
+      const dmSummary = formatCompactDmCompletionSummary(unifiedInput);
+
       if (hasHumanFollowUp || (hasFollowUp && thread.iteration >= route.maxIterations)) {
         thread.iteration = 0;
         thread.consecutiveSameFailures = 0;
@@ -929,11 +1090,16 @@ export class OrchEngine {
       const report = [
         `✅ **[사이클 ${completedIter}/${route.maxIterations} 검증 통과]** \`${route.name}\``,
         verification.summaryText,
+        "",
+        unifiedReport,
         ...(hasFollowUp ? ["", "💬 작업 도중 새 메시지가 도착해 후속 사이클을 이어서 진행합니다."] : []),
       ].join("\n");
       if (!dryRun) {
         await this.deps.discord.postMessage(thread.threadId, report);
-        await this.notifyOwnerDm(config, `✅ [orch 완료] ${route.name} (#${thread.name}) — 사이클 ${completedIter}/${route.maxIterations} 검증 전 항목 PASS.`);
+        await this.notifyOwnerDm(
+          config,
+          `✅ [orch 완료] ${route.name} (#${thread.name}) — 사이클 ${completedIter}/${route.maxIterations} 검증 전 항목 PASS.\n${dmSummary}`,
+        );
       }
       return "verified";
     }
@@ -995,11 +1161,16 @@ export class OrchEngine {
           reason: "requeued_by_human_guidance",
         }, dryRun);
         if (!dryRun) {
+          const unifiedReport = formatDiscordCompletionReport(
+            buildUnifiedReportInput("partial", completedIter, [{ label: "새 사용자 지침 반영 사이클 재실행", source: "queue" }]),
+          );
           await this.deps.discord.postMessage(
             thread.threadId,
             [
               `🔁 **[사이클 ${completedIter}/${route.maxIterations} 검증 미달 및 한도 도달했으나 새 지침 도착]**`,
               verification.summaryText,
+              "",
+              unifiedReport,
               `새로운 사용자 요청을 반영하여 새 사이클을 시작합니다.`,
             ].join("\n"),
           );
@@ -1022,10 +1193,18 @@ export class OrchEngine {
       await this.persist(state, dryRun);
 
       await this.record("escalated_human", thread, { reason, failureHash: hash }, dryRun);
+      const escalatedInput = buildUnifiedReportInput(
+        "escalated",
+        completedIter,
+        [{ label: "사람 검토 후 수정 방향 전달 또는 `!orch retry`", source: "approval" }],
+        reason,
+      );
       const alert = [
         `🚨 **[자동 재귀 중단 — 사람 확인 필요]** \`${route.name}\` (#${thread.name})`,
         `- 사유: ${reason}`,
         `- 최근 검증 결과:\n${verification.summaryText}`,
+        "",
+        formatDiscordCompletionReport(escalatedInput),
         `- 조치: 쓰레드에 수정 방향을 남기거나 \`!orch retry\` 로 재시작하세요.`,
       ].join("\n");
       if (!dryRun) {
@@ -1056,18 +1235,26 @@ export class OrchEngine {
       failureHash: hash,
     }, dryRun);
     if (!dryRun) {
+      const requeueReport = formatDiscordCompletionReport(
+        buildUnifiedReportInput("partial", completedIter, [
+          { label: `자동 재수정 사이클 ${completedIter + 1}/${route.maxIterations} 실행 대기`, source: "queue" },
+        ]),
+      );
       await this.deps.discord.postMessage(
         thread.threadId,
         [
           `🔁 **[사이클 ${completedIter}/${route.maxIterations} 검증 미달 → 자동 재수정 예약]**`,
           verification.summaryText,
+          "",
+          requeueReport,
           `다음 사이클(${completedIter + 1}/${route.maxIterations})을 유휴 워커에 자동 배정합니다.`,
         ].join("\n"),
       );
     }
     return "verified";
   }
-  private async reactOnce(channelId: string, messageId: string, emoji: string, dryRun: boolean): Promise<void> {
+
+  private async reactOnce(channelId: string, messageId: string | undefined, emoji: string, dryRun: boolean): Promise<void> {
     if (dryRun || !messageId || !this.deps.discord.addReaction) return;
     try {
       await this.deps.discord.addReaction(channelId, messageId, emoji);
@@ -1131,11 +1318,18 @@ export class OrchEngine {
     thread: ThreadLoopState,
     content: string,
     dryRun: boolean,
-    opts?: { silent?: boolean },
+    opts?: { silent?: boolean; force?: boolean },
   ): Promise<void> {
     if (dryRun || !content.trim()) return;
     if (thread.statusMessageId && thread.lastStatusContent === content) {
       return;
+    }
+    const nowMs = this.now();
+    if (thread.statusMessageId && !opts?.force) {
+      const lastEditAt = this.lastThinkingEditAtMs.get(thread.threadId);
+      if (lastEditAt !== undefined && nowMs - lastEditAt < DISCORD_THINKING_DEBOUNCE_MS) {
+        return;
+      }
     }
     if (thread.statusMessageId) {
       if (!this.deps.discord.editMessage) {
@@ -1144,6 +1338,7 @@ export class OrchEngine {
       try {
         await this.deps.discord.editMessage(thread.threadId, thread.statusMessageId, content);
         thread.lastStatusContent = content;
+        this.lastThinkingEditAtMs.set(thread.threadId, nowMs);
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1166,6 +1361,7 @@ export class OrchEngine {
       if (ids[0]) {
         thread.statusMessageId = ids[0];
         thread.lastStatusContent = content;
+        this.lastThinkingEditAtMs.set(thread.threadId, nowMs);
       }
     } catch (err) {
       this.log(`Status post skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -1183,8 +1379,10 @@ export class OrchEngine {
     thread.statusMessageId = undefined;
     thread.lastStatusContent = undefined;
     thread.lastWorkerPhase = undefined;
+    thread.lastThinkingExcerpt = undefined;
+    thread.lastCurrentTool = undefined;
+    this.lastThinkingEditAtMs.delete(thread.threadId);
   }
-
   private async notifyOwnerDm(config: OrchConfig, content: string): Promise<void> {
     try {
       let dmChannelId = config.ownerDmChannelId;

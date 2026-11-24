@@ -109,3 +109,37 @@ test("skillAdvisoryRoutingNote: ok selection renders the suggested skill names a
   expect(note).toContain("ralplan");
   expect(note).toContain("Advisory only");
 });
+
+test("route-skills: conversational choice replies and 'ok' abstain cleanly", () => {
+  const mk = (name: string, summary: string) => ({ name, command: `jeo /${name}`, summary, whenToUse: summary, details: "" });
+  const skills = [
+    mk("okf", "Create and validate Open Knowledge Format bundles."),
+    mk("brainstorm-okrs", "Brainstorm quarterly OKRs."),
+    mk("agent-beacon", "Skill routing and agent coordination."),
+  ];
+  for (const prompt of [
+    "1.c, 2.a, 3. 2~3초 ok, 응 허용 4. 엉뚱한걸 체크하는거같아",
+    "1. c, 2. a, 3. a",
+    "ok",
+    "응 그렇게 진행해줘",
+    "고마워, 잘 됐어!",
+  ]) {
+    const sel = routeSkillsForTask(prompt, skills);
+    expect(sel.topK).toEqual([]);
+    expect(sel.reason).toBe("gate");
+    expect(skillAdvisoryRoutingNote(sel)).toBe("");
+  }
+});
+
+test("route-skills: Korean technical prompts route accurately without alphabetical ties", () => {
+  const mk = (name: string, summary: string) => ({ name, command: `jeo /${name}`, summary, whenToUse: summary, details: "" });
+  const skills = [
+    mk("agent-beacon", "Agent skill status beacon."),
+    mk("agent-manager", "Manage agent skills."),
+    mk("blender-skills", "Blender 5.2+ rigging, skinning, weight painting, and 3D modeling."),
+  ];
+  const sel = routeSkillsForTask("블렌더에서 캐릭터 리깅하고 웨이트 페인팅 알려줘", skills);
+  expect(sel.reason).toBe("ok");
+  expect(sel.topK[0]?.name).toBe("blender-skills");
+  expect(sel.topK.some(c => c.name === "agent-beacon")).toBe(false);
+});

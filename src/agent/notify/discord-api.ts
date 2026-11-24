@@ -58,6 +58,25 @@ function splitDiscordText(text: string): { chunks: string[]; needsAttachment: bo
   return { chunks, needsAttachment };
 }
 
+function clipDiscordEditText(text: string): string {
+  if (!text) return DISCORD_BOUNDARY_GUARD;
+  const leading = DISCORD_WHITESPACE.test(text[0]!) ? DISCORD_BOUNDARY_GUARD : "";
+  let end = Math.min(2000 - leading.length, text.length);
+  while (end > 0) {
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) {
+      end--;
+      continue;
+    }
+    const trailing = DISCORD_WHITESPACE.test(text[end - 1]!) ? DISCORD_BOUNDARY_GUARD : "";
+    if (end + leading.length + trailing.length <= 2000) {
+      return `${leading}${text.slice(0, end)}${trailing}`;
+    }
+    end--;
+  }
+  return DISCORD_BOUNDARY_GUARD;
+}
+
 export class DiscordApi {
   private readonly controller = new AbortController();
   private cooldownUntil = 0;
@@ -167,9 +186,29 @@ export class DiscordApi {
     return gateway;
   }
 
-  sendMessage(channelId: string, content: string, eligible?: () => boolean): Promise<{ id: string }[]> {
+  sendMessage(channelId: string, content: string, eligible?: () => boolean, flags?: number): Promise<{ id: string }[]> {
     this.checkId(channelId);
-    const result = this.sendQueue.then(() => this.sendMessageOrdered(channelId, content, eligible));
+    const result = this.sendQueue.then(() => this.sendMessageOrdered(channelId, content, eligible, flags));
+    this.sendQueue = result.then(() => {}, () => {});
+    return result;
+  }
+
+  editMessage(channelId: string, messageId: string, content: string, eligible?: () => boolean): Promise<{ id: string }> {
+    this.checkId(channelId);
+    this.checkId(messageId);
+    const clippedContent = clipDiscordEditText(content);
+    const result = this.sendQueue.then(async () => {
+      const message = await this.request<{ id: string }>(
+        `/channels/${channelId}/messages/${messageId}`,
+        { content: clippedContent, allowed_mentions: { parse: [], replied_user: false } },
+        "PATCH",
+        eligible,
+      );
+      if (!message || typeof message.id !== "string" || !/^\d{1,20}$/.test(message.id)) {
+        throw new DiscordApiError("Invalid Discord message ID");
+      }
+      return message;
+    });
     this.sendQueue = result.then(() => {}, () => {});
     return result;
   }
@@ -189,14 +228,15 @@ export class DiscordApi {
     return result;
   }
 
-  private async sendMessageOrdered(channelId: string, content: string, eligible?: () => boolean): Promise<{ id: string }[]> {
+  private async sendMessageOrdered(channelId: string, content: string, eligible?: () => boolean, flags?: number): Promise<{ id: string }[]> {
     const { chunks, needsAttachment } = splitDiscordText(content);
     const messages: { id: string }[] = [];
+    const flagPatch = flags !== undefined ? { flags } : {};
     for (let index = 0; index < chunks.length + Number(needsAttachment); index++) {
-      let body: unknown = { content: chunks[index], allowed_mentions: { parse: [], replied_user: false } };
+      let body: unknown = { content: chunks[index], allowed_mentions: { parse: [], replied_user: false }, ...flagPatch };
       if (index === chunks.length) {
         const form = new FormData();
-        form.append("payload_json", JSON.stringify({ allowed_mentions: { parse: [], replied_user: false } }));
+        form.append("payload_json", JSON.stringify({ allowed_mentions: { parse: [], replied_user: false }, ...flagPatch }));
         form.append("files[0]", new Blob([content], { type: "text/plain; charset=utf-8" }), "response.txt");
         body = form;
       }

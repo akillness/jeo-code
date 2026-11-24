@@ -61,7 +61,7 @@
 - **リモート監視・制御(Telegram, Discord, Slack)** — ボットを一度ペアリング(`jeo notify setup --provider telegram|discord|slack`)すれば、共有の `jeo daemon start` 1 つが、稼働中のすべてのセッションにわたってサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、人間の許可リスト(allowlist)からの `/subagents`、`/steer`、`/cancel`(Discord/Slack ではさらに `/sessions` と `/send`)を受け付けます。Telegram はフォーラムトピック・インラインキーボード・画像添付に対応し、Discord は REST + Gateway WebSocket、Slack は Web API + Socket Mode を使います。プラットフォーム別詳細ガイドおよびインストール可能なエージェントスキル(`channel-notify`)を提供します。
 - **範囲のあるワークフローゲートであり、証明ではない** — `approve` は承認対象の正確なプランダイジェストを再検証し、`team` はレビュー後にダイジェストが変わったプランを拒否します。`done` では現在のターンの変更・検証シグナルが完了をブロックまたは格下げし、`/goal` は会話・ツール履歴に対する別の LLM 判定と決定論的な証拠ゲートを追加します。いずれもワークスペースを独立して再読み込みしません。ツールやテストの出力は証拠であって、実行ランナーや結果の信頼性を証明するものではありません。このチェックはターン終了後にバックグラウンド処理がファイルを変更しないことも保証しません。`autopilot` ratchet はロールバック失敗を `rollback_failed` と記録し、非ゼロで停止します。
 - **ターンをブロックしないセッション単位の非同期実行** — `task` ツールの実際の `tasks` 配列で独立した作業をファンアウトし、親ターンを止めません。detached サブエージェント、バックグラウンド job、行単位 monitor は後続ターンからも `subagent`/`job`/`monitor` の `list`、`inspect`、`await`、`cancel`、`tail` で制御できます。インライン TUI は各ワーカーのライブ activity を専用スロットに表示し、セッション終了または Ctrl-C ですべてのレジストリを破棄します。
-  ローカルの単一タスクは `detached: true`（または `"true"`）を受け付け、detached ファンアウトは拒否します。未完了の detached 実行は最大4件で、一時停止・キャンセル済みでも実際に終了するまでは数えます。返されたプレーンテキスト ID を `subagent` の制御に使用してください。`monitor {action:"start", command, timeout:30}` の `timeout` は有限の正数で秒単位の寿命、`await` の `timeoutMs` はミリ秒です。monitor 出力は上限付きの信頼できない観測データであり、指示ではありません。永続化する TUI イベントはサニタイズします。サンドボックスゲストの push 観測・ライフサイクル転送は従来どおり未対応で、このローカル動作は特権 RPC を追加しません。
+  ローカルの単一タスクは `detached: true`（または `"true"`）を受け付け、detached ファンアウトは拒否します。未完了の detached 実行は最大6件で、一時停止・キャンセル済みでも実際に終了するまでは数えます。返されたプレーンテキスト ID を `subagent` の制御に使用してください。`monitor {action:"start", command, timeout:30}` の `timeout` は有限の正数で秒単位の寿命、`await` の `timeoutMs` はミリ秒です。monitor 出力は上限付きの信頼できない観測データであり、指示ではありません。永続化する TUI イベントはサニタイズします。サンドボックスゲストの push 観測・ライフサイクル転送は従来どおり未対応で、このローカル動作は特権 RPC を追加しません。
 - **プラン critic ゲート** — プランは architect/critic の工程を省略できません。`PlanSchema` は未検証の変更で終わるプランを拒否し(変更より前の verifier は対象にならない)、`ralplan` の作成時と `team`/`approve` の実行時に適用します。critic 評決には観測されたリポジトリ読み取り・検索の証拠が必要ですが、これはレビュー可能性を支えるものであり、ワークスペースの独立検証ではありません。
 - **セーフティバウンダリの自動モデルフォールバック** — 未分類のセーフティ拒否(本物のコンテンツポリシー違反ではなく、分類器の誤検知の可能性)は、同じモデルで永遠に譲歩するのではなく、実際に別プロバイダのモデルへ切り替わるようになりました — 既存のレート制限時の高速フォールバックと同じパターンです。`Refusal (<category>)` 形式の確定的な拒否は影響を受けず、引き続きフォールバックなしでハードフェイルします。
 - **メモリ: 勝ち取った信頼** — コンセプトの検証日付は、あらゆる書き込みではなく、蒸留パスが明示的に検証済みとマークした場合にのみ記録されるようになりました。`isConceptStale` は受動的なタイムスタンプを信頼する代わりに、未検証(または30日超の陳腐化)のコンセプトを再検証が必要なものとして扱います。
@@ -559,7 +559,7 @@ JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文
 ### サブエージェントのファンアウト並列度
 
 ```jsonc
-{ "subagentConcurrency": 2 }   // 既定 4、1〜16 にクランプ
+{ "subagentConcurrency": 2 }   // 既定 6、1〜16 にクランプ
 ```
 
 Anthropic の Tier-1 アカウントでは同時ストリーム4本で即座にレートリミットに達し、
@@ -600,11 +600,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
 - **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
-- **[1.0.9]** (2026-11-19) — Fix post-submit Ctrl+C exit collapse and background `imagePasteInFlight` check after clearing an open paste.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

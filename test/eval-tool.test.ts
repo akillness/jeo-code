@@ -2,12 +2,14 @@ import { test, expect, mock, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { resetSharedSubagentScaler } from "../src/agent/subagent-scaler";
 
 // Each test re-mocks ../src/agent/loop (task()'s dispatch goes through the
 // same runSubagentOnce -> callLlm chain task-tool.test.ts mocks); restore
 // afterwards so other suites are clean.
 afterEach(() => {
   mock.restore();
+  resetSharedSubagentScaler();
 });
 
 async function tmpDir(): Promise<string> {
@@ -441,7 +443,7 @@ test("createEvalTool: pipeline() with zero stages returns the items unchanged", 
 // this mock runs on the MAIN thread (it's the RPC handler's runSubagentOnce
 // call, not the worker's own code), but the same "genuine overlap, not a
 // label" reasoning applies — a fake timer cannot distinguish 10 sequential
-// zero-delay calls from 4-at-a-time bounded concurrency; a real overlapping
+// zero-delay calls from 6-at-a-time bounded concurrency; a real overlapping
 // delay is the only way to prove the semaphore actually throttles.
 test("createEvalTool: N raw concurrent task() calls (bypassing parallel()/pipeline() entirely) still never exceed MAX_FANOUT in flight", async () => {
   let inFlight = 0;
@@ -469,7 +471,7 @@ test("createEvalTool: N raw concurrent task() calls (bypassing parallel()/pipeli
   }, await tmpDir());
   expect(res.success).toBe(true);
   expect(res.output).toContain("Return value:\n10");
-  expect(maxObservedInFlight).toBeLessThanOrEqual(4); // MAX_FANOUT
+  expect(maxObservedInFlight).toBeLessThanOrEqual(6); // MAX_FANOUT
   expect(maxObservedInFlight).toBeGreaterThan(1); // proves it's genuinely concurrent, not accidentally serial
 });
 
@@ -484,7 +486,7 @@ test("createEvalTool: exceeding the per-call task() dispatch cap fails the eval 
   const tool = createEvalTool({ config: { defaultModel: "ollama/fast", subagents: {} } });
   const res = await tool({
     code: `
-      for (let i = 0; i < 41; i++) {
+      for (let i = 0; i < 65; i++) {
         await task("executor", "job " + i);
       }
       return "should not reach here";
@@ -499,7 +501,7 @@ test("createEvalTool: a parallel() queue over the size cap is rejected before an
   const tool = createEvalTool({ config: { defaultModel: "ollama/fast", subagents: {} } });
   const res = await tool({
     code: `
-      const thunks = Array.from({ length: 21 }, () => async () => 1);
+      const thunks = Array.from({ length: 33 }, () => async () => 1);
       await parallel(thunks);
     `,
   }, await tmpDir());
@@ -559,9 +561,9 @@ test("createEvalTool: an externally-aborted signal terminates the worker with a 
 // MAX_FANOUT other dispatches or already IN-FLIGHT inside runSubagentOnce.
 // The queued-cancellation test below uses a real setTimeout INSIDE the
 // worker script (rule exception, same cross-thread reasoning as the
-// parallel()/pipeline() tests above): it deliberately gives 4 filler
+// parallel()/pipeline() tests above): it deliberately gives 6 filler
 // dispatches genuine wall-clock time to occupy their slots on the MAIN
-// thread (running concurrently with the worker's own sleep) BEFORE a 5th
+// thread (running concurrently with the worker's own sleep) BEFORE a 7th
 // call is queued and the script returns — a fake/simulated clock cannot
 // synchronize two independent real threads racing each other this way. ---
 
@@ -641,7 +643,7 @@ test("createEvalTool: a fire-and-forget task() QUEUED behind MAX_FANOUT other di
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (messages: { content: string }[]) => {
       dispatchedTaskTexts.push(String(messages[1]?.content ?? ""));
-      // Hang forever — these 4 fill every MAX_FANOUT slot, so the 5th
+      // Hang forever — these 6 fill every MAX_FANOUT slot, so the 7th
       // (fire-and-forget) call can NEVER acquire a slot on its own; only
       // cancellation (via settleRpc, once "done" fires) can end its wait.
       await new Promise(() => {});
@@ -652,25 +654,25 @@ test("createEvalTool: a fire-and-forget task() QUEUED behind MAX_FANOUT other di
   const tool = createEvalTool({ config: { defaultModel: "ollama/fast", subagents: {} } });
   const res = await tool({
     code: `
-      // Fill all 4 MAX_FANOUT slots with never-resolving dispatches (fire-and-forget —
+      // Fill all 6 MAX_FANOUT slots with never-resolving dispatches (fire-and-forget —
       // the script itself never awaits any of them either).
-      for (let i = 0; i < 4; i++) task("executor", "filler-" + i);
+      for (let i = 0; i < 6; i++) task("executor", "filler-" + i);
       // A REAL delay (the worker has full JS runtime access, same as every
-      // parallel()/pipeline() test above using setTimeout) so the 4 fillers
+      // parallel()/pipeline() test above using setTimeout) so the 6 fillers
       // genuinely reach callLlm and occupy their slots on the MAIN thread —
       // which runs concurrently with this worker's own sleep — BEFORE the
-      // 5th call is fired and this script returns (triggering "done").
+      // 7th call is fired and this script returns (triggering "done").
       // Without this, the script returns near-instantly and "done" would
-      // race ahead of ALL 5 dispatches, proving nothing about the QUEUE
+      // race ahead of ALL 7 dispatches, proving nothing about the QUEUE
       // specifically (only re-proving the "never even started" case above).
       await new Promise(r => setTimeout(r, 200));
-      // The 5th call is queued behind all 4 occupied slots — it can only
+      // The 7th call is queued behind all 6 occupied slots — it can only
       // ever be cancelled OUT of the queue, never actually dispatched.
       task("executor", "QUEUED-should-never-dispatch");
-      return "returned while 4 fillers hang and a 5th is still queued";
+      return "returned while 6 fillers hang and a 7th is still queued";
     `,
   }, await tmpDir());
   expect(res.success).toBe(true);
-  expect(dispatchedTaskTexts.length).toBe(4); // exactly the 4 that filled MAX_FANOUT — the 5th was NEVER dispatched
+  expect(dispatchedTaskTexts.length).toBe(6); // exactly the 6 that filled MAX_FANOUT — the 7th was NEVER dispatched
   expect(dispatchedTaskTexts.some(t => t.includes("QUEUED-should-never-dispatch"))).toBe(false);
 }, 10_000);

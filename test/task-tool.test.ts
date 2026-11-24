@@ -7,10 +7,12 @@ import { appendSubagentMessage, createSession, loadSession } from "../src/agent/
 import { createTaskTool, runSubagentOnce, taskToolProtocolLine, type TaskSubEvent } from "../src/agent/task-tool";
 import { DEFAULT_TOOLS } from "../src/agent/engine";
 import { defaultSubagentRole } from "../src/agent/subagents";
+import { resetSharedSubagentScaler } from "../src/agent/subagent-scaler";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
   mock.restore();
+  resetSharedSubagentScaler();
 });
 
 async function tmpDir(): Promise<string> {

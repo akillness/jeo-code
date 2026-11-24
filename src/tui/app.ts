@@ -1805,7 +1805,7 @@ export class LaunchTui {
 
 
   /** Active workers share a bounded live panel; completed workers go to the ledger. */
-  private static readonly SUBAGENT_PANEL_MAX_ROWS = 6;
+  private static readonly SUBAGENT_PANEL_MAX_ROWS = 16;
   private renderSubagentPanel(cols: number): string[] {
     if (this.subagentLiveSlots.size === 0) return [];
     const now = Date.now();

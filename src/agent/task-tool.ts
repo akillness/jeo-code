@@ -38,6 +38,12 @@ import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notif
 import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, strongestMidTierCredentialed, type RoutingConfig } from "./prompt-router";
 import { isRateLimitError } from "../util/retry";
 import { currentSandboxExecution, withSandboxExecution, type SandboxExecutionScope } from "./hooks";
+import {
+  SubagentScaler,
+  getSharedSubagentScaler,
+  resolveScalerCeilings,
+  type SubagentScalerConfig,
+} from "./subagent-scaler";
 
 /** `runSubagentOnce`/`createTaskTool`'s config requirement: everything
  *  `resolveSubagentModel`/`resolveSubagentMaxSteps`/`resolveSubagentThinking` need
@@ -49,7 +55,7 @@ import { currentSandboxExecution, withSandboxExecution, type SandboxExecutionSco
  *  Both real call sites (`launch.ts`'s `createTaskTool({ config: turnConfig, … })`
  *  and `team.ts`'s two `runSubagentOnce` call sites) already pass a full `Config`
  *  at runtime, so this widening is type-only — zero runtime behavior change. */
-export type SubagentTaskConfig = RoutingConfig & Pick<Config, "subagents" | "thinkingLevel">;
+export type SubagentTaskConfig = RoutingConfig & Pick<Config, "subagents" | "thinkingLevel"> & SubagentScalerConfig;
 
 
 /** Lifecycle event emitted while a delegated subagent runs. */
@@ -108,6 +114,8 @@ export interface TaskToolOptions {
    *  second, competing endpoint (see `ensureSessionNotifyEndpoint`). */
   sessionEndpoint?: SessionNotifyEndpoint;
   sandbox?: SandboxExecutionScope;
+  /** Optional concurrency scaler override (defaults to the process-wide shared scaler). */
+  scaler?: SubagentScaler;
 }
 
 /** Max concurrent subagents in a fan-out batch (both read-only AND the mutating
@@ -115,7 +123,7 @@ export interface TaskToolOptions {
  *  disjoint files (documented in `taskToolProtocolLine`); overlapping scopes
  *  should either run sequentially (separate `task` calls) or coordinate — jeo has
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
-export const MAX_FANOUT = 4;
+export const MAX_FANOUT = 6;
 
 /** Clamp for {@link resolveFanoutLimit}. Below 1 there is no fan-out at all; above 16
  *  the parent turn is monopolized no matter how much provider capacity exists. */
@@ -125,10 +133,10 @@ export const MAX_FANOUT_LIMIT = 16;
 /**
  * Effective fan-out concurrency for this account.
  *
- * {@link MAX_FANOUT} is a reasonable default, not a universal one: four concurrent
- * Anthropic streams trip a Tier-1 rate limit immediately (turning a fan-out into a
- * backoff storm that is SLOWER than running sequentially), while an account with real
- * headroom leaves throughput on the table at four. `config.subagentConcurrency` lets
+ * {@link MAX_FANOUT} (6) is a general default, not a universal one: even four
+ * concurrent Anthropic streams trip a Tier-1 rate limit immediately (turning a fan-out
+ * into a backoff storm that is SLOWER than running sequentially), while an account with
+ * real headroom leaves throughput on the table at six. `config.subagentConcurrency` lets
  * that be tuned per machine; the clamp keeps a typo (`0`, `-1`, `500`) from producing a
  * batch that never runs or never yields.
  */
@@ -136,6 +144,19 @@ export function resolveFanoutLimit(config?: { subagentConcurrency?: number }): n
   const raw = config?.subagentConcurrency;
   if (raw === undefined || !Number.isFinite(raw)) return MAX_FANOUT;
   return Math.min(MAX_FANOUT_LIMIT, Math.max(MIN_FANOUT_LIMIT, Math.trunc(raw)));
+}
+
+/** Role-split dynamic concurrency limit backed by {@link SubagentScaler}.
+ *  Read-only roles scale dynamically up to their ceiling (default 16) when healthy;
+ *  mutating executor roles stay bounded by their conservative ceiling (default 6, max 8). */
+export function resolveRoleFanoutLimit(
+  config: SubagentScalerConfig | undefined,
+  roleReadOnly: boolean,
+  demand?: number,
+  scaler?: SubagentScaler,
+): number {
+  const target = scaler ?? getSharedSubagentScaler(config);
+  return target.effectiveLimit(roleReadOnly, demand);
 }
 
 /** Small bounded reroute budget for a SUBAGENT's own 429 (distinct from
@@ -303,6 +324,8 @@ export interface RunSubagentOptions {
   /** SubagentRegistry to report live activity into (e.g. current tool or step). */
   registry?: SubagentRegistry;
   sandbox?: SandboxExecutionScope;
+  /** Optional concurrency scaler for 429 backoff / healthy recovery tracking. */
+  scaler?: SubagentScaler;
 }
 
 
@@ -361,6 +384,8 @@ export async function runSubagentOnce(
     return withSandboxExecution(opts.sandbox, () => runSubagentOnce(role, taskText, context, cwd, opts));
   }
   const { steer, slot, detachedId, projectContext: preloadedContext, memorySection: preloadedMemorySection, signal } = opts;
+  const scaler = opts.scaler ?? getSharedSubagentScaler(opts.config);
+  let attemptRateLimited = false;
   const runId = crypto.randomUUID();
   // Tag every live event with its fan-out slot or detached ID so a parent monitor can tell
   // task 1 from task 3 or detached tasks apart when several subagents stream concurrently.
@@ -564,6 +589,7 @@ export async function runSubagentOnce(
   }
   let contractCorrections = 0;
   const runOnce = () => {
+    attemptRateLimited = false;
     return runAgentLoop(history, {
       cwd,
       model: activeModel,
@@ -642,7 +668,13 @@ export async function runSubagentOnce(
         },
         // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
         // parent's monitor shows WHY a subagent is pausing instead of going silent.
-        onNotice: msg => emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model: activeModel }),
+        onNotice: msg => {
+          if (!attemptRateLimited && isRateLimitError(new Error(msg))) {
+            attemptRateLimited = true;
+            scaler.recordRateLimit(role.readOnly);
+          }
+          emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model: activeModel });
+        },
         // Mid-turn steering reached this subagent: surface it as a live beat so the
         // parent's monitor shows the redirect instead of an unexplained behavior change.
         onSteer: text => emit({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model: activeModel }),
@@ -653,6 +685,10 @@ export async function runSubagentOnce(
   const failureResult = (error: unknown): SubagentRunResult => {
     const explicitSignal = typeof error === "object" && error !== null && "mutationMayHaveOccurred" in error && error.mutationMayHaveOccurred === true;
     const message = error instanceof Error ? error.message : String(error);
+    if (!attemptRateLimited && isRateLimitError(error)) {
+      attemptRateLimited = true;
+      scaler.recordRateLimit(role.readOnly);
+    }
     emit({ role: role.id, kind: "error", detail: message, success: false, step: currentStep, maxSteps, model: activeModel });
     return {
       success: false,
@@ -694,6 +730,10 @@ export async function runSubagentOnce(
     if (!rateLimited && !safetyBail && !malformedCall) break;
     const previousModel = activeModel;
     if (rateLimited) {
+      if (!attemptRateLimited) {
+        attemptRateLimited = true;
+        scaler.recordRateLimit(role.readOnly);
+      }
       // The model that just 429'd: exclude its WHOLE credential scope (not just its
       // own id) so a sibling model riding the SAME exhausted OAuth subscription is
       // never proposed as a "fallback" (cca5fe2's fix, mirrored here).
@@ -727,6 +767,15 @@ export async function runSubagentOnce(
   const reason = stripSafetyFallbackTag(result.doneReason?.trim() || "") || `(subagent reached the ${result.steps}-step limit without signaling done)`;
   const validation = validateSubagentDoneReason(role, reason);
   const complete = result.done && validation.ok;
+  const finalRateLimited = !result.done && !result.completionRejected && isRateLimitError(new Error(result.doneReason ?? ""));
+  if (finalRateLimited) {
+    if (!attemptRateLimited) {
+      attemptRateLimited = true;
+      scaler.recordRateLimit(role.readOnly);
+    }
+  } else if (complete) {
+    scaler.recordSuccess(role.readOnly);
+  }
   const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
   emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model: activeModel, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
   const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
@@ -808,6 +857,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       modelOverride: extra.modelOverride,
       detachedId: extra.detachedId,
       registry: extra.registry,
+      scaler: opts.scaler,
     };
     const first = await runSubagentOnce(role, taskText, context, cwd, runOpts);
     if (first.success && !(extra.signal ?? opts.signal)?.aborted && process.env.JEO_SUBAGENT_EVAL === "1") {
@@ -867,13 +917,14 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // below): an unbounded queue behind bounded concurrency would still
       // monopolize the parent turn. Split larger executor efforts into
       // sequential task calls.
-      if (!role.readOnly && items.length > MAX_SERIAL_EXECUTOR) {
+      const executorBatchCap = Math.max(MAX_SERIAL_EXECUTOR, resolveScalerCeilings(opts.config).executorCeiling);
+      if (!role.readOnly && items.length > executorBatchCap) {
         return {
           success: false,
           output: "",
           error:
-            `Executor fan-out of ${items.length} exceeds the batch cap of ${MAX_SERIAL_EXECUTOR}. ` +
-            `Split into ≤${MAX_SERIAL_EXECUTOR}-task batches or sequential task calls.`,
+            `Executor fan-out of ${items.length} exceeds the batch cap of ${executorBatchCap}. ` +
+            `Split into ≤${executorBatchCap}-task batches or sequential task calls.`,
         };
       }
       // Spawn-gate lite: a batch
@@ -894,11 +945,10 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           };
         }
       }
-      // Both roles fan out CONCURRENTLY, bounded at the account's effective limit
-      // See MAX_FANOUT's docstring for the disjoint-file-scope expectation
-      // this relies on). `config.subagentConcurrency` tunes it per machine so a
-      // rate-limited account can drop below the default instead of backoff-storming.
-      const fanoutLimit = resolveFanoutLimit(opts.config as { subagentConcurrency?: number });
+      // Role-split dynamic concurrency: read-only roles scale up to their configured
+      // ceiling (default 16) while healthy and back off on 429; mutating executor roles
+      // remain bounded by their conservative cap (default 6, max 8).
+      const fanoutLimit = resolveRoleFanoutLimit(opts.config, role.readOnly, items.length, opts.scaler);
       const limit = Math.min(items.length, fanoutLimit);
       // Load project context and memory section ONCE per batch instead of re-scanning
       // AGENTS.md / `.jeo/memory/` and recomputing TF-IDF for every fan-out task.
@@ -983,8 +1033,14 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // its own registry inbox (registry.steerDrainFor(id)) between its own steps.
     if (detached && opts.registry) {
       // Pause/cancel requests do not release capacity until the runner settles.
-      if (opts.registry.pending().length >= MAX_FANOUT) {
-        return { success: false, output: "", error: `Detached task limit is ${MAX_FANOUT} unsettled runs. Await a runner's settlement before launching another task.` };
+      const pendingCount = opts.registry.pending().length;
+      const detachedLimit = resolveRoleFanoutLimit(opts.config, role.readOnly, pendingCount + 1, opts.scaler);
+      if (pendingCount >= detachedLimit) {
+        return {
+          success: false,
+          output: "",
+          error: `Detached task limit is ${detachedLimit} unsettled runs for ${role.readOnly ? "read-only" : "executor"} role. Await a runner's settlement before launching another task.`,
+        };
       }
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
         runOne(role, taskText, ctx(args.context), cwd, {

@@ -15,7 +15,10 @@
     "c4_tool_guidance": [
       ".agents/rules/jeo-workflows.md"
     ],
-    "c5_subagents": [],
+    "c5_subagents": [
+      "src/prompts/agents",
+      "src/agent/subagents.ts"
+    ],
     "c6_skills": [
       ".agents/skills",
       ".claude/skills"
@@ -24,7 +27,7 @@
       "scripts"
     ],
     "c8_plugins_hooks": [
-      ".git/hooks/post-commit"
+      "src/agent/hooks.ts"
     ]
   },
   "mode": "method",

@@ -13,22 +13,28 @@ import {
   LOCAL_ORCH_CONFIG_RELPATH,
   loadOrchConfig,
   loadOrchState,
+  normalizeOrchBackendKind,
   normalizeRoute,
   ORCH_LAUNCHD_LABEL,
+  parseTmuxWorkerHandle,
   readOrchConfigFile,
   readRecentLedger,
   removeRoute,
   resolveDiscordToken,
   resolveLocalOrchConfigPath,
+  resolveOrchBackendKind,
   resolveOrchHome,
   runOrchDaemon,
   runOrchOnce,
   saveDiscordToken,
   saveOrchState,
+  tmuxSessionNameForRepo,
+  TmuxWorkerBackend,
   uninstallLaunchdService,
   unlinkOrchConfigFile,
   upsertRoute,
   writeLocalOrchConfigFile,
+  type OrchBackendKind,
   type OrchConfig,
   type OrchConfigFile,
   type OrchState,
@@ -39,25 +45,26 @@ import {
 export interface OrchActionResult {
   lines: string[];
   exitCode?: number;
+  attachCommand?: string[];
 }
-
 export function orchUsageLines(prefix = "jeo orch"): string[] {
   return [
     `Usage: ${prefix} <subcommand> [options]`,
     `  status                                       Show daemon, launchd, routes, threads, and pending gates`,
     `  routes                                       List configured project routes and linked config files`,
     `  init [guildId] [--guild <id>] [--dm <ch>]    Configure guild/owners/settings, or auto-link ./.jeo/orch.json`,
-    `       [--owner <u1,u2>] [--poll <ms>] [--debounce <ms>] [--token-file <p>] [--token-env <v>] [--orca-bin <p>] [--config <p>] [--local]`,
+    `       [--owner <u1,u2>] [--backend auto|tmux|headless|orca] [--poll <ms>] [--debounce <ms>] [--token-file <p>] [--token-env <v>] [--orca-bin <p>] [--config <p>] [--local]`,
     `  link [path]                                  Link a repo-local hidden config file (default: ${LOCAL_ORCH_CONFIG_RELPATH})`,
     `  unlink [path]                                Unlink a repo-local hidden config file`,
     `  assign --id <id> --parent <ch> --repo <dir>  Add/update a project route [--name <n>] [--keywords a,b] [--prefixes p1,p2] [--worktree <dir>]`,
-    `       [--max-iter 4] [--same-failure-limit 2] [--max-workers 3] [--no-spawn] [--gate "name=cmd"] [--qa-markers m1,m2] [--guild <id>] [--local]`,
+    `       [--backend auto|tmux|headless|orca] [--max-iter 4] [--same-failure-limit 2] [--max-workers 3] [--no-spawn] [--gate "name=cmd"] [--qa-markers m1,m2] [--guild <id>] [--local]`,
     `  unassign <id>                                Remove a project route from global routes.json`,
     `  threads                                      List tracked Discord threads and loop state`,
+    `  attach [routeId|handle] [--print]            Show/attach to the active tmux worker session`,
     `  pause|resume|stop|retry <threadId>           Control an individual thread loop`,
     `  approve|deny <gateId>                        Resolve a risky-operation approval gate`,
-    `  tick [--dry-run]                             Run a single orchestrator poll/dispatch/verify tick`,
-    `  daemon [--interval <ms>]                     Run foreground orchestrator daemon`,
+    `  tick [--dry-run] [--backend <kind>]          Run a single orchestrator poll/dispatch/verify tick`,
+    `  daemon [--interval <ms>] [--backend <kind>]  Run foreground orchestrator daemon`,
     `  daemon install|uninstall|status              Manage macOS launchd service (${ORCH_LAUNCHD_LABEL})`,
     `  ledger [n]                                   Show last N ledger events (default 15)`,
     `  token --set <token>                          Save Discord bot token to 0600 file`,
@@ -77,14 +84,17 @@ export function formatRoutesLines(config: OrchConfig): string[] {
     return lines;
   }
 
-  lines.push(`Project routes (${config.routes.length}) [guild: ${config.guildId || "(unset)"}]:`);
+  lines.push(
+    `Project routes (${config.routes.length}) [guild: ${config.guildId || "(unset)"} | backend: ${config.backend ?? "auto"}]:`,
+  );
   for (const r of config.routes) {
     const flag = r.enabled ? "ON " : "OFF";
     const parents = r.parentChannelIds.join(",") || "*";
     const kws = r.titleKeywords.join(",") || "*";
+    const backendNote = r.backend ? ` | backend=${r.backend}` : "";
     lines.push(
       `  [${flag}] ${r.id} — ${r.name}`,
-      `        parent=${parents} | keywords=${kws} | iter<=${r.maxIterations} | workers<=${r.maxWorkers} | gates=${r.verificationGates.length}`,
+      `        parent=${parents} | keywords=${kws} | iter<=${r.maxIterations} | workers<=${r.maxWorkers} | gates=${r.verificationGates.length}${backendNote}`,
       `        repo=${r.repoPath}`,
     );
   }
@@ -99,10 +109,11 @@ export function formatThreadsLines(state: OrchState): string[] {
   const lines = [`Tracked threads (${threads.length}):`];
   for (const t of threads) {
     const worker = t.assignedWorkerHandle ? ` worker=${t.assignedWorkerHandle}` : "";
+    const backend = t.activeBackend ? ` backend=${t.activeBackend}` : "";
     const phase = t.lastWorkerPhase ? ` phase=${t.lastWorkerPhase}` : "";
     const gate = t.pendingGate?.status === "pending" ? ` gate=${t.pendingGate.id}` : "";
     lines.push(
-      `  ${t.threadId} [${t.status}] (${t.routeId}) iter=${t.iteration} pending=${t.pendingMessages.length}${worker}${phase}${gate} — ${t.name}`,
+      `  ${t.threadId} [${t.status}] (${t.routeId}) iter=${t.iteration} pending=${t.pendingMessages.length}${worker}${backend}${phase}${gate} — ${t.name}`,
     );
     if (t.statusReason) lines.push(`        reason: ${t.statusReason}`);
   }
@@ -118,6 +129,8 @@ export async function formatDashboardLines(orchHome = resolveOrchHome(), showMen
     resolveDiscordToken(orchHome),
   ]);
 
+  const resolvedBackend = await resolveOrchBackendKind(config.backend);
+  const configuredBackend = config.backend ?? "auto";
   const threads = Object.values(state.threads);
   const activeCount = threads.filter(t => t.status === "QUEUED" || t.status === "DISPATCHED" || t.status === "VERIFYING").length;
   const pausedHuman = threads.filter(t => t.status === "PAUSED_NEEDS_HUMAN").length;
@@ -126,12 +139,12 @@ export async function formatDashboardLines(orchHome = resolveOrchHome(), showMen
   const lines = [
     `=== jeo Thread Orchestrator ===`,
     `Home: ${orchHome}`,
+    `Backend: ${configuredBackend}${configuredBackend !== resolvedBackend ? ` -> ${resolvedBackend}` : ""}`,
     `Daemon: ${daemon.running ? `RUNNING (pid=${daemon.lock?.pid}, since=${daemon.lock?.startedAt})` : "STOPPED"} | launchd: ${launchd.detail}`,
     `Discord: guild=${config.guildId || "(unset)"} | ownerDM=${config.ownerDmChannelId || "(auto)"} | token=${token ? "configured" : "MISSING"}`,
     `Routes: ${config.routes.length} (${config.routes.filter(r => r.enabled).length} enabled) | linkedConfigs=${config.configFiles?.length ?? 0} | poll=${config.pollIntervalMs}ms | debounce=${config.debounceMs}ms`,
     `Threads: ${threads.length} total (${activeCount} active, ${pausedHuman} needs-human) | lastPoll=${state.lastPollAt ?? "never"}`,
   ];
-
   if (pendingGates.length > 0) {
     lines.push(`Pending approval gates (${pendingGates.length}):`);
     for (const g of pendingGates) {
@@ -159,6 +172,20 @@ function splitCsv(raw: string): string[] {
     .filter(Boolean);
 }
 
+function parseBackendFlag(raw: string): OrchBackendKind {
+  const parsed = normalizeOrchBackendKind(raw);
+  if (!parsed) {
+    throw new Error(`Invalid --backend '${raw}'. Expected one of: auto, tmux, headless, orca.`);
+  }
+  return parsed;
+}
+
+function extractBackendFlag(args: string[]): OrchBackendKind | undefined {
+  const idx = args.indexOf("--backend");
+  if (idx < 0) return undefined;
+  return parseBackendFlag(args[idx + 1] ?? "");
+}
+
 interface ParsedInitArgs {
   guildId?: string;
   ownerDmChannelId?: string;
@@ -166,6 +193,7 @@ interface ParsedInitArgs {
   tokenFile?: string;
   tokenEnv?: string;
   orcaBin?: string;
+  backend?: OrchBackendKind;
   pollIntervalMs?: number;
   debounceMs?: number;
   configFile?: string;
@@ -180,6 +208,7 @@ function parseInitArgs(args: string[]): ParsedInitArgs {
   let tokenFile: string | undefined;
   let tokenEnv: string | undefined;
   let orcaBin: string | undefined;
+  let backend: OrchBackendKind | undefined;
   let pollIntervalMs: number | undefined;
   let debounceMs: number | undefined;
   let configFile: string | undefined;
@@ -197,6 +226,7 @@ function parseInitArgs(args: string[]): ParsedInitArgs {
     } else if (a === "--token-file") tokenFile = next().trim() || undefined;
     else if (a === "--token-env") tokenEnv = next().trim() || undefined;
     else if (a === "--orca-bin") orcaBin = next().trim() || undefined;
+    else if (a === "--backend") backend = parseBackendFlag(next());
     else if (a === "--poll") {
       const n = Number.parseInt(next(), 10);
       if (Number.isFinite(n) && n >= 2000) pollIntervalMs = n;
@@ -217,6 +247,7 @@ function parseInitArgs(args: string[]): ParsedInitArgs {
       tokenFile ||
       tokenEnv ||
       orcaBin ||
+      backend ||
       typeof pollIntervalMs === "number" ||
       typeof debounceMs === "number" ||
       configFile ||
@@ -230,6 +261,7 @@ function parseInitArgs(args: string[]): ParsedInitArgs {
     tokenFile,
     tokenEnv,
     orcaBin,
+    backend,
     pollIntervalMs,
     debounceMs,
     configFile,
@@ -263,6 +295,7 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
   let ownerDmChannelId: string | undefined;
   let ownerUserIds: string[] | undefined;
   let local = false;
+  let backend: OrchBackendKind | undefined;
   const gates: VerificationGate[] = [];
   const positional: string[] = [];
 
@@ -281,6 +314,7 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
     else if (a === "--same-failure-limit") sameFailureLimit = Number.parseInt(next(), 10) || 2;
     else if (a === "--max-workers") maxWorkers = Number.parseInt(next(), 10) || 3;
     else if (a === "--no-spawn") spawnIfBusy = false;
+    else if (a === "--backend") backend = parseBackendFlag(next());
     else if (a === "--guild") guildId = next().trim() || undefined;
     else if (a === "--dm") ownerDmChannelId = next().trim() || undefined;
     else if (a === "--owner" || a === "--owners") {
@@ -329,6 +363,7 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
     spawnIfBusy,
     verificationGates: gates,
     ...(parsedQaMarkers && parsedQaMarkers.length > 0 ? { allowBotQaMarkers: parsedQaMarkers } : {}),
+    ...(backend ? { backend } : {}),
   });
 
   return { route, guildId, ownerDmChannelId, ownerUserIds, local };
@@ -396,7 +431,7 @@ export async function executeOrchAction(
       }
       return {
         lines: [
-          `Usage: ${prefix} init <guildId> [--dm <channelId>] [--owner <u1,u2>] [--poll <ms>] [--debounce <ms>] [--token-file <path>] [--token-env <var>] [--orca-bin <path>] [--local]`,
+          `Usage: ${prefix} init <guildId> [--dm <channelId>] [--owner <u1,u2>] [--backend auto|tmux|headless|orca] [--poll <ms>] [--debounce <ms>] [--token-file <path>] [--token-env <var>] [--orca-bin <path>] [--local]`,
           `   or: ${prefix} init --config <path-to-.jeo/orch.json>  (or place ${LOCAL_ORCH_CONFIG_RELPATH} in this repo and re-run \`${prefix} init\`)`,
         ],
         exitCode: 1,
@@ -413,6 +448,7 @@ export async function executeOrchAction(
           tokenFile: parsed.tokenFile,
           tokenEnv: parsed.tokenEnv,
           orcaBin: parsed.orcaBin,
+          backend: parsed.backend,
           pollIntervalMs: parsed.pollIntervalMs,
           debounceMs: parsed.debounceMs,
           writeLocalPath: targetPath,
@@ -446,6 +482,7 @@ export async function executeOrchAction(
         tokenFile: parsed.tokenFile,
         tokenEnv: parsed.tokenEnv,
         orcaBin: parsed.orcaBin,
+        backend: parsed.backend,
         pollIntervalMs: parsed.pollIntervalMs,
         debounceMs: parsed.debounceMs,
       },
@@ -453,7 +490,7 @@ export async function executeOrchAction(
     );
     return {
       lines: [
-        `Updated orchestrator config in ${orchHome}/routes.json (guild=${cfg.guildId || "(unset)"}, owners=${cfg.ownerUserIds.length}, routes=${cfg.routes.length}).`,
+        `Updated orchestrator config in ${orchHome}/routes.json (guild=${cfg.guildId || "(unset)"}, backend=${cfg.backend ?? "auto"}, owners=${cfg.ownerUserIds.length}, routes=${cfg.routes.length}).`,
         ...formatRoutesLines(cfg),
       ],
     };
@@ -533,6 +570,85 @@ export async function executeOrchAction(
   }
   if (sub === "threads") {
     return { lines: formatThreadsLines(await loadOrchState(orchHome)) };
+  }
+  if (sub === "attach") {
+    const target = rest.find(a => !a.startsWith("--"))?.trim();
+    const [config, state] = await Promise.all([loadOrchConfig(orchHome), loadOrchState(orchHome)]);
+    const tmuxBackend = new TmuxWorkerBackend({ orchHome });
+
+    let attachCmd: string[] | undefined;
+    let detail = "";
+
+    if (target) {
+      if (parseTmuxWorkerHandle(target) || target.startsWith("jeo-orch-")) {
+        attachCmd = (await tmuxBackend.resolveAttachCommand(target)) ?? tmuxBackend.attachCommand(target);
+        detail = `handle=${target}`;
+      } else {
+        const matchedThread = state.threads[target];
+        if (matchedThread?.assignedWorkerHandle) {
+          attachCmd = await tmuxBackend.resolveAttachCommand(matchedThread.assignedWorkerHandle);
+          detail = `thread=${matchedThread.threadId} worker=${matchedThread.assignedWorkerHandle}`;
+        }
+        if (!attachCmd) {
+          const routeId = matchedThread?.routeId ?? target;
+          const route = config.routes.find(r => r.id === routeId);
+          if (route) {
+            const worktree = route.orcaWorktreePath ?? route.repoPath;
+            const workers = await tmuxBackend.listRepoWorkers(worktree);
+            const sessionName = workers[0]?.sessionName ?? tmuxSessionNameForRepo(worktree);
+            attachCmd = ["tmux", "attach-session", "-t", sessionName];
+            detail = workers[0]
+              ? `route=${route.id} worker=${workers[0].handle} session=${sessionName}`
+              : `route=${route.id} session=${sessionName} (not running yet)`;
+          }
+        }
+      }
+    } else {
+      const activeTmuxThread = Object.values(state.threads).find(
+        t => t.assignedWorkerHandle && parseTmuxWorkerHandle(t.assignedWorkerHandle),
+      );
+      if (activeTmuxThread?.assignedWorkerHandle) {
+        attachCmd = await tmuxBackend.resolveAttachCommand(activeTmuxThread.assignedWorkerHandle);
+        detail = `thread=${activeTmuxThread.threadId} worker=${activeTmuxThread.assignedWorkerHandle}`;
+      }
+      if (!attachCmd) {
+        for (const route of config.routes) {
+          const worktree = route.orcaWorktreePath ?? route.repoPath;
+          const workers = await tmuxBackend.listRepoWorkers(worktree);
+          if (workers.length > 0) {
+            const sessionName = workers[0]!.sessionName ?? tmuxSessionNameForRepo(worktree);
+            attachCmd = ["tmux", "attach-session", "-t", sessionName];
+            detail = `route=${route.id} worker=${workers[0]!.handle} session=${sessionName}`;
+            break;
+          }
+        }
+      }
+      if (!attachCmd && config.routes.length === 1) {
+        const onlyRoute = config.routes[0]!;
+        const sessionName = tmuxSessionNameForRepo(onlyRoute.orcaWorktreePath ?? onlyRoute.repoPath);
+        attachCmd = ["tmux", "attach-session", "-t", sessionName];
+        detail = `route=${onlyRoute.id} session=${sessionName}`;
+      }
+    }
+
+    if (!attachCmd) {
+      return {
+        lines: [
+          target
+            ? `Could not resolve a tmux worker or route for '${target}'.`
+            : "No active tmux worker session found. Pass a routeId or worker handle: `attach <routeId|handle>`.",
+        ],
+        exitCode: 1,
+      };
+    }
+
+    return {
+      lines: [
+        `Attach (${detail}):`,
+        `  ${attachCmd.join(" ")}`,
+      ],
+      attachCommand: attachCmd,
+    };
   }
   if (sub === "pause" || sub === "resume" || sub === "stop" || sub === "retry") {
     const threadId = rest[0]?.trim();
@@ -638,8 +754,9 @@ export async function executeOrchAction(
   }
   if (sub === "tick" || sub === "dry-run") {
     const dryRun = sub === "dry-run" || rest.includes("--dry-run");
+    const backend = extractBackendFlag(rest);
     const logs: string[] = [];
-    const summary = await runOrchOnce({ dryRun, orchHome, log: m => logs.push(m) });
+    const summary = await runOrchOnce({ dryRun, orchHome, backend, log: m => logs.push(m) });
     return {
       lines: [
         ...logs,
@@ -696,9 +813,11 @@ export async function executeOrchAction(
     }
     const intervalIdx = rest.indexOf("--interval");
     const pollIntervalMs = intervalIdx >= 0 ? Number.parseInt(rest[intervalIdx + 1] ?? "", 10) : undefined;
+    const backend = extractBackendFlag(rest);
     await runOrchDaemon({
       orchHome,
       pollIntervalMs: pollIntervalMs && Number.isFinite(pollIntervalMs) ? pollIntervalMs : undefined,
+      backend,
     });
     return { lines: [] };
   }
@@ -712,6 +831,17 @@ export async function runOrch(args: string[]): Promise<void> {
   const result = await executeOrchAction(args, { prefix: "jeo orch" });
   for (const line of result.lines) {
     console.log(line);
+  }
+  if (result.attachCommand && !args.includes("--print") && process.stdin.isTTY && process.stdout.isTTY) {
+    const cmd =
+      process.env.TMUX && result.attachCommand[0] === "tmux" && result.attachCommand[1] === "attach-session"
+        ? ["tmux", "switch-client", ...result.attachCommand.slice(2)]
+        : result.attachCommand;
+    const proc = Bun.spawnSync(cmd, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    if (proc.exitCode !== 0) {
+      process.exitCode = proc.exitCode;
+    }
+    return;
   }
   if (result.exitCode && result.exitCode !== 0) {
     process.exitCode = result.exitCode;

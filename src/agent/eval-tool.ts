@@ -42,11 +42,13 @@ import { assertBashAllowed, type ToolResult } from "./tools";
 import type { ToolHandler } from "./engine";
 import {
   runSubagentOnce,
-  MAX_FANOUT,
+  resolveRoleFanoutLimit,
   type SubagentTaskConfig,
   type SubagentRunResult,
   type TaskSubEvent,
 } from "./task-tool";
+import { resolveScalerCeilings, type SubagentScaler, type SubagentScalerConfig } from "./subagent-scaler";
+import type { Config } from "./state";
 import type { SubagentMessage } from "./session";
 import { getSubagentRole, defaultSubagentRole, subagentRoleIds } from "./subagents";
 import { loadProjectContext, type ProjectContextFile } from "./context-files";
@@ -62,6 +64,8 @@ export interface EvalToolOptions {
   steer?: () => string[];
   /** Restore, in order, messages drained for children but consumed by none. */
   restoreSteer?: (messages: string[]) => void;
+  /** Optional concurrency scaler override (defaults to the shared scaler). */
+  scaler?: SubagentScaler;
 }
 
 /** Structured result `task()` resolves to inside eval-authored code — a
@@ -85,16 +89,13 @@ function toEvalResult(r: SubagentRunResult): EvalTaskResult {
  *  script cannot bypass it via `parallel()`/`pipeline()`/a bare loop no matter
  *  how it shapes the calls. Generous (workflows genuinely chaining many small
  *  steps are the whole point of this tool) but not unbounded. */
-const MAX_EVAL_TASK_CALLS = 40;
+const MAX_EVAL_TASK_CALLS = 64;
 
 /** Hard cap on a single `parallel()`/`pipeline()` call's item-array length
- *  (queue size, not concurrency — both always run at most MAX_FANOUT at once
- *  regardless of how many items are queued behind that). Mirrors
- *  MAX_SERIAL_EXECUTOR's philosophy in task-tool.ts: an eval script is
- *  self-documenting code (unlike a one-shot `tasks[]` JSON batch), so no
- *  justification-string gate is required, but a hard ceiling still exists so
- *  a buggy/malicious loop cannot queue an unbounded batch. */
-const MAX_PARALLEL_QUEUE = 20;
+ *  (queue size, not concurrency — main-thread semaphore still enforces the live
+ *  role-split concurrency budget regardless of queue length). Raised to 32 so
+ *  16-way read-only parallel waves fit comfortably. */
+const MAX_PARALLEL_QUEUE = 32;
 
 /** Wall-clock budget for one `eval` call — mirrors `bashTool`'s own default
  *  timeout philosophy (a runaway script must not block the turn forever).
@@ -105,17 +106,21 @@ const MAX_PARALLEL_QUEUE = 20;
 const DEFAULT_EVAL_TIMEOUT_MS = 300_000; // 5 minutes
 const MAX_EVAL_TIMEOUT_MS = 1_800_000; // 30 minutes — same outer ceiling as JEO_CALL_TIMEOUT_MS's default
 
-export function evalToolProtocolLine(config?: Pick<import("./state").Config, "subagents">): string {
+export function evalToolProtocolLine(config?: Pick<Config, "subagents"> & SubagentScalerConfig): string {
   if (currentSandboxExecution()) {
     return "eval {code, timeoutMs?} executes JavaScript in the persistent session hands kernel at the mapped working directory. Filesystem/process access stays inside the container. task(), parallel(), and pipeline() orchestration are not available there; use the parent task tool to delegate model work.";
   }
+  const { readOnlyCeiling, executorCeiling } = resolveScalerCeilings(config);
+  const concurrencyDesc = readOnlyCeiling === executorCeiling
+    ? `max ${readOnlyCeiling} concurrent`
+    : `up to ${readOnlyCeiling} concurrent for read-only roles, ${executorCeiling} for executor (429-adaptive)`;
   return (
     `eval    {code, timeoutMs?}  — Dynamic Workflows: write an async JS function BODY (return value or throw) ` +
     `composing subagent dispatch with REAL control flow (loops/conditionals/sequencing) instead of one static tool call. ` +
     `In scope: task(role, taskText, context?) -> {success, output, error?} runs ONE subagent to completion ` +
     `(role: ${subagentRoleIds(config).join("|")}, same roles as the 'task' tool); ` +
-    `parallel(thunks) -> results[] runs an array of () => Promise thunks through a bounded pool (max ${MAX_FANOUT} concurrent, input order kept); ` +
-    `pipeline(items, ...stages) -> results[] maps items through one-arg async stages left-to-right with a barrier between stages, each stage itself bounded at ${MAX_FANOUT} concurrent ` +
+    `parallel(thunks) -> results[] runs an array of () => Promise thunks through a bounded pool (${concurrencyDesc}, queue cap ${MAX_PARALLEL_QUEUE}, input order kept); ` +
+    `pipeline(items, ...stages) -> results[] maps items through one-arg async stages left-to-right with a barrier between stages, each stage bounded at ${concurrencyDesc} ` +
     `(stage 1 gets the item, later stages get the previous stage's result); log(message) prints a progress line. ` +
     `Runs in an isolated worker with a hard wall-clock timeout (default ${Math.round(DEFAULT_EVAL_TIMEOUT_MS / 1000)}s, override with {timeoutMs} up to ${Math.round(MAX_EVAL_TIMEOUT_MS / 1000)}s). ` +
     `Use this ONLY when the work genuinely needs sequential composition or branching across multiple subagent calls that 'task's tasks[] (single-stage, parallel-only) cannot express — ` +
@@ -131,8 +136,9 @@ export function evalToolProtocolLine(config?: Pick<import("./state").Config, "su
 // worker's own scope, so `parallel`'s thunks and `pipeline`'s stage functions
 // (arbitrary closures the script defines) never need to cross the postMessage
 // boundary — only `task()`'s plain-data request/response does.
-const WORKER_BOOTSTRAP = `
-const MAX_FANOUT = ${MAX_FANOUT};
+function buildWorkerBootstrap(workerMaxFanout: number): string {
+  return `
+const MAX_FANOUT = ${workerMaxFanout};
 const MAX_PARALLEL_QUEUE = ${MAX_PARALLEL_QUEUE};
 let nextReqId = 0;
 const pending = new Map();
@@ -209,6 +215,7 @@ self.onmessage = async (ev) => {
   }
 };
 `;
+}
 
 /** One RPC round-trip's shape, as posted by the worker. */
 interface TaskRequestMsg {
@@ -281,23 +288,25 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     // entirely, e.g. Promise.all(items.map(i => task(...)))) — passes through
     // this ONE main-thread RPC handler (task_request below), so gating
     // concurrency HERE, not just inside the worker's own boundedMap, is what
-    // actually makes "at most MAX_FANOUT concurrent" unbypassable regardless
+    // actually makes role-split dynamic concurrency unbypassable regardless
     // of how the script shapes its calls.
     let inFlight = 0;
-    const fanoutQueue: Array<{ entry: () => void; remove: () => void }> = [];
+    const fanoutQueue: Array<{ roleReadOnly: boolean; entry: () => void; remove: () => void }> = [];
     // `abortSignal` here is `rpcSignal` (settle-aware — see below), NOT
     // `combinedSignal`: a QUEUED (not yet dispatched) request must stop
     // waiting for a slot the instant the tool settles, even though nothing
     // was ever sent to runSubagentOnce for it to cancel.
-    const acquireFanoutSlot = (abortSignal: AbortSignal): Promise<void> => {
+    const acquireFanoutSlot = (abortSignal: AbortSignal, roleReadOnly: boolean): Promise<void> => {
       if (abortSignal.aborted) return Promise.reject(new Error("eval settled before this task() dispatch reached the front of the queue."));
-      if (inFlight < MAX_FANOUT) {
+      const queueDemand = inFlight + fanoutQueue.length + 1;
+      const limit = resolveRoleFanoutLimit(opts.config, roleReadOnly, queueDemand, opts.scaler);
+      if (inFlight < limit) {
         inFlight++;
         return Promise.resolve();
       }
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       const entry = () => { inFlight++; resolve(); };
-      const queued = { entry, remove: () => {} };
+      const queued = { roleReadOnly, entry, remove: () => {} };
       const onQueueAbort = () => {
         const idx = fanoutQueue.indexOf(queued);
         if (idx !== -1) fanoutQueue.splice(idx, 1); // still waiting — drop it, never dispatched
@@ -310,11 +319,21 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
     };
     const releaseFanoutSlot = (): void => {
       inFlight--;
-      const next = fanoutQueue.shift();
-      if (next) next.entry();
+      for (let i = 0; i < fanoutQueue.length; ) {
+        const waiter = fanoutQueue[i]!;
+        const queueDemand = inFlight + fanoutQueue.length;
+        const limit = resolveRoleFanoutLimit(opts.config, waiter.roleReadOnly, queueDemand, opts.scaler);
+        if (inFlight < limit) {
+          fanoutQueue.splice(i, 1);
+          waiter.entry();
+        } else {
+          i++;
+        }
+      }
     };
 
-    const blob = new Blob([WORKER_BOOTSTRAP], { type: "application/javascript" });
+    const workerMaxFanout = resolveScalerCeilings(opts.config).readOnlyCeiling;
+    const blob = new Blob([buildWorkerBootstrap(workerMaxFanout)], { type: "application/javascript" });
     const url = URL.createObjectURL(blob);
     const worker = new Worker(url);
 
@@ -419,7 +438,7 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
             throw new Error(`eval script exceeded the per-call task() dispatch cap (${MAX_EVAL_TASK_CALLS}) — split the workflow across multiple eval calls.`);
           }
           taskCalls++;
-          await acquireFanoutSlot(rpcSignal);
+          await acquireFanoutSlot(rpcSignal, role.readOnly);
           let steerQueue: SteerMessage[] | undefined;
           try {
             if (projectContext === undefined) projectContext = await loadProjectContext(cwd);
@@ -446,6 +465,7 @@ export function createEvalTool(opts: EvalToolOptions): ToolHandler {
               }),
               projectContext,
               excludedCredentialScopes,
+              scaler: opts.scaler,
             });
             safePostMessage({ type: "task_response", id, ok: true, result: toEvalResult(result) });
           } finally {

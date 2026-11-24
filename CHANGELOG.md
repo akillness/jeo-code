@@ -16,11 +16,12 @@ _Role-split dynamic subagent scaling (default concurrency 6), Discord live think
 - **Pluggable Orchestrator Worker Backends (`src/orch/backend.ts`, `src/orch/tmux-backend.ts`, `src/orch/headless-backend.ts`, `src/orch/engine.ts`, `src/orch/orca.ts`, `src/orch/store.ts`, `src/commands/orch.ts`):** Resolve worker backends cleanly (`auto` → `tmux` when available → `headless` fallback, with `orca` opt-in via `--backend`), supporting `jeo orch attach` and live thinking/task sidecar status snapshots.
 
 ### Changed
-- **Bilingual Skill Router & Conversational Abstention (`src/agent/skill-router.ts`, `test/karpathy-skill-router.test.ts`):** Add Stage-0 conversational abstention, Korean/English boundary-aware lexical + IDF scoring, negated-phrase filtering, optional `routing-index.v1.json` enrichment, and raise `SKILL_ROUTE_TOP_K` from `3` to `8`.
+- **Bilingual Skill Router & Conversational Abstention (`src/agent/skill-router.ts`, `test/karpathy-skill-router.test.ts`):** Add Stage-0 conversational abstention, Korean/English boundary-aware lexical + IDF scoring, single-character Korean tech token (`웹`/`앱`/`깃`/`봇`/`맵`/`뷰`/`툴`) and compound-stem (`딥리서치하고`, `깃푸시`, `실동작검증`) expansions, negated-phrase filtering, optional `routing-index.v1.json` enrichment, and raise `SKILL_ROUTE_TOP_K` from `3` to `8`.
 
 ### Fixed
 - **Harness² Workspace Component Mapping (`.harness2/workspace.json`):** Map `c5_subagents` (`src/prompts/agents`, `src/agent/subagents.ts`) and `c8_plugins_hooks` (`src/agent/hooks.ts`) to real tracked repository paths so `test/harness2-evolution.test.ts` passes cleanly in fresh CI checkouts as well as locally.
 - **Monitor Registry Incomplete-Lease Invariant (`src/agent/monitor-registry.ts`):** Keep unconfirmed/incomplete monitor entries sticky in `active` / `unobserved()` until reaped cleanly, restoring `JobRegistry` parity and `test/shell-lease.test.ts` / `test/monitor-drain.test.ts` guarantees.
+- **Post-Abort PTY Stdin Handoff & Coalesced Ctrl+C/Paste-End (`src/commands/launch.ts`):** Keep the in-flight abort harness attached across turn teardown until `interactiveTurnActive` clears (preserving post-abort partial input), process coalesced `\u0003`/`PASTE_END`/command segments in `captureAfterAbort`, and handle leading Ctrl+C before trailing commands in `kfDataHandler` without falsely exiting.
 
 ## [1.0.13] - 2026-11-23
 _Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes._

@@ -143,3 +143,37 @@ test("route-skills: Korean technical prompts route accurately without alphabetic
   expect(sel.topK[0]?.name).toBe("blender-skills");
   expect(sel.topK.some(c => c.name === "agent-beacon")).toBe(false);
 });
+
+test("route-skills: single-char Korean tech terms (웹/앱/깃) route cleanly", () => {
+  const mk = (name: string, summary: string) => ({ name, command: `jeo /${name}`, summary, whenToUse: summary, details: "" });
+  const skills = [
+    mk("git-workflow", "Git branch, commit, push, and PR workflow automation."),
+    mk("web-design-guidelines", "Web UI and responsive app layout guidelines."),
+    mk("blender-skills", "Blender 3D modeling and rigging."),
+  ];
+  const webSel = routeSkillsForTask("웹 앱 UI 레이아웃 수정해줘", skills);
+  expect(webSel.reason).toBe("ok");
+  expect(webSel.topK.map(c => c.name)).toContain("web-design-guidelines");
+  expect(webSel.topK.map(c => c.name)).not.toContain("blender-skills");
+
+  const gitSel = routeSkillsForTask("깃 커밋하고 푸시해줘", skills);
+  expect(gitSel.reason).toBe("ok");
+  expect(gitSel.topK.map(c => c.name)).toContain("git-workflow");
+  expect(gitSel.topK.map(c => c.name)).not.toContain("blender-skills");
+});
+
+test("route-skills: Korean compound multi-intent stems (딥리서치하고, 깃푸시, 실동작검증) match accurately", () => {
+  const mk = (name: string, summary: string) => ({ name, command: `jeo /${name}`, summary, whenToUse: summary, details: "" });
+  const skills = [
+    mk("deep-research", "Structured deep research workflow with parallel web search and report generation."),
+    mk("git-workflow", "Git commit, push, branch management, and GitHub workflow."),
+    mk("code-review", "Code review, audit, and architecture quality checks."),
+    mk("blender-skills", "Blender 3D sculpting and rendering."),
+  ];
+  const sel = routeSkillsForTask("subagent 이용해. 추가 리뷰 및 딥리서치하고 개선해서 깃푸시하고 실동작검증까지 진행", skills);
+  expect(sel.reason).toBe("ok");
+  const names = sel.topK.map(c => c.name);
+  expect(names).toContain("deep-research");
+  expect(names).toContain("git-workflow");
+  expect(names).not.toContain("blender-skills");
+});

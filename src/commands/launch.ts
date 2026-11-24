@@ -1794,37 +1794,53 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       return emergencyInput.inPaste;
     };
     const captureAfterAbort = (chunk: string, view: LaunchTuiInstance | null): void => {
-      const paste = emergencyInput.inPaste || chunk.includes(PASTE_START) || chunk.includes(PASTE_END) || chunk.includes("\u0016");
-      if (paste) emergencyPaste = true;
-      const ctrlCClear = !chunk.includes(PASTE_START) && chunkHasCtrlC(chunk);
-      if (ctrlCClear) queueBusyClear?.();
-      const submitted = !emergencyInput.inPaste && /[\r\n]/.test(chunk) && !chunk.includes(PASTE_START) && !chunk.includes(PASTE_END);
-      captureLivePromptInputChunk(emergencyInput, chunk, { multiline: true });
-      if (ctrlCClear) {
+      const feedSegment = (seg: string): void => {
+        if (!seg) return;
+        const ctrlCClear = !seg.includes(PASTE_START) && chunkHasCtrlC(seg);
+        if (ctrlCClear) {
+          queueBusyClear?.();
+          const lastCtrlC = seg.lastIndexOf("\u0003");
+          const prefix = lastCtrlC === -1 ? seg : seg.slice(0, lastCtrlC + 1);
+          const tail = lastCtrlC === -1 ? "" : seg.slice(lastCtrlC + 1);
+          captureLivePromptInputChunk(emergencyInput, prefix, { multiline: true });
+          emergencyInput.partial = "";
+          emergencyInput.pastedLines.length = 0;
+          if (!emergencyInput.inPaste) emergencyPaste = false;
+          if (tail) feedSegment(tail);
+          return;
+        }
+        const paste = emergencyInput.inPaste || seg.includes(PASTE_START) || seg.includes(PASTE_END) || seg.includes("\u0016");
+        if (paste) emergencyPaste = true;
+        if (seg.includes(PASTE_END) && !seg.includes(PASTE_START)) {
+          const endIdx = seg.indexOf(PASTE_END) + PASTE_END.length;
+          captureLivePromptInputChunk(emergencyInput, seg.slice(0, endIdx), { multiline: true });
+          if (!emergencyInput.inPaste && !emergencyInput.partial && emergencyInput.pastedLines.length === 0) emergencyPaste = false;
+          if (endIdx < seg.length) feedSegment(seg.slice(endIdx));
+          return;
+        }
+        const submitted = !emergencyInput.inPaste && /[\r\n]/.test(seg) && !seg.includes(PASTE_START) && !seg.includes(PASTE_END);
+        captureLivePromptInputChunk(emergencyInput, seg, { multiline: true });
+        if (!emergencyInput.partial && !emergencyInput.inPaste) emergencyPaste = false;
+        if (!submitted) return;
+        const endpoint = sessionNotifyEndpoint;
+        if (!emergencyPaste && /^\/discord\s+(?:control\s+off|stop)$/.test(emergencyInput.partial.trim())) {
+          const isStop = emergencyInput.partial.trim() === "/discord stop";
+          if (isStop && liveDiscordBridge?.active) {
+            const bridge = liveDiscordBridge;
+            liveDiscordBridge = undefined;
+            void bridge.close().catch(() => undefined);
+          }
+          if (endpoint && endpointMatchesCurrentSession()) endpoint.setDiscordControlEnabled(false);
+          queueBusyClear?.();
+          const noticeText = isStop ? "Discord bridge stopped; access revoked." : "Discord control revoked for this session.";
+          if (view) view.events().onNotice?.(noticeText);
+          else console.log(noticeText);
+        }
         emergencyInput.partial = "";
         emergencyInput.pastedLines.length = 0;
-        if (!emergencyInput.inPaste) emergencyPaste = false;
-        return;
-      }
-      if (!emergencyInput.partial && !emergencyInput.inPaste) emergencyPaste = false;
-      if (!submitted) return;
-      const endpoint = sessionNotifyEndpoint;
-      if (!emergencyPaste && /^\/discord\s+(?:control\s+off|stop)$/.test(emergencyInput.partial.trim())) {
-        const isStop = emergencyInput.partial.trim() === "/discord stop";
-        if (isStop && liveDiscordBridge?.active) {
-          const bridge = liveDiscordBridge;
-          liveDiscordBridge = undefined;
-          void bridge.close().catch(() => undefined);
-        }
-        if (endpoint && endpointMatchesCurrentSession()) endpoint.setDiscordControlEnabled(false);
-        queueBusyClear?.();
-        const noticeText = isStop ? "Discord bridge stopped; access revoked." : "Discord control revoked for this session.";
-        if (view) view.events().onNotice?.(noticeText);
-        else console.log(noticeText);
-      }
-      emergencyInput.partial = "";
-      emergencyInput.pastedLines.length = 0;
-      emergencyPaste = false;
+        emergencyPaste = false;
+      };
+      feedSegment(chunk);
     };
     const selectedModel = sessionModel || defaultModel;
     if (selectedModel.startsWith("agy/")) {
@@ -1940,6 +1956,26 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     let tui: LaunchTuiInstance | null = null;
     let tuiStarted = false;
     let tuiFinished = false;
+    let activeAbortHarness: { dispose(): void } | undefined;
+    let turnLoopActive = false;
+    let turnAborted = false;
+    const finishInteractiveTurn = (forceClearTurnActive = false): void => {
+      activeAbortHarness?.dispose();
+      activeAbortHarness = undefined;
+      if (
+        turnAborted &&
+        !emergencyInput.inPaste &&
+        queueBusyInput &&
+        (emergencyInput.partial.length > 0 || emergencyInput.pendingLines.length > 0)
+      ) {
+        for (const line of emergencyInput.pendingLines.splice(0)) queueBusyInput(`${line}\r`);
+        if (emergencyInput.partial) {
+          queueBusyInput(emergencyInput.partial);
+          emergencyInput.partial = "";
+        }
+      }
+      if (forceClearTurnActive || tui) interactiveTurnActive = false;
+    };
     try {
     const preflightSignal = preflightHarness && opts?.signal ? AbortSignal.any([preflightHarness.controller.signal, opts.signal]) : preflightHarness?.controller.signal ?? opts?.signal;
     const turnConfig = await readGlobalConfig();
@@ -2488,13 +2524,17 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           }
         },
         onAbortNotice: msg => {
+          if (!turnLoopActive) return;
           if (tui) tui.events().onNotice?.(msg);
           else console.log(msg);
         },
         onHardExit: () => {
+          if (!turnLoopActive) { handleCtrlC(); return; }
           handleTurnCtrlC(() => { if (tui && !tuiFinished) { tui.finish("Cancelled.", { ok: false }); tuiFinished = true; } });
         },
       });
+      activeAbortHarness = harness;
+      turnLoopActive = true;
       const abortRemote = () => harness.controller.abort();
       opts?.signal?.addEventListener("abort", abortRemote, { once: true });
       if (opts?.signal?.aborted) abortRemote();
@@ -3112,7 +3152,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       } finally {
         opts?.signal?.removeEventListener("abort", abortRemote);
         activeTurnAbort = undefined;
-        harness.dispose();
+        turnLoopActive = false;
+        turnAborted = ac.signal.aborted;
         originatingTurnOpen = false;
         activeTui = null;
         currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
@@ -3131,8 +3172,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       if (tui && !tuiFinished) {
         tui.finish(`! ${friendlyProviderError(err)}`, { ok: false });
         tuiFinished = true;
-        interactiveTurnActive = false;
       }
+      finishInteractiveTurn();
       flushSubagentWarnings();
       flushDetachedEvents();
       throw err;
@@ -3186,7 +3227,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       opts?.signal?.throwIfAborted();
       if (tui && !tuiFinished) { tui.finish(reply); tuiFinished = true; }
     } finally {
-      if (tui) interactiveTurnActive = false;
+      finishInteractiveTurn();
       flushSubagentWarnings();
       flushDetachedEvents();
     }
@@ -3268,7 +3309,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
       }
       if (activeTui === tui) activeTui = null;
       preflightHarness?.dispose();
-      interactiveTurnActive = false;
+      finishInteractiveTurn(true);
     }
   };
 
@@ -3933,8 +3974,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     const kfUtf8Decoder = new StringDecoder("utf8");
     const kfDataHandler = (chunk: Buffer) => {
       if (interactiveTurnActive) return;
-      const data = kfUtf8Decoder.write(chunk);
+      let data = kfUtf8Decoder.write(chunk);
       if (!data) return; // an incomplete sequence is buffered inside the decoder; wait for the rest
+      if (!pickerActive && !data.includes(PASTE_START) && chunkHasCtrlC(data)) {
+        const lastCtrlC = data.lastIndexOf("\u0003");
+        if (lastCtrlC >= 0 && lastCtrlC < data.length - 1) {
+          handleCtrlC();
+          data = data.slice(lastCtrlC + 1);
+        }
+      }
       const result = filterPromptInputChunk(
         data,
         activeRl ? (activeRl as unknown as { line: string; cursor: number }) : null,

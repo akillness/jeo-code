@@ -49,7 +49,8 @@ export interface SkillRouteSelection {
   routing: string;
 }
 
-const TOKEN_RE = /[a-z0-9][a-z0-9.+#/-]*|[가-힣]{2,}/gi;
+export const SINGLE_CHAR_KO_TECH = new Set(["웹", "앱", "깃", "봇", "맵", "뷰", "툴"]);
+const TOKEN_RE = /[a-z0-9][a-z0-9.+#/-]*|[가-힣]+/gi;
 const STOPWORDS = new Set([
   "the", "are", "you", "your", "and", "for", "with", "that", "this", "have",
   "has", "had", "what", "when", "where", "which", "how", "why", "who", "whom",
@@ -68,11 +69,11 @@ const STOPWORDS = new Set([
   "차이", "차이점", "개념", "간단하게", "어떨까", "오늘", "현재", "우리", "방법",
 ]);
 
-const KO_EN_EXPANSIONS: Record<string, string[]> = {
+export const KO_EN_EXPANSIONS: Record<string, string[]> = {
   블렌더: ["blender"], 리깅: ["rigging", "rig"], 믹사모: ["mixamo"], 모션: ["motion"],
   한글: ["hwp", "hwpx"], 파싱: ["parse", "extract"], 치환: ["replace", "edit"],
   리액트: ["react"], 넥스트: ["nextjs"], 성능: ["performance", "optimization"],
-  최적화: ["optimization", "performance"], 리뷰: ["review"], 코드리뷰: ["code-review"],
+  최적화: ["optimization", "performance"], 리뷰: ["review", "audit"], 코드리뷰: ["code-review", "review", "audit"],
   스키마: ["schema", "database"], 데이터베이스: ["database", "schema", "sql"],
   쇼츠: ["shorts", "video"], 유튜브: ["youtube"], 영상: ["video"],
   크롬: ["chrome", "browser"], 브라우저: ["browser", "chrome"], 헤드리스: ["headless", "cdp"],
@@ -86,15 +87,27 @@ const KO_EN_EXPANSIONS: Record<string, string[]> = {
   아키텍처: ["architecture"], 테스트: ["testing", "test"], 배포: ["deploy", "deployment"],
   모니터링: ["monitoring", "observability"], 접근성: ["accessibility", "wcag", "aria"],
   반응형: ["responsive"], 디자인: ["design"], 도커: ["docker"], 환경변수: ["env", "environment"],
-  인터뷰: ["interview", "grill"], 요구사항: ["requirements", "spec"], 리서치: ["research"],
+  인터뷰: ["interview", "grill"], 요구사항: ["requirements", "spec"],
+  리서치: ["research", "investigate"], 딥리서치: ["deep-research", "deep", "research", "investigate"],
   나레이션: ["tts", "voice"], 사운드: ["sound", "audio"], 이펙트: ["vfx"],
-  온톨로지: ["ontology", "rdf", "owl"], 벤치마크: ["benchmark"], 유니티: ["unity"],
+  온톨로지: ["ontology", "rdf", "owl"], 벤치마크: ["benchmark", "measure", "evaluation"], 유니티: ["unity"],
+  깃: ["git"], 깃푸시: ["git", "push", "commit", "github", "workflow"],
+  깃허브: ["github", "git", "workflow"], 커밋: ["commit", "git", "workflow"], 푸시: ["push", "git", "workflow"],
+  브랜치: ["branch", "git"],
+  서브에이전트: ["subagent", "multi-agent", "parallel", "team"], 에이전트: ["agent"],
+  실측: ["benchmark", "measure", "evaluation", "eval"],
+  검증: ["verification", "verify", "test", "testing"], 실동작검증: ["verification", "verify", "test", "testing"],
+  개선: ["improve", "optimize", "refactor"],
+  보고서: ["report", "summary"],
+  설치: ["install", "setup", "deploy"],
+  웹: ["web"], 앱: ["app"],
+  봇: ["bot"], 맵: ["map"], 뷰: ["view"], 툴: ["tool"],
 };
 
 const CHOICE_ENUM_RE = /(?:^|[\s,])\d+\s*[.)]\s*[a-e](?=$|[\s,.)])/i;
 const CHOICE_OPT_RE = /\b(?:option\s*[a-e1-9]|choice\s*[a-e1-9])\b|(?:[1-9]\s*번\s*(?:옵션|으로|로|선택|가자)?|첫\s*번째|두\s*번째)/i;
 const META_KO_RE = /(?:방금\s*(?:말한|설명한)|다시\s*설명|그거\s*말고|그렇게\s*(?:진행|해줘|하자)|계속\s*진행)/i;
-const DOMAIN_ANCHOR_RE = /\b(?:react|next\.?js|three\.?js|webgl|blender|unity|unreal|godot|mixamo|hwp|hwpx|rhwp|sql|postgres|postgresql|bigquery|looker|supabase|firebase|genkit|vercel|docker|kubernetes|playwright|cdp|chrome|browser|mcp|fastmcp|langgraph|langsmith|langfuse|pydantic|a2a|rdf|owl|shacl|ontology|git|tdd|e2e|wcag|aria|csrf|oauth|jwt|api|prd|gtm|tts|vfx|glb|obsidian|zvec|semble|graphify|mex|hyperfine|kipris)\b|(?:블렌더|리깅|한글|리액트|코드\s*리뷰|스키마|유튜브|쇼츠|크롬|브라우저|로그|머지\s*충돌|기획서|보안|특허|옵시디언|셰이더|경쟁사|리팩토링|아키텍처|배포|모니터링|접근성|반응형|도커|환경변수|인터뷰|리서치|온톨로지|벤치마크)/i;
+const DOMAIN_ANCHOR_RE = /\b(?:react|next\.?js|three\.?js|webgl|blender|unity|unreal|godot|mixamo|hwp|hwpx|rhwp|sql|postgres|postgresql|bigquery|looker|supabase|firebase|genkit|vercel|docker|kubernetes|playwright|cdp|chrome|browser|mcp|fastmcp|langgraph|langsmith|langfuse|pydantic|a2a|rdf|owl|shacl|ontology|git|github|subagent|push|commit|tdd|e2e|wcag|aria|csrf|oauth|jwt|api|prd|gtm|tts|vfx|glb|obsidian|zvec|semble|graphify|mex|hyperfine|kipris)\b|(?:블렌더|리깅|한글|리액트|코드\s*리뷰|리뷰|스키마|유튜브|쇼츠|크롬|브라우저|로그|머지\s*충돌|기획서|보안|특허|옵시디언|셰이더|경쟁사|리팩토링|아키텍처|배포|모니터링|접근성|반응형|도커|환경변수|인터뷰|리서치|딥리서치|온톨로지|벤치마크|실측|실동작\s*검증|검증|서브에이전트|깃푸시|깃허브|커밋|푸시|개선|보고서|설치)/i;
 
 interface OfflineIndexEntry {
   name: string;
@@ -130,6 +143,7 @@ function tokens(text: string): Set<string> {
   const add = (t: string) => {
     if (!t || STOPWORDS.has(t)) return;
     if (/^\d+$/.test(t) || (/^[a-z0-9]+$/.test(t) && t.length < 2)) return;
+    if (/^[가-힣]$/.test(t) && !SINGLE_CHAR_KO_TECH.has(t)) return;
     out.add(t);
   };
   for (const m of text.toLowerCase().matchAll(TOKEN_RE)) {
@@ -147,7 +161,7 @@ function tokens(text: string): Set<string> {
       }
     }
     for (const [ko, ens] of Object.entries(KO_EN_EXPANSIONS)) {
-      if (clean === ko || (ko.length >= 2 && tok.startsWith(ko))) {
+      if (clean === ko || (ko.length >= 2 && tok.startsWith(ko)) || (ko.length >= 3 && tok.includes(ko))) {
         for (const en of ens) add(en);
       }
     }

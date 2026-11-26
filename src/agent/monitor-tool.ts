@@ -146,7 +146,7 @@ export function createMonitorTool(registry: MonitorRegistry): ToolHandler {
       : action === "cancel" ? (ids.length ? ids : registry.cancellable().map(r => r.id))
         : [];
     const result = await handle(args, cwd);
-    if (!result.error && registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;
+    if (registry.consumeMutations(targets)) result.mutationMayHaveOccurred = true;
     return result;
   };
 }

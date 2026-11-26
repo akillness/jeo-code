@@ -327,7 +327,7 @@ export class MonitorRegistry {
         shell.release();
         await shell.reaped;
         shell.dispose();
-        this.active.delete(id);
+        if (!entry.incomplete) this.active.delete(id);
         this.pendingMutations.add(id);
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
         this.notify(this.onDone, record);

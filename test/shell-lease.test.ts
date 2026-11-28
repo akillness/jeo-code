@@ -53,7 +53,9 @@ function alive(pid: number): boolean {
     const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
     return state !== "Z" && state !== "X";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // A process reaped after kill(pid, 0) can disappear at open or at read.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return false;
     throw error;
   }
 }

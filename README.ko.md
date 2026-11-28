@@ -377,9 +377,13 @@ jeo ultragoal                                      # 5. 최종 증거 기반 종
 ```bash
 jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>]
 jeo orch link ./.jeo/orch.json           # 또는 JEO_ORCH_CONFIG 환경변수 지정
-jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --gate 'unit=bun test' --local
 jeo orch tick                            # 백그라운드 상시 실행: jeo orch daemon install
 ```
+
+게이트가 없으면 검증 완료로 처리하지 않습니다. 단위 테스트는 서비스 전환이나 실제 화면 동작의 증거가 아닙니다. 필요한 결과마다 게이트를 등록하세요. 게이트는 기본적으로 워커의 워크트리에서 실행됩니다. 실행별 증거를 확인하려면 실제 결과를 기록한 시스템의 영수증에서 워커 프롬프트의 배정 ID가 게이트 환경 변수 `JEO_ORCH_DISPATCH_ID`와 일치하는지, 결과 자체가 성공인지 모두 검사하세요.
+
+새 배정은 같은 ID가 담긴 워커의 종료 결과도 필요합니다. 상태 파일을 쓰지 않는 수동 Orca 탭은 유휴 화면만으로 검증할 수 없으므로 오케스트레이터가 시작한 워커를 사용하세요.
 
 플랫폼별 상세 단독 가이드:
 - 📖 [채널 연동 개요 & 아키텍처](docs/integrations/README.md) — 기능 매트릭스 및 구조 개요
@@ -656,11 +660,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.15]** (2026-11-28) — Thread orchestration distinguishes partial work from verified completion and supports dispatch-specific evidence in project checks.
 - **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
-- **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

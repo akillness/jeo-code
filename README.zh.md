@@ -322,9 +322,13 @@ jeo ultragoal
 ```bash
 jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>]
 jeo orch link ./.jeo/orch.json           # 或设置 JEO_ORCH_CONFIG 环境变量
-jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --gate 'unit=bun test' --local
 jeo orch tick                            # 安装后台常驻服务：jeo orch daemon install
 ```
+
+没有配置检查项的轮次不能标记为已验证。单元测试不能证明服务已切换或界面流程正常；请为每项必要结果单独配置检查。检查默认在工作进程的工作树中执行。如需使用本轮凭据，请核对实际执行系统记录的分派 ID 与检查环境变量 `JEO_ORCH_DISPATCH_ID` 是否一致，并验证结果本身是否成功。
+
+新分派还需要工作进程返回含相同 ID 的终态结果。手动打开且不写状态文件的 Orca 标签页不能仅凭空闲画面通过验证；请使用编排器启动的工作进程。
 
 各平台详细独立指南：
 - 📖 [渠道集成概览与架构](docs/integrations/README.md) — 功能对比矩阵与架构图
@@ -598,11 +602,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.15]** (2026-11-28) — Thread orchestration distinguishes partial work from verified completion and supports dispatch-specific evidence in project checks.
 - **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
-- **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

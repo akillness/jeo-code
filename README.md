@@ -384,7 +384,7 @@ jeo orch init --guild <guild-id> --owner <user-id> [--dm <dm-channel-id>] [--orc
 jeo orch link ./.jeo/orch.json           # or set JEO_ORCH_CONFIG=/path/to/.jeo/orch.json
 
 # 2. Register a project route (add --local to write into <repo>/.jeo/orch.json and link it)
-jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --local
+jeo orch assign --id my-app --parent <channel-id> --repo /path/to/repo --keywords api,auth --gate 'unit=bun test' --local
 
 # 3. Run a single poll cycle or install the background macOS launchd daemon
 jeo orch tick
@@ -407,6 +407,10 @@ jeo orch daemon install                  # manage from REPL via /orch status|rou
   }
 }
 ```
+
+An empty gate list cannot verify a turn. Configure a gate for each required outcome: unit tests do not prove that a service cutover happened or that a UI flow worked. Each gate runs in the worker's worktree by default. For run-specific evidence, have the responsible system record the dispatch ID shown in the worker prompt. A project check should compare that receipt to the gate environment variable `JEO_ORCH_DISPATCH_ID` **and** validate the actual outcome; a matching ID alone is not proof.
+
+New native dispatches also require a terminal result with the matching ID. A manually opened Orca tab without the worker status sidecar cannot verify a turn, even if its screen looks idle. Use an orchestrator-launched worker.
 
 Detailed standalone guides:
 - 📖 [Channel Integrations Overview](docs/integrations/README.md) — Feature matrix and architecture overview
@@ -669,11 +673,11 @@ Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` se
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[1.0.15]** (2026-11-28) — Thread orchestration distinguishes partial work from verified completion and supports dispatch-specific evidence in project checks.
 - **[1.0.14]** (2026-11-24) — Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix.
 - **[1.0.13]** (2026-11-23) — Discord orchestrator emoji lifecycle reactions, live in-place Thinking status cards, and live-verified Orca/tilde/launchd fixes.
 - **[1.0.12]** (2026-11-23) — Multi-project Discord Thread Orchestrator & Recursive Orca Loop (`jeo orch` / `/orch`) with repo-local `.jeo/orch.json` live configs and fully configurable routes, gates, and worker pools.
 - **[1.0.11]** (2026-11-22) — Support `max` thinking level with live per-model capability metadata, automatic clamping, and Perplexity-first web search documentation.
-- **[1.0.10]** (2026-11-20) — Inbound HTTP/SSE agent server (`jeo serve`), GoalFlow workflow engine with HITL resumption, 3-tier local model cascade (`llama.cpp`/`ollama`), and Harness² offline evolution.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

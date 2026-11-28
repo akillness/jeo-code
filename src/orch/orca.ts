@@ -201,6 +201,7 @@ function isJeoAgentTerminal(term: OrcaTerminalInfo): boolean {
 
 export class CliOrcaClient implements OrchWorkerBackend {
   readonly kind = "orca" as const;
+  readonly requiresDispatchReceipt = true;
   private orcaBin: string;
   private readonly bootTimeoutMs: number;
   private readonly bootPollIntervalMs: number;
@@ -229,7 +230,8 @@ export class CliOrcaClient implements OrchWorkerBackend {
 
   async listRepoWorkers(repoPath: string): Promise<OrcaTerminalInfo[]> {
     const res = await this.exec([this.orcaBin, "terminal", "list", "--json"]);
-    if (res.exitCode !== 0) return [];
+    if (res.timedOut) throw new Error("Timed out listing Orca workers");
+    if (res.exitCode !== 0) throw new Error(extractCommandError(res, "Failed to list Orca workers"));
     let parsed: {
       ok?: boolean;
       result?: { terminals?: OrcaTerminalInfo[] };
@@ -238,10 +240,14 @@ export class CliOrcaClient implements OrchWorkerBackend {
     try {
       parsed = JSON.parse(res.stdout);
     } catch {
-      return [];
+      throw new Error("Invalid JSON while listing Orca workers");
+    }
+    if (parsed?.ok === false) throw new Error(extractOrcaError(parsed, "Failed to list Orca workers"));
+    const terminals = parsed?.result?.terminals ?? parsed?.data?.terminals;
+    if (!Array.isArray(terminals) || terminals.some(term => !term || typeof term.handle !== "string" || !term.handle.trim())) {
+      throw new Error("Invalid terminal list returned by Orca");
     }
     const target = path.resolve(expandTilde(repoPath));
-    const terminals = parsed?.result?.terminals ?? parsed?.data?.terminals ?? [];
     return terminals
       .filter(t => {
         if (!t.worktreePath) return false;
@@ -253,6 +259,7 @@ export class CliOrcaClient implements OrchWorkerBackend {
 
   async inspectWorkerState(handle: string): Promise<OrchWorkerInspection> {
     const res = await this.exec([this.orcaBin, "terminal", "read", "--terminal", handle, "--screen", "--json"]);
+    if (res.timedOut) throw new Error(`Timed out reading Orca worker ${handle}`);
     if (res.exitCode !== 0) return { state: "UNKNOWN", tail: [] };
     try {
       const parsed = JSON.parse(res.stdout) as {
@@ -271,38 +278,42 @@ export class CliOrcaClient implements OrchWorkerBackend {
         parsed?.data?.terminal?.title ??
         parsed?.data?.title ??
         "";
-      const state = classifyTerminalScreen(tail, title);
       const snapshot = this.orchHome
         ? await readWorkerStatusSnapshot(workerStatusFilePath(this.orchHome, handle))
         : undefined;
-      const freshSnapshot = isWorkerStatusSnapshotFresh(snapshot, this.snapshotMaxAgeMs) ? snapshot : undefined;
+      const owned = snapshot && (!snapshot.workerHandle || snapshot.workerHandle === handle) ? snapshot : undefined;
+      const fresh = isWorkerStatusSnapshotFresh(owned, this.snapshotMaxAgeMs) ? owned : undefined;
+      // A dispatch ID is stronger than age for a settled receipt: the engine
+      // compares the ID to its active turn, even if it was offline for a while.
+      const terminal = owned?.state === "IDLE" && (owned.dispatchId || fresh) ? owned : undefined;
+      const screenState = classifyTerminalScreen(tail, title);
+      // A prior idle prompt can still be on screen during the next turn's
+      // preflight. A fresh BUSY receipt prevents that prompt from looking reusable.
+      const state = screenState === "IDLE" && fresh?.state === "BUSY" ? "BUSY" : screenState;
+      const matching = state === "BUSY" ? (fresh?.state === "BUSY" ? fresh : undefined) : terminal;
+      const status = matching ? {
+        statusUpdatedAt: matching.updatedAt,
+        dispatchId: matching.dispatchId,
+        outcome: state === "BUSY" ? undefined : matching.outcome,
+        blockers: state === "BUSY" ? undefined : matching.blockers,
+        completedTasks: matching.completedTasks,
+        remainingTasks: matching.remainingTasks,
+        summary: matching.summary,
+        thinkingExcerpt: matching.thinkingExcerpt,
+        currentTool: matching.currentTool,
+      } : {};
 
       if (state === "BUSY") {
         const info = extractWorkerActivity(tail);
         return {
           state,
           tail,
-          phase: freshSnapshot?.phase ?? info?.phase ?? "working",
+          ...status,
+          phase: matching?.phase ?? info?.phase ?? "working",
           ...(info?.detail ? { activity: info.detail } : {}),
-          ...(freshSnapshot?.thinkingExcerpt ? { thinkingExcerpt: freshSnapshot.thinkingExcerpt } : {}),
-          ...(freshSnapshot?.currentTool ? { currentTool: freshSnapshot.currentTool } : {}),
-          ...(freshSnapshot?.completedTasks ? { completedTasks: freshSnapshot.completedTasks } : {}),
-          ...(freshSnapshot?.remainingTasks ? { remainingTasks: freshSnapshot.remainingTasks } : {}),
-          ...(freshSnapshot?.summary ? { summary: freshSnapshot.summary } : {}),
         };
       }
-      if (state === "IDLE") {
-        const idleSnapshot = snapshot?.state === "IDLE" ? snapshot : freshSnapshot;
-        return {
-          state,
-          tail,
-          ...(idleSnapshot?.completedTasks ? { completedTasks: idleSnapshot.completedTasks } : {}),
-          ...(idleSnapshot?.remainingTasks ? { remainingTasks: idleSnapshot.remainingTasks } : {}),
-          ...(idleSnapshot?.summary ? { summary: idleSnapshot.summary } : {}),
-          ...(idleSnapshot?.thinkingExcerpt ? { thinkingExcerpt: idleSnapshot.thinkingExcerpt } : {}),
-        };
-      }
-      return { state, tail };
+      return { state, tail, ...status };
     } catch {
       return { state: "UNKNOWN", tail: [] };
     }

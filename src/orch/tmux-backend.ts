@@ -98,6 +98,7 @@ export interface TmuxWorkerBackendOptions {
 
 export class TmuxWorkerBackend implements OrchWorkerBackend {
   readonly kind = "tmux" as const;
+  readonly requiresDispatchReceipt = true;
 
   private readonly orchHome: string;
   private readonly exec: ExecCommandFn;
@@ -118,7 +119,12 @@ export class TmuxWorkerBackend implements OrchWorkerBackend {
 
   async listRepoWorkers(repoPath: string): Promise<OrchWorkerInfo[]> {
     const res = await this.exec(["tmux", "list-panes", "-a", "-F", TMUX_LIST_FORMAT]);
-    if (res.exitCode !== 0 || !res.stdout.trim()) return [];
+    if (res.exitCode !== 0) {
+      const noServer = /^(?:no server running\b|no sessions\b|error connecting to .*\(No such file or directory\))/im.test(res.stderr.trim());
+      if (!res.timedOut && noServer) return [];
+      throw new Error(res.stderr || `tmux worker enumeration exited with code ${res.exitCode}`);
+    }
+    if (!res.stdout.trim()) return [];
 
     const target = path.resolve(expandTilde(repoPath));
     const expectedSession = tmuxSessionNameForRepo(target);
@@ -183,6 +189,7 @@ export class TmuxWorkerBackend implements OrchWorkerBackend {
 
     const canonicalHandle = `tmux:${parsed.paneId}`;
     const res = await this.exec(["tmux", "capture-pane", "-p", "-t", parsed.paneId, "-S", "-60"]);
+    if (res.timedOut) throw new Error(res.stderr);
     if (res.exitCode !== 0) return { state: "UNKNOWN", tail: [] };
 
     const tail = res.stdout.replace(/\r\n/g, "\n").split("\n");
@@ -196,7 +203,7 @@ export class TmuxWorkerBackend implements OrchWorkerBackend {
     const freshSnapshot = isWorkerStatusSnapshotFresh(snapshot, this.snapshotMaxAgeMs) ? snapshot : undefined;
 
     let effectiveState = screenState;
-    if (effectiveState === "UNKNOWN" && freshSnapshot?.state === "BUSY") {
+    if (freshSnapshot?.state === "BUSY") {
       effectiveState = "BUSY";
     }
 
@@ -212,6 +219,7 @@ export class TmuxWorkerBackend implements OrchWorkerBackend {
         ...(freshSnapshot?.completedTasks ? { completedTasks: freshSnapshot.completedTasks } : {}),
         ...(freshSnapshot?.remainingTasks ? { remainingTasks: freshSnapshot.remainingTasks } : {}),
         ...(freshSnapshot?.summary ? { summary: freshSnapshot.summary } : {}),
+        ...(freshSnapshot ? { statusUpdatedAt: freshSnapshot.updatedAt, dispatchId: freshSnapshot.dispatchId } : {}),
       };
     }
 
@@ -224,6 +232,9 @@ export class TmuxWorkerBackend implements OrchWorkerBackend {
         ...(idleSnapshot?.remainingTasks ? { remainingTasks: idleSnapshot.remainingTasks } : {}),
         ...(idleSnapshot?.summary ? { summary: idleSnapshot.summary } : {}),
         ...(idleSnapshot?.thinkingExcerpt ? { thinkingExcerpt: idleSnapshot.thinkingExcerpt } : {}),
+        ...(idleSnapshot?.outcome ? { outcome: idleSnapshot.outcome } : {}),
+        ...(idleSnapshot?.blockers ? { blockers: idleSnapshot.blockers } : {}),
+        ...(idleSnapshot ? { statusUpdatedAt: idleSnapshot.updatedAt, dispatchId: idleSnapshot.dispatchId } : {}),
       };
     }
 

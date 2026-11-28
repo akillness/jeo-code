@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [1.0.15] - 2026-11-28
+_Thread orchestration distinguishes partial work from verified completion and supports dispatch-specific evidence in project checks._
+
+### Fixed
+- `jeo orch` no longer counts an empty verification run, worker-reported unfinished work, or a failed check as verified. A bounded retry retains the objective; retrying a paused, assigned worker does not discard its lease.
+- Verification gates run in the worker worktree by default. Invalid gate definitions no longer disappear or run as empty shell commands. Gates can use `JEO_ORCH_DISPATCH_ID` to reject receipts left by a previous run.
+
 ## [1.0.14] - 2026-11-24
 _Role-split dynamic subagent scaling (default concurrency 6), Discord live thinking/completion cards, pluggable tmux/headless orchestrator backends, bilingual skill-router abstention, and Harness² CI mapping fix._
 

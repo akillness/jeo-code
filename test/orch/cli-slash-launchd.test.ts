@@ -11,6 +11,7 @@ import {
   isDaemonRunning,
   loadOrchConfig,
   loadOrchState,
+  loadStoredOrchConfig,
   ORCH_LAUNCHD_LABEL,
   resolveDiscordToken,
   runOrchDaemon,
@@ -85,6 +86,43 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
     // Never allow foreground blocking daemon inside TUI
     const blocked = await runOrchSlash("/orch daemon", { orchHome: tmpHome });
     expect(blocked.lines.join("\n")).toContain("Foreground daemon cannot run inside the interactive TUI");
+  });
+
+  describe("jeo orch assign --gate", () => {
+    function assign(...gates: string[]) {
+      return Bun.spawnSync([
+        process.execPath, path.resolve(import.meta.dir, "../../src/cli.ts"), "orch",
+        "assign", "sample-app", "999888777", tmpHome, ...gates,
+      ], {
+        cwd: tmpHome,
+        env: { PATH: process.env.PATH, HOME: tmpHome, JEO_CONFIG_DIR: tmpHome, JEO_ORCH_HOME: tmpHome },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    }
+
+    it("persists every gate and preserves equals signs in shell commands", async () => {
+      const cutover = 'test "mode=strict" = "mode=strict"';
+      const result = assign("--gate", "unit=true", "--gate", `cutover=${cutover}`);
+      expect(result.exitCode).toBe(0);
+      const config = await loadStoredOrchConfig(tmpHome);
+      expect(config.routes.find(route => route.id === "sample-app")?.verificationGates).toEqual([
+        { name: "unit", command: "true" },
+        { name: "cutover", command: cutover },
+      ]);
+    });
+
+    it.each([
+      ["missing separator", ["cutover"]],
+      ["blank gate name", [" =false"]],
+      ["blank command", ["cutover= "]],
+      ["missing argument", []],
+    ])("rejects a later required gate with %s without persisting a partial route", async (_case, invalid) => {
+      const result = assign("--gate", "unit=true", "--gate", ...invalid);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain("Invalid --gate");
+      expect((await loadStoredOrchConfig(tmpHome)).routes.map(route => route.id)).not.toContain("sample-app");
+    });
   });
 
   it("loads, links, live-reloads, and unlinks repo-local hidden .jeo/orch.json configs", async () => {
@@ -404,7 +442,7 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
       expect(unassignShadow.exitCode ?? 0).toBe(0);
       expect(unassignShadow.lines.join("\n")).toContain("still active via linked config");
 
-      // 5. threads displays phase=... and stop/retry clear lastWorkerPhase & workerHandle
+      // 5. A rejected retry must not detach the active worker shown by threads.
       await saveOrchState(
         {
           version: 1,
@@ -415,6 +453,7 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
               name: "phase-thread",
               routeId: "linked-app",
               status: "DISPATCHED",
+              dispatchId: "active-dispatch",
               iteration: 1,
               consecutiveSameFailures: 0,
               assignedWorkerHandle: "w-1",
@@ -422,6 +461,21 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
               pendingMessages: [],
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
+            },
+            "t-failed": {
+              threadId: "t-failed",
+              parentId: "ch-1",
+              name: "failed-thread",
+              routeId: "linked-app",
+              status: "PAUSED_NEEDS_HUMAN",
+              iteration: 3,
+              consecutiveSameFailures: 2,
+              lastFailureSummary: "Cutover receipt is stale",
+              currentTask: "Complete cutover with a fresh receipt",
+              lastWorkerPhase: "reporting",
+              pendingMessages: [],
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
             },
           },
           gates: {},
@@ -432,10 +486,40 @@ describe("orch CLI, /orch slash menu, autocomplete, and launchd", () => {
       expect(threadsOut.lines.join("\n")).toContain("phase=thinking");
 
       const retryOut = await executeOrchAction(["retry", "t-phase"], { orchHome: tmpHome });
-      expect(retryOut.exitCode ?? 0).toBe(0);
-      const stateAfterRetry = await loadOrchState(tmpHome);
-      expect(stateAfterRetry.threads["t-phase"]!.lastWorkerPhase).toBeUndefined();
-      expect(stateAfterRetry.threads["t-phase"]!.assignedWorkerHandle).toBeUndefined();
+      expect(retryOut.exitCode).toBe(1);
+      expect(retryOut.lines.join("\n")).toContain("a worker is still assigned");
+      expect((await loadOrchState(tmpHome)).threads["t-phase"]).toMatchObject({
+        status: "DISPATCHED",
+        assignedWorkerHandle: "w-1",
+        dispatchId: "active-dispatch",
+        lastWorkerPhase: "thinking",
+      });
+
+      await executeOrchAction(["pause", "t-phase"], { orchHome: tmpHome });
+      expect((await loadOrchState(tmpHome)).threads["t-phase"]).toMatchObject({
+        status: "PAUSED",
+        assignedWorkerHandle: "w-1",
+        dispatchId: "active-dispatch",
+      });
+      await executeOrchAction(["resume", "t-phase"], { orchHome: tmpHome });
+      expect((await loadOrchState(tmpHome)).threads["t-phase"]).toMatchObject({
+        status: "DISPATCHED",
+        assignedWorkerHandle: "w-1",
+        dispatchId: "active-dispatch",
+      });
+
+      const retryFailed = await executeOrchAction(["retry", "t-failed"], { orchHome: tmpHome });
+      expect(retryFailed.exitCode ?? 0).toBe(0);
+      const failedAfterRetry = (await loadOrchState(tmpHome)).threads["t-failed"]!;
+      expect(failedAfterRetry).toMatchObject({
+        status: "QUEUED",
+        iteration: 0,
+        consecutiveSameFailures: 0,
+        currentTask: "Complete cutover with a fresh receipt",
+        lastFailureSummary: "Cutover receipt is stale",
+      });
+      expect(failedAfterRetry.lastWorkerPhase).toBeUndefined();
+      expect(failedAfterRetry.assignedWorkerHandle).toBeUndefined();
 
       // 5. Unknown daemon subcommands fail fast in both CLI and /orch slash without hanging
       const badCli = await executeOrchAction(["daemon", "start"], { orchHome: tmpHome });

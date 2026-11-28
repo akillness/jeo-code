@@ -9,9 +9,12 @@ export type ResolvedOrchBackendKind = "tmux" | "headless" | "orca";
 export interface VerificationGate {
   /** Short human-readable gate identifier (e.g. "pytest", "go-test", "static-preflight"). */
   name: string;
-  /** Shell command executed in `cwd ?? route.repoPath`. Exit code 0 = PASS. */
+  /**
+   * Shell check run in the worker worktree unless `cwd` overrides it. Exit 0 means the evidence passed.
+   * Receipt checks should verify `JEO_ORCH_DISPATCH_ID` (empty if no dispatch ID is available).
+   */
   command: string;
-  /** Optional relative or absolute working directory override. */
+  /** Optional cwd, absolute or relative to `route.orcaWorktreePath ?? route.repoPath`. */
   cwd?: string;
   /** Timeout in milliseconds (default: 180_000). */
   timeoutMs?: number;
@@ -150,8 +153,12 @@ export interface ThreadLoopState {
   assignedWorkerHandle?: string;
   /** Timestamp when current worker dispatch started. */
   dispatchedAt?: string;
+  /** Receipt identifier for this dispatch, retained across verification recovery. */
+  dispatchId?: string;
   /** True once the assigned worker has been observed BUSY after dispatch (prevents premature idle detection). */
   workerObservedBusy?: boolean;
+  /** When the backend first became unobservable after dispatch grace. */
+  workerUnknownSinceMs?: number;
   /** Debounced incoming trigger messages waiting for dispatch (or live feedback received mid-turn). */
   pendingMessages: QueuedMessage[];
   /** Timestamp (ms) of the most recent pending message for debounce calculation. */
@@ -176,8 +183,13 @@ export interface ThreadLoopState {
   lastCompletedTasks?: string[];
   /** Remaining task items reported by the worker. */
   lastRemainingTasks?: string[];
+  /** Final backend outcome and blockers for the currently dispatched turn. */
+  lastWorkerOutcome?: "completed" | "partial" | "failed" | "cancelled";
+  lastWorkerBlockers?: string[];
   /** Resolved backend kind currently managing this thread's worker. */
   activeBackend?: ResolvedOrchBackendKind;
+  /** Worktree leased at dispatch; use it for verification even if the route changes. */
+  activeWorktreePath?: string;
   /** Human-readable reason for pause / escalation / last result. */
   statusReason?: string;
   /** Active user task or fix objective currently executing in this cycle. */

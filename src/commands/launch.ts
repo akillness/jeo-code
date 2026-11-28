@@ -123,7 +123,7 @@ import {
   type UnifiedCompletionReportInput,
   type UnifiedTaskReportItem,
 } from "../agent/notify/discord-thinking";
-import { writeWorkerStatusSnapshot } from "../orch/backend";
+import { writeWorkerStatusSnapshot, type OrchWorkerStatusSnapshot } from "../orch/backend";
 
 export const WORKFLOW_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"] as const;
 export function isWorkflowSkill(name: string): boolean {
@@ -1726,6 +1726,14 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     forceExitFromCtrlC();
   };
   let resetTurnCtrlCArmed = (): void => {};
+  const orchStatusFile = process.env.JEO_ORCH_STATUS_FILE?.trim();
+  const orchWorkerHandle = process.env.JEO_ORCH_WORKER_HANDLE?.trim() || "jeo-worker";
+  type OrchTurnProgress = {
+    live: (status: Partial<OrchWorkerStatusSnapshot>) => void;
+    tasks?: () => { completed: UnifiedTaskReportItem[]; remaining: UnifiedTaskReportItem[] };
+    outcome?: NonNullable<OrchWorkerStatusSnapshot["outcome"]>;
+  };
+  type TurnOptions = { userCard?: string | null; displayInput?: string; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean };
   const runTurnScoped = async (
     userInput: string,
     useTui: boolean,
@@ -1734,7 +1742,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
     // itself (normal turns); null → suppress it entirely (skill runs, where the
     // injected SKILL.md is NOT user-authored and the [skill] card already names it);
     // a string → show that compact label instead of the raw input.
-    opts?: { userCard?: string | null; displayInput?: string; signal?: AbortSignal; trustedContext?: string; skillRun?: boolean },
+    opts?: TurnOptions,
+    orchTurn?: OrchTurnProgress,
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string; unverified: boolean }> => {
     opts?.signal?.throwIfAborted();
     if (currentSandboxExecution() && sessionId !== sandboxTranscriptId) throw new Error("SESSION_MISMATCH: start a new launch for the selected transcript; sandbox grants cannot cross sessions");
@@ -2382,6 +2391,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         activeTurnAbort = undefined;
         compactHarness.dispose();
       }
+      if (orchTurn && compactHarness.controller.signal.aborted) orchTurn.outcome = "cancelled";
       opts?.signal?.throwIfAborted();
       if (compRes.error) {
         throw new Error(compRes.error);
@@ -2548,8 +2558,8 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         sessionNotifyEndpoint.sendContextUpdate("turn_start", "[redacted]", { model: activeModel });
       }
       const turnStartedAtMs = Date.now();
-      const orchStatusFile = process.env.JEO_ORCH_STATUS_FILE?.trim() || undefined;
-      const orchWorkerHandle = process.env.JEO_ORCH_WORKER_HANDLE?.trim() || undefined;
+      // These registries live for the whole session; only this turn's tasks
+      // belong on its dispatch receipt.
       let turnTodos: { title: string; status: string }[] = [];
       let lastTelemetryPhase: ThinkingPhase = "thinking";
       let lastTelemetryReasoning = "";
@@ -2571,7 +2581,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           }
         }
         for (const sub of subagentRegistry.list()) {
-          if (sub.finishedAt !== undefined && sub.finishedAt < turnStartedAtMs) continue;
+          if (sub.startedAt < turnStartedAtMs) continue;
           if (sub.status === "completed" && sub.success !== false) {
             completed.push({ label: `${sub.role} (${sub.id})`, source: "subagent", detail: sub.task.slice(0, 60) });
           } else if (sub.status === "running" || sub.status === "paused") {
@@ -2581,10 +2591,12 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
           }
         }
         for (const job of jobRegistry.running()) {
+          if (job.startedAt < turnStartedAtMs) continue;
           remaining.push({ label: `백그라운드 잡 ${job.id}`, source: "job", detail: job.command.slice(0, 60) });
         }
         return { completed, remaining };
       };
+      if (orchTurn) orchTurn.tasks = collectUnifiedTasks;
 
       const emitLiveTelemetry = (
         phase: ThinkingPhase,
@@ -2612,20 +2624,15 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             elapsedMs: Math.max(0, nowMs - turnStartedAtMs),
           });
         }
-        if (orchStatusFile) {
+        if (orchTurn) {
           const { completed, remaining } = collectUnifiedTasks();
-          void writeWorkerStatusSnapshot(orchStatusFile, {
-            version: 1,
-            workerHandle: orchWorkerHandle ?? "jeo-worker",
-            pid: process.pid,
-            state: "BUSY",
+          orchTurn.live({
             phase: phase === "verifying" ? "executing" : phase,
             thinkingExcerpt: reasoningExcerpt || undefined,
             currentTool: redactTurnTelemetry ? undefined : lastTelemetryTool,
-            completedTasks: completed.map(c => c.label),
-            remainingTasks: remaining.map(r => r.label),
-            updatedAt: new Date(nowMs).toISOString(),
-          }).catch(() => undefined);
+            completedTasks: completed.map(c => redactTurnTelemetry ? "[redacted]" : c.label),
+            remainingTasks: remaining.map(r => redactTurnTelemetry ? "[redacted]" : r.label),
+          });
         }
       };
 
@@ -2648,19 +2655,6 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
             completed: redactTurnTelemetry ? [{ label: "작업 처리 완료", source: "todo" }] : completed,
             remaining: redactTurnTelemetry ? [] : remaining,
           });
-        }
-        if (orchStatusFile) {
-          void writeWorkerStatusSnapshot(orchStatusFile, {
-            version: 1,
-            workerHandle: orchWorkerHandle ?? "jeo-worker",
-            pid: process.pid,
-            state: "IDLE",
-            phase: "reporting",
-            summary: redactTurnTelemetry ? "[redacted]" : summaryText?.slice(0, 300),
-            completedTasks: completed.map(c => c.label),
-            remainingTasks: remaining.map(r => r.label),
-            updatedAt: new Date().toISOString(),
-          }).catch(() => undefined);
         }
       };
 
@@ -3167,6 +3161,7 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         }
       }
     } catch (err) {
+      if (orchTurn && turnAborted) orchTurn.outcome = "cancelled";
       await subagentWrites;
       emitTurnCompletionTelemetry("failed", friendlyProviderError(err));
       if (tui && !tuiFinished) {
@@ -3209,6 +3204,13 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
         // never the answer).
         sessionNotifyEndpoint.sendTurnStream(reply);
       }
+    }
+    if (orchTurn) {
+      // The agent loop returns provider failures as an Error-prefixed result
+      // (rather than throwing) so it can retry/fail over before the turn ends.
+      orchTurn.outcome = turnAborted ? "cancelled" : result.done ? "completed" :
+        !result.completionRejected && !result.stopClass &&
+        (result.doneReason?.startsWith("Error: ") || isSafetyFallbackBail(result.doneReason)) ? "failed" : "partial";
     }
     emitTurnCompletionTelemetry(result.done ? "completed" : "partial", reply);
     // Persist any messages this turn produced that onStep hasn't flushed yet (the
@@ -3317,9 +3319,55 @@ async function runLaunchSession(args: string[], registerEndpointCleanup?: (clean
   const withCurrentSessionUsage = <T>(run: () => T): T => sessionId
     ? withUsageScope({ file: path.join(sessionsDir(cwd), "usage", `${sessionId}.jsonl`), sessionId, role: "parent" }, run)
     : run();
-  const runTurn = (...args: Parameters<typeof runTurnScoped>) => withCurrentSessionUsage(() => turnSandboxScope
-    ? withSandboxExecution(turnSandboxScope, () => runTurnScoped(...args))
-    : runTurnScoped(...args));
+  let orchWrite = Promise.resolve();
+  const runTurn = async (prompt: string, useTui: boolean, images?: ImageAttachment[], opts?: TurnOptions) => {
+    const scope = (progress?: OrchTurnProgress) => {
+      const turn = () => runTurnScoped(prompt, useTui, images, opts, progress);
+      return withCurrentSessionUsage(() => turnSandboxScope ? withSandboxExecution(turnSandboxScope, turn) : turn());
+    };
+    if (!orchStatusFile) return scope();
+
+    const dispatchId = /^\[jeo \/orch — Thread Recursive Improvement Cycle \d+\/\d+\]\r?\n[^\n]*\n[^\n]*\n[^\n]*\nDispatch receipt ID: ([0-9a-f]{32})\./.exec(prompt)?.[1];
+    const publish = (state: OrchWorkerStatusSnapshot["state"], fields: Partial<OrchWorkerStatusSnapshot>) => {
+      const snapshot: OrchWorkerStatusSnapshot = {
+        ...fields, version: 1, workerHandle: orchWorkerHandle, sessionId, pid: process.pid,
+        dispatchId, state, updatedAt: new Date().toISOString(),
+      };
+      // Atomic renames protect readers from torn writes, but without ordering an
+      // earlier live update can still land after the terminal receipt.
+      orchWrite = orchWrite.then(() => writeWorkerStatusSnapshot(orchStatusFile, snapshot)).catch(() => undefined);
+      return orchWrite;
+    };
+    const progress: OrchTurnProgress = { live: fields => { void publish("BUSY", fields); } };
+    progress.live({ phase: "thinking", completedTasks: [], remainingTasks: [] });
+    const redact = notifyRedact || !!opts?.trustedContext;
+    const settle = async (outcome: NonNullable<OrchWorkerStatusSnapshot["outcome"]>, summary: string) => {
+      const tasks = progress.tasks?.();
+      const completedTasks = tasks?.completed.map(task => redact ? "[redacted]" : task.label) ?? [];
+      const remainingTasks = tasks?.remaining.map(task => redact ? "[redacted]" : task.label) ?? [];
+      const effective = outcome === "completed" && remainingTasks.length ? "partial" : outcome;
+      const detail = redact ? "[redacted]" : summary.slice(0, 300);
+      const blockers = effective === "completed" ? [] : [
+        ...(remainingTasks.length ? [`${remainingTasks.length} unfinished task(s)`] : []),
+        ...(outcome !== "completed" && detail ? [detail] : []),
+      ];
+      await publish("IDLE", { phase: "reporting", outcome: effective, summary: detail, completedTasks, remainingTasks, blockers });
+    };
+    try {
+      const result = await scope(progress);
+      const outcome = progress.outcome ?? (result.done ? "completed" : "partial");
+      await settle(outcome, outcome === "cancelled" ? "Cancelled." : result.reply);
+      if (isOneShot && (outcome === "failed" || outcome === "cancelled")) process.exitCode = outcome === "cancelled" ? 130 : 1;
+      return result;
+    } catch (error) {
+      const cancelled = progress.outcome === "cancelled" || opts?.signal?.aborted ||
+        (error instanceof Error && error.name === "AbortError") ||
+        (error instanceof AgyCliError && error.kind === "cancelled");
+      await settle(cancelled ? "cancelled" : "failed", cancelled ? "Cancelled." : friendlyProviderError(error));
+      if (isOneShot) process.exitCode = cancelled ? 130 : 1;
+      throw error;
+    }
+  };
 
   const joinedArgs = flags.message;
   const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;

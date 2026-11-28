@@ -384,14 +384,13 @@ export function normalizeRoute(raw: Partial<ProjectRoute>): ProjectRoute {
     maxWorkers: clampInt(raw.maxWorkers, 1, 8, DEFAULT_MAX_WORKERS),
     spawnIfBusy: raw.spawnIfBusy ?? true,
     verificationGates: Array.isArray(raw.verificationGates)
-      ? raw.verificationGates
-          .filter(g => g && typeof g.name === "string" && typeof g.command === "string")
-          .map(g => ({
-            name: g.name.trim(),
-            command: g.command.trim(),
-            ...(g.cwd ? { cwd: g.cwd } : {}),
-            ...(typeof g.timeoutMs === "number" && g.timeoutMs > 0 ? { timeoutMs: g.timeoutMs } : {}),
-          }))
+      // Preserve invalid entries: dropping just one could verify a route using only its other gates.
+      ? raw.verificationGates.map(g => ({
+          name: typeof g?.name === "string" ? g.name.trim() : "",
+          command: typeof g?.command === "string" ? g.command.trim() : "",
+          ...(g?.cwd ? { cwd: g.cwd } : {}),
+          ...(typeof g?.timeoutMs === "number" && g.timeoutMs > 0 ? { timeoutMs: g.timeoutMs } : {}),
+        }))
       : [],
     allowBotQaMarkers: Array.isArray(raw.allowBotQaMarkers)
       ? raw.allowBotQaMarkers.map(String).filter(Boolean)

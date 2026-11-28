@@ -22,6 +22,8 @@ import {
   expandTilde,
   loadOrchConfig,
   loadOrchState,
+  loadStoredOrchConfig,
+  normalizeRoute,
   readRecentLedger,
   removeRoute,
   resolveOrchHome,
@@ -38,6 +40,7 @@ import type {
   OrchState,
   ProjectRoute,
 } from "../../src/orch/types";
+import { ShellGateVerifier } from "../../src/orch/verifier";
 
 describe("matcher", () => {
   const baseRoute: ProjectRoute = {
@@ -482,6 +485,24 @@ describe("store", () => {
     expect(loaded.routes[0]!.parentChannelIds).toEqual(["chan-1"]); // deduped
   });
 
+  it.each([
+    { name: "blank command", gate: { name: "cutover", command: " " }, resultName: "cutover" },
+    { name: "blank name", gate: { name: " ", command: "true" }, resultName: "" },
+    { name: "null entry", gate: null, resultName: "" },
+  ])("cannot verify a persisted route that has a $name alongside a passing gate", async ({ gate, resultName }) => {
+    await fs.writeFile(path.join(tmpDir, "routes.json"), JSON.stringify({
+      routes: [{ id: "deploy", repoPath: tmpDir, verificationGates: [{ name: "unit", command: "true" }, gate] }],
+    }));
+
+    const [route] = (await loadStoredOrchConfig(tmpDir)).routes;
+    const verification = await new ShellGateVerifier().verifyRoute(route!);
+    expect(verification.passed).toBe(false);
+    expect(verification.results).toEqual([
+      expect.objectContaining({ name: "unit", passed: true, exitCode: 0 }),
+      expect.objectContaining({ name: resultName, passed: false, exitCode: 125, outputExcerpt: expect.stringContaining("[INVALID GATE]") }),
+    ]);
+  });
+
   it("loadOrchState returns empty state when state.json does not exist", async () => {
     const state = await loadOrchState(tmpDir);
     expect(state.version).toBe(1);
@@ -581,6 +602,96 @@ describe("store", () => {
     const removeRes = await removeRoute("test-route", tmpDir);
     expect(removeRes.removed).toBe(true);
     expect(removeRes.config.routes.length).toBe(0);
+  });
+});
+
+describe("ShellGateVerifier", () => {
+  let tmpDir: string;
+  const verifier = new ShellGateVerifier();
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "orch-verifier-test-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("does not mark a route verified when it has no evidence gates", async () => {
+    const route = normalizeRoute({ id: "deploy", repoPath: tmpDir, verificationGates: [] });
+    const verification = await verifier.verifyRoute(route, "dispatch-2");
+    expect(verification.passed).toBe(false);
+    expect(verification.results).toEqual([]);
+    expect(verification.summaryText).toContain("No verification gates configured");
+  });
+
+  it("reports a launch error for a gate whose working directory is missing", async () => {
+    const route = normalizeRoute({
+      id: "deploy", repoPath: tmpDir,
+      verificationGates: [{ name: "cutover", command: "true", cwd: "missing-evidence-directory" }],
+    });
+    const verification = await verifier.verifyRoute(route, "dispatch-2");
+    expect(verification.passed).toBe(false);
+    expect(verification.results).toEqual([
+      expect.objectContaining({ name: "cutover", passed: false, exitCode: 125, outputExcerpt: expect.stringContaining("[GATE EXECUTION ERROR]") }),
+    ]);
+  });
+
+  it("rejects stale worktree receipts even when the base checkout has current evidence", async () => {
+    const repoPath = path.join(tmpDir, "repo");
+    const worktreePath = path.join(tmpDir, "worker tree");
+    const evidencePath = path.join(worktreePath, "evidence");
+    await fs.mkdir(repoPath);
+
+    function git(...args: string[]) {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd: repoPath,
+        env: { PATH: process.env.PATH, HOME: tmpDir, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    }
+
+    git("init", "-q", "--template=");
+    git("-c", "user.name=Verifier Test", "-c", "user.email=verifier@example.test",
+      "commit", "--allow-empty", "-qm", "Create worktree base");
+    git("worktree", "add", "--detach", worktreePath);
+
+    await fs.mkdir(path.join(repoPath, "evidence"));
+    await fs.mkdir(evidencePath);
+    await fs.writeFile(path.join(repoPath, "evidence", "cutover.receipt"), "dispatch-2\n");
+    await fs.writeFile(path.join(evidencePath, "cutover.receipt"), "dispatch-1\n");
+    await fs.writeFile(path.join(worktreePath, "worker.marker"), "worker-checkout\n");
+
+    const route = normalizeRoute({
+      id: "deploy", repoPath, orcaWorktreePath: worktreePath,
+      verificationGates: [
+        { name: "unit", command: "cat worker.marker" },
+        {
+          name: "cutover", cwd: "evidence",
+          command: 'receipt=$(cat cutover.receipt) || exit 16; '
+            + 'if [ -z "$JEO_ORCH_DISPATCH_ID" ] || [ "$receipt" != "$JEO_ORCH_DISPATCH_ID" ]; then '
+            + 'printf "stale receipt: %s\\n" "$receipt" >&2; exit 17; fi; '
+            + 'printf "accepted receipt: %s\\n" "$receipt"',
+        },
+      ],
+    });
+
+    const stale = await verifier.verifyRoute(route, "dispatch-2");
+    expect(stale.passed).toBe(false);
+    expect(stale.results).toEqual([
+      expect.objectContaining({ name: "unit", passed: true, exitCode: 0, outputExcerpt: "worker-checkout" }),
+      expect.objectContaining({ name: "cutover", passed: false, exitCode: 17, outputExcerpt: "stale receipt: dispatch-1" }),
+    ]);
+
+    await fs.writeFile(path.join(evidencePath, "cutover.receipt"), "dispatch-2\n");
+    const current = await verifier.verifyRoute(route, "dispatch-2");
+    expect(current.passed).toBe(true);
+    expect(current.results).toEqual([
+      expect.objectContaining({ name: "unit", passed: true, exitCode: 0, outputExcerpt: "worker-checkout" }),
+      expect.objectContaining({ name: "cutover", passed: true, exitCode: 0, outputExcerpt: "accepted receipt: dispatch-2" }),
+    ]);
   });
 });
 

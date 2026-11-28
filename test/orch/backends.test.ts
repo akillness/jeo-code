@@ -27,6 +27,7 @@ import {
   type SpawnHeadlessProcessRequest,
 } from "../../src/orch/headless-backend";
 import { compareSnowflakes } from "../../src/orch/matcher";
+import { CliOrcaClient } from "../../src/orch/orca";
 import { createEmptyOrchState, loadOrchConfig, saveOrchConfig, saveOrchState } from "../../src/orch/store";
 import {
   parseTmuxWorkerHandle,
@@ -43,7 +44,7 @@ import type {
   ResolvedOrchBackendKind,
   VerificationSummary,
 } from "../../src/orch/types";
-import type { GateVerifier } from "../../src/orch/verifier";
+import { ShellGateVerifier, type GateVerifier } from "../../src/orch/verifier";
 
 // ============================================================================
 // Shared hermetic helpers & fakes (zero timers, zero network, zero live daemons)
@@ -327,6 +328,27 @@ describe("resolveOrchBackendKind and createOrchWorkerBackend", () => {
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Orca terminal inventory", () => {
+  it.each([
+    { name: "nonzero control exit", exitCode: 1, stdout: '{"ok":true,"result":{"terminals":[]}}', stderr: "control connection refused", error: "control connection refused" },
+    { name: "malformed JSON", exitCode: 0, stdout: "invalid-json", stderr: "", error: "Invalid JSON" },
+    { name: "explicit control failure", exitCode: 0, stdout: '{"ok":false,"result":{"terminals":[]}}', stderr: "", error: "Failed to list Orca workers" },
+    { name: "success without an inventory", exitCode: 0, stdout: '{"ok":true,"result":{}}', stderr: "", error: "Invalid terminal list" },
+  ])("rejects $name instead of reporting an empty inventory", async ({ exitCode, stdout, stderr, error }) => {
+    const backend = new CliOrcaClient(async () => ({ exitCode, stdout, stderr }), "/test/orca");
+    await expect(backend.listRepoWorkers("/tmp/invoices")).rejects.toThrow(error);
+  });
+
+  it("accepts an explicitly empty successful inventory", async () => {
+    const backend = new CliOrcaClient(async () => ({
+      exitCode: 0,
+      stdout: '{"ok":true,"result":{"terminals":[]}}',
+      stderr: "",
+    }), "/test/orca");
+    expect(await backend.listRepoWorkers("/tmp/invoices")).toEqual([]);
   });
 });
 
@@ -967,6 +989,48 @@ describe("HeadlessWorkerBackend", () => {
     expect(deadDispatch.detail).toContain("UNKNOWN");
     expect(spawnCalls).toHaveLength(2);
   });
+
+  it.each([
+    { name: "clean exit permits reuse", exitCode: 0, state: "IDLE", outcome: "completed" },
+    { name: "crash overrides an IDLE sidecar", exitCode: 137, state: "UNKNOWN", outcome: "failed" },
+  ])("handles a process exiting before spawn returns: $name", async ({ exitCode, state, outcome }) => {
+    const pid = 9301;
+    const now = () => Date.parse("2026-11-24T15:00:00.000Z");
+    const backend = new HeadlessWorkerBackend({
+      orchHome: tmpHome,
+      jeoBin: "/usr/local/bin/jeo",
+      now,
+      isPidAlive: () => false,
+      spawnProcess: async ({ env, onExit }) => {
+        await writeWorkerStatusSnapshot(env.JEO_ORCH_STATUS_FILE!, {
+          version: 1,
+          workerHandle: env.JEO_ORCH_WORKER_HANDLE,
+          pid,
+          state: "IDLE",
+          outcome: "completed",
+          remainingTasks: [],
+          updatedAt: new Date(now()).toISOString(),
+        });
+        onExit?.(exitCode);
+        return { pid };
+      },
+    });
+
+    const spawned = await backend.spawnWorker(repoDir, "Invoice checks", "Verify invoice totals");
+    expect(spawned.ok).toBe(true);
+    const handle = spawned.handle!;
+    const inspection = await backend.inspectWorkerState(handle);
+    expect(inspection).toMatchObject({ state, outcome });
+    const available = (await backend.listRepoWorkers(repoDir)).map(worker => worker.handle);
+    if (exitCode === 0) {
+      expect(available).toEqual([handle]);
+      expect(inspection.remainingTasks).toEqual([]);
+    } else {
+      expect(available).toEqual([]);
+      expect(inspection.blockers?.join(" ")).toContain("137");
+      expect((await backend.dispatchToWorker(handle, "Try again")).ok).toBe(false);
+    }
+  });
 });
 
 // ============================================================================
@@ -1256,7 +1320,7 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
     });
 
     const requeueTick = await engine.tick();
-    expect(requeueTick.verified).toBe(1);
+    expect(requeueTick.verified).toBe(0);
     expect(requeueTick.escalated).toBe(0);
     // Note: same tick step 4 also dispatches the newly re-queued cycle 2 onto IDLE worker tmux:%8!
     expect(requeueTick.dispatched).toBe(1);
@@ -1279,7 +1343,7 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
       tail: ["Running edit"],
       phase: "executing",
       completedTasks: ["Retry fix"],
-      remainingTasks: ["Unresolved precision drift"],
+      remainingTasks: ["Fix failing assertion"],
     });
     await engine.tick();
 
@@ -1288,7 +1352,7 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
       state: "IDLE",
       tail: ["Type your next message..."],
       completedTasks: ["Retry fix"],
-      remainingTasks: ["Unresolved precision drift"],
+      remainingTasks: ["Fix failing assertion"],
     });
     verifier.enqueue({
       passed: false,
@@ -1307,6 +1371,8 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
     });
 
     const escalatedTick = await engine.tick();
+    expect(escalatedTick.verified).toBe(0);
+    expect(escalatedTick.dispatched).toBe(0);
     expect(escalatedTick.escalated).toBe(1);
 
     const escalationThreadPost = discord.postedMessages
@@ -1317,7 +1383,7 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
     expect(escalationThreadPost).toContain("✅ [Todo] Retry fix");
     expect(escalationThreadPost).toContain("**남은 작업**");
     expect(escalationThreadPost).toContain("❌ [Gate] unit (exit 1)");
-    expect(escalationThreadPost).toContain("⬜ [Todo] Unresolved precision drift");
+    expect(escalationThreadPost).toContain("⬜ [Todo] Fix failing assertion");
     expect(escalationThreadPost).toContain("🛡️ [승인 대기]");
 
     const dmPostsAfterEscalation = discord.postedMessages.filter(m => m.channelId === "dm-owner-1");
@@ -1325,6 +1391,156 @@ describe("OrchEngine backend routing, live thinking debounce, and unified comple
     expect(dmPostsAfterEscalation[1]!.content).toContain("🚨 사람 확인 필요");
     expect(dmPostsAfterEscalation[1]!.content).toContain("Retry fix");
     expect(dmPostsAfterEscalation[1]!.content).toContain("unit (exit 1)");
+  });
+
+  it.each([
+    { name: "a partial outcome with passing gates", outcome: "partial" as const, remainingTasks: [], blockers: [], initialTotal: "100", reason: "Worker reported partial" },
+    { name: "remaining work with passing gates", outcome: "completed" as const, remainingTasks: ["Check credit adjustments"], blockers: [], initialTotal: "100", reason: "Check credit adjustments" },
+    { name: "a reported blocker with passing gates", outcome: "completed" as const, remainingTasks: [], blockers: ["Waiting for tax fixture"], initialTotal: "100", reason: "Waiting for tax fixture" },
+    { name: "a failed independent gate despite a completed outcome", outcome: "completed" as const, remainingTasks: [], blockers: [], initialTotal: "99", reason: "`invoice total` (exit 1" },
+  ])("retries $name, ignores the late receipt, and verifies only the recovered dispatch", async ({ outcome, remainingTasks, blockers, initialTotal, reason }) => {
+    const discord = new FakeDiscordClient();
+    const backend = new FakeWorkerBackend("tmux");
+    const handle = "tmux:%9";
+    const threadId = "th-recovered";
+    const objective = "Fix invoice totals for partial refunds";
+    const route: ProjectRoute = {
+      id: "refunds",
+      name: "Refunds",
+      enabled: true,
+      parentChannelIds: ["ch-1"],
+      titleKeywords: ["refund"],
+      repoPath: tmpHome,
+      maxIterations: 2,
+      sameFailureLimit: 2,
+      maxWorkers: 1,
+      spawnIfBusy: false,
+      verificationGates: [
+        { name: "current evidence", command: "printf '%s\\n' \"$JEO_ORCH_DISPATCH_ID\" >> gate-runs; test \"$JEO_ORCH_DISPATCH_ID\" = \"$(cat active-receipt)\"" },
+        { name: "invoice total", command: "test \"$(cat invoice-total)\" = 100" },
+      ],
+    };
+    backend.addWorker(handle, route.repoPath);
+    discord.addThread({ id: threadId, parent_id: "ch-1", name: "refund totals", last_message_id: "100" });
+    await saveOrchConfig(makeTestConfig([route]), tmpHome);
+    const engine = new OrchEngine({ discord, backend, verifier: new ShellGateVerifier(), orchHome: tmpHome, now: () => clockMs });
+    const receipt = (prompt: string) => prompt.match(/Dispatch receipt ID: ([a-f0-9]{32})\./)![1]!;
+    const messages = (channelId: string) => discord.postedMessages.filter(m => m.channelId === channelId).map(m => m.content);
+    const gateRuns = () => fs.readFile(path.join(tmpHome, "gate-runs"), "utf8");
+
+    await engine.tick();
+    discord.addHumanMessage(threadId, objective, "101");
+    expect((await engine.tick()).dispatched).toBe(1);
+    const firstId = receipt(backend.dispatched[0]!.prompt);
+    await fs.writeFile(path.join(tmpHome, "active-receipt"), firstId);
+    await fs.writeFile(path.join(tmpHome, "invoice-total"), initialTotal);
+    await engine.tick(); // Observe the first worker BUSY.
+
+    clockMs += 1_000;
+    backend.setInspection(handle, { state: "IDLE", tail: [], dispatchId: firstId, statusUpdatedAt: new Date(clockMs).toISOString(), outcome, remainingTasks, blockers });
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 1, escalated: 0 });
+    expect(await gateRuns()).toBe(`${firstId}\n`);
+    const retryPrompt = backend.dispatched[1]!.prompt;
+    const retryId = receipt(retryPrompt);
+    expect(retryId).not.toBe(firstId);
+    expect(retryPrompt).toContain("Cycle 2/2");
+    expect(retryPrompt).toContain(objective);
+    expect(retryPrompt).toContain(reason);
+    const firstReport = messages(threadId).find(message => message.includes("⚠️ 부분 완료"));
+    expect(firstReport).toContain(initialTotal === "100" ? "✔ [Gate] invoice total" : "❌ [Gate] invoice total (exit 1)");
+    expect(messages("dm-owner-1")).toEqual([]);
+
+    await fs.writeFile(path.join(tmpHome, "active-receipt"), retryId);
+    await fs.writeFile(path.join(tmpHome, "invoice-total"), "100");
+    await engine.tick(); // The retry has actually been seen BUSY.
+    clockMs += 1_000;
+    const done: OrchWorkerInspection = {
+      state: "IDLE", tail: [], statusUpdatedAt: new Date(clockMs).toISOString(),
+      outcome: "completed", completedTasks: ["Check partial-refund totals"], remainingTasks: [], blockers: [],
+    };
+    // A late terminal report looks fresh by timestamp and would pass both gates if checked.
+    backend.setInspection(handle, { ...done, dispatchId: firstId });
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 0 });
+    expect(await gateRuns()).toBe(`${firstId}\n`);
+    expect(messages("dm-owner-1")).toEqual([]);
+
+    clockMs += 1_000;
+    backend.setInspection(handle, { ...done, dispatchId: retryId, statusUpdatedAt: new Date(clockMs).toISOString() });
+    expect(await engine.tick()).toMatchObject({ verified: 1, dispatched: 0, escalated: 0 });
+    expect(await gateRuns()).toBe(`${firstId}\n${retryId}\n`);
+    expect(messages(threadId).at(-1)).toContain("`current evidence` (exit 0,");
+    expect(messages(threadId).at(-1)).toContain("`invoice total` (exit 0,");
+    expect(messages("dm-owner-1")).toEqual([expect.stringContaining("사이클 2/2 검증 전 항목 PASS")]);
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 0 });
+  });
+
+  it.each([
+    { name: "no sidecar", sidecar: "none", verified: 0, escalated: 1 },
+    { name: "an IDLE report with no dispatch ID", sidecar: "unbound", verified: 0, escalated: 1 },
+    { name: "a fresh report from another dispatch", sidecar: "stale", verified: 0, escalated: 1 },
+    { name: "the current dispatch ID but no terminal outcome", sidecar: "progress", verified: 0, escalated: 1 },
+    { name: "a current completed receipt", sidecar: "current", verified: 1, escalated: 0 },
+  ])("handles an exit-zero headless worker with $name even when its independent gate passes", async ({ sidecar, verified, escalated }) => {
+    const discord = new FakeDiscordClient();
+    const backend = new HeadlessWorkerBackend({
+      orchHome: tmpHome,
+      now: () => clockMs,
+      isPidAlive: () => false,
+      spawnProcess: async ({ cmd, env, onExit }) => {
+        const pid = 9302;
+        if (sidecar !== "none") {
+          const currentId = cmd.at(-1)!.match(/Dispatch receipt ID: ([a-f0-9]{32})\./)![1]!;
+          const staleId = `${currentId[0] === "f" ? "e" : "f"}${currentId.slice(1)}`;
+          await writeWorkerStatusSnapshot(env.JEO_ORCH_STATUS_FILE!, {
+            version: 1,
+            workerHandle: env.JEO_ORCH_WORKER_HANDLE,
+            pid,
+            state: sidecar === "progress" ? "BUSY" : "IDLE",
+            outcome: sidecar === "progress" ? undefined : "completed",
+            remainingTasks: [],
+            dispatchId: sidecar === "stale" ? staleId : sidecar === "unbound" ? undefined : currentId,
+            updatedAt: new Date(clockMs + 1_000).toISOString(),
+          });
+        }
+        onExit?.(0);
+        return { pid };
+      },
+    });
+    const threadId = "th-headless-receipt";
+    const route: ProjectRoute = {
+      id: "invoice",
+      name: "Invoice",
+      enabled: true,
+      parentChannelIds: ["ch-1"],
+      titleKeywords: ["invoice"],
+      repoPath: tmpHome,
+      maxIterations: 1,
+      sameFailureLimit: 2,
+      maxWorkers: 1,
+      spawnIfBusy: true,
+      verificationGates: [{ name: "invoice total", command: "test \"$(cat invoice-total)\" = 100 && printf checked > gate-result" }],
+    };
+    await fs.writeFile(path.join(tmpHome, "invoice-total"), "100");
+    discord.addThread({ id: threadId, parent_id: "ch-1", name: "invoice totals", last_message_id: "100" });
+    await saveOrchConfig(makeTestConfig([route], { backend: "headless" }), tmpHome);
+    const engine = new OrchEngine({ discord, backend, verifier: new ShellGateVerifier(), orchHome: tmpHome, now: () => clockMs });
+    await engine.tick();
+    discord.addHumanMessage(threadId, "Correct the invoice total", "101");
+    expect((await engine.tick()).dispatched).toBe(1);
+
+    clockMs += 20_000;
+    expect(await engine.tick()).toMatchObject({ verified, dispatched: 0, escalated });
+    const ownerDm = discord.postedMessages.find(message => message.channelId === "dm-owner-1");
+    const gateResultFile = path.join(tmpHome, "gate-result");
+    if (verified) {
+      expect(ownerDm?.content).toContain("[orch 완료]");
+      expect(await fs.readFile(gateResultFile, "utf8")).toBe("checked");
+    } else {
+      expect(ownerDm?.content).toContain("without a matching terminal receipt");
+      expect(ownerDm?.content).toContain("Its lease is still held");
+      await expect(fs.readFile(gateResultFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 0 });
   });
 });
 

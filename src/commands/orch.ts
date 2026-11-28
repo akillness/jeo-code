@@ -58,6 +58,7 @@ export function orchUsageLines(prefix = "jeo orch"): string[] {
     `  unlink [path]                                Unlink a repo-local hidden config file`,
     `  assign --id <id> --parent <ch> --repo <dir>  Add/update a project route [--name <n>] [--keywords a,b] [--prefixes p1,p2] [--worktree <dir>]`,
     `       [--backend auto|tmux|headless|orca] [--max-iter 4] [--same-failure-limit 2] [--max-workers 3] [--no-spawn] [--gate "name=cmd"] [--qa-markers m1,m2] [--guild <id>] [--local]`,
+    `       Repeat --gate for each required check; without any gates the route cannot report verified completion.`,
     `  unassign <id>                                Remove a project route from global routes.json`,
     `  threads                                      List tracked Discord threads and loop state`,
     `  attach [routeId|handle] [--print]            Show/attach to the active tmux worker session`,
@@ -324,9 +325,12 @@ function parseAssignArgs(args: string[], cwd: string): ParsedAssignArgs {
     else if (a === "--gate") {
       const spec = next();
       const eq = spec.indexOf("=");
-      if (eq > 0) {
-        gates.push({ name: spec.slice(0, eq).trim(), command: spec.slice(eq + 1).trim() });
+      const gateName = spec.slice(0, eq).trim();
+      const command = spec.slice(eq + 1).trim();
+      if (eq < 1 || !gateName || !command || spec.startsWith("--")) {
+        throw new Error('Invalid --gate: expected "name=command" with a non-empty name and command.');
       }
+      gates.push({ name: gateName, command });
     } else if (!a.startsWith("--")) {
       positional.push(a);
     }
@@ -668,11 +672,15 @@ export async function executeOrchAction(
           exitCode: 1,
         };
       }
-      thread.status = thread.pendingMessages.length > 0 || thread.lastFailureSummary ? "QUEUED" : "IDLE";
+      thread.status = thread.assignedWorkerHandle || thread.workerHandle
+        ? "DISPATCHED"
+        : thread.pendingMessages.length > 0 || thread.lastFailureSummary ? "QUEUED" : "IDLE";
       thread.statusReason = "Resumed via CLI/slash";
     } else if (sub === "stop") {
       thread.status = "STOPPED";
       thread.pendingMessages = [];
+      thread.currentTask = undefined;
+      thread.lastFailureSummary = undefined;
       thread.assignedWorkerHandle = undefined;
       {
         const threadDyn = thread as unknown as Record<string, unknown>;
@@ -699,6 +707,9 @@ export async function executeOrchAction(
           exitCode: 1,
         };
       }
+      if (thread.assignedWorkerHandle || thread.workerHandle) {
+        return { lines: [`Cannot retry '${threadId}': a worker is still assigned. Resume the paused turn instead.`], exitCode: 1 };
+      }
       thread.iteration = 0;
       thread.consecutiveSameFailures = 0;
       thread.lastFailureHash = undefined;
@@ -707,7 +718,6 @@ export async function executeOrchAction(
         threadDyn.consecutiveFailureCount = 0;
         threadDyn.consecutiveFailureHash = undefined;
         threadDyn.workerHandle = undefined;
-        threadDyn.lastDispatchedMessages = undefined;
       }
       thread.assignedWorkerHandle = undefined;
       thread.workerObservedBusy = undefined;
@@ -744,6 +754,9 @@ export async function executeOrchAction(
       } else {
         if (thread.pendingGate?.id === gate.id) thread.pendingGate = undefined;
         thread.pendingMessages = [];
+        thread.lastDispatchedMessages = undefined;
+        thread.currentTask = undefined;
+        thread.lastFailureSummary = undefined;
         thread.status = "IDLE";
         thread.statusReason = `Denied gate ${gate.id}`;
       }

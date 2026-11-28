@@ -6,7 +6,7 @@ import { DISCORD_SILENT_FLAGS, type DiscordClient } from "../../src/orch/discord
 import { buildWorkerPrompt, OrchEngine } from "../../src/orch/engine";
 import { compareSnowflakes } from "../../src/orch/matcher";
 import type { OrcaClient, OrcaTerminalInfo, WorkerTerminalState } from "../../src/orch/orca";
-import { saveOrchConfig } from "../../src/orch/store";
+import { loadOrchState, saveOrchConfig } from "../../src/orch/store";
 import type {
   DiscordChannel,
   DiscordMessage,
@@ -16,7 +16,7 @@ import type {
   VerificationSummary,
   WorkerActivityPhase,
 } from "../../src/orch/types";
-import type { GateVerifier } from "../../src/orch/verifier";
+import { ShellGateVerifier, type GateVerifier } from "../../src/orch/verifier";
 
 // ============================================================================
 // Clean in-memory fakes for Discord, Orca, GateVerifier, and controllable clock
@@ -546,10 +546,10 @@ describe("OrchEngine", () => {
     expect(threadMessages.some(m => m.content.includes("검증 통과"))).toBe(true);
     expect(threadMessages.some(m => m.content.includes("후속 사이클을 이어서 진행합니다"))).toBe(true);
 
-    // Verification 2: Owner DM sent
+    // The owner sees a verified cycle, not completion of the whole request.
     const dmMessage = fakeDiscord.postedMessages.find(m => m.channelId === "dm-owner-direct");
-    expect(dmMessage).toBeDefined();
-    expect(dmMessage?.content).toContain("✅ [orch 완료]");
+    expect(dmMessage?.content).toContain("🔄 [orch cycle passed; follow-up pending]");
+    expect(dmMessage?.content).not.toContain("[orch 완료]");
 
     // Verification 3: Thread automatically re-queued for the live follow-up message!
     // Next tick will dispatch cycle 2 with the live human feedback
@@ -608,7 +608,7 @@ describe("OrchEngine", () => {
     };
 
     const failTick1 = await engine.tick();
-    expect(failTick1.verified).toBe(1);
+    expect(failTick1.verified).toBe(0);
     expect(failTick1.escalated).toBe(0); // Not escalated yet: 1st failure
     expect(failTick1.dispatched).toBe(1); // Auto-requeued and dispatched cycle 2 immediately!
 
@@ -621,7 +621,8 @@ describe("OrchEngine", () => {
     fakeOrca.setWorkerState("worker-1", "IDLE");
 
     const failTick2 = await engine.tick();
-    expect(failTick2.verified).toBe(1);
+    expect(failTick2.verified).toBe(0);
+    expect(failTick2.dispatched).toBe(0);
     expect(failTick2.escalated).toBe(1); // 2 consecutive identical failures -> HALT & ESCALATE!
 
     // Verify Thread escalation alert
@@ -636,6 +637,93 @@ describe("OrchEngine", () => {
       m => m.channelId === "dm-owner-direct" && m.content.includes("자동 재귀 중단 — 사람 확인 필요"),
     );
     expect(escalationDmMsg).toBeDefined();
+  });
+
+  it("pauses for an independent verification gate instead of approving or retrying an unchecked turn", async () => {
+    const threadId = "thread-ungated";
+    defaultRoute.verificationGates = [];
+    await saveOrchConfig(baseConfig, tmpHome);
+    fakeDiscord.addThread({
+      id: threadId,
+      parent_id: "channel-sample-parent",
+      name: "sample route without checks",
+      last_message_id: "1000",
+    });
+    fakeOrca.addWorker("worker-1", defaultRoute.repoPath, "IDLE");
+    const engine = new OrchEngine({
+      discord: fakeDiscord,
+      orca: fakeOrca,
+      verifier: new ShellGateVerifier(),
+      orchHome: tmpHome,
+      now,
+    });
+    await engine.tick();
+    fakeDiscord.addMessage(threadId, "Repair blank invoice totals");
+    await engine.tick();
+    advanceTime(20_000);
+    expect((await engine.tick()).dispatched).toBe(1);
+    await engine.tick();
+    fakeOrca.setWorkerState("worker-1", "IDLE");
+
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 1 });
+    const alerts = fakeDiscord.postedMessages.filter(m => m.channelId === threadId || m.channelId === "dm-owner-direct");
+    expect(alerts.find(m => m.channelId === threadId && m.content.includes("자동 재귀 중단"))?.content)
+      .toContain("No verification gates configured");
+    expect(alerts.find(m => m.channelId === "dm-owner-direct")?.content).toContain("No verification gates configured");
+  });
+
+  it.each([
+    { name: "keeps the original gates and retries on the original route", removeOriginalRoute: false },
+    { name: "pauses if the original route no longer exists", removeOriginalRoute: true },
+  ])("$name when an in-flight thread is renamed", async ({ removeOriginalRoute }) => {
+    const threadId = "thread-renamed";
+    const objective = "Repair dashboard totals";
+    const originalRoute = {
+      ...defaultRoute,
+      repoPath: tmpHome,
+      verificationGates: [{ name: "dashboard check", command: "printf checked > dashboard-ran; test -f dashboard-correct" }],
+    };
+    const otherRoute = {
+      ...defaultRoute,
+      id: "exports",
+      name: "Exports",
+      titleKeywords: ["exports"],
+      repoPath: tmpHome,
+      verificationGates: [{ name: "exports check", command: "printf checked > exports-ran" }],
+    };
+    await saveOrchConfig({ ...baseConfig, routes: [originalRoute, otherRoute] }, tmpHome);
+    fakeDiscord.addThread({ id: threadId, parent_id: "channel-sample-parent", name: "sample dashboard", last_message_id: "1000" });
+    fakeOrca.addWorker("worker-dashboard", originalRoute.repoPath);
+    const engine = new OrchEngine({
+      discord: fakeDiscord, orca: fakeOrca, verifier: new ShellGateVerifier(), orchHome: tmpHome, now,
+    });
+    await engine.tick();
+    fakeDiscord.addMessage(threadId, objective);
+    await engine.tick();
+    advanceTime(20_000);
+    expect((await engine.tick()).dispatched).toBe(1);
+    await engine.tick(); // Observe the original worker BUSY.
+
+    fakeDiscord.threads[0]!.name = "exports only";
+    if (removeOriginalRoute) await saveOrchConfig({ ...baseConfig, routes: [otherRoute] }, tmpHome);
+    fakeOrca.setWorkerState("worker-dashboard", "IDLE");
+    if (removeOriginalRoute) {
+      expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 1 });
+      expect((await loadOrchState(tmpHome)).threads[threadId]).toMatchObject({
+        status: "PAUSED_NEEDS_HUMAN", assignedWorkerHandle: "worker-dashboard", statusReason: expect.stringContaining(originalRoute.id),
+      });
+      await expect(fs.readFile(path.join(tmpHome, "dashboard-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 1, escalated: 0 });
+      expect(await fs.readFile(path.join(tmpHome, "dashboard-ran"), "utf8")).toBe("checked");
+      expect(fakeOrca.dispatched[1]!.prompt).toContain(objective);
+      expect(fakeOrca.dispatched[1]!.prompt).toContain("dashboard check");
+      await engine.tick();
+      await fs.writeFile(path.join(tmpHome, "dashboard-correct"), "correct");
+      fakeOrca.setWorkerState("worker-dashboard", "IDLE");
+      expect(await engine.tick()).toMatchObject({ verified: 1, dispatched: 0, escalated: 0 });
+    }
+    await expect(fs.readFile(path.join(tmpHome, "exports-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   // --------------------------------------------------------------------------
@@ -803,6 +891,46 @@ describe("OrchEngine", () => {
     expect(updatedState.threads[threadEscalate]!.status).toBe("PAUSED_NEEDS_HUMAN");
     expect(fakeDiscord.postedMessages.some(m => m.channelId === threadEscalate && m.content.includes("워커 비정상 종료 — 사람 확인 필요"))).toBe(true);
     expect(fakeDiscord.postedMessages.some(m => m.channelId === "dm-owner-direct" && m.content.includes("워커 비정상 종료 — 사람 확인 필요"))).toBe(true);
+  });
+
+  it("quarantines a still-listed UNKNOWN worker without verifying or leasing it to another request", async () => {
+    const threadId = "thread-unknown";
+    const otherThread = "thread-next";
+    const handle = "worker-unresponsive";
+    for (const id of [threadId, otherThread]) {
+      fakeDiscord.addThread({ id, parent_id: "channel-sample-parent", name: `sample ${id}`, last_message_id: "1000" });
+    }
+    fakeOrca.addWorker(handle, defaultRoute.repoPath);
+    const engine = createEngine();
+    await engine.tick();
+    fakeDiscord.addMessage(threadId, "Fix the dashboard totals");
+    await engine.tick();
+    advanceTime(20_000);
+    expect((await engine.tick()).dispatched).toBe(1);
+
+    fakeOrca.setWorkerState(handle, "UNKNOWN");
+    advanceTime(20_000);
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 0 });
+    advanceTime(61_000);
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 1 });
+    expect(fakeDiscord.postedMessages.filter(m => m.channelId === "dm-owner-direct")).toEqual([
+      expect.objectContaining({ content: expect.stringContaining(handle) }),
+    ]);
+
+    // A later IDLE appearance is not operator intervention. A fresh thread must not get that worker either.
+    fakeOrca.setWorkerState(handle, "IDLE");
+    fakeDiscord.addMessage(threadId, "Also check weekly dashboard totals");
+    fakeDiscord.addMessage(otherThread, "Check the CSV export headers");
+    await engine.tick();
+    advanceTime(20_000);
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 0, escalated: 0 });
+
+    fakeOrca.addWorker("worker-replacement", defaultRoute.repoPath);
+    expect(await engine.tick()).toMatchObject({ verified: 0, dispatched: 1, escalated: 0 });
+    expect(fakeOrca.dispatched[1]).toMatchObject({
+      handle: "worker-replacement",
+      prompt: expect.stringContaining("Check the CSV export headers"),
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1118,7 +1246,7 @@ describe("OrchEngine", () => {
     expect(ledger.some(e => e.event === "thread_deleted" && e.threadId === threadDeleted)).toBe(true);
   });
 
-  it("Test 13: Discord reaction lifecycle (👀 -> 🧠 -> 🔍 -> ✅), typing indicator, editable live Thinking status, and mid-turn follow-up preservation", async () => {
+  it("Test 13: Discord reaction lifecycle (👀 -> 🧠 -> 🔍 -> 🔄), typing indicator, editable live Thinking status, and mid-turn follow-up preservation", async () => {
     const threadId = "thread-1301";
     fakeDiscord.addThread({
       id: threadId,
@@ -1161,17 +1289,19 @@ describe("OrchEngine", () => {
     // Still only 1 live status message posted (all updates via PATCH)
     expect(fakeDiscord.postedMessages.filter(m => m.channelId === threadId).length).toBe(1);
 
-    // 4. Worker finishes -> 🔍 during verify -> ✅ on msg1 (NOT msg2!), status finalized cleanly
+    // 4. Verification leaves a follow-up-pending reaction on msg1, not final success.
     fakeOrca.setWorkerState("worker-rx", "IDLE");
     await engine.tick();
     expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "🔍" });
-    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "✅" });
+    expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "🔄" });
+    expect(fakeDiscord.addedReactions).not.toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "✅" });
+    expect(fakeDiscord.addedReactions).not.toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "🔄" });
     expect(fakeDiscord.editedMessages.some(e => e.messageId === statusPost!.id && e.content.includes("Thinking 완료"))).toBe(true);
 
-    // 5. Follow-up batch (msg2) dispatches -> preserves ✅ on msg1, cleans 👀 on msg2, sets 🧠 on msg2
+    // 5. Follow-up dispatch clears the old pending reaction and replaces 👀 with 🧠 on msg2.
     advanceTime(20_000);
     await engine.tick();
-    expect(fakeDiscord.removedReactions).not.toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "✅" });
+    expect(fakeDiscord.removedReactions).toContainEqual({ channelId: threadId, messageId: msg1.id, emoji: "🔄" });
     expect(fakeDiscord.removedReactions).toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "👀" });
     expect(fakeDiscord.addedReactions).toContainEqual({ channelId: threadId, messageId: msg2.id, emoji: "🧠" });
   });

@@ -30,6 +30,8 @@ export interface OrchWorkerInfo {
   pid?: number;
 }
 
+export type OrchWorkerOutcome = "completed" | "partial" | "failed" | "cancelled";
+
 export interface OrchWorkerInspection {
   state: WorkerTerminalState;
   tail: string[];
@@ -40,6 +42,11 @@ export interface OrchWorkerInspection {
   completedTasks?: string[];
   remainingTasks?: string[];
   summary?: string;
+  outcome?: OrchWorkerOutcome;
+  blockers?: string[];
+  /** Timestamp of the associated sidecar telemetry, when available. */
+  statusUpdatedAt?: string;
+  dispatchId?: string;
 }
 
 export interface OrchWorkerStatusSnapshot {
@@ -54,33 +61,52 @@ export interface OrchWorkerStatusSnapshot {
   completedTasks?: string[];
   remainingTasks?: string[];
   summary?: string;
+  outcome?: OrchWorkerOutcome;
+  blockers?: string[];
+  dispatchId?: string;
   updatedAt: string;
 }
 
-export type ExecCommandFn = (cmd: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+export interface ExecCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}
+
+export type ExecCommandFn = (cmd: string[]) => Promise<ExecCommandResult>;
 
 export async function defaultExecCommand(
   cmd: string[],
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  timeoutMs = 15_000,
+): Promise<ExecCommandResult> {
+  let timer: NodeJS.Timeout | undefined;
   try {
     const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    return { exitCode, stdout, stderr };
+    const completed = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+      .then(([stdout, stderr, exitCode]) => ({ exitCode, stdout, stderr }));
+    const timedOut = new Promise<ExecCommandResult>(resolve => {
+      timer = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* already settled */ }
+        resolve({ exitCode: 124, stdout: "", stderr: `Worker backend command timed out after ${timeoutMs} ms`, timedOut: true });
+      }, timeoutMs);
+    });
+    return await Promise.race([completed, timedOut]);
   } catch (err) {
     return {
       exitCode: 127,
       stdout: "",
       stderr: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 export interface OrchWorkerBackend {
   readonly kind?: ResolvedOrchBackendKind;
+  /** Native workers must return the dispatch's matching terminal receipt. */
+  readonly requiresDispatchReceipt?: boolean;
   listRepoWorkers(repoPath: string): Promise<OrchWorkerInfo[]>;
   inspectWorkerState(handle: string): Promise<OrchWorkerInspection>;
   dispatchToWorker(handle: string, prompt: string): Promise<{ ok: boolean; detail: string }>;
@@ -148,6 +174,9 @@ export async function readWorkerStatusSnapshot(filePath: string): Promise<OrchWo
         : undefined;
     const completedTasks = sanitizeStringArray(parsed.completedTasks);
     const remainingTasks = sanitizeStringArray(parsed.remainingTasks);
+    const outcome = parsed.outcome === "completed" || parsed.outcome === "partial" ||
+      parsed.outcome === "failed" || parsed.outcome === "cancelled" ? parsed.outcome : undefined;
+    const blockers = sanitizeStringArray(parsed.blockers);
 
     return {
       version: 1,
@@ -170,6 +199,10 @@ export async function readWorkerStatusSnapshot(filePath: string): Promise<OrchWo
         : {}),
       ...(completedTasks ? { completedTasks } : {}),
       ...(remainingTasks ? { remainingTasks } : {}),
+      ...(Array.isArray(parsed.remainingTasks) && parsed.remainingTasks.length === 0 ? { remainingTasks: [] } : {}),
+      ...(outcome ? { outcome } : {}),
+      ...(blockers ? { blockers } : {}),
+      ...(typeof parsed.dispatchId === "string" && /^[a-f0-9]{32}$/.test(parsed.dispatchId) ? { dispatchId: parsed.dispatchId } : {}),
       ...(typeof parsed.summary === "string" && parsed.summary.trim()
         ? { summary: parsed.summary.trim() }
         : {}),

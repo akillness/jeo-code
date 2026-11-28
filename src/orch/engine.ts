@@ -5,7 +5,7 @@
  *   DISCOVERED -> QUEUED -> DISPATCHED -> VERIFYING -> IDLE | QUEUED (next iter) | PAUSED_NEEDS_HUMAN
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   DISCORD_THINKING_DEBOUNCE_MS,
   extractThinkingExcerpt,
@@ -15,7 +15,7 @@ import {
   type UnifiedCompletionReportInput,
   type UnifiedTaskReportItem,
 } from "../agent/notify/discord-thinking";
-import { createOrchWorkerBackend, type OrchWorkerBackend } from "./backend";
+import { createOrchWorkerBackend, type OrchWorkerBackend, type OrchWorkerInfo, type OrchWorkerInspection } from "./backend";
 import { DISCORD_SILENT_FLAGS, type DiscordClient } from "./discord-api";
 import { classifyMessage, compareSnowflakes, detectRiskyOperation, matchRoute, type OrchThreadCommand } from "./matcher";
 import type { OrcaClient } from "./orca";
@@ -35,6 +35,7 @@ import type {
 import type { GateVerifier } from "./verifier";
 
 const DISPATCH_MIN_GRACE_MS = 15_000;
+const WORKER_UNKNOWN_LIMIT_MS = 60_000;
 
 const BACKEND_LABELS: Record<ResolvedOrchBackendKind, string> = {
   tmux: "tmux",
@@ -139,10 +140,14 @@ export function formatThinkingStatus(params: {
   }
   return lines.join("\n").slice(0, 1_900);
 }
-export function buildWorkerPrompt(route: ProjectRoute, thread: ThreadLoopState, nextIter: number): string {
-  const userMsgs = thread.pendingMessages
-    .map(m => `- [${m.kind === "qa_fail_trigger" ? "QA_FAIL" : m.authorName}] ${m.content}`)
-    .join("\n");
+export function buildWorkerPrompt(route: ProjectRoute, thread: ThreadLoopState, nextIter: number, dispatchId?: string): string {
+  const authoredMessages = [...(thread.lastDispatchedMessages ?? []), ...thread.pendingMessages]
+    .map(message => [message.id, `- [${message.kind === "qa_fail_trigger" ? "QA_FAIL" : message.authorName}] ${message.content}`] as const);
+  const textById = new Map(authoredMessages);
+  const pendingIds = new Set(thread.pendingMessages.map(message => message.id));
+  const originalMessages = (thread.lastDispatchedMessages ?? []).filter(message => !pendingIds.has(message.id));
+  const userMsgs = thread.pendingMessages.map(message => textById.get(message.id)).join("\n");
+  const objective = originalMessages.map(message => textById.get(message.id)).join("\n") || thread.currentTask;
 
   const gatesList = route.verificationGates.length
     ? route.verificationGates.map(g => `- ${g.name}: \`${g.command}\``).join("\n")
@@ -157,10 +162,12 @@ export function buildWorkerPrompt(route: ProjectRoute, thread: ThreadLoopState, 
     `Project: ${route.name} (${route.id})`,
     `Repo: ${route.repoPath}`,
     `Discord Thread: #${thread.name} (${thread.threadId})`,
+    ...(dispatchId ? [`Dispatch receipt ID: ${dispatchId}. Include this exact ID in any evidence required by the configured verification gates.`] : []),
     "",
     "### Trigger / Feedback",
     userMsgs || "(Autonomous recursive fix cycle based on verification gate failures below)",
     prevFailureBlock,
+    ...(objective ? ["### Original Objective (Still Required)", objective, ""] : []),
     "### Verification Gates (Must Pass Before Finishing)",
     gatesList,
     "",
@@ -254,14 +261,18 @@ export class OrchEngine {
     const routeById = new Map(config.routes.map(r => [r.id, r]));
 
     for (const thread of activeThreads) {
+      const existing = state.threads[thread.id];
       const matched = matchRoute(thread, config.routes);
-      if (!matched) continue;
-      if (!state.threads[thread.id]) {
+      if (!existing && matched) {
         await this.initializeThread(state, thread, matched, dryRun);
         summary.discovered++;
-      } else {
-        state.threads[thread.id]!.name = thread.name;
-        state.threads[thread.id]!.routeId = matched.id;
+      } else if (existing) {
+        existing.name = thread.name;
+        // Rename-based routing applies to the next request, never to leased work or its retries.
+        if (matched && (existing.status === "IDLE" || existing.status === "DISCOVERED" || existing.status === "STOPPED") &&
+          !existing.assignedWorkerHandle && !existing.workerHandle && !existing.pendingMessages.length) {
+          existing.routeId = matched.id;
+        }
       }
     }
 
@@ -315,9 +326,19 @@ export class OrchEngine {
 
     // 3) Advance DISPATCHED or VERIFYING threads -> PASS/RETRY/ESCALATE
     for (const threadState of Object.values(state.threads)) {
-      if (threadState.status !== "DISPATCHED" && threadState.status !== "VERIFYING") continue;
+      const active = threadState.status === "DISPATCHED" || threadState.status === "VERIFYING";
       const route = routeById.get(threadState.routeId);
-      if (!route) continue;
+      if ((!route && (active || threadState.status === "QUEUED")) || (active && route && !route.enabled)) {
+        const reason = `Pinned route ${threadState.routeId} is unavailable; restore it before resuming this request.`;
+        threadState.status = "PAUSED_NEEDS_HUMAN";
+        threadState.statusReason = reason;
+        threadState.updatedAt = new Date(this.now()).toISOString();
+        await this.persist(state, dryRun);
+        await this.record("escalated_human", threadState, { reason }, dryRun);
+        summary.escalated++;
+        continue;
+      }
+      if (!active || !route) continue;
 
       try {
         let outcome: "running" | "verified" | "escalated";
@@ -332,10 +353,7 @@ export class OrchEngine {
           outcome = await this.checkDispatchedThread(config, state, threadState, route, dryRun);
         }
         if (outcome === "verified") summary.verified++;
-        if (outcome === "escalated") {
-          summary.verified++;
-          summary.escalated++;
-        }
+        if (outcome === "escalated") summary.escalated++;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.errors.push(`verify ${threadState.threadId}: ${message}`);
@@ -343,12 +361,10 @@ export class OrchEngine {
       }
     }
 
-    // 4) Dispatch QUEUED threads (respecting debounce, risky gate, and Orca BUSY guard)
-    const busyHandlesInState = new Set(
-      Object.values(state.threads)
-        .filter(t => t.status === "DISPATCHED" && (t.assignedWorkerHandle || (t as unknown as Record<string, unknown>).workerHandle))
-        .map(t => (t.assignedWorkerHandle ?? ((t as unknown as Record<string, unknown>).workerHandle as string))!),
-    );
+    // Hold every assigned handle until the turn is verified, stopped or requeued — including paused/recovering turns.
+    const busyHandlesInState = new Set(Object.values(state.threads)
+      .map(thread => thread.assignedWorkerHandle ?? thread.workerHandle)
+      .filter((handle): handle is string => !!handle));
 
     for (const threadState of Object.values(state.threads)) {
       if (threadState.status !== "QUEUED") continue;
@@ -485,8 +501,9 @@ export class OrchEngine {
         thread.lastFailureSummary = undefined;
         thread.status = "QUEUED";
         thread.statusReason = `Queued from QA failure marker (${verdict.marker})`;
-      } else if (thread.status === "PAUSED_NEEDS_HUMAN" && verdict.kind === "human_trigger") {
-        // Explicit new human instructions unblock a human-paused thread
+      } else if (thread.status === "PAUSED_NEEDS_HUMAN" && verdict.kind === "human_trigger" &&
+        !thread.assignedWorkerHandle && !thread.workerHandle) {
+        // A fresh request can resume failed work, but only an operator command can resume an unobservable lease.
         thread.consecutiveSameFailures = 0;
         const threadDyn = thread as unknown as Record<string, unknown>;
         threadDyn.consecutiveFailureCount = 0;
@@ -499,7 +516,7 @@ export class OrchEngine {
 
       // Immediately acknowledge receipt with 👀 reaction on the triggering Discord message.
       // While a prior turn is still DISPATCHED/VERIFYING, react without hijacking reactionMessageId.
-      if (thread.status === "DISPATCHED" || thread.status === "VERIFYING") {
+      if (thread.assignedWorkerHandle || thread.workerHandle || thread.status === "VERIFYING") {
         await this.reactOnce(thread.threadId, msg.id, "👀", dryRun);
       } else {
         await this.setThreadReaction(thread, "👀", dryRun, msg.id);
@@ -551,7 +568,10 @@ export class OrchEngine {
           commandReaction = "⚠️";
           reply = `⚠️ 승인 대기 중인 위험 작업 게이트(\`${thread.pendingGate.id}\`)가 있습니다. \`!orch approve ${thread.pendingGate.id}\` 또는 \`!orch deny ${thread.pendingGate.id}\`로 먼저 결정해 주세요.`;
         } else {
-          thread.status = thread.pendingMessages.length > 0 || thread.lastFailureSummary ? "QUEUED" : "IDLE";
+          thread.status = thread.assignedWorkerHandle || thread.workerHandle
+            ? "DISPATCHED"
+            : thread.pendingMessages.length > 0 || thread.lastFailureSummary ? "QUEUED" : "IDLE";
+          thread.workerUnknownSinceMs = undefined;
           thread.statusReason = `Resumed by ${actor}`;
           reply = `▶️ **재개됨** (\`${route.name}\`, 상태: \`${thread.status}\`).`;
         }
@@ -574,6 +594,9 @@ export class OrchEngine {
           thread.pendingGate = undefined;
         }
         thread.workerObservedBusy = undefined;
+        thread.workerUnknownSinceMs = undefined;
+        thread.currentTask = undefined;
+        thread.lastFailureSummary = undefined;
         thread.lastWorkerPhase = undefined;
         thread.statusReason = `Stopped by ${actor}`;
         commandReaction = "🛑";
@@ -587,6 +610,11 @@ export class OrchEngine {
           reply = `⚠️ 승인 대기 중인 위험 작업 게이트(\`${thread.pendingGate.id}\`)가 있습니다. \`!orch approve ${thread.pendingGate.id}\` 또는 \`!orch deny ${thread.pendingGate.id}\`로 먼저 결정해 주세요.`;
           break;
         }
+        if (thread.assignedWorkerHandle || thread.workerHandle) {
+          commandReaction = "⚠️";
+          reply = `⚠️ An assigned worker is still leased. Let the current turn settle, or resume it if paused.`;
+          break;
+        }
         thread.consecutiveSameFailures = 0;
         {
           const threadDyn = thread as unknown as Record<string, unknown>;
@@ -594,7 +622,6 @@ export class OrchEngine {
           thread.lastFailureHash = undefined;
           threadDyn.consecutiveFailureHash = undefined;
           threadDyn.workerHandle = undefined;
-          threadDyn.lastDispatchedMessages = undefined;
         }
         thread.assignedWorkerHandle = undefined;
         thread.workerObservedBusy = undefined;
@@ -642,6 +669,8 @@ export class OrchEngine {
           if (thread.pendingGate?.id === gate.id) thread.pendingGate = undefined;
           thread.pendingMessages = [];
           (thread as unknown as Record<string, unknown>).lastDispatchedMessages = undefined;
+          thread.currentTask = undefined;
+          thread.lastFailureSummary = undefined;
           thread.status = "IDLE";
           thread.statusReason = `Denied gate ${gate.id} by ${actor}`;
           commandReaction = "🛑";
@@ -734,18 +763,19 @@ export class OrchEngine {
     }
 
     const nextIter = thread.iteration + 1;
-    const prompt = buildWorkerPrompt(route, thread, nextIter);
     const worktree = route.orcaWorktreePath ?? route.repoPath;
     const workerBackend = await this.resolveBackendForRoute(config, route);
     const backendName = workerBackend.kind ? BACKEND_LABELS[workerBackend.kind] : "워커";
     const workers = await workerBackend.listRepoWorkers(worktree);
 
     let chosenHandle: string | undefined;
+    let chosenWorktree = worktree;
     for (const worker of workers) {
       if (busyHandlesInState.has(worker.handle)) continue;
       const inspected = await workerBackend.inspectWorkerState(worker.handle);
       if (inspected.state === "IDLE") {
         chosenHandle = worker.handle;
+        chosenWorktree = worker.worktreePath || worktree;
         break;
       }
     }
@@ -754,6 +784,10 @@ export class OrchEngine {
       this.log(`[dry-run] Would dispatch #${thread.name} (iter ${nextIter}/${route.maxIterations}) to ${chosenHandle ?? (route.spawnIfBusy && workers.length < route.maxWorkers ? `new spawned ${backendName} worker` : "wait (all busy)")}`);
       return "waiting";
     }
+
+    const dispatchId = randomBytes(16).toString("hex");
+    const dispatchedAt = new Date(this.now()).toISOString();
+    const prompt = buildWorkerPrompt(route, thread, nextIter, dispatchId);
 
     if (chosenHandle) {
       const sent = await workerBackend.dispatchToWorker(chosenHandle, prompt);
@@ -784,21 +818,28 @@ export class OrchEngine {
     }
 
     // Commit dispatch transition
+    busyHandlesInState.add(chosenHandle);
     thread.iteration = nextIter;
     thread.status = "DISPATCHED";
     thread.assignedWorkerHandle = chosenHandle;
     (thread as unknown as Record<string, unknown>).workerHandle = chosenHandle;
     thread.activeBackend = workerBackend.kind;
-    thread.dispatchedAt = new Date(this.now()).toISOString();
+    thread.activeWorktreePath = chosenWorktree;
+    thread.dispatchedAt = dispatchedAt;
+    thread.dispatchId = dispatchId;
     thread.workerObservedBusy = false;
     thread.lastWorkerPhase = "thinking";
     thread.lastThinkingExcerpt = undefined;
     thread.lastCurrentTool = undefined;
     thread.lastCompletedTasks = undefined;
     thread.lastRemainingTasks = undefined;
+    thread.lastWorkerOutcome = undefined;
+    thread.lastWorkerBlockers = undefined;
     const batchTargetMessageId = thread.pendingMessages[thread.pendingMessages.length - 1]?.id;
     if (thread.pendingMessages.length > 0) {
-      (thread as unknown as Record<string, unknown>).lastDispatchedMessages = [...thread.pendingMessages];
+      const prior = thread.lastDispatchedMessages ?? [];
+      const priorIds = new Set(prior.map(message => message.id));
+      thread.lastDispatchedMessages = [...prior, ...thread.pendingMessages.filter(message => !priorIds.has(message.id))];
     }
     thread.pendingMessages = [];
     thread.pendingGate = undefined;
@@ -808,7 +849,7 @@ export class OrchEngine {
     // Immediately persist after dispatch succeeds, BEFORE posting Discord status
     await this.persist(state, false);
 
-    await this.record("worker_dispatched", thread, { handle: chosenHandle, iteration: nextIter, backend: workerBackend.kind }, false);
+    await this.record("worker_dispatched", thread, { handle: chosenHandle, iteration: nextIter, backend: workerBackend.kind, dispatchId }, false);
     if (batchTargetMessageId && batchTargetMessageId !== thread.reactionMessageId && this.deps.discord.removeReaction) {
       try {
         await this.deps.discord.removeReaction(thread.threadId, batchTargetMessageId, "👀");
@@ -837,18 +878,35 @@ export class OrchEngine {
       await this.persist(state, dryRun);
       return "running";
     }
-    const workerBackend = await this.resolveBackendForRoute(config, route);
-    const inspected = await workerBackend.inspectWorkerState(handle);
-    if (inspected.thinkingExcerpt) {
+    const elapsedMs = thread.dispatchedAt ? this.now() - Date.parse(thread.dispatchedAt) : DISPATCH_MIN_GRACE_MS;
+    let workerBackend: OrchWorkerBackend;
+    let inspected: OrchWorkerInspection;
+    try {
+      workerBackend = await this.resolveBackendForRoute(config, thread.activeBackend ? { ...route, backend: thread.activeBackend } : route);
+      inspected = await workerBackend.inspectWorkerState(handle);
+    } catch (err) {
+      if (elapsedMs < DISPATCH_MIN_GRACE_MS) return "running";
+      return await this.deferUnobservableWorker(config, state, thread, route, handle, dryRun, err);
+    }
+    if (inspected.state !== "UNKNOWN") thread.workerUnknownSinceMs = undefined;
+    const receiptMatches = !!thread.dispatchId && inspected.dispatchId === thread.dispatchId;
+    const telemetryIsCurrent = thread.dispatchId && inspected.dispatchId ? receiptMatches
+      : inspected.statusUpdatedAt === undefined || !thread.dispatchedAt ||
+        Date.parse(inspected.statusUpdatedAt) >= Date.parse(thread.dispatchedAt);
+    if (telemetryIsCurrent && inspected.state !== "BUSY") {
+      thread.lastWorkerOutcome = inspected.outcome;
+      thread.lastWorkerBlockers = inspected.blockers;
+    }
+    if (telemetryIsCurrent && inspected.thinkingExcerpt) {
       thread.lastThinkingExcerpt = extractThinkingExcerpt(inspected.thinkingExcerpt);
     }
-    if (inspected.currentTool !== undefined) {
+    if (telemetryIsCurrent && inspected.currentTool !== undefined) {
       thread.lastCurrentTool = inspected.currentTool;
     }
-    if (inspected.completedTasks) {
+    if (telemetryIsCurrent && inspected.completedTasks !== undefined) {
       thread.lastCompletedTasks = inspected.completedTasks;
     }
-    if (inspected.remainingTasks) {
+    if (telemetryIsCurrent && inspected.remainingTasks !== undefined) {
       thread.lastRemainingTasks = inspected.remainingTasks;
     }
     if (inspected.state === "BUSY") {
@@ -875,12 +933,19 @@ export class OrchEngine {
       await this.persist(state, dryRun);
       return "running";
     }
-    const elapsedMs = thread.dispatchedAt ? this.now() - Date.parse(thread.dispatchedAt) : DISPATCH_MIN_GRACE_MS;
+    if (!dryRun && telemetryIsCurrent && (inspected.outcome === "failed" || inspected.outcome === "cancelled")) {
+      return await this.runVerification(config, state, thread, route, dryRun);
+    }
 
     if (inspected.state === "UNKNOWN") {
-      if (elapsedMs > DISPATCH_MIN_GRACE_MS) {
-        const repoPath = route.orcaWorktreePath ?? route.repoPath;
-        const activeRepoWorkers = await workerBackend.listRepoWorkers(repoPath);
+      if (elapsedMs >= DISPATCH_MIN_GRACE_MS) {
+        const repoPath = thread.activeWorktreePath ?? route.orcaWorktreePath ?? route.repoPath;
+        let activeRepoWorkers: OrchWorkerInfo[];
+        try {
+          activeRepoWorkers = await workerBackend.listRepoWorkers(repoPath);
+        } catch (err) {
+          return await this.deferUnobservableWorker(config, state, thread, route, handle, dryRun, err);
+        }
         const isStillPresent = activeRepoWorkers.some(w => w.handle === handle);
         if (!isStillPresent) {
           const disappearedHandle = handle;
@@ -888,6 +953,7 @@ export class OrchEngine {
           (thread as unknown as Record<string, unknown>).workerHandle = undefined;
           thread.dispatchedAt = undefined;
           thread.workerObservedBusy = undefined;
+          thread.workerUnknownSinceMs = undefined;
           thread.lastWorkerPhase = undefined;
 
           if (thread.iteration < route.maxIterations) {
@@ -898,6 +964,7 @@ export class OrchEngine {
             }
             thread.status = "QUEUED";
             thread.lastPendingAtMs = 0;
+            thread.lastFailureSummary = `Worker ${disappearedHandle} disappeared before completing the assigned turn.`;
             thread.statusReason = `Worker ${disappearedHandle} disappeared/terminated unexpectedly; re-queued cycle ${thread.iteration}/${route.maxIterations}`;
             thread.updatedAt = new Date(this.now()).toISOString();
             await this.setThreadReaction(thread, "🔄", dryRun);
@@ -940,19 +1007,60 @@ export class OrchEngine {
             return "escalated";
           }
         }
+        return await this.deferUnobservableWorker(config, state, thread, route, handle, dryRun);
       }
       return "running";
     }
-    // Prevent false completion right after dispatch before the agent screen refreshes to BUSY
-    if (!thread.workerObservedBusy && elapsedMs < DISPATCH_MIN_GRACE_MS) {
+    // An idle screen is not proof a new native turn ran. Only the matching terminal result can settle it.
+    const requiresReceipt = !!thread.dispatchId && !!workerBackend.requiresDispatchReceipt;
+    const hasCurrentTerminalOutcome = receiptMatches && !!inspected.outcome;
+    const missingCurrentOutput = !telemetryIsCurrent || (!hasCurrentTerminalOutcome && (requiresReceipt || !thread.workerObservedBusy));
+    if (missingCurrentOutput && elapsedMs < DISPATCH_MIN_GRACE_MS) {
       await this.emitTyping(thread.threadId, dryRun);
       return "running";
     }
 
     if (dryRun) return "running";
+    if (requiresReceipt && missingCurrentOutput) {
+      return await this.deferUnobservableWorker(config, state, thread, route, handle, dryRun, undefined, true);
+    }
+    if (missingCurrentOutput) {
+      thread.lastWorkerOutcome = "failed";
+      thread.lastWorkerBlockers = ["Worker became idle without a completion result for the current dispatch."];
+    }
 
     // Worker returned to IDLE -> run project verification gates
     return await this.runVerification(config, state, thread, route, dryRun);
+  }
+
+  private async deferUnobservableWorker(
+    config: OrchConfig,
+    state: OrchState,
+    thread: ThreadLoopState,
+    route: ProjectRoute,
+    handle: string,
+    dryRun: boolean,
+    error?: unknown,
+    missingReceipt = false,
+  ): Promise<"running" | "escalated"> {
+    const nowMs = this.now();
+    thread.workerUnknownSinceMs ??= nowMs;
+    if (dryRun || (!missingReceipt && nowMs - thread.workerUnknownSinceMs < WORKER_UNKNOWN_LIMIT_MS)) return "running";
+
+    const reason = missingReceipt
+      ? `Worker ${handle} became idle without a matching terminal receipt. Its lease is still held; inspect the worker and use a managed Jeo worker that can emit the current dispatch's receipt.`
+      : `Worker ${handle} has remained unobservable; its lease is still held. Inspect it before resuming or stopping.`;
+    thread.status = "PAUSED_NEEDS_HUMAN";
+    thread.statusReason = reason;
+    thread.updatedAt = new Date(nowMs).toISOString();
+    await this.persist(state, dryRun);
+    await this.record("escalated_human", thread, { reason, handle, ...(error ? { error: String(error) } : {}) }, dryRun);
+    await this.setThreadReaction(thread, "🛑", dryRun);
+    const alert = `🚨 **[Worker inspection required]** \`${route.name}\` (#${thread.name})\n${reason}\nUse \`!orch resume\` to resume checks or \`!orch stop\` to release the lease.`;
+    await this.finalizeThinkingStatus(thread, alert, dryRun);
+    await this.deps.discord.postMessage(thread.threadId, alert);
+    await this.notifyOwnerDm(config, alert);
+    return "escalated";
   }
 
   private async runVerification(
@@ -961,7 +1069,7 @@ export class OrchEngine {
     thread: ThreadLoopState,
     route: ProjectRoute,
     dryRun: boolean,
-  ): Promise<"verified" | "escalated"> {
+  ): Promise<"running" | "verified" | "escalated"> {
     thread.status = "VERIFYING";
     thread.lastWorkerPhase = undefined;
     thread.updatedAt = new Date(this.now()).toISOString();
@@ -975,7 +1083,17 @@ export class OrchEngine {
     );
     await this.persist(state, dryRun);
 
-    const verification = await this.deps.verifier.verifyRoute(route);
+    const verificationRoute = thread.activeWorktreePath ? { ...route, orcaWorktreePath: thread.activeWorktreePath } : route;
+    const verification = await this.deps.verifier.verifyRoute(verificationRoute, thread.dispatchId);
+    const missingGates = !verification.passed && verification.results.length === 0;
+    const workerProblems = [
+      ...(thread.lastWorkerOutcome && thread.lastWorkerOutcome !== "completed"
+        ? [`Worker reported ${thread.lastWorkerOutcome}.`] : []),
+      ...(thread.lastWorkerBlockers ?? []),
+      ...(thread.lastRemainingTasks ?? []),
+    ];
+    const failureSummary = [verification.summaryText, ...(workerProblems.length > 0
+      ? ["Unfinished worker tasks or blockers:", ...workerProblems.map(problem => `- ${problem}`)] : [])].join("\n");
     const workerHandle = thread.assignedWorkerHandle ?? ((thread as unknown as Record<string, unknown>).workerHandle as string | undefined);
     const elapsedExact = formatElapsedExact(thread.dispatchedAt, this.now());
     thread.assignedWorkerHandle = undefined;
@@ -1017,6 +1135,9 @@ export class OrchEngine {
       for (const item of thread.lastRemainingTasks ?? []) {
         remaining.push({ label: item, source: "todo" });
       }
+      for (const item of thread.lastWorkerBlockers ?? []) {
+        remaining.push({ label: item, source: "todo" });
+      }
       if (thread.pendingMessages.length > 0) {
         remaining.push({
           label: `작업 중 도착한 후속 요청 ${thread.pendingMessages.length}건`,
@@ -1042,7 +1163,7 @@ export class OrchEngine {
       };
     };
 
-    if (verification.passed) {
+    if (verification.passed && workerProblems.length === 0) {
       thread.consecutiveSameFailures = 0;
       {
         const threadDyn = thread as unknown as Record<string, unknown>;
@@ -1052,12 +1173,13 @@ export class OrchEngine {
         threadDyn.lastDispatchedMessages = undefined;
       }
       thread.lastFailureSummary = undefined;
+      thread.currentTask = undefined;
 
       const completedIter = thread.iteration;
       const hasFollowUp = thread.pendingMessages.length > 0;
       const hasHumanFollowUp = thread.pendingMessages.some(m => m.kind === "human_trigger");
       const unifiedInput = buildUnifiedReportInput(
-        hasFollowUp || (thread.lastRemainingTasks?.length ?? 0) > 0 ? "partial" : "completed",
+        hasFollowUp ? "partial" : "completed",
         completedIter,
       );
       const unifiedReport = formatDiscordCompletionReport(unifiedInput);
@@ -1078,7 +1200,7 @@ export class OrchEngine {
         ? "Passed verification; processing live user feedback received mid-turn"
         : `Cycle ${completedIter} passed all verification gates`;
       thread.updatedAt = new Date(this.now()).toISOString();
-      await this.setThreadReaction(thread, "✅", dryRun);
+      await this.setThreadReaction(thread, hasFollowUp ? "🔄" : "✅", dryRun);
       await this.finalizeThinkingStatus(
         thread,
         `✅ **[사이클 ${completedIter}/${route.maxIterations} Thinking 완료]** \`${route.name}\` — 검증 통과 (소요 ${elapsedExact})`,
@@ -1098,7 +1220,7 @@ export class OrchEngine {
         await this.deps.discord.postMessage(thread.threadId, report);
         await this.notifyOwnerDm(
           config,
-          `✅ [orch 완료] ${route.name} (#${thread.name}) — 사이클 ${completedIter}/${route.maxIterations} 검증 전 항목 PASS.\n${dmSummary}`,
+          `${hasFollowUp ? "🔄 [orch cycle passed; follow-up pending]" : "✅ [orch 완료]"} ${route.name} (#${thread.name}) — 사이클 ${completedIter}/${route.maxIterations} 검증 전 항목 PASS.\n${dmSummary}`,
         );
       }
       return "verified";
@@ -1106,7 +1228,9 @@ export class OrchEngine {
 
     // Verification failed -> evaluate circuit breaker & max iterations
     const completedIter = thread.iteration;
-    const hash = verification.failureHash ?? "unknown";
+    const hash = workerProblems.length > 0
+      ? createHash("sha256").update(JSON.stringify([verification.failureHash, [...new Set(workerProblems)].sort()])).digest("hex").slice(0, 12)
+      : verification.failureHash ?? (missingGates ? "verification-unconfigured" : "unknown");
     if (thread.lastFailureHash === hash) {
       thread.consecutiveSameFailures += 1;
     } else {
@@ -1118,7 +1242,7 @@ export class OrchEngine {
       threadDyn.consecutiveFailureHash = thread.lastFailureHash;
       threadDyn.consecutiveFailureCount = thread.consecutiveSameFailures;
     }
-    thread.lastFailureSummary = verification.summaryText;
+    thread.lastFailureSummary = failureSummary;
     thread.updatedAt = new Date(this.now()).toISOString();
 
     await this.record("verification_failed", thread, {
@@ -1133,8 +1257,8 @@ export class OrchEngine {
     const hasLiveFeedback = thread.pendingMessages.length > 0;
     const hasHumanFeedback = thread.pendingMessages.some(m => m.kind === "human_trigger");
 
-    if (hitSameFailureCap || hitMaxIter) {
-      if (hasHumanFeedback) {
+    if (missingGates || hitSameFailureCap || hitMaxIter) {
+      if (hasHumanFeedback && !missingGates) {
         // Fresh human guidance queues a new cycle instead of escalating over the human's new instructions
         thread.iteration = 0;
         thread.consecutiveSameFailures = 0;
@@ -1142,7 +1266,6 @@ export class OrchEngine {
         threadDyn.consecutiveFailureCount = 0;
         thread.lastFailureHash = undefined;
         threadDyn.consecutiveFailureHash = undefined;
-        thread.lastFailureSummary = undefined;
         thread.status = "QUEUED";
         // Do NOT zero thread.lastPendingAtMs (preserve debounce)
         thread.statusReason = `Verification failed (${hash}), but fresh human instructions arrived; starting fresh cycle`;
@@ -1168,17 +1291,18 @@ export class OrchEngine {
             thread.threadId,
             [
               `🔁 **[사이클 ${completedIter}/${route.maxIterations} 검증 미달 및 한도 도달했으나 새 지침 도착]**`,
-              verification.summaryText,
+              failureSummary,
               "",
               unifiedReport,
               `새로운 사용자 요청을 반영하여 새 사이클을 시작합니다.`,
             ].join("\n"),
           );
         }
-        return "verified";
+        return "running";
       }
 
-      const reason = hitSameFailureCap
+      const reason = missingGates ? "No verification gates configured; add a project verification gate before retrying."
+        : hitSameFailureCap
         ? `동일 검증 실패(${hash})가 ${thread.consecutiveSameFailures}회 연속 발생해 자동 중단했습니다.`
         : `최대 자율 재귀 횟수(${route.maxIterations}회)에 도달해 중단했습니다.`;
       thread.status = "PAUSED_NEEDS_HUMAN";
@@ -1202,7 +1326,7 @@ export class OrchEngine {
       const alert = [
         `🚨 **[자동 재귀 중단 — 사람 확인 필요]** \`${route.name}\` (#${thread.name})`,
         `- 사유: ${reason}`,
-        `- 최근 검증 결과:\n${verification.summaryText}`,
+        `- 최근 검증 결과:\n${failureSummary}`,
         "",
         formatDiscordCompletionReport(escalatedInput),
         `- 조치: 쓰레드에 수정 방향을 남기거나 \`!orch retry\` 로 재시작하세요.`,
@@ -1244,14 +1368,14 @@ export class OrchEngine {
         thread.threadId,
         [
           `🔁 **[사이클 ${completedIter}/${route.maxIterations} 검증 미달 → 자동 재수정 예약]**`,
-          verification.summaryText,
+          failureSummary,
           "",
           requeueReport,
           `다음 사이클(${completedIter + 1}/${route.maxIterations})을 유휴 워커에 자동 배정합니다.`,
         ].join("\n"),
       );
     }
-    return "verified";
+    return "running";
   }
 
   private async reactOnce(channelId: string, messageId: string | undefined, emoji: string, dryRun: boolean): Promise<void> {

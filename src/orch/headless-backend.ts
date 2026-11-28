@@ -81,10 +81,12 @@ async function defaultSpawnHeadlessProcess(req: SpawnHeadlessProcessRequest): Pr
       detached: true,
       stdio: ["ignore", logFd, logFd],
     });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
     const pid = child.pid;
-    if (!pid || pid <= 0) {
-      throw new Error(`Failed to spawn headless worker process: ${binary}`);
-    }
+    if (!pid) throw new Error(`Failed to spawn headless worker process: ${binary}`);
     child.once("exit", code => {
       req.onExit?.(code);
     });
@@ -123,6 +125,7 @@ export interface HeadlessWorkerBackendOptions {
 
 export class HeadlessWorkerBackend implements OrchWorkerBackend {
   readonly kind = "headless" as const;
+  readonly requiresDispatchReceipt = true;
 
   private readonly orchHome: string;
   private readonly workersDir: string;
@@ -130,6 +133,8 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
   private readonly spawnProcess: SpawnHeadlessProcessFn;
   private readonly isPidAlive: IsPidAliveFn;
   private readonly now: () => number;
+  private readonly dispatching = new Set<string>();
+  private readonly activeProcesses = new Set<number>();
 
   constructor(options: HeadlessWorkerBackendOptions = {}) {
     this.orchHome = resolveOrchHome(options.orchHome);
@@ -187,9 +192,11 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
         continue;
       }
 
-      const alive = typeof record.pid === "number" && record.pid > 0 && this.isPidAlive(record.pid);
+      const alive = record.exitCode === undefined && !!record.pid &&
+        (this.activeProcesses.has(record.pid) || this.isPidAlive(record.pid));
       const snapshot = await readWorkerStatusSnapshot(record.statusFile);
-      const reusableIdle = !alive && (record.exitCode === 0 || snapshot?.state === "IDLE");
+      const reusableIdle = !alive && (record.exitCode === 0 || (record.exitCode === undefined &&
+        record.pid !== undefined && snapshot?.pid === record.pid && snapshot.state === "IDLE"));
 
       // Exclude crashed/dead workers whose state is UNKNOWN so engine recovery triggers cleanly.
       if (!alive && !reusableIdle) {
@@ -221,12 +228,14 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
     const record = await this.readRecord(workerId);
     if (!record) return { state: "UNKNOWN", tail: [] };
 
-    const [tail, snapshot] = await Promise.all([
+    const [tail, rawSnapshot] = await Promise.all([
       readLogTail(record.logFile),
       readWorkerStatusSnapshot(record.statusFile),
     ]);
 
-    const alive = typeof record.pid === "number" && record.pid > 0 && this.isPidAlive(record.pid);
+    const snapshot = rawSnapshot?.pid === record.pid ? rawSnapshot : undefined;
+    const alive = record.exitCode === undefined && !!record.pid &&
+      (this.activeProcesses.has(record.pid) || this.isPidAlive(record.pid));
     if (alive) {
       return {
         state: "BUSY",
@@ -238,10 +247,12 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
         ...(snapshot?.completedTasks ? { completedTasks: snapshot.completedTasks } : {}),
         ...(snapshot?.remainingTasks ? { remainingTasks: snapshot.remainingTasks } : {}),
         ...(snapshot?.summary ? { summary: snapshot.summary } : {}),
+        ...(snapshot?.updatedAt ? { statusUpdatedAt: snapshot.updatedAt } : {}),
+        ...(snapshot?.dispatchId ? { dispatchId: snapshot.dispatchId } : {}),
       };
     }
 
-    if (record.exitCode === 0 || snapshot?.state === "IDLE") {
+    if (record.exitCode === 0 || (record.exitCode === undefined && snapshot?.state === "IDLE")) {
       return {
         state: "IDLE",
         tail,
@@ -249,6 +260,10 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
         ...(snapshot?.remainingTasks ? { remainingTasks: snapshot.remainingTasks } : {}),
         ...(snapshot?.summary ? { summary: snapshot.summary } : {}),
         ...(snapshot?.thinkingExcerpt ? { thinkingExcerpt: snapshot.thinkingExcerpt } : {}),
+        ...(snapshot?.outcome ? { outcome: snapshot.outcome } : {}),
+        ...(snapshot?.blockers ? { blockers: snapshot.blockers } : {}),
+        ...(snapshot?.updatedAt ? { statusUpdatedAt: snapshot.updatedAt } : {}),
+        ...(snapshot?.dispatchId ? { dispatchId: snapshot.dispatchId } : {}),
       };
     }
 
@@ -256,6 +271,10 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
       state: "UNKNOWN",
       tail,
       ...(snapshot?.summary ? { summary: snapshot.summary } : {}),
+      ...(record.exitCode !== undefined ? {
+        outcome: "failed" as const,
+        blockers: [record.exitCode === null ? "Headless worker was terminated by a signal." : `Headless worker exited with code ${record.exitCode}.`, ...(snapshot?.blockers ?? [])],
+      } : {}),
     };
   }
 
@@ -265,6 +284,18 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
       return { ok: false, detail: `Invalid headless worker handle: ${handle}` };
     }
 
+    if (this.dispatching.has(workerId)) {
+      return { ok: false, detail: `Refused to dispatch: headless worker ${handle} is BUSY starting another turn` };
+    }
+    this.dispatching.add(workerId);
+    try {
+      return await this.startWorkerTurn(workerId, handle, prompt);
+    } finally {
+      this.dispatching.delete(workerId);
+    }
+  }
+
+  private async startWorkerTurn(workerId: string, handle: string, prompt: string): Promise<{ ok: boolean; detail: string }> {
     const record = await this.readRecord(workerId);
     if (!record) {
       return { ok: false, detail: `Headless worker ${handle} not found` };
@@ -272,7 +303,7 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
 
     // Strict non-interruption guard: re-verify IDLE before spawning a new turn.
     const check = await this.inspectWorkerState(handle);
-    if (check.state !== "IDLE") {
+    if (check.state !== "IDLE" || (record.pid !== undefined && this.activeProcesses.has(record.pid))) {
       return { ok: false, detail: `Refused to dispatch: headless worker ${handle} is ${check.state}` };
     }
 
@@ -292,13 +323,18 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
     };
 
     try {
+      // The child owns telemetry. Remove the previous turn before spawn, not after a fast child may have written its result.
+      await fs.rm(record.statusFile, { force: true });
+      let startedPid: number | undefined;
+      let earlyExit: number | null | undefined;
       const spawned = await this.spawnProcess({
         cmd,
         cwd: record.repoPath,
         env,
         logFile: record.logFile,
         onExit: exitCode => {
-          void this.recordProcessExit(workerId, spawned.pid, exitCode);
+          if (startedPid === undefined) earlyExit = exitCode;
+          else void this.recordProcessExit(workerId, startedPid, exitCode);
         },
       });
 
@@ -310,15 +346,9 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
         updatedAt: nowIso,
       };
       await writeAtomicRecord(this.recordPath(workerId), updatedRecord);
-      await writeWorkerStatusSnapshot(record.statusFile, {
-        version: 1,
-        workerHandle: record.handle,
-        sessionId: record.sessionId,
-        pid: spawned.pid,
-        state: "BUSY",
-        phase: "thinking",
-        updatedAt: nowIso,
-      });
+      this.activeProcesses.add(spawned.pid);
+      startedPid = spawned.pid;
+      if (earlyExit !== undefined) await this.recordProcessExit(workerId, spawned.pid, earlyExit);
 
       return { ok: true, detail: `dispatched to ${handle} (pid=${spawned.pid})` };
     } catch (err) {
@@ -386,11 +416,7 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
       const current = await this.readRecord(workerId);
       if (!current || current.pid !== pid) return;
       const nowIso = new Date(this.now()).toISOString();
-      await writeAtomicRecord(this.recordPath(workerId), {
-        ...current,
-        exitCode,
-        updatedAt: nowIso,
-      });
+      await writeAtomicRecord(this.recordPath(workerId), { ...current, exitCode, updatedAt: nowIso });
 
       if (exitCode === 0) {
         const snap = await readWorkerStatusSnapshot(current.statusFile);
@@ -408,6 +434,8 @@ export class HeadlessWorkerBackend implements OrchWorkerBackend {
       }
     } catch {
       // Best-effort exit metadata persistence.
+    } finally {
+      this.activeProcesses.delete(pid);
     }
   }
 }
